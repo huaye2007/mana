@@ -5,14 +5,14 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.github.huaye2007.mana</groupId>
-    <artifactId>game-parent</artifactId>
+    <artifactId>mana</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
-    <name>mana game-parent</name>
+    <name>mana</name>
     <description>Java game server framework components: networking, internal RPC, serialization,
         service registry, configuration, runtime task scheduling and JPA-style persistence.</description>
-    <url>https://github.com/huaye2007/game-parent</url>
+    <url>https://github.com/huaye2007/mana</url>
 
     <licenses>
         <license>
@@ -30,9 +30,9 @@
     </developers>
 
     <scm>
-        <connection>scm:git:https://github.com/huaye2007/game-parent.git</connection>
-        <developerConnection>scm:git:git@github.com:huaye2007/game-parent.git</developerConnection>
-        <url>https://github.com/huaye2007/game-parent</url>
+        <connection>scm:git:https://github.com/huaye2007/mana.git</connection>
+        <developerConnection>scm:git:git@github.com:huaye2007/mana.git</developerConnection>
+        <url>https://github.com/huaye2007/mana</url>
         <tag>HEAD</tag>
     </scm>
 
