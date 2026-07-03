@@ -1,0 +1,2 @@
+com.github.huaye2007.mana.config.loader.JsonLocalConfigLoader
+com.github.huaye2007.mana.config.loader.CustomLocalConfigLoader

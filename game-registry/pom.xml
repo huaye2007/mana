@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.github.huaye2007.mana</groupId>
+        <artifactId>game-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>game-registry</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <!-- zookeeper 集成测试用 curator-test 内嵌服务，自包含，默认开启；
+             etcd/nacos/consul 需要本机跑真实服务，默认关闭，用 registry-it-* profile 打开 -->
+        <game.registry.integration.zookeeper>true</game.registry.integration.zookeeper>
+        <game.registry.integration.etcd>false</game.registry.integration.etcd>
+        <game.registry.integration.nacos>false</game.registry.integration.nacos>
+        <game.registry.integration.consul>false</game.registry.integration.consul>
+    </properties>
+
+    <modules>
+        <module>game-registry-core</module>
+        <module>game-registry-zookeeper</module>
+        <module>game-registry-etcd</module>
+        <module>game-registry-nacos</module>
+        <module>game-registry-consul</module>
+        <module>game-registry-starter</module>
+    </modules>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <org.slf4j.simpleLogger.defaultLogLevel>warn</org.slf4j.simpleLogger.defaultLogLevel>
+                        <org.slf4j.simpleLogger.log.org.apache.zookeeper.server.ServerCnxnFactory>error</org.slf4j.simpleLogger.log.org.apache.zookeeper.server.ServerCnxnFactory>
+                        <org.slf4j.simpleLogger.showDateTime>false</org.slf4j.simpleLogger.showDateTime>
+                        <org.slf4j.simpleLogger.showThreadName>false</org.slf4j.simpleLogger.showThreadName>
+                        <game.registry.integration.zookeeper>${game.registry.integration.zookeeper}</game.registry.integration.zookeeper>
+                        <game.registry.integration.etcd>${game.registry.integration.etcd}</game.registry.integration.etcd>
+                        <game.registry.integration.nacos>${game.registry.integration.nacos}</game.registry.integration.nacos>
+                        <game.registry.integration.consul>${game.registry.integration.consul}</game.registry.integration.consul>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>registry-it-zookeeper</id>
+            <properties>
+                <game.registry.integration.zookeeper>true</game.registry.integration.zookeeper>
+            </properties>
+        </profile>
+        <profile>
+            <id>registry-it-etcd</id>
+            <properties>
+                <game.registry.integration.etcd>true</game.registry.integration.etcd>
+            </properties>
+        </profile>
+        <profile>
+            <id>registry-it-nacos</id>
+            <properties>
+                <game.registry.integration.nacos>true</game.registry.integration.nacos>
+            </properties>
+        </profile>
+        <profile>
+            <id>registry-it-consul</id>
+            <properties>
+                <game.registry.integration.consul>true</game.registry.integration.consul>
+            </properties>
+        </profile>
+        <profile>
+            <id>registry-it-all</id>
+            <properties>
+                <game.registry.integration.zookeeper>true</game.registry.integration.zookeeper>
+                <game.registry.integration.etcd>true</game.registry.integration.etcd>
+                <game.registry.integration.nacos>true</game.registry.integration.nacos>
+                <game.registry.integration.consul>true</game.registry.integration.consul>
+            </properties>
+        </profile>
+    </profiles>
+
+</project>

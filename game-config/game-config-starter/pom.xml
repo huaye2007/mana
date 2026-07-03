@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.github.huaye2007.mana</groupId>
+        <artifactId>game-config</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>game-config-starter</artifactId>
+
+    <properties>
+        <!-- 可选后端 game-config-etcd 的 jetcd 栈只兼容 netty 4.1 线，与其保持一致 -->
+        <netty.version>4.1.132.Final</netty.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-config-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-config-local</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-config-nacos</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-config-apollo</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-config-consul</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-config-etcd</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.github.huaye2007.mana</groupId>
+        <artifactId>game-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>game-dev</artifactId>
+
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-rpc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-runtime</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-serialization</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-network-netty</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <!-- 父 POM 的 dependencyManagement 把 slf4j-simple 默认钉为 test 作用域，
+                 这里显式覆盖为 runtime，否则运行 Game.main 时拿不到 SLF4J provider -->
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-jpa-rdb</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-jpa-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-jpa-rdb-cache</artifactId>
+        </dependency>
+        <!-- GameJpaBootstrap / GameJpaContext：组装模块、创建上下文、取 Repository -->
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-jpa-starter</artifactId>
+        </dependency>
+        <!-- MysqlRdbExecutor / MysqlDataSourceFactory，并传递引入 HikariCP -->
+        <dependency>
+            <groupId>com.github.huaye2007.mana</groupId>
+            <artifactId>game-jpa-rdb-mysql</artifactId>
+        </dependency>
+        <!-- MySQL 驱动是 GPLv2（FOSS Exception），game-jpa-rdb-mysql 里是 provided 不传递；
+             game-dev 是可执行 demo 宿主，运行需要驱动，在此显式声明 -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+</project>
