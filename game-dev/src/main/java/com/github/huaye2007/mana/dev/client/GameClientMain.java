@@ -36,8 +36,8 @@ public final class GameClientMain {
         String host = args.length > 0 ? args[0] : DEFAULT_HOST;
         int port = args.length > 1 ? Integer.parseInt(args[1]) : DEFAULT_PORT;
 
-        // 默认 Fury 要求类注册，发包前先把消息 DTO 登记进去
-        com.github.huaye2007.mana.dev.bootstrap.FuryMessageRegistrar.registerMessageTypes();
+        // 默认 Fory 要求类注册，发包前先把消息 DTO 登记进去
+        com.github.huaye2007.mana.dev.bootstrap.ForyMessageRegistrar.registerMessageTypes();
 
         GameClient client = new GameClient(host, port);
         // 回包回调跑在 IO 线程，这里只打印

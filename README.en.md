@@ -26,7 +26,7 @@ mvn "-Dmaven.repo.local=.m2" test
 | --- | --- |
 | `game-network` | Network foundation (core + Netty): TCP/WebSocket/HTTP transport, connection and session lifecycle, transport pipeline; delivers decoded messages to `INetworkHandler` (HTTP goes through `IHttpHandler`). Zero dependencies; no protocol routing or command dispatch (see [game-network/README.en.md](game-network/README.en.md)) |
 | `game-rpc` | Internal RPC: protocol codec, handshake/heartbeat/reconnect, oneway/future/callback invocation, backpressure and in-flight limit protection, per-service broadcast (see [game-rpc/README.en.md](game-rpc/README.en.md)) |
-| `game-serialization` | Serialization facade unifying JSON, Protobuf and Fury (see [game-serialization/README.en.md](game-serialization/README.en.md)) |
+| `game-serialization` | Serialization facade unifying JSON, Protobuf and Apache Fory (see [game-serialization/README.en.md](game-serialization/README.en.md)) |
 | `game-registry` | Registry/discovery abstraction (`Registry` / `Discovery`), backed by ZooKeeper, Etcd, Nacos, Consul via SPI (see [game-registry/README.en.md](game-registry/README.en.md)) |
 | `game-config` | Multi-source configuration loading (local file/classpath/command line/JVM/env vars/defaults/remote) with type-safe snapshots, change listeners and hot reload (see [game-config/README.en.md](game-config/README.en.md)) |
 | `game-runtime` | Unified runtime: commands/events/timers/callbacks converge into tasks, hashed by routerKey to a fixed worker in the group for serial execution (see [game-runtime/README.en.md](game-runtime/README.en.md)) |

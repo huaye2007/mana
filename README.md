@@ -26,7 +26,7 @@ mvn "-Dmaven.repo.local=.m2" test
 | --- | --- |
 | `game-network` | 网络基础层（core + Netty）：TCP/WebSocket/HTTP 接入、连接与会话生命周期、传输 pipeline，把解码后的消息投递给 `INetworkHandler`（HTTP 走 `IHttpHandler`）。零依赖，不做协议路由与命令分发（见 [game-network/README.md](game-network/README.md)） |
 | `game-rpc` | 对内 RPC：协议编解码、握手/心跳/重连、oneway/future/callback 调用、背压与在途上限保护、按服务广播（见 [game-rpc/README.md](game-rpc/README.md)） |
-| `game-serialization` | 序列化门面，统一 JSON、Protobuf、Fury 三种实现（见 [game-serialization/README.md](game-serialization/README.md)） |
+| `game-serialization` | 序列化门面，统一 JSON、Protobuf、Apache Fory 三种实现（见 [game-serialization/README.md](game-serialization/README.md)） |
 | `game-registry` | 注册发现抽象（`Registry` / `Discovery`），通过 SPI 接入 ZooKeeper、Etcd、Nacos、Consul（见 [game-registry/README.md](game-registry/README.md)） |
 | `game-config` | 多源配置加载（本地文件/classpath/命令行/JVM/环境变量/默认值/远端），类型安全快照、变更监听与热加载（见 [game-config/README.md](game-config/README.md)） |
 | `game-runtime` | 统一运行时：命令/事件/定时器/回调四类入口收敛为任务，按 routerKey 哈希到组内固定 worker 串行执行（见 [game-runtime/README.md](game-runtime/README.md)） |

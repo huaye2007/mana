@@ -55,7 +55,7 @@ public final class ClientResponse {
     }
 
     /**
-     * 在已知回包业务类型时，按服务端固定的 Fury 序列化方式反序列化 body。
+     * 在已知回包业务类型时，按服务端固定的 Fory 序列化方式反序列化 body。
      * body 为空时返回 {@code null}。
      */
     public <T> T decodeBody(Class<T> type) {

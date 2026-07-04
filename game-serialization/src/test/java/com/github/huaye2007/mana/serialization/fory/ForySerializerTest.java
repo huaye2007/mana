@@ -1,4 +1,4 @@
-package com.github.huaye2007.mana.serialization.fury;
+package com.github.huaye2007.mana.serialization.fory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -8,11 +8,11 @@ import java.util.List;
 import java.util.Objects;
 import org.junit.jupiter.api.Test;
 
-class FurySerializerTest {
+class ForySerializerTest {
 
     @Test
     void roundTripsPojoPayload() {
-        FurySerializer serializer = FurySerializer.builder()
+        ForySerializer serializer = ForySerializer.builder()
             .register(PlayerState.class, 100)
             .requireClassRegistration(true)
             .build();
@@ -27,7 +27,7 @@ class FurySerializerTest {
     @Test
     void defaultRejectsUnregisteredType() {
         // 安全默认：未登记类型不允许序列化（反序列化同理），挡住任意类反序列化攻击面
-        FurySerializer serializer = FurySerializer.create();
+        ForySerializer serializer = ForySerializer.create();
         PlayerState state = new PlayerState(1L, "rogue", 1, new ArrayList<>());
 
         assertThrows(RuntimeException.class, () -> serializer.serialize(state));
@@ -36,7 +36,7 @@ class FurySerializerTest {
     @Test
     void startupRegistrationEnablesRoundTrip() {
         // 启动期（首次 serialize 之前）登记后即可正常收发；Fory 在首次收发后冻结注册
-        FurySerializer serializer = FurySerializer.create().register(PlayerState.class);
+        ForySerializer serializer = ForySerializer.create().register(PlayerState.class);
         PlayerState state = new PlayerState(1L, "rogue", 1, new ArrayList<>(List.of(3, 4)));
 
         byte[] payload = serializer.serialize(state);

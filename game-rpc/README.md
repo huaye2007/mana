@@ -20,7 +20,7 @@
 ### 服务端
 
 序列化器无需手动传入：`RpcServer` / `RpcClient` 默认取 `SerializerManager.getInstance()`，
-该单例已预注册 JSON / Protobuf / Fury 三种序列化方式。如需追加或覆盖某个 serialType，
+该单例已预注册 JSON / Protobuf / Fory 三种序列化方式。如需追加或覆盖某个 serialType，
 在启动时调用 `SerializerManager.getInstance().register(...)` 即可。
 
 ```java

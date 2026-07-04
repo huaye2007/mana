@@ -3,7 +3,7 @@ package com.github.huaye2007.mana.serialization;
 public enum SerializationType {
     JSON((byte) 1),
     PROTOBUF((byte) 2),
-    FURY((byte) 3);
+    FORY((byte) 3);
 
     /** 按 typeId 直接索引的查找表，避免每帧解码都 values() 克隆数组 + 线性扫描（热路径）。 */
     private static final SerializationType[] BY_ID = buildLookup();

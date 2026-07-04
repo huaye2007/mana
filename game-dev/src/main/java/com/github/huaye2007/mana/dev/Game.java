@@ -1,7 +1,7 @@
 package com.github.huaye2007.mana.dev;
 
 import com.github.huaye2007.mana.dev.bootstrap.AnnotationScanner;
-import com.github.huaye2007.mana.dev.bootstrap.FuryMessageRegistrar;
+import com.github.huaye2007.mana.dev.bootstrap.ForyMessageRegistrar;
 import com.github.huaye2007.mana.dev.bootstrap.GameJpaRepositoryRegistrar;
 import com.github.huaye2007.mana.dev.server.CustomTcpPipelineConfigurator;
 import com.github.huaye2007.mana.dev.server.GameHandler;
@@ -59,8 +59,8 @@ public class Game {
 
         registerExecutorGroups();
         registerAnnotatedBeans(applicationContext);
-        // 默认 Fury 要求类注册，外网包体收发前先把消息 DTO 登记进去
-        FuryMessageRegistrar.registerMessageTypes();
+        // 默认 Fory 要求类注册，外网包体收发前先把消息 DTO 登记进去
+        ForyMessageRegistrar.registerMessageTypes();
         // 任务失败统一回包：handler 异常/队列满丢弃都给客户端回错误码，不让请求方干等
         GameTaskFailureReplier failureReplier = new GameTaskFailureReplier();
         GameTaskExceptionHandlers.setHandler(failureReplier);

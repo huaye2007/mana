@@ -2,14 +2,14 @@
 
 # game-dev
 
-A complete, runnable game server host: it assembles game-network (Netty transport), game-runtime (thread groups / commands / events / timers), game-serialization (Fury) and game-jpa (async persistence) into an out-of-the-box single-process game server, and doubles as the reference template for "how a host should wire these frameworks together".
+A complete, runnable game server host: it assembles game-network (Netty transport), game-runtime (thread groups / commands / events / timers), game-serialization (Apache Fory) and game-jpa (async persistence) into an out-of-the-box single-process game server, and doubles as the reference template for "how a host should wire these frameworks together".
 
 ## Architecture
 
 ```
 Client ──TCP──▶ Netty IO threads
                  │  IdleStateHandler + IdleKickHandler   read-idle kick
-                 │  GamePacketEncoder / GamePacketDecoder frame codec + Fury deserialization
+                 │  GamePacketEncoder / GamePacketDecoder frame codec + Fory deserialization
                  │  GameHandler (INetworkHandler)         connect/disconnect/exception
                  ▼
            GameRouterManager.handleGameMsg               login gate → route by command
@@ -40,7 +40,7 @@ bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes
 | seq | client request sequence number, echoed back in the reply for correlation; always `0` for server-initiated pushes |
 | code | error code (see table below), `0`=success; body is empty when non-zero |
 | flags | reserved (compression/encryption markers) |
-| body | Fury-serialized business object; all external DTOs live in the `com.github.huaye2007.mana.dev.message` package and are registered wholesale at startup by `FuryMessageRegistrar` (Fury requires class registration by default — unregistered types throw outright, closing the arbitrary-class deserialization attack surface) |
+| body | Fory-serialized business object; all external DTOs live in the `com.github.huaye2007.mana.dev.message` package and are registered wholesale at startup by `ForyMessageRegistrar` (Fory requires class registration by default — unregistered types throw outright, closing the arbitrary-class deserialization attack surface) |
 
 ### Error Codes (`GameErrorCode`)
 
@@ -110,13 +110,13 @@ Example: `PlayerLoginEvent` / `PlayerLoginEventHandler`.
 Periodic tasks = one-shot schedule + self-renewal inside the task (see `Game.scheduleOnlineReport`).
 Only lightweight bookkeeping on the wheel thread; heavy work is wrapped into tasks and submitted to executor groups.
 
-**Message DTOs**: just place them in the `com.github.huaye2007.mana.dev.message` package; `FuryMessageRegistrar` registers the whole package at startup, sorted by class name — no manual registration.
+**Message DTOs**: just place them in the `com.github.huaye2007.mana.dev.message` package; `ForyMessageRegistrar` registers the whole package at startup, sorted by class name — no manual registration.
 
 ## Startup & Shutdown
 
 Startup order (`Game.main`): Spring scan (include filters take over `@GameController`/`@EventHandler`) →
 register game-jpa Repository singletons before refresh → refresh → register executor groups → register commands/events →
-register Fury message types → wire the task-failure replier → start Netty → schedule timers.
+register Fory message types → wire the task-failure replier → start Netty → schedule timers.
 
 Shutdown is an **ordered sequence inside a single shutdown hook** (not split into multiple hooks — the JVM runs them in parallel and order would be lost):
 

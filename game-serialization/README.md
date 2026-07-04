@@ -2,13 +2,13 @@
 
 # game-serialization
 
-`game-serialization` 为游戏服务提供一个小而高吞吐的序列化门面，支持 JSON、Protobuf 和 Fury 兼容的二进制序列化。
+`game-serialization` 为游戏服务提供一个小而高吞吐的序列化门面，支持 JSON、Protobuf 和 Apache Fory 二进制序列化。
 
 ## 支持的格式
 
 - JSON：Jackson `JsonMapper`，缓存 `ObjectReader`/`ObjectWriter`，支持 Java time 类型，启用 Blackbird 字节码优化。
 - Protobuf：Google Protobuf `MessageLite` 载荷，缓存生成的 parser。
-- Fury：基于当前 Apache Fory Java SDK 实现，使用 Java 原生序列化模式并复用 `ThreadSafeFory` 运行时。
+- Apache Fory：基于 Apache Fory（原 Apache Fury）Java SDK 实现，使用 Java 原生序列化模式并复用 `ThreadSafeFory` 运行时。
 
 ## 使用方式
 
@@ -28,24 +28,24 @@ LoginRequest fromProto = protobuf.deserialize(protoBytes, LoginRequest.class);
 
 `getISerializer` 对未知的 `serialType` 返回 `null`——调用方必须做空值检查。
 
-### Fury
+### Apache Fory
 
-独立的 Fury 序列化器通过 builder 构建。类注册**默认开启**（安全模式），因此所有要序列化/反序列化的类型必须先注册：
+独立的 Fory 序列化器通过 builder 构建。类注册**默认开启**（安全模式），因此所有要序列化/反序列化的类型必须先注册：
 
 ```java
-FurySerializer fury = FurySerializer.builder()
+ForySerializer fory = ForySerializer.builder()
     .register(PlayerState.class, 100)   // 稳定 id → 更小的载荷
     .build();
-byte[] furyBytes = fury.serialize(playerState);
-PlayerState fromFury = fury.deserialize(furyBytes, PlayerState.class);
+byte[] foryBytes = fory.serialize(playerState);
+PlayerState fromFory = fory.deserialize(foryBytes, PlayerState.class);
 ```
 
-从 `SerializerManager.getInstance()` 获取的默认 Fury 同样要求类注册。在对外提供服务前，于启动期注册所有消息类型：
+从 `SerializerManager.getInstance()` 获取的默认 Fory 同样要求类注册。在对外提供服务前，于启动期注册所有消息类型：
 
 ```java
-if (serializers.getISerializer(SerializationType.FURY.typeId()) instanceof FurySerializer fury) {
-    fury.register(LoginReq.class);
-    fury.register(LoginRes.class);
+if (serializers.getISerializer(SerializationType.FORY.typeId()) instanceof ForySerializer fory) {
+    fory.register(LoginReq.class);
+    fory.register(LoginRes.class);
 }
 ```
 
@@ -53,10 +53,10 @@ if (serializers.getISerializer(SerializationType.FURY.typeId()) instanceof FuryS
 
 - 复用序列化器实例。按请求创建 Jackson mapper 或 Fory 运行时会成为延迟的主要来源。
 - 跨服务、schema 先行的契约和紧凑稳定的线上载荷优先用 Protobuf。
-- JVM 到 JVM 的游戏状态快照、缓存值、需要 Java 原生对象图的内部消息优先用 Fury。
-- 高频使用的 Fury 类用稳定 ID 注册，载荷更小、分发更快。
+- JVM 到 JVM 的游戏状态快照、缓存值、需要 Java 原生对象图的内部消息优先用 Fory。
+- 高频使用的 Fory 类用稳定 ID 注册，载荷更小、分发更快。
 
 ## 默认值与安全
 
-- **类注册默认开启**（`requireClassRegistration(true)`）。不可信边界——例如 body 用 Fury 编码的外网游戏协议——只能反序列化已注册的类型，从而封死任意类反序列化的攻击面。启动期注册所有消息类型；未注册的类型会快速失败。只有完全可信的纯内网流量才可通过 `Builder.requireClassRegistration(false)` 关闭。
+- **类注册默认开启**（`requireClassRegistration(true)`）。不可信边界——例如 body 用 Fory 编码的外网游戏协议——只能反序列化已注册的类型，从而封死任意类反序列化的攻击面。启动期注册所有消息类型；未注册的类型会快速失败。只有完全可信的纯内网流量才可通过 `Builder.requireClassRegistration(false)` 关闭。
 - **引用跟踪默认开启**（`refTracking(true)`），共享和循环对象图可以正确往返。只有确定载荷是树形结构、且需要额外吞吐时才关闭。

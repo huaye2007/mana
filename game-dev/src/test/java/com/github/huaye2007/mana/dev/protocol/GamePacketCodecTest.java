@@ -1,7 +1,7 @@
 package com.github.huaye2007.mana.dev.protocol;
 
 import com.github.huaye2007.mana.dev.message.LoginReq;
-import com.github.huaye2007.mana.dev.bootstrap.FuryMessageRegistrar;
+import com.github.huaye2007.mana.dev.bootstrap.ForyMessageRegistrar;
 import com.github.huaye2007.mana.dev.server.PlayerSession;
 import com.github.huaye2007.mana.runtime.annotation.GameController;
 import com.github.huaye2007.mana.runtime.annotation.GameMethod;
@@ -40,8 +40,8 @@ class GamePacketCodecTest {
         if (CommandRegistry.getInstance().getCommandMeta(CMD) == null) {
             CommandRegistry.getInstance().register(new CodecController());
         }
-        // 默认 Fury 要求类注册，外网包体收发前先登记消息 DTO（幂等）
-        FuryMessageRegistrar.registerMessageTypes();
+        // 默认 Fory 要求类注册，外网包体收发前先登记消息 DTO（幂等）
+        ForyMessageRegistrar.registerMessageTypes();
     }
 
     private static byte[] encode(int command, int seq, LoginReq req) {

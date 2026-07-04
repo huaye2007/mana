@@ -1,6 +1,6 @@
 package com.github.huaye2007.mana.dev.server;
 
-import com.github.huaye2007.mana.dev.bootstrap.FuryMessageRegistrar;
+import com.github.huaye2007.mana.dev.bootstrap.ForyMessageRegistrar;
 import com.github.huaye2007.mana.dev.client.ClientResponse;
 import com.github.huaye2007.mana.dev.client.GameClient;
 import com.github.huaye2007.mana.dev.message.HeartbeatReq;
@@ -107,7 +107,7 @@ class ServerFrameworkIntegrationTest {
         // 进程级单例，跨测试共享：组/命令都幂等注册
         registerGroupIfAbsent(ExecutorGroups.LOGIN, "it-login");
         registerGroupIfAbsent(ExecutorGroups.PLAYER, "it-player");
-        FuryMessageRegistrar.registerMessageTypes();
+        ForyMessageRegistrar.registerMessageTypes();
         GameTaskFailureReplier failureReplier = new GameTaskFailureReplier();
         GameTaskExceptionHandlers.setHandler(failureReplier);
         GameTaskMonitors.setMonitor(failureReplier);

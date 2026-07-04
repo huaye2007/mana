@@ -1,7 +1,7 @@
 package com.github.huaye2007.mana.dev.client;
 
 import com.github.huaye2007.mana.dev.message.LoginReq;
-import com.github.huaye2007.mana.dev.bootstrap.FuryMessageRegistrar;
+import com.github.huaye2007.mana.dev.bootstrap.ForyMessageRegistrar;
 import com.github.huaye2007.mana.dev.bus.login.LoginController;
 import com.github.huaye2007.mana.dev.server.CustomTcpPipelineConfigurator;
 import com.github.huaye2007.mana.dev.protocol.GamePacket;
@@ -41,8 +41,8 @@ class GameClientIntegrationTest {
         if (CommandRegistry.getInstance().getCommandMeta(CMD_LOGIN) == null) {
             CommandRegistry.getInstance().register(new LoginController());
         }
-        // 默认 Fury 要求类注册，收发同进程共用一套 Fury，登记一次覆盖请求与响应类型
-        FuryMessageRegistrar.registerMessageTypes();
+        // 默认 Fory 要求类注册，收发同进程共用一套 Fory，登记一次覆盖请求与响应类型
+        ForyMessageRegistrar.registerMessageTypes();
 
         BlockingQueue<GamePacket> serverReceived = new LinkedBlockingQueue<>();
         int port = availablePort();

@@ -27,8 +27,8 @@ import java.util.function.Consumer;
 /**
  * 外网 TCP 测试客户端：连服务端、发业务消息、收回包。
  *
- * <p>与服务端共用同一套外网帧格式和 Fury 序列化（直接复用 {@link GamePacketEncoder} 和
- * {@link SerializerManager} 的 Fury 实例），保证编解码与线上一致，省去自己拼字节。</p>
+ * <p>与服务端共用同一套外网帧格式和 Fory 序列化（直接复用 {@link GamePacketEncoder} 和
+ * {@link SerializerManager} 的 Fory 实例），保证编解码与线上一致，省去自己拼字节。</p>
  *
  * <p>典型用法：
  * <pre>{@code
@@ -118,7 +118,7 @@ public class GameClient implements AutoCloseable {
     }
 
     /**
-     * 发送一条业务消息：自动分配 seq、code=0、flags=0，body 用 Fury 序列化。
+     * 发送一条业务消息：自动分配 seq、code=0、flags=0，body 用 Fory 序列化。
      *
      * @param command 业务命令号（对应服务端 {@code @GameMethod} 的 value）
      * @param body    业务参数对象，可为 {@code null}（表示空 body）
@@ -130,7 +130,7 @@ public class GameClient implements AutoCloseable {
         return seq;
     }
 
-    /** 完全指定帧头字段地发送，body 用 Fury 序列化（{@code null} 视为空 body）。 */
+    /** 完全指定帧头字段地发送，body 用 Fory 序列化（{@code null} 视为空 body）。 */
     public void send(int command, int seq, int code, byte flags, Object body) {
         byte[] bodyBytes = body == null ? new byte[0] : serializer.serialize(body);
         sendRaw(command, seq, code, flags, bodyBytes);

@@ -26,6 +26,6 @@ class SerializationTypeTest {
     void typeIdsAreStableWireContract() {
         assertEquals(1, SerializationType.JSON.typeId());
         assertEquals(2, SerializationType.PROTOBUF.typeId());
-        assertEquals(3, SerializationType.FURY.typeId());
+        assertEquals(3, SerializationType.FORY.typeId());
     }
 }

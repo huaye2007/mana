@@ -14,7 +14,7 @@ Internal (service-to-service) RPC framework built on Netty + game-serialization.
 
 ### Server
 
-No serializer needs to be passed in manually: `RpcServer` / `RpcClient` default to `SerializerManager.getInstance()`, a singleton pre-registered with JSON / Protobuf / Fury. To add or override a serialType, call `SerializerManager.getInstance().register(...)` at startup.
+No serializer needs to be passed in manually: `RpcServer` / `RpcClient` default to `SerializerManager.getInstance()`, a singleton pre-registered with JSON / Protobuf / Fory. To add or override a serialType, call `SerializerManager.getInstance().register(...)` at startup.
 
 ```java
 RpcServer server = new RpcServer(

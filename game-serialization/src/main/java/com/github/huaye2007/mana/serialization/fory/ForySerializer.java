@@ -1,4 +1,4 @@
-package com.github.huaye2007.mana.serialization.fury;
+package com.github.huaye2007.mana.serialization.fory;
 
 import com.github.huaye2007.mana.serialization.ISerializer;
 import com.github.huaye2007.mana.serialization.SerializationException;
@@ -10,20 +10,20 @@ import org.apache.fory.Fory;
 import org.apache.fory.ThreadSafeFory;
 
 /**
- * Fury-compatible serializer backed by Apache Fory, the current continuation of Apache Fury.
+ * Serializer backed by Apache Fory (formerly Apache Fury).
  *
  * <p>默认 {@code requireClassRegistration=true}：不可信连接（如外网包体）反序列化时只能实例化
- * 已登记的类型，挡住任意类反序列化这一攻击面。代价是所有要走 Fury 的业务类型必须在收发流量前
+ * 已登记的类型，挡住任意类反序列化这一攻击面。代价是所有要走 Fory 的业务类型必须在收发流量前
  * 通过 {@link #register} 或 {@link Builder#register} 登记，否则序列化/反序列化抛异常。</p>
  *
  * <p>默认 {@code refTracking=true}：支持共享/循环引用的对象图（游戏状态快照常见），避免重复展开
  * 或栈溢出；少量开销换取正确性。仅在确认无共享引用、追求极致吞吐时关掉。</p>
  */
-public final class FurySerializer implements ISerializer {
+public final class ForySerializer implements ISerializer {
 
     private final ThreadSafeFory fory;
 
-    public static FurySerializer create() {
+    public static ForySerializer create() {
         return builder().build();
     }
 
@@ -31,13 +31,13 @@ public final class FurySerializer implements ISerializer {
         return new Builder();
     }
 
-    public FurySerializer(ThreadSafeFory fory) {
+    public ForySerializer(ThreadSafeFory fory) {
         this.fory = Objects.requireNonNull(fory, "fory");
     }
 
     @Override
     public SerializationType type() {
-        return SerializationType.FURY;
+        return SerializationType.FORY;
     }
 
     @Override
@@ -53,7 +53,7 @@ public final class FurySerializer implements ISerializer {
         try {
             return fory.deserialize(payload, type);
         } catch (RuntimeException e) {
-            throw new SerializationException("Failed to deserialize Fury payload as " + type.getName(), e);
+            throw new SerializationException("Failed to deserialize Fory payload as " + type.getName(), e);
         }
     }
 
@@ -64,13 +64,13 @@ public final class FurySerializer implements ISerializer {
      * <p>Fory 在首次 {@code serialize/deserialize} 之后会冻结注册，此后再调用本方法会抛异常——
      * 务必在任何收发之前完成所有登记。</p>
      */
-    public FurySerializer register(Class<?> type) {
+    public ForySerializer register(Class<?> type) {
         fory.register(Objects.requireNonNull(type, "type"));
         return this;
     }
 
     /** 同 {@link #register(Class)}，但指定稳定的正整数 {@code typeId}（更小的载荷、跨进程稳定）。 */
-    public FurySerializer register(Class<?> type, int typeId) {
+    public ForySerializer register(Class<?> type, int typeId) {
         if (typeId <= 0) {
             throw new IllegalArgumentException("typeId must be positive");
         }
@@ -128,7 +128,7 @@ public final class FurySerializer implements ISerializer {
             return this;
         }
 
-        public FurySerializer build() {
+        public ForySerializer build() {
             var builder = Fory.builder()
                 .withXlang(false)
                 .requireClassRegistration(requireClassRegistration)
@@ -146,7 +146,7 @@ public final class FurySerializer implements ISerializer {
                     fory.register(registration.type, registration.typeId);
                 }
             }
-            return new FurySerializer(fory);
+            return new ForySerializer(fory);
         }
     }
 
