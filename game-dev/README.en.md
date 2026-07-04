@@ -40,7 +40,7 @@ bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes
 | seq | client request sequence number, echoed back in the reply for correlation; always `0` for server-initiated pushes |
 | code | error code (see table below), `0`=success; body is empty when non-zero |
 | flags | reserved (compression/encryption markers) |
-| body | Fory-serialized business object; all external DTOs live in the `com.github.huaye2007.mana.dev.message` package and are registered wholesale at startup by `ForyMessageRegistrar` (Fory requires class registration by default — unregistered types throw outright, closing the arbitrary-class deserialization attack surface) |
+| body | Fory-serialized business object; all external DTOs live in the `cn.managame.dev.message` package and are registered wholesale at startup by `ForyMessageRegistrar` (Fory requires class registration by default — unregistered types throw outright, closing the arbitrary-class deserialization attack surface) |
 
 ### Error Codes (`GameErrorCode`)
 
@@ -110,7 +110,7 @@ Example: `PlayerLoginEvent` / `PlayerLoginEventHandler`.
 Periodic tasks = one-shot schedule + self-renewal inside the task (see `Game.scheduleOnlineReport`).
 Only lightweight bookkeeping on the wheel thread; heavy work is wrapped into tasks and submitted to executor groups.
 
-**Message DTOs**: just place them in the `com.github.huaye2007.mana.dev.message` package; `ForyMessageRegistrar` registers the whole package at startup, sorted by class name — no manual registration.
+**Message DTOs**: just place them in the `cn.managame.dev.message` package; `ForyMessageRegistrar` registers the whole package at startup, sorted by class name — no manual registration.
 
 ## Startup & Shutdown
 
@@ -140,10 +140,10 @@ drain executor groups (in-flight business finishes writing caches) → close Gam
 
 ```bash
 # Server (needs local MySQL; tables auto-created from entities)
-mvn -q -pl game-dev exec:java -Dexec.mainClass=com.github.huaye2007.mana.dev.Game
+mvn -q -pl game-dev exec:java -Dexec.mainClass=cn.managame.dev.Game
 
 # Interactive test client (login / ping / send / raw — see GameClientMain help)
-mvn -q -pl game-dev exec:java -Dexec.mainClass=com.github.huaye2007.mana.dev.client.GameClientMain
+mvn -q -pl game-dev exec:java -Dexec.mainClass=cn.managame.dev.client.GameClientMain
 
 # Tests (the end-to-end integration test does not depend on MySQL)
 mvn -pl game-dev test

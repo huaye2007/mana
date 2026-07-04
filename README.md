@@ -69,20 +69,20 @@ mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 
 ## 开发约定
 
-- Java 包名统一使用 `com.github.huaye2007.mana` 前缀；各模块在其下按职责分包（如 `com.github.huaye2007.mana.jpa.*`、`com.github.huaye2007.mana.runtime.*`）。
+- Java 包名统一使用 `cn.managame` 前缀；各模块在其下按职责分包（如 `cn.managame.jpa.*`、`cn.managame.runtime.*`）。
 - 测试统一使用 JUnit 5/Jupiter。
 - 运行时按 routerKey 哈希到组内固定 worker，保证同一 routerKey（同一玩家/房间/公会）的任务串行执行，业务无需加锁（见 [game-runtime/README.md](game-runtime/README.md)）。
 - 模块边界保持清晰：core 层不依赖具体实现，Netty、HTTP、MySQL、Mongo、注册中心/配置中心 provider 等放在独立实现模块；`game-network` / `game-rpc` / `game-runtime` 互不依赖，桥接代码放宿主进程。
 
 ## 常用入口
 
-- Runtime（无统一装配门面，按需使用各组件单例）：命令注册 `com.github.huaye2007.mana.runtime.command.CommandRegistry`（派发由宿主桥接：构造 `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`）、事件 `com.github.huaye2007.mana.runtime.event.EventBus`、定时 `com.github.huaye2007.mana.runtime.timer.TimingWheel` / `CronTask`、执行器组注册 `com.github.huaye2007.mana.runtime.executor.ExecutorGroupRegistry`
-- Network：`com.github.huaye2007.mana.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer`（实现 `INetworkServer`），业务侧实现 `INetworkHandler` / `IHttpHandler`
-- RPC：`com.github.huaye2007.mana.rpc.RpcClient`、`com.github.huaye2007.mana.rpc.RpcServer`
-- Registry：`com.github.huaye2007.mana.registry.api.Registry` / `com.github.huaye2007.mana.registry.api.Discovery`，工厂 `com.github.huaye2007.mana.registry.factory.RegistryFactory`，starter `com.github.huaye2007.mana.registry.starter.GameRegistryStarter`
-- Config：`com.github.huaye2007.mana.config.manager.GameConfigManager`，工厂 `com.github.huaye2007.mana.config.factory.GameConfigFactory`
-- Serialization：`com.github.huaye2007.mana.serialization.SerializerManager`
-- JPA starter：`com.github.huaye2007.mana.jpa.starter.GameJpaBootstrap`
+- Runtime（无统一装配门面，按需使用各组件单例）：命令注册 `cn.managame.runtime.command.CommandRegistry`（派发由宿主桥接：构造 `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`）、事件 `cn.managame.runtime.event.EventBus`、定时 `cn.managame.runtime.timer.TimingWheel` / `CronTask`、执行器组注册 `cn.managame.runtime.executor.ExecutorGroupRegistry`
+- Network：`cn.managame.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer`（实现 `INetworkServer`），业务侧实现 `INetworkHandler` / `IHttpHandler`
+- RPC：`cn.managame.rpc.RpcClient`、`cn.managame.rpc.RpcServer`
+- Registry：`cn.managame.registry.api.Registry` / `cn.managame.registry.api.Discovery`，工厂 `cn.managame.registry.factory.RegistryFactory`，starter `cn.managame.registry.starter.GameRegistryStarter`
+- Config：`cn.managame.config.manager.GameConfigManager`，工厂 `cn.managame.config.factory.GameConfigFactory`
+- Serialization：`cn.managame.serialization.SerializerManager`
+- JPA starter：`cn.managame.jpa.starter.GameJpaBootstrap`
 
 ## License
 

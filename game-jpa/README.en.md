@@ -46,17 +46,17 @@ Add dependencies:
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-jpa-starter</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-jpa-rdb-cache</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-jpa-rdb-mysql</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -67,13 +67,13 @@ Add dependencies:
 Define an entity:
 
 ```java
-import com.github.huaye2007.mana.jpa.rdb.annotation.Column;
-import com.github.huaye2007.mana.jpa.rdb.annotation.ColumnType;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Entity;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Id;
-import com.github.huaye2007.mana.jpa.rdb.annotation.ShardKey;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Table;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Version;
+import cn.managame.jpa.rdb.annotation.Column;
+import cn.managame.jpa.rdb.annotation.ColumnType;
+import cn.managame.jpa.rdb.annotation.Entity;
+import cn.managame.jpa.rdb.annotation.Id;
+import cn.managame.jpa.rdb.annotation.ShardKey;
+import cn.managame.jpa.rdb.annotation.Table;
+import cn.managame.jpa.rdb.annotation.Version;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -108,7 +108,7 @@ public class Player {
 Define a Repository:
 
 ```java
-import com.github.huaye2007.mana.jpa.rdb.cache.IRdbUniqueCacheRepository;
+import cn.managame.jpa.rdb.cache.IRdbUniqueCacheRepository;
 
 public interface PlayerRepository extends IRdbUniqueCacheRepository<Player, Long> {
 }
@@ -117,12 +117,12 @@ public interface PlayerRepository extends IRdbUniqueCacheRepository<Player, Long
 Bootstrap the framework:
 
 ```java
-import com.github.huaye2007.mana.jpa.rdb.cache.RdbCacheModule;
-import com.github.huaye2007.mana.jpa.rdb.mysql.MysqlDataSourceFactory;
-import com.github.huaye2007.mana.jpa.rdb.mysql.MysqlRdbExecutor;
-import com.github.huaye2007.mana.jpa.rdb.mysql.MysqlSchemaModule;
-import com.github.huaye2007.mana.jpa.starter.GameJpaBootstrap;
-import com.github.huaye2007.mana.jpa.starter.GameJpaContext;
+import cn.managame.jpa.rdb.cache.RdbCacheModule;
+import cn.managame.jpa.rdb.mysql.MysqlDataSourceFactory;
+import cn.managame.jpa.rdb.mysql.MysqlRdbExecutor;
+import cn.managame.jpa.rdb.mysql.MysqlSchemaModule;
+import cn.managame.jpa.starter.GameJpaBootstrap;
+import cn.managame.jpa.starter.GameJpaContext;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -186,7 +186,7 @@ Use `RdbCacheModule.withExecutor(...)` and have business Repositories extend:
 For a small table of config/dictionary-style data that should be fully loaded at startup and kept resident in memory, mark the entity class with `@Warmup` and have the business Repository extend `IRdbUniqueCacheRepository<T, ID>`:
 
 ```java
-import com.github.huaye2007.mana.jpa.cache.annotation.Warmup;
+import cn.managame.jpa.cache.annotation.Warmup;
 
 @Warmup
 @Entity
@@ -215,9 +215,9 @@ GameJpaContext context = new GameJpaBootstrap()
 Role-related tables must mark the roleId field explicitly, so the framework never guesses by field name or key order:
 
 ```java
-import com.github.huaye2007.mana.jpa.cache.annotation.CacheKey;
-import com.github.huaye2007.mana.jpa.core.annotation.RoleId;
-import com.github.huaye2007.mana.jpa.rdb.annotation.ShardKey;
+import cn.managame.jpa.cache.annotation.CacheKey;
+import cn.managame.jpa.core.annotation.RoleId;
+import cn.managame.jpa.rdb.annotation.ShardKey;
 
 @Entity
 @Table(name = "mail")

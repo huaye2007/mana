@@ -32,7 +32,7 @@
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-core</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -42,7 +42,7 @@
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-starter</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -52,12 +52,12 @@ provider 实现依赖是 optional，不会通过 starter 自动传递到业务�
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-core</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-local</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -388,7 +388,7 @@ public class YamlLocalConfigLoader implements LocalConfigLoader {
 并在资源文件中注册：
 
 ```text
-META-INF/services/com.github.huaye2007.mana.config.loader.LocalConfigLoader
+META-INF/services/cn.managame.config.loader.LocalConfigLoader
 ```
 
 ## 扩展远端 provider
@@ -412,7 +412,7 @@ public class MyRemoteConfigProvider implements RemoteConfigProvider {
 并在资源文件中注册：
 
 ```text
-META-INF/services/com.github.huaye2007.mana.config.spi.RemoteConfigProvider
+META-INF/services/cn.managame.config.spi.RemoteConfigProvider
 ```
 
 需要主动推送能力时，重写 `supportsPush()` 和 `subscribe(...)`。

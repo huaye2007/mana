@@ -42,7 +42,7 @@ bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes
 | seq | 客户端请求序号，回包原样带回用于对包；服务端主动推送恒为 `0` |
 | code | 错误码（见下表），`0`=成功；非 0 时 body 为空 |
 | flags | 预留（压缩/加密标记） |
-| body | Fory 序列化的业务对象；所有外网 DTO 放 `com.github.huaye2007.mana.dev.message` 包，启动期由 `ForyMessageRegistrar` 整包登记（默认 Fory 要求类注册，未登记类型直接抛异常，挡住任意类反序列化攻击面） |
+| body | Fory 序列化的业务对象；所有外网 DTO 放 `cn.managame.dev.message` 包，启动期由 `ForyMessageRegistrar` 整包登记（默认 Fory 要求类注册，未登记类型直接抛异常，挡住任意类反序列化攻击面） |
 
 ### 错误码（`GameErrorCode`）
 
@@ -115,7 +115,7 @@ public class LoginController {
 周期任务 = 一次性 schedule + 任务内自续期（见 `Game.scheduleOnlineReport`）。
 轮线程上只做轻量打点，重活封装成任务投递到执行器组。
 
-**消息 DTO**：放 `com.github.huaye2007.mana.dev.message` 包即可，`ForyMessageRegistrar` 启动期按类名排序整包登记，无需手工注册。
+**消息 DTO**：放 `cn.managame.dev.message` 包即可，`ForyMessageRegistrar` 启动期按类名排序整包登记，无需手工注册。
 
 ## 启动与停机
 
@@ -145,10 +145,10 @@ Fory 登记消息类型 → 装配任务失败回包 → 起 Netty → 定时任
 
 ```bash
 # 服务端（需要本地 MySQL，按实体自动补建表）
-mvn -q -pl game-dev exec:java -Dexec.mainClass=com.github.huaye2007.mana.dev.Game
+mvn -q -pl game-dev exec:java -Dexec.mainClass=cn.managame.dev.Game
 
 # 交互式测试客户端（login / ping / send / raw，见 GameClientMain 帮助）
-mvn -q -pl game-dev exec:java -Dexec.mainClass=com.github.huaye2007.mana.dev.client.GameClientMain
+mvn -q -pl game-dev exec:java -Dexec.mainClass=cn.managame.dev.client.GameClientMain
 
 # 测试（全链路集成测试不依赖 MySQL）
 mvn -pl game-dev test

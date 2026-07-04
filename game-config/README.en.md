@@ -32,7 +32,7 @@ Using only local config and the common API:
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-core</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -42,7 +42,7 @@ Using the starter for the core entry points:
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-starter</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -52,12 +52,12 @@ Provider dependencies are optional and are not transitively delivered through th
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-core</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-config-local</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -388,7 +388,7 @@ public class YamlLocalConfigLoader implements LocalConfigLoader {
 And register it in the resource file:
 
 ```text
-META-INF/services/com.github.huaye2007.mana.config.loader.LocalConfigLoader
+META-INF/services/cn.managame.config.loader.LocalConfigLoader
 ```
 
 ## Extending Remote Providers
@@ -412,7 +412,7 @@ public class MyRemoteConfigProvider implements RemoteConfigProvider {
 And register it in the resource file:
 
 ```text
-META-INF/services/com.github.huaye2007.mana.config.spi.RemoteConfigProvider
+META-INF/services/cn.managame.config.spi.RemoteConfigProvider
 ```
 
 For active push, override `supportsPush()` and `subscribe(...)`.

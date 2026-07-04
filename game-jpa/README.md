@@ -46,17 +46,17 @@ mvn "-Dmaven.repo.local=..\.m2" -Pintegration-tests verify
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-jpa-starter</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-jpa-rdb-cache</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-jpa-rdb-mysql</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -67,13 +67,13 @@ mvn "-Dmaven.repo.local=..\.m2" -Pintegration-tests verify
 定义实体：
 
 ```java
-import com.github.huaye2007.mana.jpa.rdb.annotation.Column;
-import com.github.huaye2007.mana.jpa.rdb.annotation.ColumnType;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Entity;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Id;
-import com.github.huaye2007.mana.jpa.rdb.annotation.ShardKey;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Table;
-import com.github.huaye2007.mana.jpa.rdb.annotation.Version;
+import cn.managame.jpa.rdb.annotation.Column;
+import cn.managame.jpa.rdb.annotation.ColumnType;
+import cn.managame.jpa.rdb.annotation.Entity;
+import cn.managame.jpa.rdb.annotation.Id;
+import cn.managame.jpa.rdb.annotation.ShardKey;
+import cn.managame.jpa.rdb.annotation.Table;
+import cn.managame.jpa.rdb.annotation.Version;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -106,7 +106,7 @@ public class Player {
 定义 Repository：
 
 ```java
-import com.github.huaye2007.mana.jpa.rdb.cache.IRdbUniqueCacheRepository;
+import cn.managame.jpa.rdb.cache.IRdbUniqueCacheRepository;
 
 public interface PlayerRepository extends IRdbUniqueCacheRepository<Player, Long> {
 }
@@ -115,12 +115,12 @@ public interface PlayerRepository extends IRdbUniqueCacheRepository<Player, Long
 启动框架：
 
 ```java
-import com.github.huaye2007.mana.jpa.rdb.cache.RdbCacheModule;
-import com.github.huaye2007.mana.jpa.rdb.mysql.MysqlDataSourceFactory;
-import com.github.huaye2007.mana.jpa.rdb.mysql.MysqlRdbExecutor;
-import com.github.huaye2007.mana.jpa.rdb.mysql.MysqlSchemaModule;
-import com.github.huaye2007.mana.jpa.starter.GameJpaBootstrap;
-import com.github.huaye2007.mana.jpa.starter.GameJpaContext;
+import cn.managame.jpa.rdb.cache.RdbCacheModule;
+import cn.managame.jpa.rdb.mysql.MysqlDataSourceFactory;
+import cn.managame.jpa.rdb.mysql.MysqlRdbExecutor;
+import cn.managame.jpa.rdb.mysql.MysqlSchemaModule;
+import cn.managame.jpa.starter.GameJpaBootstrap;
+import cn.managame.jpa.starter.GameJpaContext;
 
 import javax.sql.DataSource;
 import java.util.List;
@@ -185,7 +185,7 @@ context.close();
 `@Warmup`，并让业务 Repository 继承 `IRdbUniqueCacheRepository<T, ID>`：
 
 ```java
-import com.github.huaye2007.mana.jpa.cache.annotation.Warmup;
+import cn.managame.jpa.cache.annotation.Warmup;
 
 @Warmup
 @Entity
@@ -215,9 +215,9 @@ GameJpaContext context = new GameJpaBootstrap()
 角色相关表需要显式标出 roleId 字段，避免框架靠字段名或 key 顺序猜测：
 
 ```java
-import com.github.huaye2007.mana.jpa.cache.annotation.CacheKey;
-import com.github.huaye2007.mana.jpa.core.annotation.RoleId;
-import com.github.huaye2007.mana.jpa.rdb.annotation.ShardKey;
+import cn.managame.jpa.cache.annotation.CacheKey;
+import cn.managame.jpa.core.annotation.RoleId;
+import cn.managame.jpa.rdb.annotation.ShardKey;
 
 @Entity
 @Table(name = "mail")

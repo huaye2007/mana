@@ -31,12 +31,12 @@ To use the starter's builder/factory entry points, add the starter plus the prov
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-registry-starter</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-registry-zookeeper</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -46,12 +46,12 @@ Without the starter, add just core and the provider:
 
 ```xml
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-registry-core</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>com.github.huaye2007.mana</groupId>
+    <groupId>cn.managame</groupId>
     <artifactId>game-registry-zookeeper</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
@@ -233,7 +233,7 @@ To add a new registry implementation:
 
 1. Implement `Registry` and `Discovery`.
 2. Implement `RegistryProvider`, returning a unique string type.
-3. List the provider's fully qualified class name in `META-INF/services/com.github.huaye2007.mana.registry.spi.RegistryProvider`.
+3. List the provider's fully qualified class name in `META-INF/services/cn.managame.registry.spi.RegistryProvider`.
 4. Business code selects the implementation via `config.setType("your-type")`.
 
 Before going to production, complete deployment validation against the target registry (connectivity, lease/session expiry, watch pushes, failover).

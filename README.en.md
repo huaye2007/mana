@@ -69,20 +69,20 @@ Registry integration tests: ZooKeeper uses an embedded curator-test server and i
 
 ## Development Conventions
 
-- Java package names uniformly use the `com.github.huaye2007.mana` prefix; each module sub-packages by responsibility underneath (e.g. `com.github.huaye2007.mana.jpa.*`, `com.github.huaye2007.mana.runtime.*`).
+- Java package names uniformly use the `cn.managame` prefix; each module sub-packages by responsibility underneath (e.g. `cn.managame.jpa.*`, `cn.managame.runtime.*`).
 - Tests uniformly use JUnit 5/Jupiter.
 - The runtime hashes by routerKey to a fixed worker in the group, guaranteeing serial execution for the same routerKey (same player/room/guild) — business code needs no locks (see [game-runtime/README.en.md](game-runtime/README.en.md)).
 - Module boundaries stay clean: core layers do not depend on concrete implementations — Netty, HTTP, MySQL, Mongo, registry/config providers live in separate implementation modules; `game-network` / `game-rpc` / `game-runtime` do not depend on each other, and bridging code lives in the host process.
 
 ## Common Entry Points
 
-- Runtime (no unified assembly facade — use each component's singleton as needed): command registration `com.github.huaye2007.mana.runtime.command.CommandRegistry` (dispatch bridged by the host: build `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`), events `com.github.huaye2007.mana.runtime.event.EventBus`, timers `com.github.huaye2007.mana.runtime.timer.TimingWheel` / `CronTask`, executor group registration `com.github.huaye2007.mana.runtime.executor.ExecutorGroupRegistry`
-- Network: `com.github.huaye2007.mana.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer` (implementing `INetworkServer`); the business side implements `INetworkHandler` / `IHttpHandler`
-- RPC: `com.github.huaye2007.mana.rpc.RpcClient`, `com.github.huaye2007.mana.rpc.RpcServer`
-- Registry: `com.github.huaye2007.mana.registry.api.Registry` / `com.github.huaye2007.mana.registry.api.Discovery`, factory `com.github.huaye2007.mana.registry.factory.RegistryFactory`, starter `com.github.huaye2007.mana.registry.starter.GameRegistryStarter`
-- Config: `com.github.huaye2007.mana.config.manager.GameConfigManager`, factory `com.github.huaye2007.mana.config.factory.GameConfigFactory`
-- Serialization: `com.github.huaye2007.mana.serialization.SerializerManager`
-- JPA starter: `com.github.huaye2007.mana.jpa.starter.GameJpaBootstrap`
+- Runtime (no unified assembly facade — use each component's singleton as needed): command registration `cn.managame.runtime.command.CommandRegistry` (dispatch bridged by the host: build `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`), events `cn.managame.runtime.event.EventBus`, timers `cn.managame.runtime.timer.TimingWheel` / `CronTask`, executor group registration `cn.managame.runtime.executor.ExecutorGroupRegistry`
+- Network: `cn.managame.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer` (implementing `INetworkServer`); the business side implements `INetworkHandler` / `IHttpHandler`
+- RPC: `cn.managame.rpc.RpcClient`, `cn.managame.rpc.RpcServer`
+- Registry: `cn.managame.registry.api.Registry` / `cn.managame.registry.api.Discovery`, factory `cn.managame.registry.factory.RegistryFactory`, starter `cn.managame.registry.starter.GameRegistryStarter`
+- Config: `cn.managame.config.manager.GameConfigManager`, factory `cn.managame.config.factory.GameConfigFactory`
+- Serialization: `cn.managame.serialization.SerializerManager`
+- JPA starter: `cn.managame.jpa.starter.GameJpaBootstrap`
 
 ## License
 

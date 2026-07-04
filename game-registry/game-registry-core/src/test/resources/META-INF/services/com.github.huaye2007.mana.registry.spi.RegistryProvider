@@ -1,4 +1,0 @@
-com.github.huaye2007.mana.registry.factory.CustomRegistryProvider
-com.github.huaye2007.mana.registry.factory.NullBundleRegistryProvider
-com.github.huaye2007.mana.registry.factory.ThrowingRegistryProvider
-com.github.huaye2007.mana.registry.factory.MissingRegistryProvider
