@@ -6,7 +6,9 @@ public enum RegistryType {
     ZOOKEEPER("zookeeper"),
     ETCD("etcd"),
     NACOS("nacos"),
-    CONSUL("consul");
+    CONSUL("consul"),
+    /** 进程内纯内存实现（game-registry-memory），无外部依赖，面向测试与本地开发。 */
+    MEMORY("memory");
 
     private final String type;
 

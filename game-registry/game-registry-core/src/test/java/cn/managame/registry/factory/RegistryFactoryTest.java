@@ -92,13 +92,16 @@ class RegistryFactoryTest {
     }
 
     @Test
-    void memoryProviderHasBeenRemoved() {
+    void memoryTypeRequiresMemoryModuleOnClasspath() {
+        // memory 是合法类型，但 provider 在 game-registry-memory 模块里；
+        // core 自身不带实现，未引入该模块时 create 必须失败。
         RegistryConfig config = new RegistryConfig();
         config.setType("memory");
 
-        assertEquals(null, config.getType());
+        assertEquals(RegistryType.MEMORY, config.getType());
         assertThrows(RegistryOperationException.class, () -> RegistryFactory.create(config));
 
+        // 历史别名不再支持，只认 memory
         RegistryConfig aliasConfig = new RegistryConfig();
         aliasConfig.setType(" inmemory ");
 

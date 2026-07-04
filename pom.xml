@@ -133,6 +133,11 @@
                 <artifactId>game-registry-starter</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-registry-memory</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <!-- Curator (Zookeeper) -->
             <dependency>

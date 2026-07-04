@@ -34,6 +34,22 @@
             <groupId>cn.managame</groupId>
             <artifactId>game-network-netty</artifactId>
         </dependency>
+        <!-- GameConfigStarter：分层配置（命令行/-D/环境变量/本地文件），暂时只用本地配置源 -->
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-config-starter</artifactId>
+        </dependency>
+        <!-- GameRegistryStarter：按类型创建 RegistryBundle -->
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-registry-starter</artifactId>
+        </dependency>
+        <!-- memory 注册中心 provider（SPI 运行期发现），无外部依赖，方便本地开发与测试 -->
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-registry-memory</artifactId>
+            <scope>runtime</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
