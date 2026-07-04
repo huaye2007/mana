@@ -1,3 +1,5 @@
+[English](README.en.md) | 中文
+
 # game-jpa-demo
 
 `game-jpa-demo` 是一个集成风格的演示模块，用于在不依赖 MySQL 或 MongoDB 的情况下验证 `game-jpa` 的主运行路径。

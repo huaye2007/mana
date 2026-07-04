@@ -1,3 +1,5 @@
+[English](README.en.md) | 中文
+
 # game-jpa
 
 ## 构建与验证
@@ -22,8 +24,6 @@ mvn "-Dmaven.repo.local=..\.m2" -Pintegration-tests verify
 - 游戏逻辑先修改内存态，再合并批量落库
 - 按玩家 id、角色 id、日期、区服等维度分库分表
 - 需要明确、可控、低魔法的持久化 API
-
-详细 API 语义见 [API_CONTRACT.md](API_CONTRACT.md)。
 
 ## 模块说明
 

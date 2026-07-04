@@ -1,6 +1,8 @@
-# game-parent
+[English](README.en.md) | 中文
 
-`game-parent` 是一组面向游戏服务器的基础组件。Java 侧采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化；网关、路由、本机 agent 与一套服务注册发现以独立的 Rust sidecar 形式提供。基于 [Apache-2.0](LICENSE) 许可证开源。
+# mana
+
+`mana` 是一组面向游戏服务器的基础组件。Java 侧采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化；网关、路由、本机 agent 与一套服务注册发现以独立的 Rust sidecar 形式提供。基于 [Apache-2.0](LICENSE) 许可证开源。
 
 ## 环境要求
 
@@ -35,12 +37,12 @@ mvn "-Dmaven.repo.local=.m2" test
 
 | 模块 | 职责 |
 | --- | --- |
-| `game-gateway-rust` | 玩家网关：承载海量客户端长连接，负责接入、鉴权、会话、限流，业务 payload 透明转发到后端（见 [game-gateway-rust/README.md](game-gateway-rust/README.md)） |
-| `game-router-rust` | 服务内部消息转发：游戏服连接后动态注册，router 间经服务发现互联并跨节点转发（见 [game-router-rust/README.md](game-router-rust/README.md)） |
-| `game-agent-rust` | 宿主机本地 agent：本机入口路由头处理与跨 agent 骨干转发（见 [game-agent-rust/README.md](game-agent-rust/README.md)） |
-| `game-registry-rust` | Rust 服务注册与发现库，各 provider 为对应第三方 SDK 的薄层封装（见 [game-registry-rust/README.md](game-registry-rust/README.md)） |
+| `game-gateway-rust` | 玩家网关：承载海量客户端长连接，负责接入、鉴权、会话、限流，业务 payload 透明转发到后端 |
+| `game-router-rust` | 服务内部消息转发：游戏服连接后动态注册，router 间经服务发现互联并跨节点转发 |
+| `game-agent-rust` | 宿主机本地 agent：本机入口路由头处理与跨 agent 骨干转发 |
+| `game-registry-rust` | Rust 服务注册与发现库，各 provider 为对应第三方 SDK 的薄层封装 |
 
-> 早期版本中的 `game-gateway` / `game-router` / `game-agent` 已由上面的 Rust 实现取代；`game-aoi` / `game-ecs` / `game-ai` / `game-match` / `game-idgen` 尚未纳入当前仓库。
+> Rust sidecar 模块尚未纳入本仓库。早期版本中的 `game-gateway` / `game-router` / `game-agent` 已由上面的 Rust 实现取代；`game-aoi` / `game-ecs` / `game-ai` / `game-match` / `game-idgen` 尚未纳入当前仓库。
 
 ## 构建与测试
 

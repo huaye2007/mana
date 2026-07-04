@@ -1,3 +1,5 @@
+[English](README.en.md) | 中文
+
 # game-network
 
 `game-network` 是一个轻量级游戏服务器网络框架。它的边界刻意保持精简：负责接入连接、管理连接/会话生命周期、执行传输层 pipeline，并把网络事件和已解码的消息投递给 `INetworkHandler`。HTTP 请求/响应使用独立的 `IHttpHandler`。

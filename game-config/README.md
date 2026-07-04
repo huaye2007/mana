@@ -1,3 +1,5 @@
+[English](README.en.md) | 中文
+
 # game-config
 
 `game-config` 是游戏服务框架的统一配置模块，提供本地文件、classpath、命令行、JVM、环境变量、默认值和远端配置源的组合加载能力。业务侧通过 `GameConfigManager` 获取类型安全的配置快照，并可监听配置变更、执行热加载和运行时覆盖。
@@ -273,8 +275,6 @@ remote.setProperty("dataIds", "DEFAULT_GROUP:game-common,game-room");
 options.addSource(new RemoteConfigSource(provider, remote));
 ```
 
-### Nacos
-
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `serverAddr` | 无 | Nacos 服务地址，传给 Nacos client |
@@ -451,5 +451,3 @@ CI 使用 Java 25 编译和运行 `game-config` 测试，保持与根 `pom.xml` 
 | `GAME_CONFIG_INTEGRATION_CONSUL=true` 或 `-Dgame.config.integration.consul=true` | Consul Agent | `GAME_CONFIG_CONSUL_ENDPOINT`、`GAME_CONFIG_CONSUL_TOKEN`、`GAME_CONFIG_CONSUL_KEY` |
 | `GAME_CONFIG_INTEGRATION_NACOS=true` 或 `-Dgame.config.integration.nacos=true` | Nacos Config Service | `GAME_CONFIG_NACOS_SERVER_ADDR`、`GAME_CONFIG_NACOS_GROUP`、`GAME_CONFIG_NACOS_DATA_ID`、`GAME_CONFIG_NACOS_NAMESPACE`、`GAME_CONFIG_NACOS_USERNAME`、`GAME_CONFIG_NACOS_PASSWORD` |
 | `GAME_CONFIG_INTEGRATION_ETCD=true` 或 `-Dgame.config.integration.etcd=true` | Etcd | `GAME_CONFIG_ETCD_ENDPOINTS`、`GAME_CONFIG_ETCD_DATA_ID` |
-
-更多接口语义见 [API 契约文档](docs/API_CONTRACT.md)。

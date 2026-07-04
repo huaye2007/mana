@@ -1,3 +1,5 @@
+[English](README.en.md) | 中文
+
 # game-dev
 
 完整可运行的游戏服务器宿主：把 game-network（Netty 接入）、game-runtime（线程组/命令/事件/定时器）、

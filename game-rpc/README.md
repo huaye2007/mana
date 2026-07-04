@@ -1,10 +1,10 @@
+[English](README.en.md) | 中文
+
 # game-rpc
 
 对内（服务间）RPC 框架，基于 Netty + game-serialization。直接编解码 API 对象（无中间帧对象），
 请求/响应按 requestId 关联，支持 oneway、future、callback 三种调用风格，内置握手协商、心跳保活、
 断线重连、背压与在途上限保护、按服务广播。
-
-> 协议帧格式、命令段、metadata key、错误码、线程模型等契约见 [docs/api-contracts.md](docs/api-contracts.md)。
 
 ## 设计要点
 

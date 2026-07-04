@@ -1,18 +1,18 @@
+[English](README.en.md) | 中文
+
 # game-serialization
 
-`game-serialization` provides a small, high-throughput serialization facade for game services.
-It supports JSON, Protobuf, and Fury-compatible binary serialization.
+`game-serialization` 为游戏服务提供一个小而高吞吐的序列化门面，支持 JSON、Protobuf 和 Fury 兼容的二进制序列化。
 
-## Formats
+## 支持的格式
 
-- JSON: Jackson `JsonMapper` with cached `ObjectReader`/`ObjectWriter`, Java time support, and Blackbird bytecode optimization.
-- Protobuf: Google Protobuf `MessageLite` payloads with generated parser caching.
-- Fury: implemented with the current Apache Fory Java SDK, using Java-native serialization and a reused `ThreadSafeFory` runtime.
+- JSON：Jackson `JsonMapper`，缓存 `ObjectReader`/`ObjectWriter`，支持 Java time 类型，启用 Blackbird 字节码优化。
+- Protobuf：Google Protobuf `MessageLite` 载荷，缓存生成的 parser。
+- Fury：基于当前 Apache Fory Java SDK 实现，使用 Java 原生序列化模式并复用 `ThreadSafeFory` 运行时。
 
-## Usage
+## 使用方式
 
-Resolve the shared, pre-registered serializers from `SerializerManager` (the process-wide
-singleton wired into the network/RPC stacks):
+通过 `SerializerManager`（已接入网络/RPC 栈的进程级单例）获取共享、预注册的序列化器：
 
 ```java
 SerializerManager serializers = SerializerManager.getInstance();
@@ -22,27 +22,25 @@ byte[] jsonBytes = json.serialize(playerState);
 PlayerState fromJson = json.deserialize(jsonBytes, PlayerState.class);
 
 ISerializer protobuf = serializers.getISerializer(SerializationType.PROTOBUF.typeId());
-byte[] protoBytes = protobuf.serialize(loginRequest);          // value must be a protobuf MessageLite
+byte[] protoBytes = protobuf.serialize(loginRequest);          // value 必须是 protobuf MessageLite
 LoginRequest fromProto = protobuf.deserialize(protoBytes, LoginRequest.class);
 ```
 
-`getISerializer` returns `null` for an unknown `serialType` — callers must null-check.
+`getISerializer` 对未知的 `serialType` 返回 `null`——调用方必须做空值检查。
 
 ### Fury
 
-A standalone Fury serializer is built through its builder. Class registration is **on by default**
-(secure), so every type you serialize/deserialize must be registered first:
+独立的 Fury 序列化器通过 builder 构建。类注册**默认开启**（安全模式），因此所有要序列化/反序列化的类型必须先注册：
 
 ```java
 FurySerializer fury = FurySerializer.builder()
-    .register(PlayerState.class, 100)   // stable id → smaller payload
+    .register(PlayerState.class, 100)   // 稳定 id → 更小的载荷
     .build();
 byte[] furyBytes = fury.serialize(playerState);
 PlayerState fromFury = fury.deserialize(furyBytes, PlayerState.class);
 ```
 
-The default Fury obtained from `SerializerManager.getInstance()` is also registration-required.
-Register your message types at startup before serving traffic:
+从 `SerializerManager.getInstance()` 获取的默认 Fury 同样要求类注册。在对外提供服务前，于启动期注册所有消息类型：
 
 ```java
 if (serializers.getISerializer(SerializationType.FURY.typeId()) instanceof FurySerializer fury) {
@@ -51,20 +49,14 @@ if (serializers.getISerializer(SerializationType.FURY.typeId()) instanceof FuryS
 }
 ```
 
-## Performance Notes
+## 性能建议
 
-- Reuse serializer instances. Creating Jackson mappers or Fory runtimes per request will dominate latency.
-- Prefer Protobuf for schema-first cross-service contracts and compact stable wire payloads.
-- Prefer Fury for JVM-to-JVM game state snapshots, cache values, and internal messages where Java-native object graphs matter.
-- Register frequently used Fury classes with stable IDs for smaller payloads and faster dispatch.
+- 复用序列化器实例。按请求创建 Jackson mapper 或 Fory 运行时会成为延迟的主要来源。
+- 跨服务、schema 先行的契约和紧凑稳定的线上载荷优先用 Protobuf。
+- JVM 到 JVM 的游戏状态快照、缓存值、需要 Java 原生对象图的内部消息优先用 Fury。
+- 高频使用的 Fury 类用稳定 ID 注册，载荷更小、分发更快。
 
-## Defaults & Security
+## 默认值与安全
 
-- **Class registration is enabled by default** (`requireClassRegistration(true)`). Untrusted
-  boundaries — e.g. the external game protocol whose body is Fury-encoded — can only deserialize
-  registered types, which closes off the arbitrary-class deserialization attack surface. Register
-  all message types at startup; unregistered types fail fast. Disable it only for fully trusted,
-  internal-only traffic via `Builder.requireClassRegistration(false)`.
-- **Reference tracking is enabled by default** (`refTracking(true)`) so shared and cyclic object
-  graphs round-trip correctly. Turn it off only when payloads are known to be tree-shaped and you
-  want the extra throughput.
+- **类注册默认开启**（`requireClassRegistration(true)`）。不可信边界——例如 body 用 Fury 编码的外网游戏协议——只能反序列化已注册的类型，从而封死任意类反序列化的攻击面。启动期注册所有消息类型；未注册的类型会快速失败。只有完全可信的纯内网流量才可通过 `Builder.requireClassRegistration(false)` 关闭。
+- **引用跟踪默认开启**（`refTracking(true)`），共享和循环对象图可以正确往返。只有确定载荷是树形结构、且需要额外吞吐时才关闭。
