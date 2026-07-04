@@ -1,0 +1,2 @@
+cn.managame.config.loader.JsonLocalConfigLoader
+cn.managame.config.loader.CustomLocalConfigLoader
