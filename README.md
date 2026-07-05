@@ -2,13 +2,12 @@
 
 # mana
 
-`mana` 是一组面向游戏服务器的基础组件。Java 侧采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化；网关、路由、本机 agent 与一套服务注册发现以独立的 Rust sidecar 形式提供。基于 [Apache-2.0](LICENSE) 许可证开源。
+`mana` 是一组面向游戏服务器的基础组件，采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化。基于 [Apache-2.0](LICENSE) 许可证开源。
 
 ## 环境要求
 
 - **JDK 25（硬性要求）**：`game-runtime` 使用 JDK 25 转正的 `ScopedValue` 做虚拟线程上下文传递，无法降级到更低版本；构建时由 maven-enforcer 强制校验
 - Maven 3.9+
-- Rust sidecar 模块需要 Rust 工具链（`cargo`）
 - Windows 和 Linux 均可构建；UDS、epoll、部分网络集成测试需要 Linux 或可用的 Netty selector 环境
 - 可选：Docker，用于运行 MySQL、MongoDB 等集成测试
 
@@ -20,8 +19,6 @@ mvn "-Dmaven.repo.local=.m2" test
 
 ## 模块说明
 
-### Java 模块（Maven reactor）
-
 | 模块 | 职责 |
 | --- | --- |
 | `game-network` | 网络基础层（core + Netty）：TCP/WebSocket/HTTP 接入、连接与会话生命周期、传输 pipeline，把解码后的消息投递给 `INetworkHandler`（HTTP 走 `IHttpHandler`）。零依赖，不做协议路由与命令分发（见 [game-network/README.md](game-network/README.md)） |
@@ -31,18 +28,9 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-config` | 多源配置加载（本地文件/classpath/命令行/JVM/环境变量/默认值/远端），类型安全快照、变更监听与热加载（见 [game-config/README.md](game-config/README.md)） |
 | `game-runtime` | 统一运行时：命令/事件/定时器/回调四类入口收敛为任务，按 routerKey 哈希到组内固定 worker 串行执行（见 [game-runtime/README.md](game-runtime/README.md)） |
 | `game-jpa` | 轻量持久化框架，含 RDB、DocDB、缓存、异步批量写、分片、starter 和 demo（见 [game-jpa/README.md](game-jpa/README.md)） |
-| `game-dev` | 参考宿主/示例工程：外网 GamePacket 协议 + 登陆/顶号/空闲踢人等框架行为，演示 network/runtime/jpa/serialization 的桥接方式（当前为单进程宿主，尚未接入 registry/config 与 Rust 数据面） |
+| `game-dev` | 参考宿主/示例工程：外网 GamePacket 协议 + 登陆/顶号/空闲踢人等框架行为，演示 network/runtime/jpa/serialization 的桥接方式（当前为单进程宿主，尚未接入 registry/config） |
 
-### Rust sidecar 模块
-
-| 模块 | 职责 |
-| --- | --- |
-| `game-gateway-rust` | 玩家网关：承载海量客户端长连接，负责接入、鉴权、会话、限流，业务 payload 透明转发到后端 |
-| `game-router-rust` | 服务内部消息转发：游戏服连接后动态注册，router 间经服务发现互联并跨节点转发 |
-| `game-agent-rust` | 宿主机本地 agent：本机入口路由头处理与跨 agent 骨干转发 |
-| `game-registry-rust` | Rust 服务注册与发现库，各 provider 为对应第三方 SDK 的薄层封装 |
-
-> Rust sidecar 模块尚未纳入本仓库。早期版本中的 `game-gateway` / `game-router` / `game-agent` 已由上面的 Rust 实现取代；`game-aoi` / `game-ecs` / `game-ai` / `game-match` / `game-idgen` 尚未纳入当前仓库。
+> `game-aoi` / `game-ecs` / `game-ai` / `game-match` / `game-idgen` 尚未纳入当前仓库。
 
 ## 构建与测试
 
@@ -52,7 +40,7 @@ mvn "-Dmaven.repo.local=.m2" test
 mvn "-Dmaven.repo.local=.m2" test
 ```
 
-CI 会在 Linux 和 Windows 上执行同一条 Java reactor 测试命令；Rust sidecar 模块会执行 `cargo fmt --check`、`cargo test --locked` 和 `cargo clippy -D warnings`。
+CI 会在 Linux 和 Windows 上执行同一条 reactor 测试命令。
 
 只跑 JPA 模块：
 

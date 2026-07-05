@@ -46,6 +46,7 @@
 
         <module>game-jpa</module>
         <module>game-runtime</module>
+        <module>game-gateway</module>
         <module>game-dev</module>
     </modules>
 
