@@ -1,5 +1,6 @@
 package cn.managame.config.spi.support;
 
+import cn.managame.common.lang.Strings;
 import cn.managame.config.exception.ConfigOperationException;
 
 import java.util.Properties;
@@ -30,14 +31,7 @@ public final class RemoteConfigProperties {
 
     /** 返回第一个非空白的值，全为空时返回 null。 */
     public static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.isBlank()) {
-                    return value;
-                }
-            }
-        }
-        return null;
+        return Strings.firstNonBlank(values);
     }
 
     /** 解析 long，缺省/空白时取 {@code defaultValue}，非法时抛 {@link ConfigOperationException}。 */

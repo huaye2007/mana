@@ -1,5 +1,7 @@
 package cn.managame.runtime.context;
 
+import cn.managame.common.context.Metadata;
+
 import java.util.Arrays;
 
 public class GameTaskContext {

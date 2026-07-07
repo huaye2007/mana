@@ -1,38 +1,28 @@
 package cn.managame.jpa.core.metadata;
 
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
+import cn.managame.common.reflect.Reflection;
+
 import java.lang.reflect.Field;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Modifier;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Small reflection helpers shared by metadata resolvers and executors.
+ * JPA 元数据解析器/执行器用到的反射助手。
+ * <p>
+ * 通用的 {@link #getAllFields}/{@link #newInstance} 已下沉到 {@link Reflection}，此处转发以
+ * 兼容既有调用点；{@link #isPersistentField} 属 JPA 持久化语义，保留在本模块。
  */
 public final class ReflectionUtils {
-
-    /** Cached no-arg constructor handles: the row-mapping hot path instantiates one
-     * entity per row, so the reflective constructor lookup is resolved once per class. */
-    private static final Map<Class<?>, MethodHandle> CONSTRUCTOR_CACHE = new ConcurrentHashMap<>();
 
     private ReflectionUtils() {}
 
     /**
      * 获取类及其所有父类的声明字段（不含 Object）
+     *
+     * @see Reflection#getAllFields(Class)
      */
     public static List<Field> getAllFields(Class<?> clazz) {
-        List<Field> fields = new ArrayList<>();
-        Class<?> current = clazz;
-        while (current != null && current != Object.class) {
-            fields.addAll(Arrays.asList(current.getDeclaredFields()));
-            current = current.getSuperclass();
-        }
-        return fields;
+        return Reflection.getAllFields(clazz);
     }
 
     public static boolean isPersistentField(Field field) {
@@ -44,24 +34,10 @@ public final class ReflectionUtils {
 
     /**
      * 创建无参实例
+     *
+     * @see Reflection#newInstance(Class)
      */
-    @SuppressWarnings("unchecked")
     public static <T> T newInstance(Class<?> clazz) {
-        MethodHandle constructor = CONSTRUCTOR_CACHE.computeIfAbsent(clazz, ReflectionUtils::resolveConstructor);
-        try {
-            return (T) constructor.invoke();
-        } catch (Throwable e) {
-            throw new RuntimeException("Cannot instantiate: " + clazz.getName(), e);
-        }
-    }
-
-    private static MethodHandle resolveConstructor(Class<?> clazz) {
-        try {
-            Constructor<?> constructor = clazz.getDeclaredConstructor();
-            constructor.setAccessible(true);
-            return MethodHandles.lookup().unreflectConstructor(constructor);
-        } catch (NoSuchMethodException | IllegalAccessException e) {
-            throw new RuntimeException("Cannot instantiate: " + clazz.getName(), e);
-        }
+        return Reflection.newInstance(clazz);
     }
 }

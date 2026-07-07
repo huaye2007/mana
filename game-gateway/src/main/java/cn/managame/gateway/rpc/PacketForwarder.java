@@ -1,5 +1,6 @@
 package cn.managame.gateway.rpc;
 
+import cn.managame.common.context.MetadataKeys;
 import cn.managame.gateway.codec.GatewayErrorCode;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.codec.GatewayPacketConstant;
@@ -67,10 +68,10 @@ public class PacketForwarder {
      * 会话定位不走 metadata——见 {@link #forward} 里设置的 busType/busId。
      */
     private Metadata[] buildMetadata(GatewaySession session, GatewayPacket packet) {
-        Metadata seqMeta = Metadata.ofLong(GatewayRpcProtocol.MK_SEQ, packet.getSeq());
+        Metadata seqMeta = Metadata.ofLong(MetadataKeys.GW_SEQ, packet.getSeq());
         if (packet.getCommand() == loginCommand) {
             return new Metadata[]{seqMeta,
-                    Metadata.ofString(GatewayRpcProtocol.MK_CLIENT_IP, session.getClientIp())};
+                    Metadata.ofString(MetadataKeys.GW_CLIENT_IP, session.getClientIp())};
         }
         return new Metadata[]{seqMeta};
     }

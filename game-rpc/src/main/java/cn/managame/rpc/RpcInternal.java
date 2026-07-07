@@ -1,9 +1,9 @@
 package cn.managame.rpc;
 
 /**
- * 框架内部命令与保留 metadata key。内部命令落在 {@link RpcRequest#INTERNAL_COMMAND_MIN}~
- * {@link RpcRequest#INTERNAL_COMMAND_MAX} 段，业务 handler 永远看不到；保留 metadata key
- * 小于 {@link cn.managame.rpc.protocol.Metadata#KEY_BUSINESS_MIN}。
+ * 框架内部命令。内部命令落在 {@link RpcRequest#INTERNAL_COMMAND_MIN}~
+ * {@link RpcRequest#INTERNAL_COMMAND_MAX} 段，业务 handler 永远看不到。
+ * rpc 握手/响应用的保留 metadata key 见 {@link cn.managame.common.context.MetadataKeys}。
  */
 public final class RpcInternal {
 
@@ -18,10 +18,6 @@ public final class RpcInternal {
 
     /** 心跳 pong：服务端对 ping 的回执（oneway）。 */
     public static final int CMD_HEARTBEAT_PONG = -4;
-
-    public static final short META_SERVICE_NAME = 1;
-    public static final short META_SERVICE_ID = 2;
-    public static final short META_AUTH_TOKEN = 3;
 
     private RpcInternal() {
     }

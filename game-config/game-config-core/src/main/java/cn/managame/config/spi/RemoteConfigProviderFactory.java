@@ -1,8 +1,8 @@
 package cn.managame.config.spi;
 
+import cn.managame.common.lang.Strings;
 import cn.managame.config.exception.ConfigOperationException;
 
-import java.util.Locale;
 import java.util.ServiceLoader;
 
 public final class RemoteConfigProviderFactory {
@@ -60,9 +60,6 @@ public final class RemoteConfigProviderFactory {
     }
 
     static String normalize(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        return value.trim().toLowerCase(Locale.ROOT);
+        return Strings.normalizeToLower(value);
     }
 }

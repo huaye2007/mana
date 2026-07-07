@@ -1,5 +1,6 @@
 package cn.managame.registry.support;
 
+import cn.managame.common.lang.Strings;
 import cn.managame.registry.api.ServiceInstance;
 import cn.managame.registry.exception.RegistryOperationException;
 import org.slf4j.Logger;
@@ -35,7 +36,7 @@ public final class RegistryValidators {
         List<String> normalized = new ArrayList<>();
         for (String endpoint : endpoints.split(",")) {
             String trimmed = endpoint.trim();
-            if (isBlank(trimmed)) {
+            if (Strings.isBlank(trimmed)) {
                 throw new RegistryOperationException("endpoints must not contain blank entries");
             }
             normalized.add(trimmed);
@@ -91,7 +92,7 @@ public final class RegistryValidators {
         if (!instance.getAddress().equals(instance.getAddress().trim())) {
             throw new RegistryOperationException("address must not contain leading or trailing whitespace");
         }
-        if (isBlank(instance.getId()) && instance.getAddress().contains("/")) {
+        if (Strings.isBlank(instance.getId()) && instance.getAddress().contains("/")) {
             throw new RegistryOperationException("address must not contain / when id is blank");
         }
         if (instance.getPort() <= 0 || instance.getPort() > 65535) {
@@ -124,12 +125,8 @@ public final class RegistryValidators {
     }
 
     public static void requireNonBlank(String value, String fieldName) {
-        if (isBlank(value)) {
+        if (Strings.isBlank(value)) {
             throw new RegistryOperationException(fieldName + " must not be blank");
         }
-    }
-
-    private static boolean isBlank(String value) {
-        return value == null || value.isBlank();
     }
 }

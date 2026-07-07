@@ -1,5 +1,7 @@
 package cn.managame.runtime.context;
 
+import cn.managame.common.context.Metadata;
+
 /**
  * 事件任务上下文。
  *

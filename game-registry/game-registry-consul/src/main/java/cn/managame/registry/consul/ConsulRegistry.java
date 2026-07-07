@@ -15,7 +15,7 @@ import cn.managame.registry.api.ServiceInstanceListener;
 import cn.managame.registry.api.ServiceNameListener;
 import cn.managame.registry.exception.RegistryConnectionException;
 import cn.managame.registry.exception.RegistryOperationException;
-import cn.managame.registry.support.CloseChain;
+import cn.managame.common.io.CloseChain;
 import cn.managame.registry.support.RegistryWatchDiff;
 import cn.managame.registry.support.RegistryWatchHandles;
 import cn.managame.registry.support.RegistryProperties;
@@ -205,7 +205,7 @@ public class ConsulRegistry implements Registry, Discovery {
         }
         closed = true;
         started = false;
-        CloseChain chain = new CloseChain();
+        CloseChain chain = new CloseChain(RegistryOperationException::new);
         for (AutoCloseable handle : new ArrayList<>(watchHandles.values())) {
             chain.step("Failed to close consul watch", handle::close);
         }

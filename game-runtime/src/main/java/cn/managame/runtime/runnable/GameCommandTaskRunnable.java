@@ -5,7 +5,7 @@ import cn.managame.runtime.context.GameCommandTaskContext;
 import cn.managame.runtime.context.GameTaskContext;
 import cn.managame.runtime.context.GameTaskContextHolder;
 import cn.managame.runtime.context.GameTaskType;
-import cn.managame.runtime.context.Metadata;
+import cn.managame.common.context.Metadata;
 
 /**
  * <p>执行期间把上下文绑定到 {@link GameTaskContextHolder}，使 command handler 内部

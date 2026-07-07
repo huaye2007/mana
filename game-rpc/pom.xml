@@ -20,6 +20,10 @@
     <dependencies>
         <dependency>
             <groupId>cn.managame</groupId>
+            <artifactId>game-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cn.managame</groupId>
             <artifactId>game-network-netty</artifactId>
         </dependency>
         <dependency>

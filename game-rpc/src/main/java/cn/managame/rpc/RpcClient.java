@@ -1,5 +1,6 @@
 package cn.managame.rpc;
 
+import cn.managame.common.context.MetadataKeys;
 import cn.managame.rpc.connection.ClientRpcConnection;
 import cn.managame.rpc.connection.RpcConnection;
 import cn.managame.rpc.protocol.Metadata;
@@ -207,11 +208,11 @@ public class RpcClient extends RpcContainer {
     private RpcRequest buildHandshake() {
         List<Metadata> metadata = new ArrayList<>(3);
         if (config.getServiceName() != null) {
-            metadata.add(Metadata.ofString(RpcInternal.META_SERVICE_NAME, config.getServiceName()));
-            metadata.add(Metadata.ofString(RpcInternal.META_SERVICE_ID, config.getServiceId()));
+            metadata.add(Metadata.ofString(MetadataKeys.RPC_SERVICE_NAME, config.getServiceName()));
+            metadata.add(Metadata.ofString(MetadataKeys.RPC_SERVICE_ID, config.getServiceId()));
         }
         if (config.getAuthToken() != null) {
-            metadata.add(Metadata.ofString(RpcInternal.META_AUTH_TOKEN, config.getAuthToken()));
+            metadata.add(Metadata.ofString(MetadataKeys.RPC_AUTH_TOKEN, config.getAuthToken()));
         }
         RpcRequest request = RpcRequest.oneway(RpcInternal.CMD_HANDSHAKE);
         if (!metadata.isEmpty()) {

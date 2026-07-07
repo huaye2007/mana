@@ -1,5 +1,6 @@
 package cn.managame.gateway.rpc;
 
+import cn.managame.common.context.MetadataKeys;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.codec.GatewayPacketConstant;
 import cn.managame.gateway.session.GatewaySession;
@@ -53,8 +54,8 @@ public class GatewayRpcMessageHandler extends RpcMessageHandler {
 
         Metadata[] metadata = msg.getMetadata();
         int command = msg.getCommand();
-        int seq = (int) Metadata.findLong(metadata, GatewayRpcProtocol.MK_SEQ, 0);
-        int code = (int) Metadata.findLong(metadata, GatewayRpcProtocol.MK_CODE, 0);
+        int seq = (int) Metadata.findLong(metadata, MetadataKeys.GW_SEQ, 0);
+        int code = (int) Metadata.findLong(metadata, MetadataKeys.GW_CODE, 0);
 
         // 登录数据包校验通过：翻转认证态，AuthFilter 此后放行其余命令
         if (command == loginCommand && code == 0) {

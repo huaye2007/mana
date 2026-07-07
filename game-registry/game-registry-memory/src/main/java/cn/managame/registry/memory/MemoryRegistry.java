@@ -6,7 +6,7 @@ import cn.managame.registry.api.ServiceInstance;
 import cn.managame.registry.api.ServiceInstanceListener;
 import cn.managame.registry.api.ServiceNameListener;
 import cn.managame.registry.exception.RegistryOperationException;
-import cn.managame.registry.support.CloseChain;
+import cn.managame.common.io.CloseChain;
 import cn.managame.registry.support.RegistryValidators;
 import cn.managame.registry.support.RegistryWatchHandles;
 
@@ -89,7 +89,7 @@ public class MemoryRegistry implements Registry, Discovery {
         }
         closed = true;
         started = false;
-        CloseChain chain = new CloseChain();
+        CloseChain chain = new CloseChain(RegistryOperationException::new);
         for (ServiceInstance instance : new ArrayList<>(ownInstances.values())) {
             chain.step("Failed to unregister memory registry instance on close",
                     () -> store.unregister(instance));

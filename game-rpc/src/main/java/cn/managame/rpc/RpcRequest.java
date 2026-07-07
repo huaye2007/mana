@@ -19,7 +19,7 @@ public final class RpcRequest {
     private long timeoutMillis; // <=0 用客户端默认超时
     private Object body; // 出站为业务对象或 byte[]；入站恒为 byte[]，由接收方按 serialType 还原
     private Class<?> responseType; // null 或 byte[].class 表示原样返回 byte[]
-    private Metadata[] metadata; // 业务 metadata，key 从 Metadata.KEY_BUSINESS_MIN 起，框架原样透传
+    private Metadata[] metadata; // 业务 metadata，key 从 MetadataKeys.BUSINESS_MIN 起，框架原样透传
 
     private RpcRequest(int command, boolean oneway) {
         this.command = command;
@@ -87,7 +87,7 @@ public final class RpcRequest {
     }
 
     /**
-     * 业务 metadata，随帧透传给对端。业务自定义 key 从 {@link Metadata#KEY_BUSINESS_MIN} 起，
+     * 业务 metadata，随帧透传给对端。业务自定义 key 从 {@link cn.managame.common.context.MetadataKeys#BUSINESS_MIN} 起，
      * 低段保留给框架。
      */
     public RpcRequest metadata(Metadata[] metadata) {

@@ -18,6 +18,11 @@
     </properties>
 
     <dependencies>
+        <!-- 公共基础件：metadata key 号段约定（MetadataKeys）等 -->
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-common</artifactId>
+        </dependency>
         <!-- 内网 RPC：网关 → 游戏服转发通道（RpcClient、连接池、协议复用） -->
         <dependency>
             <groupId>cn.managame</groupId>

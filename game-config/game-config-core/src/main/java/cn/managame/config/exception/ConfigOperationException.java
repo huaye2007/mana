@@ -1,6 +1,8 @@
 package cn.managame.config.exception;
 
-public class ConfigOperationException extends RuntimeException {
+import cn.managame.common.exception.GameException;
+
+public class ConfigOperationException extends GameException {
     public ConfigOperationException(String message) {
         super(message);
     }

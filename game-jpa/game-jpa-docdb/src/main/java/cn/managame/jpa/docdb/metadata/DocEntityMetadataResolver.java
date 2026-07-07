@@ -1,6 +1,8 @@
 package cn.managame.jpa.docdb.metadata;
 
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.core.annotation.RoleId;
+import cn.managame.jpa.core.annotation.ShardKey;
 import cn.managame.jpa.core.exception.MetadataException;
 import cn.managame.jpa.core.metadata.EntityMetadataResolver;
 import cn.managame.jpa.core.metadata.ReflectionUtils;

@@ -8,7 +8,7 @@ import cn.managame.jpa.core.registry.DataSourceRegistry;
 import cn.managame.jpa.rdb.annotation.Column;
 import cn.managame.jpa.rdb.annotation.ColumnType;
 import cn.managame.jpa.rdb.annotation.Entity;
-import cn.managame.jpa.rdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.rdb.annotation.Table;
 import cn.managame.jpa.rdb.annotation.Version;
 import cn.managame.jpa.rdb.metadata.RdbEntityMetadata;

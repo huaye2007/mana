@@ -1,9 +1,11 @@
 package cn.managame.jpa.core.exception;
 
+import cn.managame.common.exception.GameException;
+
 /**
- * 框架顶层异常。
+ * game-jpa 模块顶层异常，继承框架公共 {@link GameException}。
  */
-public class GameJpaException extends RuntimeException {
+public class GameJpaException extends GameException {
 
     public GameJpaException(String message) {
         super(message);

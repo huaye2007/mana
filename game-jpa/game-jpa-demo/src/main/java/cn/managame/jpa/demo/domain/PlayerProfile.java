@@ -2,9 +2,9 @@ package cn.managame.jpa.demo.domain;
 
 import cn.managame.jpa.docdb.annotation.Document;
 import cn.managame.jpa.docdb.annotation.Field;
-import cn.managame.jpa.docdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.docdb.annotation.Indexed;
-import cn.managame.jpa.docdb.annotation.ShardKey;
+import cn.managame.jpa.core.annotation.ShardKey;
 
 import java.util.ArrayList;
 import java.util.List;

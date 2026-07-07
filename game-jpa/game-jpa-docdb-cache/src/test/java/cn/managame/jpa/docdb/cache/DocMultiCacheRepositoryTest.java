@@ -3,7 +3,7 @@ package cn.managame.jpa.docdb.cache;
 import cn.managame.jpa.cache.CacheCompositeKey;
 import cn.managame.jpa.cache.annotation.CacheKey;
 import cn.managame.jpa.docdb.annotation.Document;
-import cn.managame.jpa.docdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.starter.GameJpaBootstrap;
 import cn.managame.jpa.starter.GameJpaContext;
 import static org.junit.jupiter.api.Assertions.*;

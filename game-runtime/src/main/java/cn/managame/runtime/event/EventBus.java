@@ -7,7 +7,7 @@ import cn.managame.runtime.context.GameEventTaskContext;
 import cn.managame.runtime.context.GameTaskContext;
 import cn.managame.runtime.context.GameTaskContextHolder;
 import cn.managame.runtime.context.GameTaskType;
-import cn.managame.runtime.context.Metadata;
+import cn.managame.common.context.Metadata;
 import cn.managame.runtime.executor.ExecutorGroupRegistry;
 import cn.managame.runtime.invoke.Invokers;
 import cn.managame.runtime.runnable.GameEventTaskRunnable;

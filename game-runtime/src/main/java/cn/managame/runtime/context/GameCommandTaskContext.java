@@ -1,5 +1,7 @@
 package cn.managame.runtime.context;
 
+import cn.managame.common.context.Metadata;
+
 public class GameCommandTaskContext extends GameTaskContext{
     private int command;
 

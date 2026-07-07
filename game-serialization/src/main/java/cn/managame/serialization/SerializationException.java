@@ -1,6 +1,8 @@
 package cn.managame.serialization;
 
-public class SerializationException extends RuntimeException {
+import cn.managame.common.exception.GameException;
+
+public class SerializationException extends GameException {
 
     public SerializationException(String message) {
         super(message);

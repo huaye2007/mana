@@ -8,9 +8,6 @@ public final class Metadata {
     public static final byte TYPE_STRING = 0;
     public static final byte TYPE_LONG = 1;
 
-    /** metadata key 1~99 保留给框架（握手身份、错误描述、token 等），业务自定义 key 从这里起 */
-    public static final short KEY_BUSINESS_MIN = 100;
-
     /** 在数组中找 string 类型 key 的值，没有返回 null */
     public static String findString(Metadata[] metadata, short key) {
         if (metadata == null) {

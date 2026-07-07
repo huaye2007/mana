@@ -1,5 +1,6 @@
 package cn.managame.rpc;
 
+import cn.managame.common.context.MetadataKeys;
 import cn.managame.rpc.protocol.Metadata;
 
 /**
@@ -19,9 +20,6 @@ import cn.managame.rpc.protocol.Metadata;
  */
 public record RpcResponse(long requestId, int code, byte serialType, Object body, Metadata[] metadata) {
 
-    /** 失败响应（code 非 0）可选携带的错误描述，客户端拼进 GameRpcException 消息 */
-    public static final short META_KEY_ERROR_MESSAGE = 4;
-
     /** 成功响应：body 走业务序列化（serialType 通常取自请求） */
     public static RpcResponse of(long requestId, byte serialType, Object body) {
         return new RpcResponse(requestId, 0, serialType, body, null);
@@ -33,12 +31,12 @@ public record RpcResponse(long requestId, int code, byte serialType, Object body
     }
 
     /**
-     * 失败响应：code 非 0，错误描述走 metadata（{@link #META_KEY_ERROR_MESSAGE}），
+     * 失败响应：code 非 0，错误描述走 metadata（{@link cn.managame.common.context.MetadataKeys#RPC_ERROR_MESSAGE}），
      * 不占 body、不依赖业务序列化器，客户端拼进 GameRpcException 消息。
      */
     public static RpcResponse error(long requestId, int code, String message) {
         Metadata[] metadata = message == null ? null
-                : new Metadata[]{Metadata.ofString(META_KEY_ERROR_MESSAGE, message)};
+                : new Metadata[]{Metadata.ofString(MetadataKeys.RPC_ERROR_MESSAGE, message)};
         return new RpcResponse(requestId, code, (byte) 0, null, metadata);
     }
 

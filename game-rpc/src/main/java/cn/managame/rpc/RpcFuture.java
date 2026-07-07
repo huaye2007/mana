@@ -1,5 +1,6 @@
 package cn.managame.rpc;
 
+import cn.managame.common.context.MetadataKeys;
 import cn.managame.serialization.ISerializer;
 import cn.managame.serialization.SerializerManager;
 import io.netty.util.Timeout;
@@ -189,7 +190,7 @@ public final class RpcFuture {
         RpcResponse resp = response;
         if (!resp.isSuccess()) {
             safeOnException(callback, new GameRpcException(resp.code(), "rpc error code=" + resp.code()
-                    + describe(resp.metaString(RpcResponse.META_KEY_ERROR_MESSAGE))));
+                    + describe(resp.metaString(MetadataKeys.RPC_ERROR_MESSAGE))));
             return;
         }
         Object value;

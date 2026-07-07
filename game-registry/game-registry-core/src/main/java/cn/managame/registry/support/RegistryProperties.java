@@ -1,5 +1,6 @@
 package cn.managame.registry.support;
 
+import cn.managame.common.lang.Strings;
 import cn.managame.registry.exception.RegistryOperationException;
 
 import java.time.Duration;
@@ -145,6 +146,6 @@ public final class RegistryProperties {
     }
 
     public static boolean isBlank(String value) {
-        return value == null || value.isBlank();
+        return Strings.isBlank(value);
     }
 }

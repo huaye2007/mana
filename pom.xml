@@ -37,6 +37,7 @@
     </scm>
 
     <modules>
+        <module>game-common</module>
         <module>game-network</module>
         <module>game-rpc</module>
         <module>game-serialization</module>
@@ -79,6 +80,11 @@
     <dependencyManagement>
         <dependencies>
             <!-- Internal modules -->
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>cn.managame</groupId>
                 <artifactId>game-serialization</artifactId>

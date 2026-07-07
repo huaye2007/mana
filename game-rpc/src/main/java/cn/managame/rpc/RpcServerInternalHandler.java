@@ -1,5 +1,6 @@
 package cn.managame.rpc;
 
+import cn.managame.common.context.MetadataKeys;
 import cn.managame.rpc.connection.RpcConnection;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -66,15 +67,15 @@ public class RpcServerInternalHandler extends ChannelInboundHandlerAdapter {
             ctx.close();
             return;
         }
-        String token = request.metaString(RpcInternal.META_AUTH_TOKEN);
+        String token = request.metaString(MetadataKeys.RPC_AUTH_TOKEN);
         if (server.getAuthToken() != null && !server.getAuthToken().equals(token)) {
             // 校验失败直接断连、不回执，客户端那条连接永远不会挂入 peer
             log.warn("rpc handshake rejected: bad token, remote={}", ctx.channel().remoteAddress());
             ctx.close();
             return;
         }
-        String serviceName = request.metaString(RpcInternal.META_SERVICE_NAME);
-        String serviceId = request.metaString(RpcInternal.META_SERVICE_ID);
+        String serviceName = request.metaString(MetadataKeys.RPC_SERVICE_NAME);
+        String serviceId = request.metaString(MetadataKeys.RPC_SERVICE_ID);
         if (serviceName != null && !serviceName.isEmpty()) {
             // 对端带了身份：登记到服务端 peer，使服务端可反向 invoke 该客户端
             connection.setServiceName(serviceName);

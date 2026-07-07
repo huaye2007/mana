@@ -2,7 +2,7 @@ package cn.managame.jpa.rdb.mysql;
 
 import cn.managame.jpa.rdb.annotation.Column;
 import cn.managame.jpa.rdb.annotation.Entity;
-import cn.managame.jpa.rdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.rdb.annotation.Index;
 import cn.managame.jpa.rdb.annotation.Table;
 import cn.managame.jpa.rdb.annotation.Version;

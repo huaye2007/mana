@@ -1,5 +1,6 @@
 package cn.managame.rpc.codec;
 
+import cn.managame.common.context.MetadataKeys;
 import cn.managame.rpc.RpcRequest;
 import cn.managame.rpc.RpcResponse;
 import cn.managame.rpc.protocol.Metadata;
@@ -156,7 +157,7 @@ class RpcCodecTest {
         assertNotNull(decoded);
         assertEquals(42, decoded.code());
         assertFalse(decoded.isSuccess());
-        assertEquals("boom", decoded.metaString(RpcResponse.META_KEY_ERROR_MESSAGE));
+        assertEquals("boom", decoded.metaString(MetadataKeys.RPC_ERROR_MESSAGE));
     }
 
     @Test

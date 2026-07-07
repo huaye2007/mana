@@ -1,9 +1,11 @@
 package cn.managame.rpc;
 
+import cn.managame.common.exception.GameException;
+
 /**
  * RPC 调用失败：超时、连接不可用、对端返回非 0 code 等。
  */
-public class GameRpcException extends RuntimeException {
+public class GameRpcException extends GameException {
 
     private final int code;
 

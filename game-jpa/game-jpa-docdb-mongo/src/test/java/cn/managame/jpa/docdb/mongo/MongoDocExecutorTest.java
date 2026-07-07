@@ -12,7 +12,7 @@ import com.mongodb.client.model.WriteModel;
 import cn.managame.jpa.core.executor.ExecutorContext;
 import cn.managame.jpa.docdb.annotation.Document;
 import cn.managame.jpa.docdb.annotation.Field;
-import cn.managame.jpa.docdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.docdb.annotation.Indexed;
 import cn.managame.jpa.docdb.metadata.DocEntityMetadata;
 import cn.managame.jpa.docdb.metadata.DocEntityMetadataResolver;

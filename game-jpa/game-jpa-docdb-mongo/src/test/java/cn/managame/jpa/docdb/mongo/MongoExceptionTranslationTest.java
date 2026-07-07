@@ -17,7 +17,7 @@ import cn.managame.jpa.core.exception.DuplicateKeyException;
 import cn.managame.jpa.core.exception.GameJpaException;
 import cn.managame.jpa.core.exception.RetriableWriteException;
 import cn.managame.jpa.docdb.annotation.Document;
-import cn.managame.jpa.docdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.docdb.metadata.DocEntityMetadataResolver;
 import org.bson.BsonDocument;
 import static org.junit.jupiter.api.Assertions.*;

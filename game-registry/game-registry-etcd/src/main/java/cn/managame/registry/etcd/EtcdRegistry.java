@@ -15,7 +15,7 @@ import cn.managame.registry.api.ServiceNameListener;
 import cn.managame.registry.exception.RegistryConnectionException;
 import cn.managame.registry.exception.RegistryOperationException;
 import cn.managame.registry.exception.RegistrySerializationException;
-import cn.managame.registry.support.CloseChain;
+import cn.managame.common.io.CloseChain;
 import cn.managame.registry.support.RegistryListeners;
 import cn.managame.registry.support.RegistryWatchDiff;
 import cn.managame.registry.support.RegistryProperties;
@@ -320,7 +320,7 @@ public class EtcdRegistry implements Registry, Discovery {
         }
         closed = true;
         started = false;
-        CloseChain chain = new CloseChain();
+        CloseChain chain = new CloseChain(RegistryOperationException::new);
         leaseRetryExecutor.shutdownNow();
         watchRetryExecutor.shutdownNow();
         awaitRetryExecutorTermination(leaseRetryExecutor, "lease");

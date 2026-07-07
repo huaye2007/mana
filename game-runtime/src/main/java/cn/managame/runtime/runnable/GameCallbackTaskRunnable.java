@@ -4,7 +4,7 @@ import cn.managame.runtime.context.GameCallbackTaskContext;
 import cn.managame.runtime.context.GameTaskContext;
 import cn.managame.runtime.context.GameTaskContextHolder;
 import cn.managame.runtime.context.GameTaskType;
-import cn.managame.runtime.context.Metadata;
+import cn.managame.common.context.Metadata;
 import cn.managame.runtime.exception.GameTaskExceptionHandlers;
 
 public class GameCallbackTaskRunnable implements IGameTaskRunnable{

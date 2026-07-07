@@ -16,7 +16,7 @@ import cn.managame.registry.api.ServiceNameEvent;
 import cn.managame.registry.api.ServiceNameListener;
 import cn.managame.registry.exception.RegistryConnectionException;
 import cn.managame.registry.exception.RegistryOperationException;
-import cn.managame.registry.support.CloseChain;
+import cn.managame.common.io.CloseChain;
 import cn.managame.registry.support.RegistryListeners;
 import cn.managame.registry.support.RegistryWatchDiff;
 import cn.managame.registry.support.RegistryWatchHandles;
@@ -183,7 +183,7 @@ public class NacosRegistry implements Registry, Discovery {
             return;
         }
         closed = true;
-        CloseChain chain = new CloseChain();
+        CloseChain chain = new CloseChain(RegistryOperationException::new);
         for (AutoCloseable handle : new ArrayList<>(watchHandles.values())) {
             chain.step("Failed to close nacos watch", handle::close);
         }

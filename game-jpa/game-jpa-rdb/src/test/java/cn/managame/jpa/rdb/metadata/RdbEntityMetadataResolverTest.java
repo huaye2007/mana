@@ -1,7 +1,7 @@
 package cn.managame.jpa.rdb.metadata;
 
 import cn.managame.jpa.rdb.annotation.Entity;
-import cn.managame.jpa.rdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.rdb.annotation.Column;
 import cn.managame.jpa.rdb.annotation.ColumnType;
 import cn.managame.jpa.rdb.annotation.Table;

@@ -1,7 +1,7 @@
 package cn.managame.jpa.docdb.metadata;
 
 import cn.managame.jpa.docdb.annotation.Document;
-import cn.managame.jpa.docdb.annotation.Id;
+import cn.managame.jpa.core.annotation.Id;
 import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 
