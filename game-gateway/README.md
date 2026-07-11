@@ -10,8 +10,9 @@
 - 单包默认上限 1 MiB；负长度、超长包或非法消息类型会关闭连接。
 - 过滤顺序为 IP 聚合保护、会话令牌桶、登录门禁；登录命令在未认证时仍可通过。
 - 会话先按 `sessionId` 路由，登录成功并绑定 `roleId` 后改按角色路由；同一角色重复登录会先写踢线包再关闭旧连接。
-- 后端实例来自 `ServiceRegistry.watchService`。健康实例进入一致性哈希环并建立 RPC 连接，更新或下线时同步摘除。
-- 会话对后端实例保持粘滞；实例失效后才重新选择，避免普通扩缩容导致在线会话漂移。
+- 先按命令映射到登录服、场景服、聊天服等逻辑服务类型，再在该类型的实例中选择节点。
+- 每种后端服务分别执行 `ServiceRegistry.watchService`。健康实例进入各自的一致性哈希环并建立 RPC 连接，更新或下线时同步摘除。
+- 会话对每种服务分别保持粘滞；某类型的实例失效只重选该类型，不影响会话绑定的其他后端服务。
 
 ## 转发约定
 
@@ -28,6 +29,7 @@
 | `game.gateway.ws.path` | `/ws` | WebSocket 路径 |
 | `game.gateway.reader.idle.seconds` | `180` | 读空闲断连秒数；`0` 关闭 |
 | `game.gateway.backend.service` | `game-dev` | 后端服务名 |
+| `game.gateway.backend.routes` | 空 | 命令到服务的映射，如 `1000=auth-service,2000-2999=chat-service`；未匹配命令使用默认后端 |
 | `game.gateway.backend.connections` | `4` | 每实例 RPC 连接数 |
 | `game.gateway.login.command` | `1000` | 登录命令 |
 | `game.gateway.rate.pps` / `.burst` | `50` / `100` | 单会话限流 |
@@ -43,3 +45,5 @@ java -cp <classpath> cn.managame.gateway.bootstrap.Gateway --game.gateway.tcp.po
 ```
 
 生产环境应在运行时加入对应的注册中心 provider（Nacos 或 Etcd），并让后端游戏服实现上述 RPC envelope。
+
+也可以在装配代码中实现 `BackendServiceResolver`，根据会话状态、区服或协议头动态选择服务类型，而不限于静态命令表。

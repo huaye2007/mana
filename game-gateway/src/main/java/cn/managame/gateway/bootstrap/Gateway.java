@@ -9,7 +9,8 @@ import cn.managame.gateway.network.GatewayNetworkHandler;
 import cn.managame.gateway.network.tcp.GatewayTcpServer;
 import cn.managame.gateway.network.websocket.GatewayWebSocketServer;
 import cn.managame.gateway.registry.BackendDiscovery;
-import cn.managame.gateway.router.BackendRouterManager;
+import cn.managame.gateway.router.BackendDirectory;
+import cn.managame.gateway.router.CommandBackendServiceResolver;
 import cn.managame.gateway.router.ConsistentHashRouter;
 import cn.managame.gateway.rpc.GatewayRpcClient;
 import cn.managame.gateway.rpc.GatewayRpcMessageHandler;
@@ -35,7 +36,7 @@ public final class Gateway implements AutoCloseable {
     private final boolean closeRegistry;
     private final GatewaySessionManager sessions = new GatewaySessionManager();
     private final GatewayRpcClient rpcClient;
-    private final BackendDiscovery discovery;
+    private final List<BackendDiscovery> discoveries;
     private final GatewayTcpServer tcpServer;
     private final GatewayWebSocketServer webSocketServer;
     private final ServiceInstance self;
@@ -48,14 +49,18 @@ public final class Gateway implements AutoCloseable {
         this.config = Objects.requireNonNull(config, "config");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.closeRegistry = closeRegistry;
-        BackendRouterManager routers = new BackendRouterManager(new ConsistentHashRouter());
+        BackendDirectory backends = new BackendDirectory(ConsistentHashRouter::new);
+        CommandBackendServiceResolver serviceResolver = CommandBackendServiceResolver.parse(
+                config.backendService(), config.backendRoutes());
         GatewayRpcMessageHandler downlink = new GatewayRpcMessageHandler(sessions, config.loginCommand());
         RpcClientConfig rpcConfig = new RpcClientConfig()
                 .serviceName(config.serviceName()).serviceId(config.instanceId())
                 .authToken(config.rpcAuthToken());
-        rpcClient = new GatewayRpcClient(rpcConfig, downlink, config.backendService(), config.backendConnections());
-        discovery = new BackendDiscovery(registry, config.backendService(), routers, rpcClient);
-        PacketForwarder forwarder = new PacketForwarder(rpcClient, routers, config.loginCommand());
+        rpcClient = new GatewayRpcClient(rpcConfig, downlink, config.backendConnections());
+        discoveries = serviceResolver.serviceNames().stream()
+                .map(service -> new BackendDiscovery(registry, service, backends.service(service), rpcClient))
+                .toList();
+        PacketForwarder forwarder = new PacketForwarder(rpcClient, backends, serviceResolver, config.loginCommand());
         FilterChain filters = new FilterChain(List.of(
                 new DdosFilter(config.ddosMaxConnectionsPerIp(), config.ddosPpsPerIp(), config.ddosBurstPerIp()),
                 new RateLimitFilter(config.ratePps(), config.rateBurst()),
@@ -84,7 +89,7 @@ public final class Gateway implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("gateway is closed");
         if (!running.compareAndSet(false, true)) return;
         try {
-            discovery.start();
+            discoveries.forEach(BackendDiscovery::start);
             tcpServer.start();
             if (webSocketServer != null) webSocketServer.start();
             registry.register(self);
@@ -105,7 +110,9 @@ public final class Gateway implements AutoCloseable {
         if (webSocketServer != null) try { webSocketServer.stop(); } catch (RuntimeException ignored) { }
         try { tcpServer.stop(); } catch (RuntimeException ignored) { }
         sessions.closeAll();
-        try { discovery.close(); } catch (RuntimeException ignored) { }
+        for (int i = discoveries.size() - 1; i >= 0; i--) {
+            try { discoveries.get(i).close(); } catch (RuntimeException ignored) { }
+        }
         try { rpcClient.close(); } finally { if (closeRegistry) registry.close(); }
     }
 

@@ -12,22 +12,19 @@ import java.util.Objects;
 /** Gateway-specific facade over the generic RPC client's target pool. */
 public final class GatewayRpcClient implements BackendConnector, AutoCloseable {
     private final RpcClient client;
-    private final String backendServiceName;
     private final int connectionsPerBackend;
 
     public GatewayRpcClient(RpcClientConfig config, GatewayRpcMessageHandler handler,
-                            String backendServiceName, int connectionsPerBackend) {
-        if (backendServiceName == null || backendServiceName.isBlank()) throw new IllegalArgumentException("backendServiceName must not be blank");
+                            int connectionsPerBackend) {
         if (connectionsPerBackend < 1) throw new IllegalArgumentException("connectionsPerBackend must be positive");
         this.client = new RpcClient(Objects.requireNonNull(config, "config"), Objects.requireNonNull(handler, "handler"));
-        this.backendServiceName = backendServiceName;
         this.connectionsPerBackend = connectionsPerBackend;
     }
 
     @Override
     public void connectBackend(ServiceInstance instance) {
         ConnectionTargetConfig target = new ConnectionTargetConfig();
-        target.setServiceName(backendServiceName);
+        target.setServiceName(instance.getName());
         target.setServiceId(instance.getKey());
         target.setIp(instance.getAddress());
         target.setPort(instance.getPort());
@@ -36,9 +33,11 @@ public final class GatewayRpcClient implements BackendConnector, AutoCloseable {
     }
 
     @Override
-    public void disconnectBackend(ServiceInstance instance) { client.disconnect(backendServiceName, instance.getKey()); }
+    public void disconnectBackend(ServiceInstance instance) { client.disconnect(instance.getName(), instance.getKey()); }
 
-    public void forward(String serviceId, RpcRequest request) { client.oneway(backendServiceName, serviceId, request); }
+    public void forward(String serviceName, String serviceId, RpcRequest request) {
+        client.oneway(serviceName, serviceId, request);
+    }
 
     public RpcClient unwrap() { return client; }
 

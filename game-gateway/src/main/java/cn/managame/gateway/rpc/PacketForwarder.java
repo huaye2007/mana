@@ -4,7 +4,8 @@ import cn.managame.common.context.MetadataKeys;
 import cn.managame.gateway.codec.GatewayErrorCode;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.codec.GatewayPacketConstant;
-import cn.managame.gateway.router.BackendRouterManager;
+import cn.managame.gateway.router.BackendDirectory;
+import cn.managame.gateway.router.BackendServiceResolver;
 import cn.managame.gateway.session.GatewaySession;
 import cn.managame.registry.api.ServiceInstance;
 import cn.managame.rpc.RpcRequest;
@@ -16,23 +17,27 @@ import java.util.Objects;
 
 public final class PacketForwarder {
     private final GatewayRpcClient rpcClient;
-    private final BackendRouterManager routerManager;
+    private final BackendDirectory backendDirectory;
+    private final BackendServiceResolver serviceResolver;
     private final int loginCommand;
 
-    public PacketForwarder(GatewayRpcClient rpcClient, BackendRouterManager routerManager, int loginCommand) {
+    public PacketForwarder(GatewayRpcClient rpcClient, BackendDirectory backendDirectory,
+                           BackendServiceResolver serviceResolver, int loginCommand) {
         this.rpcClient = Objects.requireNonNull(rpcClient, "rpcClient");
-        this.routerManager = Objects.requireNonNull(routerManager, "routerManager");
+        this.backendDirectory = Objects.requireNonNull(backendDirectory, "backendDirectory");
+        this.serviceResolver = Objects.requireNonNull(serviceResolver, "serviceResolver");
         if (loginCommand <= 0) throw new IllegalArgumentException("loginCommand must be positive");
         this.loginCommand = loginCommand;
     }
 
     public void forward(GatewaySession session, GatewayPacket packet) {
-        ServiceInstance backend = routerManager.resolve(session);
+        String serviceName = serviceResolver.resolve(session, packet);
+        ServiceInstance backend = backendDirectory.resolve(serviceName, session);
         if (backend == null) {
             reject(session, packet, GatewayErrorCode.NO_BACKEND);
             return;
         }
-        List<Metadata> metadata = new ArrayList<>(2);
+        List<Metadata> metadata = new ArrayList<>(3);
         metadata.add(Metadata.ofLong(MetadataKeys.GW_SEQ, packet.getSeq()));
         if (packet.getFlags() != 0) metadata.add(Metadata.ofLong(MetadataKeys.GW_FLAGS, packet.getFlags() & 0xffL));
         if (packet.getCommand() == loginCommand) metadata.add(Metadata.ofString(MetadataKeys.GW_CLIENT_IP, session.getClientIp()));
@@ -46,9 +51,9 @@ public final class PacketForwarder {
                 .body(packet.getBody())
                 .metadata(metadata.toArray(Metadata[]::new));
         try {
-            rpcClient.forward(backend.getKey(), request);
+            rpcClient.forward(serviceName, backend.getKey(), request);
         } catch (RuntimeException error) {
-            session.setBackendServiceId(null);
+            session.setBackendServiceId(serviceName, null);
             reject(session, packet, GatewayErrorCode.SERVER_BUSY);
         }
     }

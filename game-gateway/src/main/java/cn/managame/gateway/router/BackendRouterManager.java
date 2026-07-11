@@ -31,10 +31,10 @@ public final class BackendRouterManager {
     }
     public int instanceCount() { return instances.size(); }
 
-    public ServiceInstance resolve(GatewaySession session) {
-        String sticky = session.getBackendServiceId();
+    public ServiceInstance resolve(GatewaySession session, String serviceName) {
+        String sticky = session.getBackendServiceId(serviceName);
         ServiceInstance selected = isAlive(sticky) ? instances.get(sticky) : router.select(session.routeKey());
-        session.setBackendServiceId(selected == null ? null : selected.getKey());
+        session.setBackendServiceId(serviceName, selected == null ? null : selected.getKey());
         return selected;
     }
 

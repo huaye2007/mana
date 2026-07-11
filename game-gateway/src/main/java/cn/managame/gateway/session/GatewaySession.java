@@ -4,13 +4,14 @@ import cn.managame.network.connection.IConnection;
 import cn.managame.network.session.DefaultSession;
 
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class GatewaySession extends DefaultSession {
     private final long sessionId;
     private final String clientIp;
     private volatile boolean authenticated;
     private volatile long roleId;
-    private volatile String backendServiceId;
+    private final ConcurrentHashMap<String, String> backendBindings = new ConcurrentHashMap<>();
 
     public GatewaySession(IConnection connection, String clientIp) {
         super(Objects.requireNonNull(connection, "connection"));
@@ -27,10 +28,13 @@ public final class GatewaySession extends DefaultSession {
         if (roleId < 0) throw new IllegalArgumentException("roleId must be non-negative");
         this.roleId = roleId;
     }
-    public String getBackendServiceId() { return backendServiceId; }
-    public void setBackendServiceId(String backendServiceId) {
-        this.backendServiceId = backendServiceId == null || backendServiceId.isBlank() ? null : backendServiceId;
+    public String getBackendServiceId(String serviceName) { return backendBindings.get(serviceName); }
+    public void setBackendServiceId(String serviceName, String serviceId) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        if (serviceId == null || serviceId.isBlank()) backendBindings.remove(serviceName);
+        else backendBindings.put(serviceName, serviceId);
     }
+    public void clearBackendBindings() { backendBindings.clear(); }
     public long routeKey() { return roleId > 0 ? roleId : sessionId; }
 
     private static String normalizeIp(String value) {

@@ -20,4 +20,12 @@ class GatewayConfigTest {
         assertThrows(IllegalArgumentException.class,
                 () -> GatewayConfig.from(Map.of("game.gateway.rate.pps", "0")));
     }
+
+    @Test void exposesMultiServiceRouteSpecification() {
+        GatewayConfig config = GatewayConfig.from(Map.of(
+                "game.gateway.backend.service", "scene-service",
+                "game.gateway.backend.routes", "1000=auth-service,2000-2999=chat-service"));
+        assertEquals("scene-service", config.backendService());
+        assertEquals("1000=auth-service,2000-2999=chat-service", config.backendRoutes());
+    }
 }

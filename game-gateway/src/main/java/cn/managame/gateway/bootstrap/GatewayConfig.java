@@ -13,10 +13,22 @@ import java.util.Properties;
 /** Immutable, validated gateway settings with a small dependency-free loader. */
 public record GatewayConfig(int tcpPort, int wsPort, String wsPath, int readerIdleSeconds,
                             int serverId, String serviceName, String instanceId, String advertiseAddress,
-                            String backendService, int backendConnections, int loginCommand,
+                            String backendService, String backendRoutes, int backendConnections, int loginCommand,
                             double ratePps, double rateBurst, int ddosMaxConnectionsPerIp,
                             double ddosPpsPerIp, double ddosBurstPerIp,
                             String registryType, String registryEndpoints, String rpcAuthToken) {
+    public GatewayConfig(int tcpPort, int wsPort, String wsPath, int readerIdleSeconds,
+                         int serverId, String serviceName, String instanceId, String advertiseAddress,
+                         String backendService, int backendConnections, int loginCommand,
+                         double ratePps, double rateBurst, int ddosMaxConnectionsPerIp,
+                         double ddosPpsPerIp, double ddosBurstPerIp,
+                         String registryType, String registryEndpoints, String rpcAuthToken) {
+        this(tcpPort, wsPort, wsPath, readerIdleSeconds, serverId, serviceName, instanceId,
+                advertiseAddress, backendService, "", backendConnections, loginCommand,
+                ratePps, rateBurst, ddosMaxConnectionsPerIp, ddosPpsPerIp, ddosBurstPerIp,
+                registryType, registryEndpoints, rpcAuthToken);
+    }
+
     public GatewayConfig {
         requirePort(tcpPort, false, "tcpPort");
         requirePort(wsPort, true, "wsPort");
@@ -28,6 +40,7 @@ public record GatewayConfig(int tcpPort, int wsPort, String wsPath, int readerId
         instanceId = requireText(instanceId, "instanceId");
         advertiseAddress = requireText(advertiseAddress, "advertiseAddress");
         backendService = requireText(backendService, "backendService");
+        if (backendRoutes == null) backendRoutes = "";
         if (backendConnections < 1) throw new IllegalArgumentException("backendConnections must be positive");
         if (loginCommand < 1) throw new IllegalArgumentException("loginCommand must be positive");
         requirePositive(ratePps, "ratePps");
@@ -76,6 +89,7 @@ public record GatewayConfig(int tcpPort, int wsPort, String wsPath, int readerId
                 values.getOrDefault("game.gateway.instance-id", "gateway-" + serverId),
                 values.getOrDefault("game.gateway.advertise-address", "127.0.0.1"),
                 values.getOrDefault("game.gateway.backend.service", "game-dev"),
+                values.getOrDefault("game.gateway.backend.routes", ""),
                 integer(values, "game.gateway.backend.connections", 4),
                 integer(values, "game.gateway.login.command", 1000),
                 decimal(values, "game.gateway.rate.pps", 50),
@@ -99,6 +113,7 @@ public record GatewayConfig(int tcpPort, int wsPort, String wsPath, int readerId
     public String getInstanceId() { return instanceId; }
     public String getAdvertiseAddress() { return advertiseAddress; }
     public String getBackendService() { return backendService; }
+    public String getBackendRoutes() { return backendRoutes; }
     public int getBackendConnections() { return backendConnections; }
     public int getLoginCommand() { return loginCommand; }
     public double getRatePps() { return ratePps; }

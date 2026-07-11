@@ -10,8 +10,9 @@
 - A packet is limited to 1 MiB by default. Negative lengths, oversized frames, and unexpected message types close the connection.
 - Filters run in this order: aggregate IP protection, session token bucket, login gate. The login command remains available before authentication.
 - Sessions route by `sessionId` first and by `roleId` after a successful login binds the role. A duplicate role login receives a kick packet before the old connection closes.
-- Backend instances come from `ServiceRegistry.watchService`. Healthy instances enter the consistent-hash ring and RPC pool; updates and removals are reconciled in both.
-- A session remains sticky to its selected backend and is reassigned only when that instance becomes unavailable.
+- Commands first resolve to a logical service type such as authentication, scene, or chat, then select an instance within that type.
+- Every service type has its own `ServiceRegistry.watchService` subscription, consistent-hash ring, and RPC targets.
+- Stickiness is tracked independently per service type. Losing one type's instance does not disturb the session's bindings to other backend services.
 
 ## Forwarding contract
 
@@ -28,6 +29,7 @@ Precedence is command-line `--key=value`, JVM `-Dkey=value`, `GAME_*` environmen
 | `game.gateway.ws.path` | `/ws` | WebSocket path |
 | `game.gateway.reader.idle.seconds` | `180` | Read-idle disconnect; `0` disables it |
 | `game.gateway.backend.service` | `game-dev` | Backend service name |
+| `game.gateway.backend.routes` | empty | Command-to-service mappings such as `1000=auth-service,2000-2999=chat-service`; unmatched commands use the default backend |
 | `game.gateway.backend.connections` | `4` | RPC connections per instance |
 | `game.gateway.login.command` | `1000` | Login command |
 | `game.gateway.rate.pps` / `.burst` | `50` / `100` | Per-session rate limit |
@@ -43,3 +45,5 @@ java -cp <classpath> cn.managame.gateway.bootstrap.Gateway --game.gateway.tcp.po
 ```
 
 Production deployments should add the selected registry provider (Nacos or Etcd) at runtime and implement this RPC envelope in backend game servers.
+
+Composition code may also provide a custom `BackendServiceResolver` to select service types from session state, realm, or protocol headers instead of using the static command table.
