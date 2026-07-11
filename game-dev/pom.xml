@@ -34,10 +34,25 @@
             <groupId>cn.managame</groupId>
             <artifactId>game-network-netty</artifactId>
         </dependency>
-        <!-- GameConfigStarter：分层配置（命令行/-D/环境变量/本地文件），暂时只用本地配置源 -->
+        <!-- 配置 API；local/Nacos/Etcd 后端由运行时 SPI 发现。 -->
         <dependency>
             <groupId>cn.managame</groupId>
-            <artifactId>game-config-starter</artifactId>
+            <artifactId>game-config-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-config-local</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-config-nacos</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-config-etcd</artifactId>
+            <scope>runtime</scope>
         </dependency>
         <!-- 注册中心 API 与 SPI 工厂 -->
         <dependency>
@@ -53,6 +68,11 @@
         <dependency>
             <groupId>cn.managame</groupId>
             <artifactId>game-registry-nacos</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-registry-etcd</artifactId>
             <scope>runtime</scope>
         </dependency>
         <dependency>

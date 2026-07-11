@@ -33,4 +33,6 @@ public final class MetadataKeys {
     public static final short GW_CODE = 6;
     /** 网关：客户端来源 IP（string）。仅上行登录命令。 */
     public static final short GW_CLIENT_IP = 7;
+    /** 网关：外网帧 flags（long，低 8 位有效），用于压缩/加密标志双向透传。 */
+    public static final short GW_FLAGS = 8;
 }

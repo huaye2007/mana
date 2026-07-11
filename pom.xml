@@ -132,7 +132,22 @@
             </dependency>
             <dependency>
                 <groupId>cn.managame</groupId>
-                <artifactId>game-config-starter</artifactId>
+                <artifactId>game-config-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-config-local</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-config-nacos</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-config-etcd</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -148,6 +163,11 @@
             <dependency>
                 <groupId>cn.managame</groupId>
                 <artifactId>game-registry-nacos</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-registry-etcd</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

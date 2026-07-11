@@ -8,8 +8,9 @@ import cn.managame.dev.server.GameHandler;
 import cn.managame.dev.server.GameRouterManager;
 import cn.managame.dev.server.GameTaskFailureReplier;
 import cn.managame.dev.server.PlayerSessionManager;
-import cn.managame.config.manager.GameConfigManager;
-import cn.managame.config.starter.GameConfigStarter;
+import cn.managame.config.ConfigCenter;
+import cn.managame.config.ConfigFactory;
+import cn.managame.config.ConfigOptions;
 import cn.managame.network.connection.ServerConnectionIdGenerator;
 import cn.managame.network.server.NettyTcpServer;
 import cn.managame.network.server.NetworkTcpServerConfig;
@@ -50,9 +51,9 @@ public class Game {
     private static final long ONLINE_REPORT_INTERVAL_MS = 60_000;
 
     public static void main(String[] args) {
-        // 分层配置：命令行 > -D 系统属性 > 环境变量 > 本地 config/application.properties。
-        // 暂时只接本地配置；后续要接 nacos/apollo 等远程源时在 createConfigManager 里补 remote 源即可。
-        GameConfigManager configManager = createConfigManager(args);
+        // 默认从本地 config/application.properties 创建不可变配置快照并监听文件变化。
+        // 需要 Nacos / Etcd 时，改为对应 type、endpoint 和 resource 即可。
+        ConfigCenter configManager = createConfigCenter();
 
         AnnotationConfigApplicationContext applicationContext = createApplicationContext();
 
@@ -113,7 +114,7 @@ public class Game {
      * 关 jpa（刷异步写队列到库）→ 关配置管理器 → 关容器。
      */
     private static void shutdown(ServiceRegistry serviceRegistry, NettyTcpServer server, GameJpaContext jpaContext,
-                                 GameConfigManager configManager,
+                                 ConfigCenter configManager,
                                  AnnotationConfigApplicationContext applicationContext) {
         logger.info("game server shutting down");
         try {
@@ -137,7 +138,7 @@ public class Game {
         try {
             configManager.close();
         } catch (RuntimeException e) {
-            logger.error("close config manager failed", e);
+            logger.error("close config center failed", e);
         }
         applicationContext.close();
         logger.info("game server shutdown complete");
@@ -185,25 +186,21 @@ public class Game {
     }
 
     /**
-     * 装配分层配置管理器。源优先级：命令行 --key=value / -Dkey=value > JVM 系统属性 >
-     * 环境变量 > 本地 config/application.properties（相对工作目录，缺失时静默忽略）。
-     * 默认值不进配置栈、留在各读取点（见 cfg），保证旧式大写环境变量键仍能兜底。
+     * 打开本地配置中心。文件相对工作目录解析，缺失时以空快照启动；文件创建或修改后自动更新。
      */
-    private static GameConfigManager createConfigManager(String[] args) {
-        return GameConfigStarter.builder()
-                .args(args)
-                .systemProperties(true)
-                .environmentVariables(true)
-                .localFile(GameConfigStarter.DEFAULT_LOCAL_FILE)
-                .start();
+    private static ConfigCenter createConfigCenter() {
+        return ConfigFactory.open(ConfigOptions.builder("local")
+                .resource("config/application.properties")
+                .property("required", "false")
+                .build());
     }
 
     /**
      * 创建注册中心并注册本服务实例。类型默认 memory（game-registry-memory 提供：进程内共享、
-     * 无外部依赖，endpoints 只当 namespace 用）；切 Nacos 时把 type 配成 nacos，
-     * 并把 endpoints 换成 Nacos 服务地址即可。
+     * 无外部依赖，endpoints 只当 namespace 用）；切 Nacos / Etcd 时修改 type，
+     * 并把 endpoints 换成对应服务地址即可。
      */
-    private static ServiceRegistry startRegistry(GameConfigManager config, int port) {
+    private static ServiceRegistry startRegistry(ConfigCenter config, int port) {
         String type = cfg(config, "game.registry.type", "GAME_REGISTRY_TYPE", RegistryType.MEMORY.type());
         String endpoints = cfg(config, "game.registry.endpoints", "GAME_REGISTRY_ENDPOINTS", "local");
         ServiceRegistry registry = RegistryFactory.startRegistry(RegistryConfig.builder()
@@ -221,7 +218,7 @@ public class Game {
     }
 
     /** 创建 MySQL 数据源：连接参数走配置管理器；密码无默认值，缺失即启动失败。 */
-    private static DataSource createDataSource(GameConfigManager config) {
+    private static DataSource createDataSource(ConfigCenter config) {
         return MysqlDataSourceFactory.builder()
                 .jdbcUrl(cfg(config, "game.db.url", "GAME_DB_URL", "jdbc:mysql://localhost:3306/test"))
                 .username(cfg(config, "game.db.username", "GAME_DB_USERNAME", "root"))
@@ -229,17 +226,17 @@ public class Game {
                 .build();
     }
 
-    /** 读取配置：先按标准键查配置管理器（命令行/-D/本地文件已分层合并），再兜底旧式大写环境变量键。 */
-    private static String cfg(GameConfigManager config, String key, String envKey, String defaultValue) {
-        String value = config.get(key);
+    /** 读取配置：先查当前不可变快照，再查进程环境变量，最后使用调用方默认值。 */
+    private static String cfg(ConfigCenter config, String key, String envKey, String defaultValue) {
+        String value = config.snapshot().get(key);
         if (value == null || value.isBlank()) {
-            value = config.get(envKey);
+            value = System.getenv(envKey);
         }
         return (value == null || value.isBlank()) ? defaultValue : value.trim();
     }
 
     /** 读取必填配置：密码等敏感项不给默认值，缺失时报错退出而不是带着弱口令跑起来。 */
-    private static String requiredCfg(GameConfigManager config, String key, String envKey) {
+    private static String requiredCfg(ConfigCenter config, String key, String envKey) {
         String value = cfg(config, key, envKey, null);
         if (value == null) {
             throw new IllegalStateException("missing required config: " + key
@@ -249,7 +246,7 @@ public class Game {
     }
 
     /** 监听端口：game.server.port，默认 8080。 */
-    private static int resolvePort(GameConfigManager config) {
+    private static int resolvePort(ConfigCenter config) {
         return Integer.parseInt(cfg(config, "game.server.port", "GAME_SERVER_PORT", "8080"));
     }
 }

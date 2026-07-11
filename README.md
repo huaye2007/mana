@@ -24,9 +24,10 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-network` | 网络基础层（core + Netty）：TCP/WebSocket/HTTP 接入、连接与会话生命周期、传输 pipeline，把解码后的消息投递给 `INetworkHandler`（HTTP 走 `IHttpHandler`）。零依赖，不做协议路由与命令分发（见 [game-network/README.md](game-network/README.md)） |
 | `game-rpc` | 对内 RPC：协议编解码、握手/心跳/重连、oneway/future/callback 调用、背压与在途上限保护、按服务广播（见 [game-rpc/README.md](game-rpc/README.md)） |
 | `game-serialization` | 序列化门面，统一 JSON、Protobuf、Apache Fory 三种实现（见 [game-serialization/README.md](game-serialization/README.md)） |
-| `game-registry` | 统一的服务注册发现 API，通过 SPI 提供 memory 与 Nacos 实现（见 [game-registry/README.md](game-registry/README.md)） |
-| `game-config` | 多源配置加载（本地文件/classpath/命令行/JVM/环境变量/默认值/远端），类型安全快照、变更监听与热加载（见 [game-config/README.md](game-config/README.md)） |
+| `game-registry` | 统一的服务注册发现 API，通过 SPI 提供 memory、Nacos 与 Etcd 实现（见 [game-registry/README.md](game-registry/README.md)） |
+| `game-config` | 基于不可变快照的配置中心，提供 local、Nacos、Etcd 后端、类型化读取与变更监听（见 [game-config/README.md](game-config/README.md)） |
 | `game-runtime` | 统一运行时：命令/事件/定时器/回调四类入口收敛为任务，按 routerKey 哈希到组内固定 worker 串行执行（见 [game-runtime/README.md](game-runtime/README.md)） |
+| `game-gateway` | TCP/WebSocket 游戏边缘网关：接入防护、登录门禁、粘滞路由、服务发现及 RPC 双向透传（见 [game-gateway/README.md](game-gateway/README.md)） |
 | `game-jpa` | 轻量持久化框架，含 RDB、DocDB、缓存、异步批量写、分片、starter 和 demo（见 [game-jpa/README.md](game-jpa/README.md)） |
 | `game-dev` | 参考宿主/示例工程：外网 GamePacket 协议 + 登陆/顶号/空闲踢人等框架行为，演示 network/runtime/jpa/serialization 的桥接方式（当前为单进程宿主，尚未接入 registry/config） |
 
@@ -48,7 +49,7 @@ CI 会在 Linux 和 Windows 上执行同一条 reactor 测试命令。
 mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 ```
 
-注册中心默认测试覆盖 memory 行为和基于模拟客户端的 Nacos 适配；不会连接外部 Nacos 服务。MySQL / MongoDB 的持久化集成测试走 `game-jpa` 的 `integration-tests` profile（基于 Testcontainers，需要 Docker）。
+注册中心默认测试覆盖 memory 行为以及基于模拟客户端的 Nacos、Etcd 适配；不会连接外部注册中心。MySQL / MongoDB 的持久化集成测试走 `game-jpa` 的 `integration-tests` profile（基于 Testcontainers，需要 Docker）。
 
 ## 依赖说明
 
@@ -68,7 +69,7 @@ mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 - Network：`cn.managame.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer`（实现 `INetworkServer`），业务侧实现 `INetworkHandler` / `IHttpHandler`
 - RPC：`cn.managame.rpc.RpcClient`、`cn.managame.rpc.RpcServer`
 - Registry：`cn.managame.registry.api.ServiceRegistry`，工厂 `cn.managame.registry.factory.RegistryFactory`
-- Config：`cn.managame.config.manager.GameConfigManager`，工厂 `cn.managame.config.factory.GameConfigFactory`
+- Config：`cn.managame.config.ConfigCenter`，工厂 `cn.managame.config.ConfigFactory`
 - Serialization：`cn.managame.serialization.SerializerManager`
 - JPA starter：`cn.managame.jpa.starter.GameJpaBootstrap`
 
