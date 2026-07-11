@@ -1,0 +1,122 @@
+package cn.managame.gateway.bootstrap;
+
+import cn.managame.gateway.codec.BodyCodec;
+import cn.managame.gateway.filter.AuthFilter;
+import cn.managame.gateway.filter.DdosFilter;
+import cn.managame.gateway.filter.FilterChain;
+import cn.managame.gateway.filter.RateLimitFilter;
+import cn.managame.gateway.network.GatewayNetworkHandler;
+import cn.managame.gateway.network.tcp.GatewayTcpServer;
+import cn.managame.gateway.network.websocket.GatewayWebSocketServer;
+import cn.managame.gateway.registry.BackendDiscovery;
+import cn.managame.gateway.router.BackendRouterManager;
+import cn.managame.gateway.router.ConsistentHashRouter;
+import cn.managame.gateway.rpc.GatewayRpcClient;
+import cn.managame.gateway.rpc.GatewayRpcMessageHandler;
+import cn.managame.gateway.rpc.PacketForwarder;
+import cn.managame.gateway.session.GatewaySessionManager;
+import cn.managame.registry.api.ServiceInstance;
+import cn.managame.registry.api.ServiceRegistry;
+import cn.managame.registry.factory.RegistryConfig;
+import cn.managame.registry.factory.RegistryFactory;
+import cn.managame.rpc.RpcClientConfig;
+import cn.managame.network.connection.ServerConnectionIdGenerator;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/** Runnable gateway composition root. */
+public final class Gateway implements AutoCloseable {
+    private final GatewayConfig config;
+    private final ServiceRegistry registry;
+    private final boolean closeRegistry;
+    private final GatewaySessionManager sessions = new GatewaySessionManager();
+    private final GatewayRpcClient rpcClient;
+    private final BackendDiscovery discovery;
+    private final GatewayTcpServer tcpServer;
+    private final GatewayWebSocketServer webSocketServer;
+    private final ServiceInstance self;
+    private final AtomicBoolean running = new AtomicBoolean();
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    public Gateway(GatewayConfig config, ServiceRegistry registry) { this(config, registry, false); }
+
+    private Gateway(GatewayConfig config, ServiceRegistry registry, boolean closeRegistry) {
+        this.config = Objects.requireNonNull(config, "config");
+        this.registry = Objects.requireNonNull(registry, "registry");
+        this.closeRegistry = closeRegistry;
+        BackendRouterManager routers = new BackendRouterManager(new ConsistentHashRouter());
+        GatewayRpcMessageHandler downlink = new GatewayRpcMessageHandler(sessions, config.loginCommand());
+        RpcClientConfig rpcConfig = new RpcClientConfig()
+                .serviceName(config.serviceName()).serviceId(config.instanceId())
+                .authToken(config.rpcAuthToken());
+        rpcClient = new GatewayRpcClient(rpcConfig, downlink, config.backendService(), config.backendConnections());
+        discovery = new BackendDiscovery(registry, config.backendService(), routers, rpcClient);
+        PacketForwarder forwarder = new PacketForwarder(rpcClient, routers, config.loginCommand());
+        FilterChain filters = new FilterChain(List.of(
+                new DdosFilter(config.ddosMaxConnectionsPerIp(), config.ddosPpsPerIp(), config.ddosBurstPerIp()),
+                new RateLimitFilter(config.ratePps(), config.rateBurst()),
+                new AuthFilter(config.loginCommand())));
+        GatewayNetworkHandler network = new GatewayNetworkHandler(sessions, filters, forwarder);
+        ServerConnectionIdGenerator connectionIds = new ServerConnectionIdGenerator(config.serverId());
+        tcpServer = new GatewayTcpServer(config.tcpPort(), connectionIds, config.readerIdleSeconds(), BodyCodec.IDENTITY, network);
+        webSocketServer = config.webSocketEnabled()
+                ? new GatewayWebSocketServer(config.wsPort(), config.wsPath(), connectionIds, BodyCodec.IDENTITY, network)
+                : null;
+        self = ServiceInstance.builder().name(config.serviceName()).id(config.instanceId())
+                .address(config.advertiseAddress()).port(config.tcpPort())
+                .metadata(config.webSocketEnabled()
+                        ? Map.of("ws.port", Integer.toString(config.wsPort()), "ws.path", config.wsPath()) : Map.of())
+                .build();
+    }
+
+    public static Gateway create(GatewayConfig config) {
+        ServiceRegistry registry = RegistryFactory.startRegistry(RegistryConfig.builder()
+                .type(config.registryType()).endpoints(config.registryEndpoints()).build());
+        try { return new Gateway(config, registry, true); }
+        catch (RuntimeException error) { registry.close(); throw error; }
+    }
+
+    public void start() {
+        if (closed.get()) throw new IllegalStateException("gateway is closed");
+        if (!running.compareAndSet(false, true)) return;
+        try {
+            discovery.start();
+            tcpServer.start();
+            if (webSocketServer != null) webSocketServer.start();
+            registry.register(self);
+        } catch (RuntimeException error) {
+            close();
+            throw error;
+        }
+    }
+
+    public boolean isRunning() { return running.get(); }
+    public GatewaySessionManager sessions() { return sessions; }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        running.set(false);
+        try { registry.deregister(self); } catch (RuntimeException ignored) { }
+        if (webSocketServer != null) try { webSocketServer.stop(); } catch (RuntimeException ignored) { }
+        try { tcpServer.stop(); } catch (RuntimeException ignored) { }
+        sessions.closeAll();
+        try { discovery.close(); } catch (RuntimeException ignored) { }
+        try { rpcClient.close(); } finally { if (closeRegistry) registry.close(); }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Gateway gateway = Gateway.create(GatewayConfig.load(args));
+        CountDownLatch stopped = new CountDownLatch(1);
+        Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().name("game-gateway-shutdown").unstarted(() -> {
+            gateway.close();
+            stopped.countDown();
+        }));
+        gateway.start();
+        stopped.await();
+    }
+}

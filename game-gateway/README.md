@@ -1,0 +1,45 @@
+[English](README.en.md) | 中文
+
+# game-gateway
+
+`game-gateway` 是游戏客户端的边缘接入层：承接 TCP / WebSocket 长连接，执行连接保护、会话限流和登录门禁，通过服务发现维护后端连接池，并借助 `game-rpc` 把不透明业务包体双向转发。网关只读取帧头，不反序列化业务对象。
+
+## 核心行为
+
+- TCP 与 WebSocket 使用同一二进制帧：`bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes)`。
+- 单包默认上限 1 MiB；负长度、超长包或非法消息类型会关闭连接。
+- 过滤顺序为 IP 聚合保护、会话令牌桶、登录门禁；登录命令在未认证时仍可通过。
+- 会话先按 `sessionId` 路由，登录成功并绑定 `roleId` 后改按角色路由；同一角色重复登录会先写踢线包再关闭旧连接。
+- 后端实例来自 `ServiceRegistry.watchService`。健康实例进入一致性哈希环并建立 RPC 连接，更新或下线时同步摘除。
+- 会话对后端实例保持粘滞；实例失效后才重新选择，避免普通扩缩容导致在线会话漂移。
+
+## 转发约定
+
+外网包的 `command` 和原始 `body` 映射到 `RpcRequest`。`busType/busId` 标识 session 或 role，`routeKey` 用于后端串行路由，`MetadataKeys.GW_SEQ` 回传客户端序号，`GW_FLAGS` 透传压缩/加密标志，登录请求额外携带 `GW_CLIENT_IP`。后端下行使用相同 envelope，`GW_CODE` 表示业务码；成功登录响应可在 `routeKey` 中回带角色 ID。
+
+## 配置
+
+配置优先级为命令行 `--key=value`、JVM `-Dkey=value`、`GAME_*` 环境变量、`config/application.properties`、默认值。
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `game.gateway.tcp.port` | `9000` | TCP 端口 |
+| `game.gateway.ws.port` | `9001` | WebSocket 端口；`0` 关闭 |
+| `game.gateway.ws.path` | `/ws` | WebSocket 路径 |
+| `game.gateway.reader.idle.seconds` | `180` | 读空闲断连秒数；`0` 关闭 |
+| `game.gateway.backend.service` | `game-dev` | 后端服务名 |
+| `game.gateway.backend.connections` | `4` | 每实例 RPC 连接数 |
+| `game.gateway.login.command` | `1000` | 登录命令 |
+| `game.gateway.rate.pps` / `.burst` | `50` / `100` | 单会话限流 |
+| `game.gateway.ddos.max-connections-per-ip` | `100` | 单 IP 最大连接数 |
+| `game.gateway.ddos.pps-per-ip` / `.burst-per-ip` | `500` / `1000` | 单 IP 聚合限流 |
+| `game.registry.type` / `.endpoints` | `memory` / `local` | 注册中心 |
+
+## 构建与启动
+
+```powershell
+mvn "-Dmaven.repo.local=.m2" -pl game-gateway -am test
+java -cp <classpath> cn.managame.gateway.bootstrap.Gateway --game.gateway.tcp.port=9000
+```
+
+生产环境应在运行时加入对应的注册中心 provider（Nacos 或 Etcd），并让后端游戏服实现上述 RPC envelope。
