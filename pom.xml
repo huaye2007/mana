@@ -137,12 +137,17 @@
             </dependency>
             <dependency>
                 <groupId>cn.managame</groupId>
-                <artifactId>game-registry-starter</artifactId>
+                <artifactId>game-registry-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>cn.managame</groupId>
                 <artifactId>game-registry-memory</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-registry-nacos</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

@@ -14,9 +14,10 @@ import cn.managame.network.connection.ServerConnectionIdGenerator;
 import cn.managame.network.server.NettyTcpServer;
 import cn.managame.network.server.NetworkTcpServerConfig;
 import cn.managame.registry.api.ServiceInstance;
-import cn.managame.registry.factory.RegistryBundle;
+import cn.managame.registry.api.ServiceRegistry;
+import cn.managame.registry.factory.RegistryConfig;
+import cn.managame.registry.factory.RegistryFactory;
 import cn.managame.registry.factory.RegistryType;
-import cn.managame.registry.starter.GameRegistryStarter;
 import cn.managame.jpa.rdb.cache.RdbCacheModule;
 import cn.managame.jpa.rdb.mysql.MysqlDataSourceFactory;
 import cn.managame.jpa.rdb.mysql.MysqlRdbExecutor;
@@ -89,9 +90,9 @@ public class Game {
 
         // 端口就绪后再注册到注册中心，避免被发现却连不上；失败要停掉 netty，
         // 否则非 daemon 的事件循环线程会让 JVM 挂着不退出
-        RegistryBundle registryBundle;
+        ServiceRegistry serviceRegistry;
         try {
-            registryBundle = startRegistry(configManager, port);
+            serviceRegistry = startRegistry(configManager, port);
         } catch (RuntimeException e) {
             nettyTcpServer.stop();
             throw e;
@@ -101,7 +102,7 @@ public class Game {
 
         // 停机是一个有顺序的序列，收敛到单一 hook，不拆成多个并行 hook（JVM 并行执行会乱序）
         Runtime.getRuntime().addShutdownHook(new Thread(
-                () -> shutdown(registryBundle, nettyTcpServer, jpaContext, configManager, applicationContext),
+                () -> shutdown(serviceRegistry, nettyTcpServer, jpaContext, configManager, applicationContext),
                 "game-shutdown"));
         logger.info("game server started, port={}", port);
     }
@@ -111,13 +112,13 @@ public class Game {
      * 停网络（关连接、不再收请求）→ 排空执行器组（在途业务写完缓存/发起落库）→
      * 关 jpa（刷异步写队列到库）→ 关配置管理器 → 关容器。
      */
-    private static void shutdown(RegistryBundle registryBundle, NettyTcpServer server, GameJpaContext jpaContext,
+    private static void shutdown(ServiceRegistry serviceRegistry, NettyTcpServer server, GameJpaContext jpaContext,
                                  GameConfigManager configManager,
                                  AnnotationConfigApplicationContext applicationContext) {
         logger.info("game server shutting down");
         try {
             // close 时 memory 实现按临时节点语义自动注销本进程注册的实例
-            registryBundle.close();
+            serviceRegistry.close();
         } catch (RuntimeException e) {
             logger.error("close registry failed", e);
         }
@@ -199,24 +200,24 @@ public class Game {
 
     /**
      * 创建注册中心并注册本服务实例。类型默认 memory（game-registry-memory 提供：进程内共享、
-     * 无外部依赖，endpoints 只当 namespace 用）；切 zookeeper/etcd/nacos/consul 时
-     * 配置 game.registry.type 并把 endpoints 换成真实地址即可。
+     * 无外部依赖，endpoints 只当 namespace 用）；切 Nacos 时把 type 配成 nacos，
+     * 并把 endpoints 换成 Nacos 服务地址即可。
      */
-    private static RegistryBundle startRegistry(GameConfigManager config, int port) {
+    private static ServiceRegistry startRegistry(GameConfigManager config, int port) {
         String type = cfg(config, "game.registry.type", "GAME_REGISTRY_TYPE", RegistryType.MEMORY.type());
         String endpoints = cfg(config, "game.registry.endpoints", "GAME_REGISTRY_ENDPOINTS", "local");
-        RegistryBundle bundle = GameRegistryStarter.builder()
+        ServiceRegistry registry = RegistryFactory.startRegistry(RegistryConfig.builder()
                 .type(type)
                 .endpoints(endpoints)
-                .start();
+                .build());
         ServiceInstance instance = ServiceInstance.builder()
                 .name(cfg(config, "game.service.name", "GAME_SERVICE_NAME", "game-dev"))
                 .address(cfg(config, "game.server.address", "GAME_SERVER_ADDRESS", "127.0.0.1"))
                 .port(port)
                 .build();
-        bundle.getRegistry().register(instance);
+        registry.register(instance);
         logger.info("registered to {} registry: {}", type, instance);
-        return bundle;
+        return registry;
     }
 
     /** 创建 MySQL 数据源：连接参数走配置管理器；密码无默认值，缺失即启动失败。 */

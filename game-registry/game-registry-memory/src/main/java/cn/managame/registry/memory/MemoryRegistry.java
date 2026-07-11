@@ -1,178 +1,197 @@
 package cn.managame.registry.memory;
 
-import cn.managame.registry.api.Discovery;
-import cn.managame.registry.api.Registry;
+import cn.managame.registry.api.DiscoveryEventType;
 import cn.managame.registry.api.ServiceInstance;
+import cn.managame.registry.api.ServiceInstanceEvent;
 import cn.managame.registry.api.ServiceInstanceListener;
-import cn.managame.registry.api.ServiceNameListener;
-import cn.managame.registry.exception.RegistryOperationException;
-import cn.managame.common.io.CloseChain;
-import cn.managame.registry.support.RegistryValidators;
-import cn.managame.registry.support.RegistryWatchHandles;
+import cn.managame.registry.api.ServiceRegistry;
 
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Pure in-memory {@link Registry} / {@link Discovery} backend. No network, no external process —
- * intended for unit / integration tests and local development where spinning up zookeeper/etcd/
- * nacos/consul is overkill.
- * <p>
- * Registries created with the same namespace (the {@code endpoints} field when built through the
- * provider) share one in-process store, so separately created bundles can discover each other
- * inside a single JVM. Instances registered through this registry behave like ephemeral
- * registrations: {@link #close()} automatically unregisters them, mirroring what happens when a
- * real backend's session/lease expires.
- * <p>
- * Watch events are dispatched synchronously on the mutating thread (see the threading contract on
- * {@link ServiceInstanceListener} / {@link ServiceNameListener}).
- */
-public class MemoryRegistry implements Registry, Discovery {
-    public static final String DEFAULT_NAMESPACE = "local";
+/** Process-local registry. Clients using the same endpoint string share one namespace. */
+public final class MemoryRegistry implements ServiceRegistry {
+    private static final Map<String, Store> STORES = new ConcurrentHashMap<>();
 
-    private final MemoryRegistryStore store;
-    private final ConcurrentMap<Long, AutoCloseable> watchHandles = new ConcurrentHashMap<>();
-    private final AtomicLong watchId = new AtomicLong(0);
-    /** name/key -> instance registered through this registry; unregistered on close. Guarded by {@code this}. */
-    private final Map<String, ServiceInstance> ownInstances = new LinkedHashMap<>();
-    private volatile boolean started;
-    private volatile boolean closed;
+    private final String owner = UUID.randomUUID().toString();
+    private final Store store;
+    private final Set<Watch> watches = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
-    public MemoryRegistry() {
-        this(DEFAULT_NAMESPACE);
-    }
-
-    public MemoryRegistry(String namespace) {
-        RegistryValidators.requireNonBlank(namespace, "namespace");
-        this.store = MemoryRegistryStore.namespace(namespace.trim());
-    }
-
-    /** Drops all data and watchers of one namespace. Test hygiene helper. */
-    public static void resetNamespace(String namespace) {
-        MemoryRegistryStore.reset(namespace);
-    }
-
-    /** Drops all namespaces. Test hygiene helper. */
-    public static void resetAllNamespaces() {
-        MemoryRegistryStore.resetAll();
-    }
-
-    public boolean isStarted() {
-        return started;
-    }
-
-    public boolean isClosed() {
-        return closed;
-    }
-
-    public int getActiveWatchCount() {
-        return watchHandles.size();
+    MemoryRegistry(String namespace) {
+        store = STORES.computeIfAbsent(namespace, ignored -> new Store());
     }
 
     @Override
-    public synchronized void start() {
-        if (closed) {
-            throw new RegistryOperationException("Memory registry has been closed");
+    public void register(ServiceInstance instance) {
+        requireOpen();
+        Objects.requireNonNull(instance, "instance");
+        ServiceInstanceEvent event;
+        List<Watch> listeners;
+        synchronized (store) {
+            Map<String, Entry> service = store.services.computeIfAbsent(instance.getName(), ignored -> new LinkedHashMap<>());
+            Entry previous = service.put(instance.getKey(), new Entry(owner, instance));
+            if (previous != null && previous.instance.equals(instance)) return;
+            event = new ServiceInstanceEvent(previous == null ? DiscoveryEventType.ADDED : DiscoveryEventType.UPDATED, instance);
+            listeners = store.listeners(instance.getName());
         }
-        started = true;
+        notifyListeners(listeners, event);
     }
 
     @Override
-    public synchronized void close() {
-        if (closed) {
-            return;
-        }
-        closed = true;
-        started = false;
-        CloseChain chain = new CloseChain(RegistryOperationException::new);
-        for (ServiceInstance instance : new ArrayList<>(ownInstances.values())) {
-            chain.step("Failed to unregister memory registry instance on close",
-                    () -> store.unregister(instance));
-        }
-        ownInstances.clear();
-        for (AutoCloseable closeable : new ArrayList<>(watchHandles.values())) {
-            chain.step("Failed to close memory registry watch", closeable::close);
-        }
-        watchHandles.clear();
-        chain.throwIfFailed();
+    public void deregister(ServiceInstance instance) {
+        requireOpen();
+        Objects.requireNonNull(instance, "instance");
+        removeOwned(instance.getName(), instance.getKey());
     }
 
     @Override
-    public void register(ServiceInstance serviceInstance) {
-        assertStarted();
-        RegistryValidators.validateInstance(serviceInstance);
-        ServiceInstance copy = serviceInstance.copy();
-        synchronized (this) {
-            store.register(copy);
-            ownInstances.put(ownKey(copy), copy);
+    public List<ServiceInstance> getInstances(String serviceName) {
+        requireOpen();
+        requireServiceName(serviceName);
+        synchronized (store) {
+            Map<String, Entry> service = store.services.get(serviceName);
+            if (service == null) return List.of();
+            return service.values().stream().map(Entry::instance).toList();
         }
-    }
-
-    @Override
-    public void unregister(ServiceInstance serviceInstance) {
-        assertStarted();
-        RegistryValidators.validateInstance(serviceInstance);
-        synchronized (this) {
-            store.unregister(serviceInstance);
-            ownInstances.remove(ownKey(serviceInstance));
-        }
-    }
-
-    @Override
-    public Collection<ServiceInstance> getInstances(String serviceName) {
-        assertStarted();
-        RegistryValidators.validateServiceName(serviceName);
-        return store.getInstances(serviceName);
-    }
-
-    @Override
-    public Collection<String> getServiceNames() {
-        assertStarted();
-        return store.getServiceNames();
     }
 
     @Override
     public AutoCloseable watchService(String serviceName, ServiceInstanceListener listener) {
-        assertStarted();
-        RegistryValidators.validateServiceName(serviceName);
-        RegistryValidators.validateListener(listener);
-        return registerWatchHandle(store.watchInstances(serviceName, listener));
+        requireOpen();
+        requireServiceName(serviceName);
+        Objects.requireNonNull(listener, "listener");
+        Watch watch = new Watch(serviceName, listener);
+        List<ServiceInstance> initial;
+        synchronized (store) {
+            store.watches.computeIfAbsent(serviceName, ignored -> new ArrayList<>()).add(watch);
+            Map<String, Entry> service = store.services.get(serviceName);
+            initial = service == null ? List.of() : service.values().stream().map(Entry::instance).toList();
+        }
+        watches.add(watch);
+        try {
+            watch.initialize(initial);
+            return watch;
+        } catch (RuntimeException e) {
+            watch.close();
+            throw e;
+        }
     }
 
     @Override
-    public AutoCloseable watchServiceNames(ServiceNameListener listener) {
-        assertStarted();
-        RegistryValidators.validateListener(listener);
-        return registerWatchHandle(store.watchNames(listener));
-    }
-
-    private AutoCloseable registerWatchHandle(AutoCloseable closeable) {
-        return RegistryWatchHandles.register(
-                watchHandles,
-                watchId,
-                this,
-                () -> closed,
-                closeable,
-                "Memory registry has been closed",
-                "Failed to close memory registry watch after registry closed");
-    }
-
-    private void assertStarted() {
-        if (closed) {
-            throw new RegistryOperationException("Memory registry has been closed");
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        List.copyOf(watches).forEach(Watch::close);
+        List<ServiceInstance> removed = new ArrayList<>();
+        Map<String, List<Watch>> listenersByService = new HashMap<>();
+        synchronized (store) {
+            store.services.forEach((name, instances) -> {
+                instances.values().removeIf(entry -> {
+                    if (!entry.owner.equals(owner)) return false;
+                    removed.add(entry.instance);
+                    return true;
+                });
+                listenersByService.put(name, store.listeners(name));
+            });
+            store.services.values().removeIf(Map::isEmpty);
         }
-        if (!started) {
-            throw new RegistryOperationException("Memory registry has not been started");
+        removed.forEach(instance -> notifyListeners(listenersByService.get(instance.getName()),
+                new ServiceInstanceEvent(DiscoveryEventType.REMOVED, instance)));
+    }
+
+    private void removeOwned(String serviceName, String key) {
+        ServiceInstance removed = null;
+        List<Watch> listeners = List.of();
+        synchronized (store) {
+            Map<String, Entry> service = store.services.get(serviceName);
+            if (service != null) {
+                Entry entry = service.get(key);
+                if (entry != null && entry.owner.equals(owner)) {
+                    removed = service.remove(key).instance;
+                    if (service.isEmpty()) store.services.remove(serviceName);
+                    listeners = store.listeners(serviceName);
+                }
+            }
+        }
+        if (removed != null) notifyListeners(listeners,
+                new ServiceInstanceEvent(DiscoveryEventType.REMOVED, removed));
+    }
+
+    private static void notifyListeners(List<Watch> listeners, ServiceInstanceEvent event) {
+        if (listeners == null) return;
+        for (Watch watch : listeners) watch.accept(event);
+    }
+
+    private void requireOpen() {
+        if (closed.get()) throw new IllegalStateException("registry is closed");
+    }
+
+    private static void requireServiceName(String value) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("service name must not be blank");
+    }
+
+    private record Entry(String owner, ServiceInstance instance) {
+    }
+
+    private static final class Store {
+        private final Map<String, Map<String, Entry>> services = new HashMap<>();
+        private final Map<String, List<Watch>> watches = new HashMap<>();
+
+        private List<Watch> listeners(String serviceName) {
+            List<Watch> listeners = watches.get(serviceName);
+            return listeners == null ? List.of() : List.copyOf(listeners);
         }
     }
 
-    /** serviceName cannot contain '/', so the pair is unambiguous. */
-    private static String ownKey(ServiceInstance instance) {
-        return instance.getName() + "/" + instance.getKey();
+    private final class Watch implements AutoCloseable {
+        private final String serviceName;
+        private final ServiceInstanceListener listener;
+        private final AtomicBoolean active = new AtomicBoolean(true);
+        private final List<ServiceInstanceEvent> pending = new ArrayList<>();
+        private boolean initialized;
+
+        private Watch(String serviceName, ServiceInstanceListener listener) {
+            this.serviceName = serviceName;
+            this.listener = listener;
+        }
+
+        private synchronized void initialize(List<ServiceInstance> initial) {
+            if (!active.get()) return;
+            initial.forEach(instance -> listener.onEvent(
+                    new ServiceInstanceEvent(DiscoveryEventType.ADDED, instance)));
+            pending.forEach(listener::onEvent);
+            pending.clear();
+            initialized = true;
+        }
+
+        private synchronized void accept(ServiceInstanceEvent event) {
+            if (!active.get()) return;
+            if (!initialized) {
+                pending.add(event);
+                return;
+            }
+            listener.onEvent(event);
+        }
+
+        @Override
+        public void close() {
+            if (!active.compareAndSet(true, false)) return;
+            synchronized (store) {
+                List<Watch> serviceWatches = store.watches.get(serviceName);
+                if (serviceWatches != null) {
+                    serviceWatches.remove(this);
+                    if (serviceWatches.isEmpty()) store.watches.remove(serviceName);
+                }
+            }
+            watches.remove(this);
+        }
     }
 }

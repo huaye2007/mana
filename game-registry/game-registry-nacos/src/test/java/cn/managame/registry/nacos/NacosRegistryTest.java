@@ -2,191 +2,73 @@ package cn.managame.registry.nacos;
 
 import cn.managame.registry.api.DiscoveryEventType;
 import cn.managame.registry.api.ServiceInstance;
+import cn.managame.registry.api.ServiceInstanceEvent;
+import com.alibaba.nacos.api.naming.NamingService;
+import com.alibaba.nacos.api.naming.listener.EventListener;
+import com.alibaba.nacos.api.naming.listener.NamingEvent;
+import com.alibaba.nacos.api.naming.pojo.Instance;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.mockito.ArgumentCaptor;
 
-import java.util.Collection;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
-import java.util.Properties;
-import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-@EnabledIfSystemProperty(named = "game.registry.integration.nacos", matches = "true")
 class NacosRegistryTest {
-    private static final String DEFAULT_ENDPOINTS = "127.0.0.1:8848";
-    private static final String DEFAULT_GROUP = "DEFAULT_GROUP";
-    private static final String DEFAULT_CLUSTER = "DEFAULT";
-
     @Test
-    void testRegistryLifecycle() {
-        String endpoints = System.getProperty("game.registry.integration.nacos.endpoints", DEFAULT_ENDPOINTS);
-        String group = System.getProperty("game.registry.integration.nacos.group", DEFAULT_GROUP);
-        String cluster = System.getProperty("game.registry.integration.nacos.cluster", DEFAULT_CLUSTER);
-        Properties properties = new Properties();
-        properties.setProperty(NacosRegistry.META_GROUP, group);
-        properties.setProperty(NacosRegistry.META_CLUSTER, cluster);
-        NacosRegistry registry = new NacosRegistry(endpoints, properties);
-        registry.start();
+    void mapsRegistrationAndCleansItUpOnClose() throws Exception {
+        NamingService naming = mock(NamingService.class);
+        NacosRegistry registry = new NacosRegistry(naming, "games");
+        ServiceInstance service = service("node-1", 9001);
 
-        String serviceName = "nacos-test-service-" + UUID.randomUUID();
-        ServiceInstance instance = new ServiceInstance();
-        instance.setName(serviceName);
-        instance.setId("nacos-1");
-        instance.setAddress("127.0.0.1");
-        instance.setPort(8080);
-        instance.setMetadata(Map.of(
-                NacosRegistry.META_GROUP, group,
-                NacosRegistry.META_CLUSTER, cluster
-        ));
+        registry.register(service);
+        ArgumentCaptor<Instance> registered = ArgumentCaptor.forClass(Instance.class);
+        verify(naming).registerInstance(eq("game"), eq("games"), registered.capture());
+        assertEquals("node-1", registered.getValue().getMetadata().get(NacosRegistry.ID_METADATA));
 
-        try {
-            registry.register(instance);
-            try {
-                Collection<ServiceInstance> instances = registry.getInstances(serviceName);
-                assertEquals(1, instances.size());
-                assertEquals("nacos-1", instances.iterator().next().getId());
-            } finally {
-                unregisterQuietly(registry, instance);
-            }
-
-            Collection<ServiceInstance> afterUnregister = registry.getInstances(serviceName);
-            assertTrue(afterUnregister.isEmpty());
-        } finally {
-            registry.close();
-        }
+        registry.close();
+        verify(naming).deregisterInstance(eq("game"), eq("games"), any(Instance.class));
+        verify(naming).shutDown();
     }
 
     @Test
-    void serviceInstanceWatchObservesAddAndRemoveWithRealNacos() throws Exception {
-        Properties properties = nacosProperties();
-        String endpoints = System.getProperty("game.registry.integration.nacos.endpoints", DEFAULT_ENDPOINTS);
-        String group = properties.getProperty(NacosRegistry.META_GROUP);
-        String cluster = properties.getProperty(NacosRegistry.META_CLUSTER);
-        NacosRegistry registry = new NacosRegistry(endpoints, properties);
+    void watchEmitsInitialSnapshotAndDiffsNacosSnapshots() throws Exception {
+        NamingService naming = mock(NamingService.class);
+        Instance first = NacosRegistry.toNacos(service("node-1", 9001));
+        when(naming.getAllInstances("game", "games")).thenReturn(List.of(first));
+        NacosRegistry registry = new NacosRegistry(naming, "games");
+        List<ServiceInstanceEvent> events = new ArrayList<>();
 
-        String serviceName = "nacos-instance-watch-test-" + UUID.randomUUID();
-        ServiceInstance instance = new ServiceInstance();
-        instance.setName(serviceName);
-        instance.setId("nacos-watch-1");
-        instance.setAddress("127.0.0.1");
-        instance.setPort(8082);
-        instance.setMetadata(Map.of(
-                NacosRegistry.META_GROUP, group,
-                NacosRegistry.META_CLUSTER, cluster
-        ));
+        AutoCloseable handle = registry.watchService("game", events::add);
+        ArgumentCaptor<EventListener> listener = ArgumentCaptor.forClass(EventListener.class);
+        verify(naming).subscribe(eq("game"), eq("games"), listener.capture());
+        Instance updated = NacosRegistry.toNacos(service("node-1", 9002));
+        listener.getValue().onEvent(new NamingEvent("game", List.of(updated)));
+        listener.getValue().onEvent(new NamingEvent("game", List.of()));
+        handle.close();
 
-        registry.start();
-        try {
-            CountDownLatch added = new CountDownLatch(1);
-            CountDownLatch removed = new CountDownLatch(1);
-            AutoCloseable handle = registry.watchService(serviceName, event -> {
-                if (!instance.getId().equals(event.getInstance().getId())) {
-                    return;
-                }
-                if (event.getType() == DiscoveryEventType.ADDED) {
-                    added.countDown();
-                } else if (event.getType() == DiscoveryEventType.REMOVED) {
-                    removed.countDown();
-                }
-            });
-            try {
-                registry.register(instance);
-                assertTrue(added.await(10, TimeUnit.SECONDS));
-                registry.unregister(instance);
-                assertTrue(removed.await(10, TimeUnit.SECONDS));
-            } finally {
-                handle.close();
-            }
-        } finally {
-            unregisterQuietly(registry, instance);
-            registry.close();
-        }
+        assertEquals(List.of(DiscoveryEventType.ADDED, DiscoveryEventType.UPDATED, DiscoveryEventType.REMOVED),
+                events.stream().map(ServiceInstanceEvent::getType).toList());
+        verify(naming).unsubscribe("game", "games", listener.getValue());
     }
 
     @Test
-    void serviceNameWatchObservesAddAndRemoveWithRealNacos() throws Exception {
-        Properties properties = nacosProperties();
-        properties.setProperty(NacosRegistry.PROP_SERVICE_NAME_WATCH_INTERVAL_MILLIS, "100");
-
-        assertServiceNameWatchObservesAddAndRemove(properties);
+    void roundTripsMetadataAndIdentity() {
+        ServiceInstance original = ServiceInstance.builder().name("game").id("node-1")
+                .address("10.0.0.1").port(9001).weight(2.5).healthy(false)
+                .metadata(Map.of("zone", "east")).build();
+        ServiceInstance restored = NacosRegistry.fromNacos("game", NacosRegistry.toNacos(original));
+        assertEquals(original, restored);
     }
 
-    private void assertServiceNameWatchObservesAddAndRemove(Properties properties) throws Exception {
-        String endpoints = System.getProperty("game.registry.integration.nacos.endpoints", DEFAULT_ENDPOINTS);
-        String group = properties.getProperty(NacosRegistry.META_GROUP);
-        String cluster = properties.getProperty(NacosRegistry.META_CLUSTER);
-        NacosRegistry registry = new NacosRegistry(endpoints, properties);
-
-        String serviceName = "nacos-name-watch-test-" + UUID.randomUUID();
-        ServiceInstance instance = new ServiceInstance();
-        instance.setName(serviceName);
-        instance.setId("nacos-name-1");
-        instance.setAddress("127.0.0.1");
-        instance.setPort(8081);
-        instance.setMetadata(Map.of(
-                NacosRegistry.META_GROUP, group,
-                NacosRegistry.META_CLUSTER, cluster
-        ));
-
-        registry.start();
-        try {
-            assertTrue(awaitUntil(() -> !registry.getServiceNames().contains(serviceName)));
-
-            CountDownLatch added = new CountDownLatch(1);
-            CountDownLatch removed = new CountDownLatch(1);
-            AutoCloseable handle = registry.watchServiceNames(event -> {
-                if (!serviceName.equals(event.getServiceName())) {
-                    return;
-                }
-                if (event.getType() == DiscoveryEventType.ADDED) {
-                    added.countDown();
-                } else if (event.getType() == DiscoveryEventType.REMOVED) {
-                    removed.countDown();
-                }
-            });
-            try {
-                registry.register(instance);
-                assertTrue(added.await(10, TimeUnit.SECONDS));
-                registry.unregister(instance);
-                assertTrue(removed.await(10, TimeUnit.SECONDS));
-            } finally {
-                handle.close();
-            }
-        } finally {
-            unregisterQuietly(registry, instance);
-            registry.close();
-        }
-    }
-
-    private Properties nacosProperties() {
-        String group = System.getProperty("game.registry.integration.nacos.group", DEFAULT_GROUP);
-        String cluster = System.getProperty("game.registry.integration.nacos.cluster", DEFAULT_CLUSTER);
-        Properties properties = new Properties();
-        properties.setProperty(NacosRegistry.META_GROUP, group);
-        properties.setProperty(NacosRegistry.META_CLUSTER, cluster);
-        return properties;
-    }
-
-    private void unregisterQuietly(NacosRegistry registry, ServiceInstance instance) {
-        try {
-            registry.unregister(instance);
-        } catch (RuntimeException ignored) {
-        }
-    }
-
-    private boolean awaitUntil(BooleanSupplier condition) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 10_000L;
-        while (System.currentTimeMillis() < deadline) {
-            if (condition.getAsBoolean()) {
-                return true;
-            }
-            TimeUnit.MILLISECONDS.sleep(100L);
-        }
-        return condition.getAsBoolean();
+    private static ServiceInstance service(String id, int port) {
+        return ServiceInstance.builder().name("game").id(id).address("127.0.0.1").port(port).build();
     }
 }

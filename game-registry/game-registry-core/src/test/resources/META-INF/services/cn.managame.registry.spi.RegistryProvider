@@ -1,4 +1,0 @@
-cn.managame.registry.factory.CustomRegistryProvider
-cn.managame.registry.factory.NullBundleRegistryProvider
-cn.managame.registry.factory.ThrowingRegistryProvider
-cn.managame.registry.factory.MissingRegistryProvider

@@ -1,8 +1,6 @@
 package cn.managame.registry.exception;
 
-import cn.managame.common.exception.GameException;
-
-public class RegistryException extends GameException {
+public class RegistryException extends RuntimeException {
     public RegistryException(String message) {
         super(message);
     }

@@ -19,8 +19,9 @@ import cn.managame.gateway.rpc.GatewayRpcMessageHandler;
 import cn.managame.gateway.rpc.PacketForwarder;
 import cn.managame.gateway.session.GatewaySessionManager;
 import cn.managame.registry.api.ServiceInstance;
-import cn.managame.registry.factory.RegistryBundle;
-import cn.managame.registry.starter.GameRegistryStarter;
+import cn.managame.registry.api.ServiceRegistry;
+import cn.managame.registry.factory.RegistryConfig;
+import cn.managame.registry.factory.RegistryFactory;
 import cn.managame.rpc.RpcClientConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -81,11 +82,11 @@ public final class Gateway {
                         config.getServerId(), bodyCodec, networkHandler)
                 : null;
 
-        RegistryBundle registryBundle = GameRegistryStarter.builder()
+        ServiceRegistry serviceRegistry = RegistryFactory.startRegistry(RegistryConfig.builder()
                 .type(config.getRegistryType())
                 .endpoints(config.getRegistryEndpoints())
-                .start();
-        BackendDiscovery backendDiscovery = new BackendDiscovery(registryBundle.getDiscovery(),
+                .build());
+        BackendDiscovery backendDiscovery = new BackendDiscovery(serviceRegistry,
                 config.getBackendService(), rpcClient, routerManager);
 
         // 端口就绪 → watch 后端建连接池 → 最后注册自身（先能收发再对外可见）
@@ -95,29 +96,29 @@ public final class Gateway {
                 wsServer.start();
             }
             backendDiscovery.start();
-            registerSelf(registryBundle, config, gatewayId);
+            registerSelf(serviceRegistry, config, gatewayId);
         } catch (RuntimeException e) {
             logger.error("gateway start failed, rolling back", e);
-            safeClose(backendDiscovery, registryBundle, tcpServer, wsServer, rpcClient, configManager);
+            safeClose(backendDiscovery, serviceRegistry, tcpServer, wsServer, rpcClient, configManager);
             throw e;
         }
 
         Runtime.getRuntime().addShutdownHook(new Thread(
-                () -> shutdown(backendDiscovery, registryBundle, tcpServer, wsServer, rpcClient, configManager),
+                () -> shutdown(backendDiscovery, serviceRegistry, tcpServer, wsServer, rpcClient, configManager),
                 "gateway-shutdown"));
         logger.info("gateway started, tcp={}, ws={}, backend='{}', registry={}",
                 config.getTcpPort(), config.isWebSocketEnabled() ? config.getWsPort() : "off",
                 config.getBackendService(), config.getRegistryType());
     }
 
-    private static void registerSelf(RegistryBundle bundle, GatewayConfig config, String gatewayId) {
+    private static void registerSelf(ServiceRegistry registry, GatewayConfig config, String gatewayId) {
         ServiceInstance instance = ServiceInstance.builder()
                 .name(config.getServiceName())
                 .id(gatewayId)
                 .address(config.getAdvertiseAddress())
                 .port(config.getTcpPort())
                 .build();
-        bundle.getRegistry().register(instance);
+        registry.register(instance);
         logger.info("registered gateway instance {}", instance);
     }
 
@@ -125,19 +126,19 @@ public final class Gateway {
      * 停机序列：先停后端发现（不再响应后端变更）→ 关注册中心（注销自身、停 watch）→
      * 停外网服务端（关客户端连接）→ 关内网 RPC 客户端（排空在途、关后端连接）→ 关配置。
      */
-    private static void shutdown(BackendDiscovery backendDiscovery, RegistryBundle registryBundle,
+    private static void shutdown(BackendDiscovery backendDiscovery, ServiceRegistry serviceRegistry,
                                  GatewayTcpServer tcpServer, GatewayWebSocketServer wsServer,
                                  GatewayRpcClient rpcClient, GameConfigManager configManager) {
         logger.info("gateway shutting down");
-        safeClose(backendDiscovery, registryBundle, tcpServer, wsServer, rpcClient, configManager);
+        safeClose(backendDiscovery, serviceRegistry, tcpServer, wsServer, rpcClient, configManager);
         logger.info("gateway shutdown complete");
     }
 
-    private static void safeClose(BackendDiscovery backendDiscovery, RegistryBundle registryBundle,
+    private static void safeClose(BackendDiscovery backendDiscovery, ServiceRegistry serviceRegistry,
                                   GatewayTcpServer tcpServer, GatewayWebSocketServer wsServer,
                                   GatewayRpcClient rpcClient, GameConfigManager configManager) {
         step("close backend discovery", backendDiscovery::close);
-        step("close registry", registryBundle::close);
+        step("close registry", serviceRegistry::close);
         step("stop tcp server", tcpServer::stop);
         if (wsServer != null) {
             step("stop ws server", wsServer::stop);

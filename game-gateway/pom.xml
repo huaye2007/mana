@@ -43,15 +43,20 @@
             <groupId>cn.managame</groupId>
             <artifactId>game-config-starter</artifactId>
         </dependency>
-        <!-- 服务发现：按类型创建 RegistryBundle，watch 游戏服上下线 -->
+        <!-- 服务注册与发现 API -->
         <dependency>
             <groupId>cn.managame</groupId>
-            <artifactId>game-registry-starter</artifactId>
+            <artifactId>game-registry-core</artifactId>
         </dependency>
         <!-- memory 注册中心 provider（SPI 运行期发现），本地开发与测试用 -->
         <dependency>
             <groupId>cn.managame</groupId>
             <artifactId>game-registry-memory</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>cn.managame</groupId>
+            <artifactId>game-registry-nacos</artifactId>
             <scope>runtime</scope>
         </dependency>
         <dependency>

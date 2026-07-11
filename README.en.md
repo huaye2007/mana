@@ -24,7 +24,7 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-network` | Network foundation (core + Netty): TCP/WebSocket/HTTP transport, connection and session lifecycle, transport pipeline; delivers decoded messages to `INetworkHandler` (HTTP goes through `IHttpHandler`). Zero dependencies; no protocol routing or command dispatch (see [game-network/README.en.md](game-network/README.en.md)) |
 | `game-rpc` | Internal RPC: protocol codec, handshake/heartbeat/reconnect, oneway/future/callback invocation, backpressure and in-flight limit protection, per-service broadcast (see [game-rpc/README.en.md](game-rpc/README.en.md)) |
 | `game-serialization` | Serialization facade unifying JSON, Protobuf and Apache Fory (see [game-serialization/README.en.md](game-serialization/README.en.md)) |
-| `game-registry` | Registry/discovery abstraction (`Registry` / `Discovery`), backed by ZooKeeper, Etcd, Nacos, Consul via SPI (see [game-registry/README.en.md](game-registry/README.en.md)) |
+| `game-registry` | Unified service registry/discovery API with memory and Nacos SPI providers (see [game-registry/README.en.md](game-registry/README.en.md)) |
 | `game-config` | Multi-source configuration loading (local file/classpath/command line/JVM/env vars/defaults/remote) with type-safe snapshots, change listeners and hot reload (see [game-config/README.en.md](game-config/README.en.md)) |
 | `game-runtime` | Unified runtime: commands/events/timers/callbacks converge into tasks, hashed by routerKey to a fixed worker in the group for serial execution (see [game-runtime/README.en.md](game-runtime/README.en.md)) |
 | `game-jpa` | Lightweight persistence framework with RDB, DocDB, caching, async batched writes, sharding, starter and demo (see [game-jpa/README.en.md](game-jpa/README.en.md)) |
@@ -48,7 +48,7 @@ JPA module only:
 mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 ```
 
-Registry integration tests: ZooKeeper uses an embedded curator-test server and is self-contained — it runs in the default build; Etcd / Nacos / Consul require the corresponding real services running locally and are off by default — enable them with the profiles in the `game-registry` POM (`registry-it-etcd`, `registry-it-nacos`, `registry-it-consul`, or `registry-it-all` for everything at once). The MySQL / MongoDB persistence integration tests use the `game-jpa` `integration-tests` profile (Testcontainers-based, requires Docker).
+The default registry tests cover memory behavior and the Nacos adapter with a mocked client; they do not connect to an external Nacos server. The MySQL / MongoDB persistence integration tests use the `game-jpa` `integration-tests` profile (Testcontainers-based, requires Docker).
 
 ## Dependency Notes
 
@@ -67,7 +67,7 @@ Registry integration tests: ZooKeeper uses an embedded curator-test server and i
 - Runtime (no unified assembly facade — use each component's singleton as needed): command registration `cn.managame.runtime.command.CommandRegistry` (dispatch bridged by the host: build `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`), events `cn.managame.runtime.event.EventBus`, timers `cn.managame.runtime.timer.TimingWheel` / `CronTask`, executor group registration `cn.managame.runtime.executor.ExecutorGroupRegistry`
 - Network: `cn.managame.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer` (implementing `INetworkServer`); the business side implements `INetworkHandler` / `IHttpHandler`
 - RPC: `cn.managame.rpc.RpcClient`, `cn.managame.rpc.RpcServer`
-- Registry: `cn.managame.registry.api.Registry` / `cn.managame.registry.api.Discovery`, factory `cn.managame.registry.factory.RegistryFactory`, starter `cn.managame.registry.starter.GameRegistryStarter`
+- Registry: `cn.managame.registry.api.ServiceRegistry`, factory `cn.managame.registry.factory.RegistryFactory`
 - Config: `cn.managame.config.manager.GameConfigManager`, factory `cn.managame.config.factory.GameConfigFactory`
 - Serialization: `cn.managame.serialization.SerializerManager`
 - JPA starter: `cn.managame.jpa.starter.GameJpaBootstrap`

@@ -3,38 +3,17 @@ package cn.managame.registry.factory;
 import java.util.Locale;
 
 public enum RegistryType {
-    ZOOKEEPER("zookeeper"),
-    ETCD("etcd"),
-    NACOS("nacos"),
-    CONSUL("consul"),
-    /** 进程内纯内存实现（game-registry-memory），无外部依赖，面向测试与本地开发。 */
-    MEMORY("memory");
-
-    private final String type;
-
-    RegistryType(String type) {
-        this.type = type;
-    }
+    MEMORY,
+    NACOS;
 
     public String type() {
-        return type;
+        return name().toLowerCase(Locale.ROOT);
     }
 
-    public static RegistryType fromType(String type) {
-        if (type == null) {
-            return null;
+    public static RegistryType from(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("registry type must not be blank");
         }
-        String normalized = type.trim().toLowerCase(Locale.ROOT);
-        for (RegistryType registryType : values()) {
-            if (registryType.type.equals(normalized)) {
-                return registryType;
-            }
-        }
-        return null;
-    }
-
-    @Override
-    public String toString() {
-        return type;
+        return valueOf(value.trim().toUpperCase(Locale.ROOT));
     }
 }
