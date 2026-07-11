@@ -17,5 +17,6 @@
         <module>game-registry-core</module>
         <module>game-registry-memory</module>
         <module>game-registry-nacos</module>
+        <module>game-registry-etcd</module>
     </modules>
 </project>

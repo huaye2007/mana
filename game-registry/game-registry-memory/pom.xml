@@ -13,6 +13,7 @@
         <dependency>
             <groupId>cn.managame</groupId>
             <artifactId>game-registry-core</artifactId>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

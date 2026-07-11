@@ -4,7 +4,8 @@ import java.util.Locale;
 
 public enum RegistryType {
     MEMORY,
-    NACOS;
+    NACOS,
+    ETCD;
 
     public String type() {
         return name().toLowerCase(Locale.ROOT);

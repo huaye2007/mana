@@ -2,13 +2,14 @@
 
 # game-registry
 
-`game-registry` provides a small, unified service registration and discovery API. It currently supports memory and Nacos.
+`game-registry` provides a small, unified service registration and discovery API. It currently supports memory, Nacos, and Etcd.
 
 ## Modules
 
 - `game-registry-core`: the `ServiceRegistry` API, immutable service instance model, and SPI factory.
 - `game-registry-memory`: a same-JVM registry shared and isolated by `endpoints`, intended for development and tests.
 - `game-registry-nacos`: ephemeral instance registration, lookup, and subscriptions backed by Nacos Naming Service.
+- `game-registry-etcd`: an Etcd provider backed by leases and prefix watches.
 
 ## Usage
 
@@ -47,3 +48,5 @@ AutoCloseable watch = registry.watchService("game-server", event -> {
 A watch synchronously emits the current instances as `ADDED` events, followed by incremental events. Closing a registry stops its watches and deregisters instances owned by that client.
 
 For Nacos, use `.type("nacos")` and the Nacos server address as `endpoints`. Nacos client properties can be passed through `RegistryConfig.properties(...)`; `group` selects the service group and defaults to `DEFAULT_GROUP`.
+
+For Etcd, use `.type("etcd")`; `endpoints` accepts a comma-separated list. Optional properties are `prefix` (default `/mana/services`), `leaseTtlSeconds` (default 10), `username`, and `password`. Registered instances are attached to the client lease, which is revoked when the registry closes.

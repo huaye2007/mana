@@ -8,7 +8,10 @@
         <artifactId>game-registry</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
-    <artifactId>game-registry-nacos</artifactId>
+    <artifactId>game-registry-etcd</artifactId>
+    <properties>
+        <surefire.argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true -Dnet.bytebuddy.experimental=true</surefire.argLine>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>cn.managame</groupId>
@@ -16,8 +19,8 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.alibaba.nacos</groupId>
-            <artifactId>nacos-client</artifactId>
+            <groupId>io.etcd</groupId>
+            <artifactId>jetcd-core</artifactId>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
