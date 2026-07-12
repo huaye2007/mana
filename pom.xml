@@ -11,7 +11,7 @@
 
     <name>mana</name>
     <description>Java game server framework components: networking, internal RPC, serialization,
-        service registry, configuration, runtime task scheduling and JPA-style persistence.</description>
+        service registry, configuration, runtime task scheduling, ECS simulation and JPA-style persistence.</description>
     <url>https://github.com/huaye2007/mana</url>
 
     <licenses>
@@ -47,6 +47,7 @@
 
         <module>game-jpa</module>
         <module>game-runtime</module>
+        <module>game-ecs</module>
         <module>game-gateway</module>
         <module>game-dev</module>
     </modules>
@@ -98,6 +99,16 @@
             <dependency>
                 <groupId>cn.managame</groupId>
                 <artifactId>game-runtime</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-ecs-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-ecs-runtime</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

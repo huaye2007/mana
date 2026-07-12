@@ -35,7 +35,12 @@ public final class ProtobufSerializer implements ISerializer {
             throw new IllegalArgumentException("Protobuf serializer requires a MessageLite value: "
                 + value.getClass().getName());
         }
-        return message.toByteArray();
+        try {
+            return message.toByteArray();
+        } catch (RuntimeException e) {
+            throw new SerializationException("Failed to serialize Protobuf value of type "
+                + value.getClass().getName(), e);
+        }
     }
 
     @Override

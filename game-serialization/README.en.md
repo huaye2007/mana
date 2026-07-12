@@ -19,16 +19,27 @@ singleton wired into the network/RPC stacks):
 ```java
 SerializerManager serializers = SerializerManager.getInstance();
 
-ISerializer json = serializers.getISerializer(SerializationType.JSON.typeId());
+ISerializer json = serializers.requireSerializer(SerializationType.JSON);
 byte[] jsonBytes = json.serialize(playerState);
 PlayerState fromJson = json.deserialize(jsonBytes, PlayerState.class);
 
-ISerializer protobuf = serializers.getISerializer(SerializationType.PROTOBUF.typeId());
+ISerializer protobuf = serializers.requireSerializer(SerializationType.PROTOBUF);
 byte[] protoBytes = protobuf.serialize(loginRequest);          // value must be a protobuf MessageLite
 LoginRequest fromProto = protobuf.deserialize(protoBytes, LoginRequest.class);
 ```
 
-`getISerializer` returns `null` for an unknown `serialType` — callers must null-check.
+`requireSerializer` fails fast when a format is missing and is the preferred business-code API.
+Network decoders that need to handle unknown wire ids explicitly can keep using the compatible
+`getISerializer(byte)` method, which returns `null` for unknown ids.
+
+Tests and hosts that need an isolated registry can use `SerializerManager.createDefault()` to get
+an independent set of built-in serializers without mutating the process-wide singleton.
+Registration and lookup are safe to call concurrently.
+
+Generic JSON payloads can use `TypeReference` or `JavaType` for both serialization and
+deserialization. The default mapper rejects extra tokens after a valid JSON value instead of
+silently accepting a dirty frame. Configure a custom `ObjectMapper` completely before its first
+read or write, and do not mutate it afterward.
 
 ### Apache Fory
 
@@ -56,6 +67,7 @@ if (serializers.getISerializer(SerializationType.FORY.typeId()) instanceof ForyS
 ## Performance Notes
 
 - Reuse serializer instances. Creating Jackson mappers or Fory runtimes per request will dominate latency.
+- When the destination is a stream or network buffer, use `serialize(value, outputStream)`; Jackson and Protobuf write directly and avoid an intermediate array copy.
 - Prefer Protobuf for schema-first cross-service contracts and compact stable wire payloads.
 - Prefer Fory for JVM-to-JVM game state snapshots, cache values, and internal messages where Java-native object graphs matter.
 - Register frequently used Fory classes with stable IDs for smaller payloads and faster dispatch.

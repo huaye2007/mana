@@ -3,6 +3,7 @@ package cn.managame.serialization.fory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import cn.managame.serialization.SerializationException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -30,7 +31,7 @@ class ForySerializerTest {
         ForySerializer serializer = ForySerializer.create();
         PlayerState state = new PlayerState(1L, "rogue", 1, new ArrayList<>());
 
-        assertThrows(RuntimeException.class, () -> serializer.serialize(state));
+        assertThrows(SerializationException.class, () -> serializer.serialize(state));
     }
 
     @Test

@@ -1,11 +1,11 @@
 package cn.managame.serialization;
 
+/** Serialization formats and their stable ids on the wire. */
 public enum SerializationType {
     JSON((byte) 1),
     PROTOBUF((byte) 2),
     FORY((byte) 3);
 
-    /** 按 typeId 直接索引的查找表，避免每帧解码都 values() 克隆数组 + 线性扫描（热路径）。 */
     private static final SerializationType[] BY_ID = buildLookup();
 
     private final byte typeId;
@@ -18,30 +18,34 @@ public enum SerializationType {
         return typeId;
     }
 
-    /** 未知 typeId 返回 {@code null}。O(1) 查表。 */
-    public static SerializationType getSerializationType(byte type) {
-        return type >= 0 && type < BY_ID.length ? BY_ID[type] : null;
+    /** Returns the matching wire type, or {@code null} when the id is unknown. */
+    public static SerializationType getSerializationType(byte typeId) {
+        int index = Byte.toUnsignedInt(typeId);
+        return index < BY_ID.length ? BY_ID[index] : null;
+    }
+
+    static int maxTypeId() {
+        return BY_ID.length - 1;
     }
 
     private static SerializationType[] buildLookup() {
-        SerializationType[] values = values();
-        byte max = 0;
-        for (SerializationType e : values) {
-            if (e.typeId > max) {
-                max = e.typeId;
-            }
+        int max = 0;
+        for (SerializationType type : values()) {
+            max = Math.max(max, Byte.toUnsignedInt(type.typeId));
         }
-        SerializationType[] table = new SerializationType[max + 1];
-        for (SerializationType e : values) {
-            if (e.typeId < 0) {
-                throw new IllegalStateException("typeId must be non-negative: " + e);
+
+        SerializationType[] lookup = new SerializationType[max + 1];
+        for (SerializationType type : values()) {
+            int index = Byte.toUnsignedInt(type.typeId);
+            if (index == 0) {
+                throw new IllegalStateException("typeId 0 is reserved: " + type);
             }
-            if (table[e.typeId] != null) {
-                throw new IllegalStateException("duplicate typeId " + e.typeId
-                    + " for " + e + " and " + table[e.typeId]);
+            if (lookup[index] != null) {
+                throw new IllegalStateException("duplicate typeId " + index + " for "
+                    + type + " and " + lookup[index]);
             }
-            table[e.typeId] = e;
+            lookup[index] = type;
         }
-        return table;
+        return lookup;
     }
 }

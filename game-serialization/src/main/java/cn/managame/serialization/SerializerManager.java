@@ -3,34 +3,25 @@ package cn.managame.serialization;
 import cn.managame.serialization.fory.ForySerializer;
 import cn.managame.serialization.json.JacksonJsonSerializer;
 import cn.managame.serialization.protobuf.ProtobufSerializer;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
-/**
- * 序列化器注册表。{@link #getInstance()} 返回进程级共享单例，已预注册 JSON / Protobuf / Fory
- * 三种默认序列化方式；宿主可在启动时通过 {@link #register} 追加或按 serialType 覆盖默认实现。
- * 使用 {@link ConcurrentHashMap} 以支持共享单例上的并发注册/读取。
- *
- * <p>注意：默认 Fory 实例 {@code requireClassRegistration=true}（安全默认），宿主必须在开始服务
- * 流量前把所有走 Fory 的业务类型登记进去，例如：
- * <pre>{@code
- * if (getInstance().getISerializer(SerializationType.FORY.typeId()) instanceof ForySerializer fory) {
- *     fory.register(LoginReq.class);
- * }
- * }</pre>
- */
+/** Thread-safe serializer registry indexed directly by stable wire ids. */
 public class SerializerManager {
 
     private static final SerializerManager INSTANCE = createDefault();
 
-    private final Map<SerializationType, ISerializer> serializerMap = new ConcurrentHashMap<>();
+    private final AtomicReferenceArray<ISerializer> serializers =
+        new AtomicReferenceArray<>(SerializationType.maxTypeId() + 1);
 
-    /** 进程级共享单例，已预注册 JSON / Protobuf / Fory 三种默认序列化方式。 */
+    /** Returns the process-wide registry containing all built-in serializers. */
     public static SerializerManager getInstance() {
         return INSTANCE;
     }
 
-    private static SerializerManager createDefault() {
+    /** Creates an independent registry containing all built-in serializers. */
+    public static SerializerManager createDefault() {
         SerializerManager manager = new SerializerManager();
         manager.register(JacksonJsonSerializer.create());
         manager.register(ProtobufSerializer.create());
@@ -38,12 +29,42 @@ public class SerializerManager {
         return manager;
     }
 
+    /** Registers or replaces the serializer for its declared type. */
     public void register(ISerializer serializer) {
-        serializerMap.put(serializer.type(), serializer);
+        Objects.requireNonNull(serializer, "serializer");
+        SerializationType type = Objects.requireNonNull(serializer.type(), "serializer.type()");
+        serializers.set(Byte.toUnsignedInt(type.typeId()), serializer);
     }
 
+    /**
+     * Compatibility lookup used by the network stack. Returns {@code null} for an unknown id or
+     * for a known type that has not been registered in this manager.
+     */
     public ISerializer getISerializer(byte serialType) {
         SerializationType type = SerializationType.getSerializationType(serialType);
-        return type == null ? null : serializerMap.get(type);
+        return type == null ? null : getSerializer(type);
+    }
+
+    public ISerializer getSerializer(SerializationType type) {
+        Objects.requireNonNull(type, "type");
+        return serializers.get(Byte.toUnsignedInt(type.typeId()));
+    }
+
+    public ISerializer requireSerializer(byte serialType) {
+        ISerializer serializer = getISerializer(serialType);
+        if (serializer == null) {
+            throw new NoSuchElementException("No serializer registered for wire type "
+                + Byte.toUnsignedInt(serialType));
+        }
+        return serializer;
+    }
+
+    public ISerializer requireSerializer(SerializationType type) {
+        Objects.requireNonNull(type, "type");
+        ISerializer serializer = getSerializer(type);
+        if (serializer == null) {
+            throw new NoSuchElementException("No serializer registered for " + type);
+        }
+        return serializer;
     }
 }

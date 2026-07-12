@@ -17,16 +17,24 @@
 ```java
 SerializerManager serializers = SerializerManager.getInstance();
 
-ISerializer json = serializers.getISerializer(SerializationType.JSON.typeId());
+ISerializer json = serializers.requireSerializer(SerializationType.JSON);
 byte[] jsonBytes = json.serialize(playerState);
 PlayerState fromJson = json.deserialize(jsonBytes, PlayerState.class);
 
-ISerializer protobuf = serializers.getISerializer(SerializationType.PROTOBUF.typeId());
+ISerializer protobuf = serializers.requireSerializer(SerializationType.PROTOBUF);
 byte[] protoBytes = protobuf.serialize(loginRequest);          // value 必须是 protobuf MessageLite
 LoginRequest fromProto = protobuf.deserialize(protoBytes, LoginRequest.class);
 ```
 
-`getISerializer` 对未知的 `serialType` 返回 `null`——调用方必须做空值检查。
+`requireSerializer` 在格式缺失时快速抛出异常，适合业务代码；网络解码等需要自行处理未知 wire id
+的场景仍可使用兼容方法 `getISerializer(byte)`，该方法对未知 id 返回 `null`。
+
+测试或需要隔离注册表的宿主可使用 `SerializerManager.createDefault()` 创建一套独立的内置序列化器，
+避免修改进程级单例。注册和读取均可并发调用。
+
+JSON 的泛型载荷可在序列化和反序列化两侧使用 `TypeReference` 或 `JavaType`。默认 mapper 会拒绝
+合法 JSON 后附带额外 token 的载荷，避免把脏包静默当成正常消息；自定义 `ObjectMapper` 应在首次
+收发前配置完成，此后不要再修改。
 
 ### Apache Fory
 
@@ -52,6 +60,7 @@ if (serializers.getISerializer(SerializationType.FORY.typeId()) instanceof ForyS
 ## 性能建议
 
 - 复用序列化器实例。按请求创建 Jackson mapper 或 Fory 运行时会成为延迟的主要来源。
+- 输出目标为流或网络缓冲区时使用 `serialize(value, outputStream)`，Jackson 和 Protobuf 会直接写入，避免中间数组复制。
 - 跨服务、schema 先行的契约和紧凑稳定的线上载荷优先用 Protobuf。
 - JVM 到 JVM 的游戏状态快照、缓存值、需要 Java 原生对象图的内部消息优先用 Fory。
 - 高频使用的 Fory 类用稳定 ID 注册，载荷更小、分发更快。

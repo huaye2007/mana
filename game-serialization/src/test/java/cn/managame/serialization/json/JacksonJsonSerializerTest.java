@@ -1,8 +1,12 @@
 package cn.managame.serialization.json;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import cn.managame.serialization.SerializationException;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +40,42 @@ class JacksonJsonSerializerTest {
         });
 
         assertEquals(List.of("login", "move", "logout"), decoded);
+    }
+
+    @Test
+    void supportsDeclaredGenericTypeForSerialization() {
+        TypeReference<Map<String, List<Integer>>> type = new TypeReference<>() {
+        };
+        Map<String, List<Integer>> value = Map.of("items", List.of(1, 3, 5));
+
+        byte[] payload = serializer.serialize(value, type);
+
+        assertEquals(value, serializer.deserialize(payload, type));
+    }
+
+    @Test
+    void writesDirectlyToOutputStream() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        serializer.serialize(Map.of("online", 12), out);
+
+        assertEquals("{\"online\":12}", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void wrapsMalformedPayloadWithSerializationException() {
+        assertThrows(SerializationException.class,
+            () -> serializer.deserialize("{".getBytes(StandardCharsets.UTF_8), Map.class));
+    }
+
+    @Test
+    void rejectsTrailingJsonTokens() {
+        byte[] payload = "{\"online\":12} {\"online\":13}"
+            .getBytes(StandardCharsets.UTF_8);
+
+        assertThrows(SerializationException.class,
+            () -> serializer.deserialize(payload, new TypeReference<Map<String, Integer>>() {
+            }));
     }
 
     private record PlayerSnapshot(

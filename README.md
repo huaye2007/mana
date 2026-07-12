@@ -2,7 +2,7 @@
 
 # mana
 
-`mana` 是一组面向游戏服务器的基础组件，采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化。基于 [Apache-2.0](LICENSE) 许可证开源。
+`mana` 是一组面向游戏服务器的基础组件，采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度、ECS 场景模拟和 JPA 风格持久化。基于 [Apache-2.0](LICENSE) 许可证开源。
 
 ## 环境要求
 
@@ -27,11 +27,12 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-registry` | 统一的服务注册发现 API，通过 SPI 提供 memory、Nacos 与 Etcd 实现（见 [game-registry/README.md](game-registry/README.md)） |
 | `game-config` | 基于不可变快照的配置中心，提供 local、Nacos、Etcd 后端、类型化读取与变更监听（见 [game-config/README.md](game-config/README.md)） |
 | `game-runtime` | 统一运行时：命令/事件/定时器/回调四类入口收敛为任务，按 routerKey 哈希到组内固定 worker 串行执行（见 [game-runtime/README.md](game-runtime/README.md)） |
+| `game-ecs` | 面向场景模拟的 ECS：实体/组件稀疏存储、快照查询、分阶段系统流水线、延迟结构变更，以及基于 `game-runtime` 的串行世界 tick（见 [game-ecs/README.md](game-ecs/README.md)） |
 | `game-gateway` | TCP/WebSocket 游戏边缘网关：接入防护、登录门禁、粘滞路由、服务发现及 RPC 双向透传（见 [game-gateway/README.md](game-gateway/README.md)） |
 | `game-jpa` | 轻量持久化框架，含 RDB、DocDB、缓存、异步批量写、分片、starter 和 demo（见 [game-jpa/README.md](game-jpa/README.md)） |
 | `game-dev` | 参考宿主/示例工程：外网 GamePacket 协议 + 登陆/顶号/空闲踢人等框架行为，演示 network/runtime/jpa/serialization 的桥接方式（当前为单进程宿主，尚未接入 registry/config） |
 
-> `game-aoi` / `game-ecs` / `game-ai` / `game-match` / `game-idgen` 尚未纳入当前仓库。
+> `game-aoi` / `game-ai` / `game-match` / `game-idgen` 尚未纳入当前仓库。
 
 ## 构建与测试
 
@@ -66,6 +67,7 @@ mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 ## 常用入口
 
 - Runtime（无统一装配门面，按需使用各组件单例）：命令注册 `cn.managame.runtime.command.CommandRegistry`（派发由宿主桥接：构造 `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`）、事件 `cn.managame.runtime.event.EventBus`、定时 `cn.managame.runtime.timer.TimingWheel` / `CronTask`、执行器组注册 `cn.managame.runtime.executor.ExecutorGroupRegistry`
+- ECS：核心世界 `cn.managame.ecs.World`、系统流水线 `cn.managame.ecs.SystemPipeline`、runtime 桥接 `cn.managame.ecs.runtime.EcsWorldRunner`
 - Network：`cn.managame.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer`（实现 `INetworkServer`），业务侧实现 `INetworkHandler` / `IHttpHandler`
 - RPC：`cn.managame.rpc.RpcClient`、`cn.managame.rpc.RpcServer`
 - Registry：`cn.managame.registry.api.ServiceRegistry`，工厂 `cn.managame.registry.factory.RegistryFactory`
