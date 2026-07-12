@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -49,12 +50,23 @@ public final class LocalConfigProvider implements ConfigProvider {
                 }
                 if (!Files.isRegularFile(file)) throw new ConfigException("local config resource is not a file: " + file);
                 try {
-                    merged.putAll(PropertiesDocument.parse(Files.readString(file, StandardCharsets.UTF_8)));
+                    String content = Files.readString(file, StandardCharsets.UTF_8);
+                    Map<String, String> values = parse(file, content);
+                    for (String key : values.keySet()) {
+                        if (merged.containsKey(key)) merged.keySet().removeIf(existing -> existing.startsWith(key + "["));
+                    }
+                    merged.putAll(values);
                 } catch (IOException e) {
                     throw new ConfigException("cannot read local config: " + file, e);
                 }
             }
             return Map.copyOf(merged);
+        }
+
+        private static Map<String, String> parse(Path file, String content) {
+            String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+            if (name.endsWith(".json")) return JsonDocument.parse(content);
+            return PropertiesDocument.parse(content);
         }
 
         @Override public synchronized AutoCloseable watch(Consumer<Map<String, String>> onUpdate,

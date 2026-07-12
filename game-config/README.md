@@ -2,12 +2,12 @@
 
 # game-config
 
-`game-config` 是一个面向消费端的配置中心客户端。它把一个或多个 Java Properties 文档按声明顺序合并为不可变快照，后声明的文档覆盖先声明的同名配置，并通过统一 API 提供类型化读取、刷新和变更监听。
+`game-config` 是一个面向消费端的配置中心客户端。它把一个或多个配置文档按声明顺序合并为不可变快照，后声明的文档覆盖先声明的同名配置，并通过统一 API 提供类型化读取、刷新和变更监听。
 
 当前实现四个模块：
 
 - `game-config-core`：`ConfigCenter`、不可变 `ConfigSnapshot`、SPI 与工厂。
-- `game-config-local`：本地 Properties 文件，使用文件系统事件热更新。
+- `game-config-local`：本地 Properties 或 JSON 文件，使用文件系统事件热更新。
 - `game-config-nacos`：Nacos Config，resource 写作 `group:dataId`；未写 group 时使用 `group` 属性或 `DEFAULT_GROUP`。
 - `game-config-etcd`：每个 resource 对应一个 Etcd key，value 是 Properties 文档。
 
@@ -30,13 +30,15 @@
 ```java
 try (ConfigCenter config = ConfigFactory.open(ConfigOptions.builder("local")
         .resource("config/base.properties")
-        .resource("config/application.properties")
+        .resource("config/application.json")
         .build())) {
     int port = config.snapshot().getInt("game.server.port", 8080);
     AutoCloseable listener = config.listen(change ->
             System.out.println(change.changedKeys()));
 }
 ```
+
+local 根据 `.json` 扩展名识别 JSON，其他文件按 Properties 解析。JSON 根节点必须是对象；嵌套对象会展开为点号键，例如 `{"game":{"server":{"port":8080}}}` 可通过 `game.server.port` 读取。数组既保留为紧凑 JSON 字符串，也展开为索引键，例如 `regions[0]`、`servers[0].host`；嵌套数组同样支持。Properties 与 JSON 可以混合声明，仍由后声明的文件覆盖同名键。
 
 Nacos：
 
