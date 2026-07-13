@@ -10,11 +10,14 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>game-ecs</artifactId>
-    <packaging>pom</packaging>
+    <packaging>jar</packaging>
     <name>game-ecs</name>
-    <description>Entity-component-system framework and game-runtime integration.</description>
-    <modules>
-        <module>game-ecs-core</module>
-        <module>game-ecs-runtime</module>
-    </modules>
+    <description>Entity-component-system framework with a dedicated world update loop.</description>
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 </project>

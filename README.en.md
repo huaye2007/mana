@@ -27,7 +27,7 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-registry` | Unified service registry/discovery API with memory, Nacos, and Etcd SPI providers (see [game-registry/README.en.md](game-registry/README.en.md)) |
 | `game-config` | Immutable configuration snapshots with local, Nacos, and Etcd backends, typed reads, and change listeners (see [game-config/README.en.md](game-config/README.en.md)) |
 | `game-runtime` | Unified runtime: commands/events/timers/callbacks converge into tasks, hashed by routerKey to a fixed worker in the group for serial execution (see [game-runtime/README.en.md](game-runtime/README.en.md)) |
-| `game-ecs` | Scene simulation ECS with sparse component storage, snapshot queries, phased system pipelines, deferred structural changes, and serial world ticks on `game-runtime` (see [game-ecs/README.en.md](game-ecs/README.en.md)) |
+| `game-ecs` | Scene simulation ECS with sparse component storage, snapshot queries, phased system pipelines, deferred structural changes, and a dedicated-thread update loop for each world (see [game-ecs/README.en.md](game-ecs/README.en.md)) |
 | `game-gateway` | TCP/WebSocket game edge gateway with admission protection, login gating, sticky routing, service discovery and bidirectional RPC tunneling (see [game-gateway/README.en.md](game-gateway/README.en.md)) |
 | `game-jpa` | Lightweight persistence framework with RDB, DocDB, caching, async batched writes, sharding, starter and demo (see [game-jpa/README.en.md](game-jpa/README.en.md)) |
 | `game-dev` | Reference host / sample project: external GamePacket protocol + framework behaviors such as login, duplicate-login kick and idle kick; demonstrates the bridging of network/runtime/jpa/serialization (currently a single-process host, registry/config not yet integrated) |
@@ -67,7 +67,7 @@ The default registry tests cover memory behavior and the Nacos/Etcd adapters wit
 ## Common Entry Points
 
 - Runtime (no unified assembly facade — use each component's singleton as needed): command registration `cn.managame.runtime.command.CommandRegistry` (dispatch bridged by the host: build `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`), events `cn.managame.runtime.event.EventBus`, timers `cn.managame.runtime.timer.TimingWheel` / `CronTask`, executor group registration `cn.managame.runtime.executor.ExecutorGroupRegistry`
-- ECS: core world `cn.managame.ecs.World`, system pipeline `cn.managame.ecs.SystemPipeline`, runtime bridge `cn.managame.ecs.runtime.EcsWorldRunner`
+- ECS: core world `cn.managame.ecs.World`, system pipeline `cn.managame.ecs.SystemPipeline`, dedicated-thread world loop `cn.managame.ecs.runtime.EcsWorldRunner`
 - Network: `cn.managame.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer` (implementing `INetworkServer`); the business side implements `INetworkHandler` / `IHttpHandler`
 - RPC: `cn.managame.rpc.RpcClient`, `cn.managame.rpc.RpcServer`
 - Registry: `cn.managame.registry.api.ServiceRegistry`, factory `cn.managame.registry.factory.RegistryFactory`

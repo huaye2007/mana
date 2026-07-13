@@ -11,8 +11,8 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Mutable ECS container. A world is intentionally not thread-safe; route all access for one
- * world to the same game-runtime router key, or otherwise confine it to one thread.
+ * Mutable ECS container. A world is intentionally not thread-safe; confine all access for one
+ * world to its ECS loop thread or another single owning thread.
  */
 public final class World {
 

@@ -2,21 +2,23 @@
 
 # game-ecs
 
-`game-ecs` is a lightweight Entity Component System for game scenes, rooms, and combat simulation. The core is independent of Spring, networking, RPC, and persistence implementations. Its optional runtime bridge submits world updates to `game-runtime`, serializing them with player or scene tasks that use the same router key.
+`game-ecs` is a lightweight Entity Component System for game scenes, rooms, and combat simulation. The core is independent of Spring, networking, RPC, and persistence implementations. Its optional runtime gives each world a dedicated platform thread that continuously drives its own game loop.
 
-## Modules
+## Structure
 
-| Module | Responsibility |
+`game-ecs` is published as one JAR and uses Java packages to separate responsibilities:
+
+| Package | Responsibility |
 | --- | --- |
-| `game-ecs-core` | Entity lifecycle, concrete-type component storage, intersection queries, system pipelines, command buffers, and lifecycle listeners |
-| `game-ecs-runtime` | Triggers updates with `TimingWheel` and dispatches world ticks through `ExecutorGroupRegistry` by `(group, routerKey)` |
+| `cn.managame.ecs` | Entity lifecycle, concrete-type component storage, intersection queries, system pipelines, command buffers, and lifecycle listeners |
+| `cn.managame.ecs.runtime` | Dedicated world threads, fixed-cadence update loops, cross-thread input queues, and complete start/stop lifecycle |
 
-The core has no third-party runtime dependencies. Depend only on `game-ecs-core` for a manual game loop, or use `game-ecs-runtime` to combine it with mana scheduling.
+The component does not depend on a concrete network, RPC, or task-scheduling implementation. A host may drive the core types with its own loop or use `EcsWorldRunner` to manage a world thread.
 
 ```xml
 <dependency>
     <groupId>cn.managame</groupId>
-    <artifactId>game-ecs-runtime</artifactId>
+    <artifactId>game-ecs</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -61,35 +63,34 @@ commands.remove(player, Velocity.class);
 commands.delete(player);
 ```
 
-## Combining with game-runtime
+## World Update Loop
 
-Register a scene executor as required by `game-runtime`, then start a world runner. Give each world a stable, non-zero router key, normally its sceneId or roomId:
+Each runner owns one platform thread. `start()` starts the loop; `close()` interrupts its wait and blocks until the thread exits:
 
 ```java
-ExecutorGroupRegistry.getInstance().register(
-        DefaultExecutorGroup.platformThreads(ExecutorGroups.SCENE, "scene", 8, 10_000));
-
 EcsWorldRunner runner = new EcsWorldRunner(
-        world, pipeline, ExecutorGroups.SCENE, sceneId, 50); // 20 Hz
+        world, pipeline, "ecs-scene-" + sceneId, 50); // 20 Hz
 runner.start();
 
-// Shutdown: stop producing ECS ticks, then follow the runtime shutdown order.
+// Network/RPC threads must not modify World directly; enqueue input on the world thread.
+runner.execute(() -> world.add(player, new Velocity(5, 2)));
+
+// Shutdown: stop and wait for the world thread to exit.
 runner.close();
-TimingWheel.getInstance().shutdown();
-ExecutorGroupRegistry.getInstance().shutdownAll(5_000);
 ```
 
-The runner keeps at most one queued or running tick. If a frame exceeds the configured period, later timer firings coalesce instead of growing the executor queue without bounds. The next frame receives the actual monotonic-clock interval in `deltaNanos`.
+The loop uses `System.nanoTime()` to calculate the actual `deltaNanos`. If input processing and system updates overrun a frame period, the runner skips missed deadlines and waits for the next full period. It never updates one world concurrently or runs back-to-back catch-up ticks. The input queue is bounded at 16,384 entries by default and can be changed with the five-argument constructor; `execute` throws `RejectedExecutionException` when the queue is full or the runner has stopped.
 
 ## Combining with Other Components
 
-- Network and RPC handlers translate input into runtime tasks. With the same scene router key, those tasks may safely read or modify the corresponding `World`.
+- Network and RPC handlers translate input into a `Runnable` and call `execute` on the corresponding runner. The world thread processes that input serially before the next update.
 - A `WorldListener` can map entity/component lifecycle changes to runtime events, dirty-data markers, or JPA persistence commands without binding the core to a specific approach.
-- Convert configuration-center updates into runtime tasks for the appropriate scene before changing system parameters; do not mutate a world directly from a configuration callback thread.
+- Configuration-center updates should also use the corresponding runner's `execute` method before changing world or system state.
 
 ## Contracts
 
-- `World` is intentionally not thread-safe. Confine all access to one thread, preferably by routing it to the same `(group, routerKey)`.
+- `World` is intentionally not thread-safe. After a runner starts, all access to its world must enter through `execute` and run on the loop thread.
+- `tickOnce` is only for deterministic tests or host-owned loops before the runner has ever started; manual ticks are rejected once its loop starts.
 - Components are indexed by their concrete runtime class. Querying a base class or interface does not match implementations.
 - Register systems during startup. A system exception propagates immediately and discards that system's unapplied command buffer.
 - `WorldListener` callbacks are synchronous and must remain lightweight and non-blocking.
@@ -97,5 +98,5 @@ The runner keeps at most one queued or running tick. If a frame exceeds the conf
 ## Build
 
 ```powershell
-mvn "-Dmaven.repo.local=.m2" -pl game-ecs/game-ecs-runtime -am test
+mvn "-Dmaven.repo.local=.m2" -pl game-ecs test
 ```

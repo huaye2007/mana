@@ -103,12 +103,7 @@
             </dependency>
             <dependency>
                 <groupId>cn.managame</groupId>
-                <artifactId>game-ecs-core</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>cn.managame</groupId>
-                <artifactId>game-ecs-runtime</artifactId>
+                <artifactId>game-ecs</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
