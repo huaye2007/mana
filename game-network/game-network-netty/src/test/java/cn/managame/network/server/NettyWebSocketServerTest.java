@@ -1,7 +1,6 @@
 package cn.managame.network.server;
 
 import cn.managame.network.connection.ConnectionType;
-import cn.managame.network.connection.IConnection;
 import cn.managame.network.handler.INetworkHandler;
 import cn.managame.network.session.ISession;
 import io.netty.buffer.ByteBuf;
@@ -63,10 +62,6 @@ class NettyWebSocketServerTest {
             public void onException(ISession session, Throwable cause) {
             }
 
-            @Override
-            public ISession createSession(IConnection connection) {
-                return null;
-            }
         });
 
         try {

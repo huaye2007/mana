@@ -19,7 +19,7 @@ The component does not depend on a concrete network, RPC, or task-scheduling imp
 <dependency>
     <groupId>cn.managame</groupId>
     <artifactId>game-ecs</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 

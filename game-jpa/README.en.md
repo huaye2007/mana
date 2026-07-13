@@ -48,17 +48,17 @@ Add dependencies:
 <dependency>
     <groupId>cn.managame</groupId>
     <artifactId>game-jpa-starter</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 <dependency>
     <groupId>cn.managame</groupId>
     <artifactId>game-jpa-rdb-cache</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 <dependency>
     <groupId>cn.managame</groupId>
     <artifactId>game-jpa-rdb-mysql</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 

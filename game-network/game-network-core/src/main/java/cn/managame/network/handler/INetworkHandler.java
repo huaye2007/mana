@@ -16,5 +16,7 @@ public interface INetworkHandler {
 
     default boolean onIdle(ISession session) { return false; }
 
-    ISession createSession(IConnection connection);
+    default ISession createSession(IConnection connection) {
+        return new DefaultSession(connection);
+    }
 }
