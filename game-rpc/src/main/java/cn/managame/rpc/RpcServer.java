@@ -96,6 +96,10 @@ public class RpcServer extends RpcContainer {
         return config.getAuthToken();
     }
 
+    public long getHandshakeTimeoutMillis() {
+        return config.getHandshakeTimeoutMillis();
+    }
+
     public int getPort() {
         return config.getPort();
     }

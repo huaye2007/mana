@@ -12,6 +12,7 @@ public final class RpcServerConfig {
     private int workerThreads; // 0 = Netty 默认（CPU*2）
     private boolean tcpNoDelay = true;
     private int backlog = 1024;
+    private long handshakeTimeoutMillis = 5000;
     private int idleTimeoutSeconds = 30; // 读空闲多久判定连接已死并关闭，0 关闭检测
     private String authToken; // 非 null 时校验客户端握手 token，不一致断连
     private int maxFrameLength = RpcCodec.DEFAULT_MAX_FRAME_LENGTH;
@@ -27,6 +28,7 @@ public final class RpcServerConfig {
         require(bossThreads >= 1, "bossThreads must be >= 1, got " + bossThreads);
         require(workerThreads >= 0, "workerThreads must be >= 0, got " + workerThreads);
         require(backlog > 0, "backlog must be > 0, got " + backlog);
+        require(handshakeTimeoutMillis > 0, "handshakeTimeoutMillis must be > 0, got " + handshakeTimeoutMillis);
         require(idleTimeoutSeconds >= 0, "idleTimeoutSeconds must be >= 0, got " + idleTimeoutSeconds);
         require(maxFrameLength > 0, "maxFrameLength must be > 0, got " + maxFrameLength);
         require(defaultTimeoutMillis > 0, "defaultTimeoutMillis must be > 0, got " + defaultTimeoutMillis);
@@ -72,6 +74,11 @@ public final class RpcServerConfig {
 
     public RpcServerConfig authToken(String authToken) {
         this.authToken = authToken;
+        return this;
+    }
+
+    public RpcServerConfig handshakeTimeoutMillis(long handshakeTimeoutMillis) {
+        this.handshakeTimeoutMillis = handshakeTimeoutMillis;
         return this;
     }
 
@@ -125,6 +132,10 @@ public final class RpcServerConfig {
 
     public String getAuthToken() {
         return authToken;
+    }
+
+    public long getHandshakeTimeoutMillis() {
+        return handshakeTimeoutMillis;
     }
 
     public int getMaxFrameLength() {

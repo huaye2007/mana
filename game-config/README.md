@@ -31,6 +31,11 @@
 try (ConfigCenter config = ConfigFactory.open(ConfigOptions.builder("local")
         .resource("config/base.properties")
         .resource("config/application.json")
+        .validator(candidate -> {
+            if (candidate.getInt("game.server.port", 0) <= 0) {
+                throw new IllegalArgumentException("game.server.port must be positive");
+            }
+        })
         .build())) {
     int port = config.snapshot().getInt("game.server.port", 8080);
     AutoCloseable listener = config.listen(change ->
@@ -70,7 +75,9 @@ ConfigOptions.builder("etcd")
 ## 语义
 
 - `ConfigFactory.open` 在返回前同步完成首次加载；失败时不会返回半初始化实例。
+- 初始快照和每次更新都会先经过可选 `ConfigValidator`；校验失败时保留 last-known-good 快照，并可通过 `isHealthy()` / `lastError()` 查看状态。
 - 推送只在合并后的内容真正变化时生成新版本和 `ConfigChange`。
-- listener 异常彼此隔离，不会阻断快照发布。
+- listener 在独立的顺序执行器中运行；慢 listener 或 listener 异常不会阻断快照发布和 provider 线程。
+- provider watch 异常后会按指数退避重新建立监听并重新加载当前快照。
 - Nacos 的删除/空内容、Etcd key 删除都视为空文档；其他 resource 的内容仍保留。
 - `close()` 会注销监听并关闭文件 watcher 或远程客户端。

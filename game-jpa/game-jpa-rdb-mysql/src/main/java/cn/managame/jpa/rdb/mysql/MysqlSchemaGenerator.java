@@ -76,7 +76,7 @@ public class MysqlSchemaGenerator {
         List<EntityMetadata> rdbEntities = registry.getByModel(ModelTypes.RDB);
 
         for (EntityMetadata meta : rdbEntities) {
-            if (meta instanceof RdbEntityMetadata rdbMeta) {
+            if (meta instanceof RdbEntityMetadata rdbMeta && !rdbMeta.hasShardKey()) {
                 allSql.addAll(synchronizeEntity(rdbMeta, mode));
             }
         }

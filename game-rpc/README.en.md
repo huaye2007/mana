@@ -78,6 +78,11 @@ RpcResponse resp = future.await(3000);   // blocking, business threads only
 client.oneway("logic", "1",
         RpcRequest.oneway(2).routeKey(playerId).serialType(serial).body(event));
 
+// Use this when the caller must detect no-connection/local-backpressure rejection.
+// true means local channel acceptance, not successful remote business processing.
+boolean accepted = client.tryOneway("logic", "1",
+        RpcRequest.oneway(2).routeKey(playerId).serialType(serial).body(event));
+
 // broadcast: one oneway to every instance of "logic", body serialized only once
 client.broadcast("logic", RpcRequest.oneway(3).serialType(serial).body(notice));
 
@@ -89,7 +94,7 @@ client.disconnect("logic", "1");
 
 | Capability | Description |
 | --- | --- |
-| Handshake | After connecting, the client sends `HANDSHAKE` (with identity/token); the server validates and replies `HANDSHAKE_ACK`; **only after receiving the ACK does the client attach the connection to the peer for routing**. On token mismatch the server drops the connection without a reply. |
+| Handshake | After connecting, the client sends `HANDSHAKE` (with identity/token); the server validates and replies `HANDSHAKE_ACK`; **only after receiving the ACK does the client attach the connection to the peer for routing**. Before completion the server rejects every business/heartbeat message; duplicate handshakes, token mismatches, and handshake timeouts close the connection. |
 | Heartbeat | The client sends `PING` on write idle, the server replies `PONG`; either side declares the connection dead and closes it on read idle (`idleTimeoutSeconds`). Driven by `IdleStateHandler`; set to 0 to disable. |
 | Reconnect | After a failed connect or a disconnect, reconnects automatically with exponential backoff (with jitter); controlled by `reconnectEnabled`. `disconnect`/`close` stops reconnecting. |
 | Backpressure | When the outbound buffer hits the high watermark (`!isWritable`): invoke fails immediately, oneway/broadcast are dropped, counted in metrics — the off-heap memory is never blown up. |
@@ -101,7 +106,7 @@ client.disconnect("logic", "1");
 
 `RpcClientConfig` key settings: `serviceName/serviceId` (own identity, used in the handshake), `authToken`, `connectionSize`, `connectTimeoutMillis`, `defaultTimeoutMillis`, `maxPendingPerPeer`, `heartbeatIntervalSeconds`, `idleTimeoutSeconds`, `reconnectEnabled`, `reconnect{Initial,Max}BackoffMillis`, `maxFrameLength`, `writeBufferWaterMark(low, high)`. `validate()` enforces constraints at construction time (e.g. `idleTimeoutSeconds > heartbeatIntervalSeconds`).
 
-`RpcServerConfig` key settings: `port`, `bossThreads`, `workerThreads`, `backlog`, `idleTimeoutSeconds`, `authToken`, `defaultTimeoutMillis`, `maxPendingPerPeer`, `maxFrameLength`.
+`RpcServerConfig` key settings: `port`, `bossThreads`, `workerThreads`, `backlog`, `handshakeTimeoutMillis`, `idleTimeoutSeconds`, `authToken`, `defaultTimeoutMillis`, `maxPendingPerPeer`, `maxFrameLength`.
 
 The event loop groups and the `HashedWheelTimer` are created inside the `RpcServer` / `RpcClient` constructors and released in `close()` (never shared externally).
 
@@ -112,11 +117,11 @@ The event loop groups and the `HashedWheelTimer` are created inside the `RpcServ
 
 ## Caveats / Known Trade-offs
 
-- **oneway is fire-and-forget**: no retry, no write-failure reporting; when the connection is unwritable or no connection is available, the message is dropped (metrics only).
+- **oneway is fire-and-forget**: no retry or asynchronous write-failure reporting. Plain `oneway` drops on no connection or local backpressure (metrics only); use `tryOneway` when the caller must observe local rejection.
 - **`RpcRequest` is mutable**: requestId is written by the framework at invoke time — **do not reuse the same instance concurrently across invokes**.
 - **Routing is not consistent hashing**: `floorMod(routeKey, connectionCount)` — when the connection count changes (scaling/disconnect), the same routeKey may drift to another connection.
 - **Command ranges**: business commands must be positive; `[-100, -1]` is reserved for framework-internal messages. Metadata keys `[1,99]` are reserved; business starts at `100` (`Metadata.KEY_BUSINESS_MIN`).
-- **Auth**: the handshake token is compared with plaintext `equals`, and there is **no TLS** — use within a trusted internal network.
+- **Auth**: handshake tokens use a constant-time byte comparison, but remain plaintext on the wire and there is **no TLS** — use within a trusted internal network.
 - **Inbound backpressure**: autoread stays on and the framework does not limit inbound rate — the host must move `handleUserMsg` work off the IO thread and apply its own backpressure.
 
 ## Out of Scope (Left to the Host)

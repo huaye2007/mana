@@ -49,4 +49,4 @@ A watch synchronously emits the current instances as `ADDED` events, followed by
 
 For Nacos, use `.type("nacos")` and the Nacos server address as `endpoints`. Nacos client properties can be passed through `RegistryConfig.properties(...)`; `group` selects the service group and defaults to `DEFAULT_GROUP`.
 
-For Etcd, use `.type("etcd")`; `endpoints` accepts a comma-separated list. Optional properties are `prefix` (default `/mana/services`), `leaseTtlSeconds` (default 10), `username`, and `password`. Registered instances are attached to the client lease, which is revoked when the registry closes.
+For Etcd, use `.type("etcd")`; `endpoints` accepts a comma-separated list. Optional properties are `prefix` (default `/mana/services`), `leaseTtlSeconds` (default 10), `operationTimeoutMillis` (default 5000), `username`, and `password`. Registered instances are attached to the client lease, which is revoked when the registry closes. A keepalive failure re-grants a lease and restores locally owned registrations. A failed watch reloads a snapshot, resumes from a new revision, and emits the instance differences missed during the outage.

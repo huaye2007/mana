@@ -148,6 +148,8 @@ GameJpaContext context = new GameJpaBootstrap()
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
+`MysqlSchemaModule` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `MysqlRdbExecutor.columnAutoWiden` remains enabled by default to widen undersized string/binary columns and retry the write.
+
 Read/write through the cache:
 
 ```java

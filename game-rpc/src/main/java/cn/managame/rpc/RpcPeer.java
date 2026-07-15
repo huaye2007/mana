@@ -48,12 +48,17 @@ public class RpcPeer {
     }
 
     public void oneway(RpcRequest request) {
+        tryOneway(request);
+    }
+
+    /** Returns whether a currently active, writable connection accepted the request. */
+    public boolean tryOneway(RpcRequest request) {
         RpcConnection connection = connectionGroup.select(request.getRouteKey());
         if (connection == null) {
             container.getMetrics().onRejectedNoConnection();
-            return;
+            return false;
         }
-        rpcInvokeManager.oneway(connection, request);
+        return rpcInvokeManager.tryOneway(connection, request);
     }
 
     public RpcFuture invoke(RpcRequest request) {

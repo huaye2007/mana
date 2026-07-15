@@ -39,6 +39,10 @@ public final class GatewayRpcClient implements BackendConnector, AutoCloseable {
         client.oneway(serviceName, serviceId, request);
     }
 
+    public boolean tryForward(String serviceName, String serviceId, RpcRequest request) {
+        return client.tryOneway(serviceName, serviceId, request);
+    }
+
     public RpcClient unwrap() { return client; }
 
     @Override public void close() { client.close(); }

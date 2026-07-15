@@ -18,6 +18,8 @@
 
 外网包的 `command` 和原始 `body` 映射到 `RpcRequest`。`busType/busId` 标识 session 或 role，`routeKey` 用于后端串行路由，`MetadataKeys.GW_SEQ` 回传客户端序号，`GW_FLAGS` 透传压缩/加密标志，登录请求额外携带 `GW_CLIENT_IP`。后端下行使用相同 envelope，`GW_CODE` 表示业务码；成功登录响应可在 `routeKey` 中回带角色 ID。
 
+如果目标 RPC 实例没有活动连接或本地出站缓冲触发背压，网关会清除该服务的粘滞绑定，并立即向客户端返回 `SERVER_BUSY`，不会静默等待超时。
+
 ## 配置
 
 配置优先级为命令行 `--key=value`、JVM `-Dkey=value`、`GAME_*` 环境变量、`config/application.properties`、默认值。

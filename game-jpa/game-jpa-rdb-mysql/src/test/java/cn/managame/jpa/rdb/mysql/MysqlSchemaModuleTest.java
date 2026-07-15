@@ -3,7 +3,6 @@ package cn.managame.jpa.rdb.mysql;
 import cn.managame.jpa.core.bootstrap.BootstrapHook;
 import cn.managame.jpa.core.bootstrap.PersistenceConfigurer;
 import cn.managame.jpa.core.context.ComponentRegistry;
-import cn.managame.jpa.core.exception.GameJpaException;
 import cn.managame.jpa.core.lifecycle.LifecycleListener;
 import cn.managame.jpa.core.metadata.EntityMetadataResolver;
 import cn.managame.jpa.core.metrics.MetricsCollector;
@@ -24,9 +23,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 
 public class MysqlSchemaModuleTest {
 
@@ -45,13 +42,13 @@ public class MysqlSchemaModuleTest {
         configurer.hook.afterMetadataScan(registry);
         configurer.hook.afterContextCreated(components);
 
-        assertSame(registry, generator.registry);
+        assertNotSame(registry, generator.registry);
         assertEquals(MysqlSchemaGenerator.Mode.UPDATE, generator.mode);
         assertEquals(1, generator.rdbEntityCount);
     }
 
     @Test
-    public void updateModuleRejectsShardedEntityWhenRoutingStrategyIsInstalled() {
+    public void updateModuleSkipsShardedEntityWhenRoutingStrategyIsInstalled() {
         TrackingSchemaGenerator generator = new TrackingSchemaGenerator();
         CapturingConfigurer configurer = new CapturingConfigurer();
         MysqlSchemaModule.withGenerator(generator, MysqlSchemaGenerator.Mode.UPDATE)
@@ -63,11 +60,8 @@ public class MysqlSchemaModuleTest {
         components.register(RoutingStrategyRegistry.class,
                 new RoutingStrategyRegistry().defaultStrategy(new TestRoutingStrategy()));
 
-        GameJpaException expected = assertThrows(GameJpaException.class, () -> {
-            configurer.hook.afterContextCreated(components);
-        });
+        configurer.hook.afterContextCreated(components);
 
-        assertTrue(expected.getMessage().contains("sharded"));
         assertEquals(0, generator.rdbEntityCount);
     }
 

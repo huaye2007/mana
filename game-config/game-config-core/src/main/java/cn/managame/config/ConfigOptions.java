@@ -10,6 +10,7 @@ public final class ConfigOptions {
     private final String endpoint;
     private final List<String> resources;
     private final Map<String, String> properties;
+    private final ConfigValidator validator;
 
     private ConfigOptions(Builder builder) {
         type = requireText(builder.type, "type").toLowerCase(java.util.Locale.ROOT);
@@ -17,6 +18,7 @@ public final class ConfigOptions {
         resources = List.copyOf(builder.resources);
         if (resources.isEmpty()) throw new IllegalArgumentException("at least one resource is required");
         properties = Map.copyOf(builder.properties);
+        validator = builder.validator;
     }
 
     public static Builder builder(String type) { return new Builder(type); }
@@ -24,6 +26,7 @@ public final class ConfigOptions {
     public String endpoint() { return endpoint; }
     public List<String> resources() { return resources; }
     public Map<String, String> properties() { return properties; }
+    public ConfigValidator validator() { return validator; }
     public String property(String key, String defaultValue) { return properties.getOrDefault(key, defaultValue); }
 
     private static String requireText(String value, String name) {
@@ -36,6 +39,7 @@ public final class ConfigOptions {
         private String endpoint;
         private final List<String> resources = new ArrayList<>();
         private final Map<String, String> properties = new LinkedHashMap<>();
+        private ConfigValidator validator = ConfigValidator.none();
 
         private Builder(String type) { this.type = type; }
         public Builder endpoint(String value) { endpoint = value; return this; }
@@ -46,6 +50,10 @@ public final class ConfigOptions {
             return this;
         }
         public Builder properties(Map<String, String> values) { values.forEach(this::property); return this; }
+        public Builder validator(ConfigValidator value) {
+            validator = java.util.Objects.requireNonNull(value, "validator");
+            return this;
+        }
         public ConfigOptions build() { return new ConfigOptions(this); }
     }
 }

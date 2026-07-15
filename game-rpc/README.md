@@ -86,6 +86,10 @@ RpcResponse resp = future.await(3000);   // 阻塞，仅限业务线程
 client.oneway("logic", "1",
         RpcRequest.oneway(2).routeKey(playerId).serialType(serial).body(event));
 
+// 需要感知“无连接/本地背压”时使用；true 仅表示本地 channel 已接受，不代表远端业务执行成功
+boolean accepted = client.tryOneway("logic", "1",
+        RpcRequest.oneway(2).routeKey(playerId).serialType(serial).body(event));
+
 // 广播：给 "logic" 的每个实例各发一条 oneway，body 只序列化一次
 client.broadcast("logic", RpcRequest.oneway(3).serialType(serial).body(notice));
 
@@ -97,7 +101,7 @@ client.disconnect("logic", "1");
 
 | 能力 | 说明 |
 | --- | --- |
-| 握手协商 | 建连后客户端发 `HANDSHAKE`（带身份/token），服务端校验后回 `HANDSHAKE_ACK`；**客户端收到 ACK 才把连接挂入 peer 参与路由**。token 不符服务端直接断连、不回执。 |
+| 握手协商 | 建连后客户端发 `HANDSHAKE`（带身份/token），服务端校验后回 `HANDSHAKE_ACK`；**客户端收到 ACK 才把连接挂入 peer 参与路由**。服务端在握手完成前拒绝所有业务/心跳消息，重复握手、token 不符或握手超时均直接断连。 |
 | 心跳保活 | 客户端写空闲发 `PING`，服务端回 `PONG`；任一端读空闲（`idleTimeoutSeconds`）判死关连接。由 `IdleStateHandler` 驱动，配置为 0 则关闭。 |
 | 断线重连 | 连接失败或断开后按指数退避（带抖动）自动重连；`reconnectEnabled` 控制。`disconnect`/`close` 会停止重连。 |
 | 背压 | 出站缓冲到高水位（`!isWritable`）时：invoke 立即失败、oneway/broadcast 直接丢弃，计入 metrics，不撑爆堆外内存。 |
@@ -112,7 +116,7 @@ client.disconnect("logic", "1");
 `idleTimeoutSeconds`、`reconnectEnabled`、`reconnect{Initial,Max}BackoffMillis`、`maxFrameLength`、
 `writeBufferWaterMark(low, high)`。`validate()` 会在构造时强校验（如 `idleTimeoutSeconds > heartbeatIntervalSeconds`）。
 
-`RpcServerConfig` 关键项：`port`、`bossThreads`、`workerThreads`、`backlog`、`idleTimeoutSeconds`、
+`RpcServerConfig` 关键项：`port`、`bossThreads`、`workerThreads`、`backlog`、`handshakeTimeoutMillis`、`idleTimeoutSeconds`、
 `authToken`、`defaultTimeoutMillis`、`maxPendingPerPeer`、`maxFrameLength`。
 
 事件循环线程组与 `HashedWheelTimer` 均由 `RpcServer` / `RpcClient` 构造方法内部创建，并在 `close()` 释放（不对外共享）。
@@ -126,11 +130,11 @@ client.disconnect("logic", "1");
 
 ## 注意事项 / 已知取舍
 
-- **oneway 是 fire-and-forget**：不重试、不报告写失败；连接不可写或无可用连接时直接丢弃（只计 metrics）。
+- **oneway 是 fire-and-forget**：不重试、不报告异步写失败；普通 `oneway` 在连接不可写或无可用连接时直接丢弃（只计 metrics）。需要感知本地拒绝时使用 `tryOneway`。
 - **`RpcRequest` 可变**：requestId 由框架在 invoke 时写入，**不要把同一个实例并发复用于多次 invoke**。
 - **路由非一致性哈希**：`floorMod(routeKey, 连接数)`，连接数变化（扩缩容/断线）时同一 routeKey 可能漂到别的连接。
 - **命令段**：业务 command 必须为正数；`[-100, -1]` 保留给框架内部消息。metadata key `[1,99]` 保留，业务从 `100`（`Metadata.KEY_BUSINESS_MIN`）起。
-- **鉴权**：握手 token 为明文 `equals` 比较，且**无 TLS**，按"对内可信网络"使用。
+- **鉴权**：握手 token 使用常量时间字节比较，但线上仍是明文传输且**无 TLS**，按“对内可信网络”使用。
 - **入站背压**：autoread 常开，框架不限制入站速率——宿主须把 `handleUserMsg` 的活儿移出 IO 线程并自行施加背压。
 
 ## 不在本模块职责内（交给宿主）

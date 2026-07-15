@@ -16,14 +16,25 @@ import java.util.List;
 import java.util.Objects;
 
 public final class PacketForwarder {
-    private final GatewayRpcClient rpcClient;
+    @FunctionalInterface
+    interface RequestSender {
+        boolean forward(String serviceName, String serviceId, RpcRequest request);
+    }
+
+    private final RequestSender requestSender;
     private final BackendDirectory backendDirectory;
     private final BackendServiceResolver serviceResolver;
     private final int loginCommand;
 
     public PacketForwarder(GatewayRpcClient rpcClient, BackendDirectory backendDirectory,
                            BackendServiceResolver serviceResolver, int loginCommand) {
-        this.rpcClient = Objects.requireNonNull(rpcClient, "rpcClient");
+        this(Objects.requireNonNull(rpcClient, "rpcClient")::tryForward,
+                backendDirectory, serviceResolver, loginCommand);
+    }
+
+    PacketForwarder(RequestSender requestSender, BackendDirectory backendDirectory,
+                    BackendServiceResolver serviceResolver, int loginCommand) {
+        this.requestSender = Objects.requireNonNull(requestSender, "requestSender");
         this.backendDirectory = Objects.requireNonNull(backendDirectory, "backendDirectory");
         this.serviceResolver = Objects.requireNonNull(serviceResolver, "serviceResolver");
         if (loginCommand <= 0) throw new IllegalArgumentException("loginCommand must be positive");
@@ -51,7 +62,10 @@ public final class PacketForwarder {
                 .body(packet.getBody())
                 .metadata(metadata.toArray(Metadata[]::new));
         try {
-            rpcClient.forward(serviceName, backend.getKey(), request);
+            if (!requestSender.forward(serviceName, backend.getKey(), request)) {
+                session.setBackendServiceId(serviceName, null);
+                reject(session, packet, GatewayErrorCode.SERVER_BUSY);
+            }
         } catch (RuntimeException error) {
             session.setBackendServiceId(serviceName, null);
             reject(session, packet, GatewayErrorCode.SERVER_BUSY);

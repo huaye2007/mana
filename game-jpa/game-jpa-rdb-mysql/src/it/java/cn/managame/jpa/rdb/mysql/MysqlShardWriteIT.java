@@ -23,7 +23,7 @@ import java.sql.Statement;
 import java.util.List;
 
 /**
- * 分表写入集成测试：验证写到不存在的物理表时自动建表（#2 自愈），以及按 physicalTableName 路由到不同物理表。
+ * 分表写入集成测试：验证写路径不会创建缺失分表，以及显式建表后可按 physicalTableName 路由。
  * 需要 Docker（testcontainers MySQL），通过 {@code mvn -Pintegration-tests verify} 运行。
  */
 public class MysqlShardWriteIT {
@@ -51,7 +51,7 @@ public class MysqlShardWriteIT {
                 .minimumIdle(1)
                 .poolName("game-jpa-shard-it")
                 .build();
-        executor = new MysqlRdbExecutor(dataSource); // autoCreateShardTable 默认开启
+        executor = new MysqlRdbExecutor(dataSource);
         metadata = new RdbEntityMetadataResolver().resolve(ShardLog.class);
         dropTables();
     }
@@ -69,19 +69,19 @@ public class MysqlShardWriteIT {
     }
 
     @Test
-    public void batchInsertAutoCreatesMissingPhysicalTable() throws Exception {
+    public void batchInsertDoesNotCreateMissingPhysicalTable() {
         ExecutorContext shard7 = ExecutorContext.of("default", null, "shard_log_7");
 
-        // 物理表 shard_log_7 不存在 → 触发 1146 → 自动建表 → 重写批量插入。
-        executor.batchInsert(metadata, List.of(
+        assertThrows(GameJpaException.class, () -> executor.batchInsert(metadata, List.of(
                 new ShardLog(1L, 7L, "a"),
-                new ShardLog(2L, 7L, "b")), shard7);
-
-        assertEquals(2, rowCount("shard_log_7"));
+                new ShardLog(2L, 7L, "b")), shard7));
     }
 
     @Test
     public void batchInsertRoutesToDistinctPhysicalTables() throws Exception {
+        MysqlSchemaGenerator generator = new MysqlSchemaGenerator(dataSource);
+        generator.createTable(metadata, "shard_log_1");
+        generator.createTable(metadata, "shard_log_2");
         executor.batchInsert(metadata, List.of(new ShardLog(10L, 1L, "x")),
                 ExecutorContext.of("default", null, "shard_log_1"));
         executor.batchInsert(metadata, List.of(new ShardLog(20L, 2L, "y")),
@@ -89,14 +89,6 @@ public class MysqlShardWriteIT {
 
         assertEquals(1, rowCount("shard_log_1"));
         assertEquals(1, rowCount("shard_log_2"));
-    }
-
-    @Test
-    public void missingTableFailsWhenAutoCreateDisabled() {
-        MysqlRdbExecutor strict = new MysqlRdbExecutor(dataSource).autoCreateShardTable(false);
-        assertThrows(GameJpaException.class, () -> strict.batchInsert(metadata,
-                List.of(new ShardLog(99L, 9L, "z")),
-                ExecutorContext.of("default", null, "shard_log_missing")));
     }
 
     private static int rowCount(String table) throws Exception {

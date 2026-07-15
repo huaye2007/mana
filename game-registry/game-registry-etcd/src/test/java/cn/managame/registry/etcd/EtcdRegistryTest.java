@@ -12,6 +12,7 @@ import io.etcd.jetcd.Watch;
 import io.etcd.jetcd.kv.GetResponse;
 import io.etcd.jetcd.kv.TxnResponse;
 import io.etcd.jetcd.lease.LeaseRevokeResponse;
+import io.etcd.jetcd.lease.LeaseGrantResponse;
 import io.etcd.jetcd.options.GetOption;
 import io.etcd.jetcd.options.PutOption;
 import io.etcd.jetcd.options.WatchOption;
@@ -26,12 +27,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 
 class EtcdRegistryTest {
     private Client client;
@@ -127,8 +132,70 @@ class EtcdRegistryTest {
         assertEquals(original, decoded.instance());
     }
 
+    @Test
+    void watchReconnectsAndReconcilesMissedChanges() throws Exception {
+        ServiceInstance first = instance("node-1", 9001);
+        ServiceInstance second = instance("node-2", 9002);
+        GetResponse initial = response(List.of(keyValue(first, 1, 1)), 10L);
+        GetResponse recovered = response(List.of(keyValue(second, 2, 2)), 20L);
+        when(kv.get(any(), any(GetOption.class))).thenReturn(
+                CompletableFuture.completedFuture(initial), CompletableFuture.completedFuture(recovered));
+        Watch.Watcher firstWatcher = mock(Watch.Watcher.class);
+        Watch.Watcher secondWatcher = mock(Watch.Watcher.class);
+        ArgumentCaptor<Watch.Listener> listeners = ArgumentCaptor.forClass(Watch.Listener.class);
+        when(watchClient.watch(any(), any(WatchOption.class), listeners.capture()))
+                .thenReturn(firstWatcher, secondWatcher);
+        when(lease.revoke(anyLong())).thenReturn(
+                CompletableFuture.completedFuture(mock(LeaseRevokeResponse.class)));
+        EtcdRegistry registry = registry();
+        List<ServiceInstanceEvent> events = new CopyOnWriteArrayList<>();
+
+        AutoCloseable handle = registry.watchService("game", events::add);
+        listeners.getAllValues().getFirst().onError(new IllegalStateException("lost"));
+
+        verify(watchClient, timeout(2000).times(2)).watch(any(), any(WatchOption.class), any(Watch.Listener.class));
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+        while (events.size() < 3 && System.nanoTime() < deadline) Thread.onSpinWait();
+        assertEquals(List.of(DiscoveryEventType.ADDED, DiscoveryEventType.REMOVED, DiscoveryEventType.ADDED),
+                events.stream().map(ServiceInstanceEvent::getType).toList());
+        assertEquals("node-2", events.getLast().getInstance().getKey());
+
+        handle.close();
+        registry.close();
+    }
+
+    @Test
+    void keepAliveFailureRegrantsLeaseAndRestoresRegistrations() {
+        when(kv.put(any(), any(), any(PutOption.class))).thenReturn(CompletableFuture.completedFuture(mock()));
+        LeaseGrantResponse grant = mock(LeaseGrantResponse.class);
+        when(grant.getID()).thenReturn(84L);
+        when(lease.grant(anyLong())).thenReturn(CompletableFuture.completedFuture(grant));
+        CloseableClient recoveredKeepAlive = mock(CloseableClient.class);
+        when(lease.keepAlive(anyLong(), any())).thenReturn(recoveredKeepAlive);
+        when(lease.revoke(anyLong())).thenReturn(
+                CompletableFuture.completedFuture(mock(LeaseRevokeResponse.class)));
+        EtcdRegistry registry = registry();
+        registry.register(instance("node-1", 9001));
+
+        registry.keepAliveFailed(42L, new IllegalStateException("lost"));
+
+        verify(lease, timeout(2000)).grant(EtcdRegistry.DEFAULT_TTL_SECONDS);
+        verify(kv, timeout(2000).times(2)).put(any(), any(), any(PutOption.class));
+        verify(lease, timeout(2000)).keepAlive(anyLong(), any());
+        verify(keepAlive, timeout(2000)).close();
+        registry.close();
+        verify(recoveredKeepAlive).close();
+    }
+
     private EtcdRegistry registry() {
         return new EtcdRegistry(client, 42L, keepAlive, "/test/services", "owner-1");
+    }
+
+    private static GetResponse response(List<KeyValue> values, long revision) {
+        GetResponse response = mock(GetResponse.class, org.mockito.Answers.RETURNS_DEEP_STUBS);
+        when(response.getKvs()).thenReturn(values);
+        when(response.getHeader().getRevision()).thenReturn(revision);
+        return response;
     }
 
     private static KeyValue keyValue(ServiceInstance instance, long createRevision, long modRevision) {

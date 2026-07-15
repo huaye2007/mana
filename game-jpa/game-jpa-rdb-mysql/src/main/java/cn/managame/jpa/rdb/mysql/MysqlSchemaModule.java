@@ -5,10 +5,8 @@ import cn.managame.jpa.core.bootstrap.ModelTypes;
 import cn.managame.jpa.core.bootstrap.PersistenceConfigurer;
 import cn.managame.jpa.core.bootstrap.PersistenceModule;
 import cn.managame.jpa.core.context.ComponentRegistry;
-import cn.managame.jpa.core.exception.GameJpaException;
 import cn.managame.jpa.core.metadata.EntityMetadata;
 import cn.managame.jpa.core.registry.MetadataRegistry;
-import cn.managame.jpa.core.routing.RoutingStrategyRegistry;
 import cn.managame.jpa.rdb.metadata.RdbEntityMetadata;
 
 import javax.sql.DataSource;
@@ -57,26 +55,19 @@ public final class MysqlSchemaModule implements PersistenceModule {
             @Override
             public void afterContextCreated(ComponentRegistry registry) {
                 MetadataRegistry metadataRegistry = registry.get(MetadataRegistry.class);
-                assertNoRoutedShardedEntities(metadataRegistry, registry.find(RoutingStrategyRegistry.class));
-                generator.synchronize(metadataRegistry, mode);
+                generator.synchronize(nonShardedMetadata(metadataRegistry), mode);
             }
         });
     }
 
-    private void assertNoRoutedShardedEntities(MetadataRegistry metadataRegistry,
-            RoutingStrategyRegistry routingRegistry) {
-        if (routingRegistry == null) {
-            return;
-        }
+    private MetadataRegistry nonShardedMetadata(MetadataRegistry metadataRegistry) {
+        MetadataRegistry result = new MetadataRegistry();
         for (EntityMetadata entityMetadata : metadataRegistry.getByModel(ModelTypes.RDB)) {
             if (entityMetadata instanceof RdbEntityMetadata rdbMetadata
-                    && rdbMetadata.hasShardKey()
-                    && routingRegistry.resolve(rdbMetadata.entityType(), rdbMetadata.logicalName()) != null) {
-                throw new GameJpaException("MysqlSchemaModule cannot synchronize sharded RDB entity "
-                        + rdbMetadata.entityType().getName()
-                        + " because physical tables/data sources are resolved by RoutingStrategy. "
-                        + "Manage shard DDL with an explicit migration or generated physical-table scripts.");
+                    && !rdbMetadata.hasShardKey()) {
+                result.register(rdbMetadata);
             }
         }
+        return result;
     }
 }

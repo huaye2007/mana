@@ -115,6 +115,23 @@ public class RpcContainer {
         peer.oneway(rpcRequest);
     }
 
+    /**
+     * Attempts a local oneway delivery without hiding missing connections or backpressure.
+     * This confirms acceptance by Netty, not remote business processing.
+     */
+    public boolean tryOneway(String serviceName, String serviceId, RpcRequest rpcRequest) {
+        if (shuttingDown) {
+            return false;
+        }
+        RpcPeer peer = getRpcPeer(serviceName, serviceId);
+        if (peer == null) {
+            metrics.onRejectedNoConnection();
+            return false;
+        }
+        ensureSerialType(rpcRequest);
+        return peer.tryOneway(rpcRequest);
+    }
+
     public RpcFuture invoke(String serviceName, String serviceId, RpcRequest rpcRequest) {
         RpcPeer peer = getRpcPeer(serviceName, serviceId);
         if (peer == null) {

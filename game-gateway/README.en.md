@@ -18,6 +18,8 @@
 
 The external packet's `command` and raw `body` map to an `RpcRequest`. `busType/busId` identifies a session or role, `routeKey` drives backend serialization, `MetadataKeys.GW_SEQ` carries the client sequence, `GW_FLAGS` preserves compression/encryption flags, and login requests also carry `GW_CLIENT_IP`. Backend downlinks use the same envelope and `GW_CODE` for the business status. A successful login response may return the role ID in `routeKey`.
 
+If the selected RPC instance has no active connection or its local outbound buffer applies backpressure, the gateway clears that service's sticky binding and immediately replies `SERVER_BUSY` instead of silently waiting for a timeout.
+
 ## Configuration
 
 Precedence is command-line `--key=value`, JVM `-Dkey=value`, `GAME_*` environment variables, `config/application.properties`, then defaults.

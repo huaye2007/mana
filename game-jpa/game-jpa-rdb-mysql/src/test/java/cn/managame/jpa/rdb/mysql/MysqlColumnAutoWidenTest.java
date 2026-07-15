@@ -5,7 +5,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
 import java.util.Map;
+import javax.sql.DataSource;
 
 /**
  * 字段超长自愈的纯逻辑单元测试：列名解析 + 可加宽类型判断。
@@ -33,6 +35,19 @@ public class MysqlColumnAutoWidenTest {
         assertFalse(MysqlRdbExecutor.isWidenable(field("age", int.class, 0, false)));
         // JSON 列不可加宽
         assertFalse(MysqlRdbExecutor.isWidenable(field("bag", Map.class, 0, true)));
+    }
+
+    @Test
+    @SuppressWarnings("removal")
+    public void writePathShardTableCreationCannotBeEnabled() {
+        DataSource dataSource = (DataSource) Proxy.newProxyInstance(
+                DataSource.class.getClassLoader(), new Class<?>[]{DataSource.class},
+                (proxy, method, args) -> null);
+        MysqlRdbExecutor executor = new MysqlRdbExecutor(dataSource);
+
+        assertThrows(IllegalArgumentException.class, () -> executor.autoCreateShardTable(true));
+        assertSame(executor, executor.autoCreateShardTable(false));
+        assertSame(executor, executor.columnAutoWiden(true));
     }
 
     private static RdbFieldMetadata field(String name, Class<?> javaType, int length, boolean json)

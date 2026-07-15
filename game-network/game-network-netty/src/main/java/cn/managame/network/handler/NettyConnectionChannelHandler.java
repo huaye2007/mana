@@ -47,10 +47,13 @@ public class NettyConnectionChannelHandler extends ChannelInboundHandlerAdapter 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         IConnection connection = connectionManager.getConnection(ctx.channel());
-        if (connection != null) {
+        if (connection != null && connectionHandler.isReadyForMessages(connection)) {
             connectionHandler.onMessage(connection, msg);
         } else {
             ReferenceCountUtil.release(msg);
+            if (connection != null) {
+                connection.close();
+            }
         }
     }
 

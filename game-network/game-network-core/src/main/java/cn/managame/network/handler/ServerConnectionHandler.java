@@ -18,8 +18,23 @@ public class ServerConnectionHandler implements IConnectionHandler{
     @Override
     public void onConnect(IConnection connection) {
         ISession session = networkHandler.createSession(connection);
-        sessionManager.addSession(session);
-        networkHandler.onConnect(session);
+        try {
+            sessionManager.addSession(session);
+            networkHandler.onConnect(session);
+        } catch (RuntimeException | Error failure) {
+            sessionManager.removeSession(session);
+            try {
+                session.close();
+            } catch (RuntimeException | Error closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+            throw failure;
+        }
+    }
+
+    @Override
+    public boolean isReadyForMessages(IConnection connection) {
+        return sessionManager.getSession(connection) != null;
     }
 
     @Override

@@ -31,6 +31,11 @@ Compile against `game-config-core` and put the selected backend on the runtime c
 try (ConfigCenter config = ConfigFactory.open(ConfigOptions.builder("local")
         .resource("config/base.properties")
         .resource("config/application.json")
+        .validator(candidate -> {
+            if (candidate.getInt("game.server.port", 0) <= 0) {
+                throw new IllegalArgumentException("game.server.port must be positive");
+            }
+        })
         .build())) {
     int port = config.snapshot().getInt("game.server.port", 8080);
     AutoCloseable listener = config.listen(change ->
@@ -70,7 +75,9 @@ Separate multiple endpoints with commas. `timeoutMillis` defaults to `3000`. For
 ## Semantics
 
 - `ConfigFactory.open` completes the initial load synchronously and never returns a partially initialized center.
+- The initial snapshot and every update pass through the optional `ConfigValidator` first. A rejected candidate leaves the last-known-good snapshot in place; inspect `isHealthy()` / `lastError()` for status.
 - A push creates a new version and `ConfigChange` only when the merged content actually changes.
-- Listener failures are isolated and do not prevent snapshot publication.
+- Listeners run on a separate ordered executor, so a slow or failing listener cannot block snapshot publication or the provider thread.
+- A failed provider watch is recreated with exponential backoff and followed by a fresh snapshot load.
 - Empty/deleted Nacos content and deleted Etcd keys become empty documents while other resources remain intact.
 - `close()` unregisters listeners and closes filesystem watchers or remote clients.

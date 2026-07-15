@@ -54,7 +54,6 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
     private static final int MYSQL_DEADLOCK = 1213;
     private static final int MYSQL_LOCK_WAIT_TIMEOUT = 1205;
     private static final int MYSQL_DATA_TOO_LONG = 1406;
-    private static final int MYSQL_NO_SUCH_TABLE = 1146;
     private static final Pattern DATA_TOO_LONG_COLUMN =
             Pattern.compile("Data too long for column '([^']+)'", Pattern.CASE_INSENSITIVE);
 
@@ -66,12 +65,8 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
     private final ConcurrentHashMap<RdbFieldMetadata, ObjectReader> jsonReaders = new ConcurrentHashMap<>();
     /** 字段超长(Data too long)时自动 ALTER MODIFY 加宽到声明长度两倍再重写。默认开启。 */
     private volatile boolean columnAutoWiden = true;
-    /** 已自动加宽的列(table:column -&gt; 已加宽到的长度)，去重避免并发重复 ALTER。 */
+    /** 已自动加宽的列(dataSource:table:column -&gt; 已加宽到的长度)，去重避免并发重复 ALTER。 */
     private final ConcurrentHashMap<String, Integer> widenedColumns = new ConcurrentHashMap<>();
-    /** 写入时物理表不存在(分表场景)则按元数据自动建表再重写。默认开启。 */
-    private volatile boolean autoCreateShardTable = true;
-    /** 已自动建过的物理表，去重避免并发重复建表/建索引。 */
-    private final java.util.Set<String> createdTables = ConcurrentHashMap.newKeySet();
 
     public MysqlRdbExecutor(DataSource dataSource) {
         this(dataSource, new TypeConverterRegistry(), null);
@@ -131,11 +126,15 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
     }
 
     /**
-     * 分表缺失自动建表开关。生产环境若不接受写路径自动 CREATE TABLE，可关闭（关闭后写到不存在的物理表按确定性失败丢弃）。
-     * 应用账号需具备建表权限；无权限时自动建表失败、写入照常丢弃。
+     * @deprecated 写路径不再允许创建分表。普通表只能由 {@link MysqlSchemaModule}
+     *             在持久化上下文初始化阶段创建，分表 DDL 必须显式管理。
      */
+    @Deprecated(forRemoval = true)
     public MysqlRdbExecutor autoCreateShardTable(boolean enabled) {
-        this.autoCreateShardTable = enabled;
+        if (enabled) {
+            throw new IllegalArgumentException("write-path shard table creation is disabled; "
+                    + "create non-sharded tables during MysqlSchemaModule initialization and manage shard DDL explicitly");
+        }
         return this;
     }
 
@@ -254,11 +253,11 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
 
     @Override
     public void batchInsert(RdbEntityMetadata metadata, List<?> entities, ExecutorContext context) {
-        batchInsert(metadata, entities, context, autoCreateShardTable, true);
+        batchInsert(metadata, entities, context, true);
     }
 
     private void batchInsert(RdbEntityMetadata metadata, List<?> entities, ExecutorContext context,
-            boolean autoCreateAllowed, boolean autoWidenAllowed) {
+            boolean autoWidenAllowed) {
         if (entities.isEmpty())
             return;
         String tableName = resolveTableName(metadata, context);
@@ -274,12 +273,8 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
             ps.executeBatch();
             tx.commit();
         } catch (SQLException e) {
-            if (autoCreateAllowed && tryAutoCreateTable(metadata, context, e)) {
-                batchInsert(metadata, entities, context, false, autoWidenAllowed);
-                return;
-            }
             if (autoWidenAllowed && tryAutoWiden(metadata, context, e)) {
-                batchInsert(metadata, entities, context, autoCreateAllowed, false);
+                batchInsert(metadata, entities, context, false);
                 return;
             }
             throw wrapSqlException("batchInsert", metadata, e);
@@ -341,11 +336,11 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
 
     @Override
     public void batchUpsert(RdbEntityMetadata metadata, List<?> entities, ExecutorContext context) {
-        batchUpsert(metadata, entities, context, autoCreateShardTable, true);
+        batchUpsert(metadata, entities, context, true);
     }
 
     private void batchUpsert(RdbEntityMetadata metadata, List<?> entities, ExecutorContext context,
-            boolean autoCreateAllowed, boolean autoWidenAllowed) {
+            boolean autoWidenAllowed) {
         if (entities.isEmpty())
             return;
         String tableName = resolveTableName(metadata, context);
@@ -368,12 +363,8 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         } catch (GameJpaException e) {
             throw e;
         } catch (SQLException e) {
-            if (autoCreateAllowed && tryAutoCreateTable(metadata, context, e)) {
-                batchUpsert(metadata, entities, context, false, autoWidenAllowed);
-                return;
-            }
             if (autoWidenAllowed && tryAutoWiden(metadata, context, e)) {
-                batchUpsert(metadata, entities, context, autoCreateAllowed, false);
+                batchUpsert(metadata, entities, context, false);
                 return;
             }
             throw wrapSqlException("batchUpsert", metadata, e);
@@ -752,38 +743,6 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         return new GameJpaException(operation + " failed: " + metadata.tableName(), e);
     }
 
-    // ==================== 分表缺失自愈 ====================
-
-    /**
-     * 物理表不存在(No such table, 1146)自愈：按元数据 CREATE TABLE 物理表 → 返回 true 让调用方重写一次。
-     * 仅当开关开启、错误码为 1146 时尝试；{@link #createdTables} + {@code synchronized} 去重，避免并发重复建表；
-     * 建表失败（如应用账号无 DDL 权限）返回 false，写入按确定性失败丢弃。
-     */
-    private boolean tryAutoCreateTable(RdbEntityMetadata metadata, ExecutorContext context, SQLException e) {
-        if (!autoCreateShardTable || e.getErrorCode() != MYSQL_NO_SUCH_TABLE) {
-            return false;
-        }
-        String table = resolveTableName(metadata, context);
-        if (createdTables.contains(table)) {
-            return true;
-        }
-        synchronized (createdTables) {
-            if (createdTables.contains(table)) {
-                return true;
-            }
-            try {
-                DataSource dataSource = dataSourceRegistry.get(dataSourceName(context));
-                new MysqlSchemaGenerator(dataSource, json).createTable(metadata, table);
-                createdTables.add(table);
-                log.warn("[{}] auto-created missing shard table (按需建物理表)", table);
-                return true;
-            } catch (RuntimeException ce) {
-                log.warn("[{}] auto-create shard table failed; dropping write", table, ce);
-                return false;
-            }
-        }
-    }
-
     // ==================== 字段超长自愈 ====================
 
     /**
@@ -839,7 +798,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
      */
     private boolean widenColumn(String table, RdbFieldMetadata field, ExecutorContext context) {
         int newLength = field.length() * 2;
-        String key = table + ":" + field.columnName();
+        String key = dataSourceName(context) + ":" + table + ":" + field.columnName();
         Integer widened = widenedColumns.get(key);
         if (widened != null && widened >= newLength) {
             return true;

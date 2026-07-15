@@ -26,15 +26,26 @@ public class RpcInvokeManager {
     }
 
     public void oneway(RpcConnection connection, RpcRequest request) {
+        tryOneway(connection, request);
+    }
+
+    /**
+     * Attempts to enqueue a fire-and-forget request.
+     *
+     * @return {@code true} when the request was accepted by the channel, or
+     *         {@code false} when local backpressure rejected it
+     */
+    public boolean tryOneway(RpcConnection connection, RpcRequest request) {
         RpcMetrics metrics = container.getMetrics();
         if (!connection.isWritable()) {
             // 出站缓冲堆到高水位，oneway 直接丢（fire-and-forget），不堆爆堆外内存
             metrics.onRejectedNotWritable();
-            return;
+            return false;
         }
         // fire-and-forget：不挂写回调（写失败也不重试），避免热路径每次分配 IWriteCallback + listener
         connection.writeMsg(request);
         metrics.onOnewaySent();
+        return true;
     }
 
     public RpcFuture invoke(RpcConnection connection, RpcRequest request) {

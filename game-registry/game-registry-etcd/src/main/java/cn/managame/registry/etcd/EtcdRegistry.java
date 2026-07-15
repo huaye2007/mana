@@ -26,6 +26,8 @@ import io.etcd.jetcd.support.CloseableClient;
 import io.etcd.jetcd.watch.WatchEvent;
 import io.etcd.jetcd.watch.WatchResponse;
 import io.grpc.stub.StreamObserver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -43,47 +45,69 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class EtcdRegistry implements ServiceRegistry {
+    private static final Logger log = LoggerFactory.getLogger(EtcdRegistry.class);
     static final String PREFIX_PROPERTY = "prefix";
     static final String TTL_PROPERTY = "leaseTtlSeconds";
+    static final String OPERATION_TIMEOUT_PROPERTY = "operationTimeoutMillis";
     static final String USERNAME_PROPERTY = "username";
     static final String PASSWORD_PROPERTY = "password";
     static final String DEFAULT_PREFIX = "/mana/services";
     static final long DEFAULT_TTL_SECONDS = 10;
+    static final long DEFAULT_OPERATION_TIMEOUT_MILLIS = 5000;
+    private static final long RECOVERY_INITIAL_BACKOFF_MILLIS = 100;
+    private static final long RECOVERY_MAX_BACKOFF_MILLIS = 5000;
     private static final int FORMAT_VERSION = 1;
 
     private final Client client;
     private final KV kv;
     private final Lease lease;
     private final Watch watchClient;
-    private final long leaseId;
-    private final CloseableClient keepAlive;
+    private volatile long leaseId;
+    private volatile CloseableClient keepAlive;
+    private final long leaseTtlSeconds;
+    private final long operationTimeoutMillis;
     private final String prefix;
     private final String owner;
     private final Map<String, ServiceInstance> registrations = new ConcurrentHashMap<>();
     private final Set<EtcdWatch> watches = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final Object leaseLock = new Object();
+    private final AtomicBoolean leaseRecoveryScheduled = new AtomicBoolean();
+    private final AtomicInteger leaseRecoveryAttempts = new AtomicInteger();
+    private final ScheduledExecutorService recoveryExecutor = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofVirtual().name("etcd-registry-recovery-", 0).factory());
 
     EtcdRegistry(RegistryConfig config) {
         Client created = createClient(config);
+        long ttl = parseTtl(config.getProperties().get(TTL_PROPERTY));
+        long timeoutMillis = parsePositiveLong(config.getProperties().get(OPERATION_TIMEOUT_PROPERTY),
+                DEFAULT_OPERATION_TIMEOUT_MILLIS, OPERATION_TIMEOUT_PROPERTY);
         try {
             Lease createdLease = created.getLeaseClient();
-            long ttl = parseTtl(config.getProperties().get(TTL_PROPERTY));
-            long createdLeaseId = await(createdLease.grant(ttl), "grant etcd lease").getID();
-            CloseableClient keepAliveHandle = createdLease.keepAlive(createdLeaseId, new KeepAliveObserver());
             client = created;
             kv = created.getKVClient();
             lease = createdLease;
             watchClient = created.getWatchClient();
-            leaseId = createdLeaseId;
-            keepAlive = keepAliveHandle;
+            leaseTtlSeconds = ttl;
+            operationTimeoutMillis = timeoutMillis;
             prefix = normalizePrefix(config.getProperties().getOrDefault(PREFIX_PROPERTY, DEFAULT_PREFIX));
             owner = UUID.randomUUID().toString();
+            long createdLeaseId = await(createdLease.grant(ttl), "grant etcd lease").getID();
+            leaseId = createdLeaseId;
+            keepAlive = createdLease.keepAlive(createdLeaseId, new KeepAliveObserver(createdLeaseId));
         } catch (RuntimeException e) {
+            recoveryExecutor.shutdownNow();
             created.close();
             throw e;
         }
@@ -94,6 +118,8 @@ public final class EtcdRegistry implements ServiceRegistry {
         this.kv = client.getKVClient();
         this.lease = client.getLeaseClient();
         this.watchClient = client.getWatchClient();
+        this.leaseTtlSeconds = DEFAULT_TTL_SECONDS;
+        this.operationTimeoutMillis = DEFAULT_OPERATION_TIMEOUT_MILLIS;
         this.leaseId = leaseId;
         this.keepAlive = Objects.requireNonNull(keepAlive, "keepAlive");
         this.prefix = normalizePrefix(prefix);
@@ -104,22 +130,25 @@ public final class EtcdRegistry implements ServiceRegistry {
     public void register(ServiceInstance instance) {
         requireOpen();
         Objects.requireNonNull(instance, "instance");
-        ByteSequence key = key(instance);
-        ByteSequence value = encode(owner, instance);
-        PutOption option = PutOption.builder().withLeaseId(leaseId).build();
-        await(kv.put(key, value, option), "register " + instance);
-        registrations.put(registrationKey(instance), instance);
+        synchronized (leaseLock) {
+            requireOpen();
+            putOnLease(instance, leaseId);
+            registrations.put(registrationKey(instance), instance);
+        }
     }
 
     @Override
     public void deregister(ServiceInstance instance) {
         requireOpen();
         Objects.requireNonNull(instance, "instance");
-        String registrationKey = registrationKey(instance);
-        ServiceInstance owned = registrations.get(registrationKey);
-        if (owned == null) return;
-        deleteOwned(owned);
-        registrations.remove(registrationKey, owned);
+        synchronized (leaseLock) {
+            requireOpen();
+            String registrationKey = registrationKey(instance);
+            ServiceInstance owned = registrations.get(registrationKey);
+            if (owned == null) return;
+            deleteOwned(owned);
+            registrations.remove(registrationKey, owned);
+        }
     }
 
     @Override
@@ -138,16 +167,10 @@ public final class EtcdRegistry implements ServiceRegistry {
         Objects.requireNonNull(listener, "listener");
         GetResponse response = await(kv.get(servicePrefix(serviceName), prefixGet()),
                 "get initial instances for " + serviceName);
-        EtcdWatch subscription = new EtcdWatch(listener);
-        WatchOption option = WatchOption.builder()
-                .isPrefix(true)
-                .withPrevKV(true)
-                .withRevision(response.getHeader().getRevision() + 1)
-                .build();
-        subscription.watcher = watchClient.watch(servicePrefix(serviceName), option, subscription);
+        EtcdWatch subscription = new EtcdWatch(serviceName, listener);
         watches.add(subscription);
         try {
-            subscription.initialize(decodeInstances(response.getKvs()));
+            subscription.start(response);
             return subscription;
         } catch (RuntimeException e) {
             subscription.close();
@@ -158,6 +181,7 @@ public final class EtcdRegistry implements ServiceRegistry {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        recoveryExecutor.shutdownNow();
         RuntimeException failure = null;
         for (EtcdWatch watch : List.copyOf(watches)) {
             try {
@@ -166,15 +190,17 @@ public final class EtcdRegistry implements ServiceRegistry {
                 failure = append(failure, e);
             }
         }
-        try {
-            keepAlive.close();
-        } catch (RuntimeException e) {
-            failure = append(failure, e);
-        }
-        try {
-            await(lease.revoke(leaseId), "revoke etcd lease");
-        } catch (RuntimeException e) {
-            failure = append(failure, e);
+        synchronized (leaseLock) {
+            try {
+                keepAlive.close();
+            } catch (RuntimeException e) {
+                failure = append(failure, e);
+            }
+            try {
+                await(lease.revoke(leaseId), "revoke etcd lease");
+            } catch (RuntimeException e) {
+                failure = append(failure, e);
+            }
         }
         try {
             client.close();
@@ -191,6 +217,11 @@ public final class EtcdRegistry implements ServiceRegistry {
         Cmp ownedValue = new Cmp(key, Cmp.Op.EQUAL, CmpTarget.value(value));
         Op delete = Op.delete(key, DeleteOption.DEFAULT);
         await(kv.txn().If(ownedValue).Then(delete).commit(), "deregister " + instance);
+    }
+
+    private void putOnLease(ServiceInstance instance, long targetLeaseId) {
+        PutOption option = PutOption.builder().withLeaseId(targetLeaseId).build();
+        await(kv.put(key(instance), encode(owner, instance), option), "register " + instance);
     }
 
     private ByteSequence key(ServiceInstance instance) {
@@ -282,6 +313,17 @@ public final class EtcdRegistry implements ServiceRegistry {
         }
     }
 
+    private static long parsePositiveLong(String value, long defaultValue, String property) {
+        if (value == null || value.isBlank()) return defaultValue;
+        try {
+            long parsed = Long.parseLong(value.trim());
+            if (parsed <= 0) throw new IllegalArgumentException(property + " must be positive");
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(property + " must be a positive integer", e);
+        }
+    }
+
     private static String normalizePrefix(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("etcd prefix must not be blank");
         String result = value.trim();
@@ -310,13 +352,90 @@ public final class EtcdRegistry implements ServiceRegistry {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("service name must not be blank");
     }
 
-    private static <T> T await(CompletableFuture<T> future, String action) {
+    private <T> T await(CompletableFuture<T> future, String action) {
         try {
-            return future.join();
-        } catch (CompletionException e) {
+            return future.get(operationTimeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new RegistryException("timed out after " + operationTimeoutMillis + "ms while attempting to " + action, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RegistryException("interrupted while attempting to " + action, e);
+        } catch (ExecutionException e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
             throw new RegistryException("failed to " + action, cause);
         }
+    }
+
+    private void scheduleLeaseRecovery(long observedLeaseId, Throwable cause) {
+        if (closed.get() || leaseId != observedLeaseId) return;
+        if (!leaseRecoveryScheduled.compareAndSet(false, true)) return;
+        int attempt = leaseRecoveryAttempts.getAndIncrement();
+        long delay = recoveryDelay(attempt);
+        log.warn("etcd lease keepalive lost; scheduling recovery in {}ms, leaseId={}",
+                delay, observedLeaseId, cause);
+        try {
+            recoveryExecutor.schedule(() -> recoverLease(observedLeaseId), delay, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ignored) {
+            leaseRecoveryScheduled.set(false);
+        }
+    }
+
+    void keepAliveFailed(long observedLeaseId, Throwable cause) {
+        scheduleLeaseRecovery(observedLeaseId, cause);
+    }
+
+    private void recoverLease(long observedLeaseId) {
+        boolean recovered = false;
+        try {
+            synchronized (leaseLock) {
+                if (closed.get() || leaseId != observedLeaseId) return;
+                long newLeaseId = await(lease.grant(leaseTtlSeconds), "re-grant etcd lease").getID();
+                CloseableClient newKeepAlive = null;
+                try {
+                    for (ServiceInstance instance : List.copyOf(registrations.values())) {
+                        putOnLease(instance, newLeaseId);
+                    }
+                    newKeepAlive = lease.keepAlive(newLeaseId, new KeepAliveObserver(newLeaseId));
+                } catch (RuntimeException recoveryFailure) {
+                    if (newKeepAlive != null) {
+                        try { newKeepAlive.close(); } catch (RuntimeException closeFailure) {
+                            recoveryFailure.addSuppressed(closeFailure);
+                        }
+                    }
+                    try { await(lease.revoke(newLeaseId), "revoke failed recovery lease"); }
+                    catch (RuntimeException revokeFailure) { recoveryFailure.addSuppressed(revokeFailure); }
+                    throw recoveryFailure;
+                }
+
+                CloseableClient oldKeepAlive = keepAlive;
+                long oldLeaseId = leaseId;
+                leaseId = newLeaseId;
+                keepAlive = newKeepAlive;
+                recovered = true;
+                try { oldKeepAlive.close(); }
+                catch (RuntimeException e) { log.debug("failed to close obsolete etcd keepalive", e); }
+                try { await(lease.revoke(oldLeaseId), "revoke obsolete etcd lease"); }
+                catch (RuntimeException e) { log.debug("failed to revoke obsolete etcd lease {}", oldLeaseId, e); }
+                log.info("etcd lease recovered and {} registrations restored, oldLeaseId={}, newLeaseId={}",
+                        registrations.size(), oldLeaseId, newLeaseId);
+            }
+        } catch (RuntimeException failure) {
+            log.warn("etcd lease recovery attempt failed, leaseId={}", observedLeaseId, failure);
+        } finally {
+            leaseRecoveryScheduled.set(false);
+            if (recovered) {
+                leaseRecoveryAttempts.set(0);
+            } else if (!closed.get() && leaseId == observedLeaseId) {
+                scheduleLeaseRecovery(observedLeaseId,
+                        new RegistryException("previous etcd lease recovery attempt failed"));
+            }
+        }
+    }
+
+    private static long recoveryDelay(int attempt) {
+        int shift = Math.min(attempt, 10);
+        return Math.min(RECOVERY_MAX_BACKOFF_MILLIS, RECOVERY_INITIAL_BACKOFF_MILLIS << shift);
     }
 
     private static RuntimeException append(RuntimeException current, RuntimeException next) {
@@ -328,70 +447,187 @@ public final class EtcdRegistry implements ServiceRegistry {
     record Envelope(String owner, ServiceInstance instance) {
     }
 
-    private final class EtcdWatch implements Watch.Listener, AutoCloseable {
+    private final class EtcdWatch implements AutoCloseable {
+        private final String serviceName;
         private final ServiceInstanceListener listener;
         private final AtomicBoolean active = new AtomicBoolean(true);
+        private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
+        private final AtomicInteger reconnectAttempts = new AtomicInteger();
         private final List<ServiceInstanceEvent> pending = new ArrayList<>();
-        private boolean initialized;
+        private final Map<String, ServiceInstance> known = new HashMap<>();
+        private boolean ready;
+        private long generation;
         private Watch.Watcher watcher;
 
-        private EtcdWatch(ServiceInstanceListener listener) {
+        private EtcdWatch(String serviceName, ServiceInstanceListener listener) {
+            this.serviceName = serviceName;
             this.listener = listener;
         }
 
-        private synchronized void initialize(List<ServiceInstance> initial) {
-            if (!active.get()) return;
-            initial.forEach(instance -> listener.onEvent(new ServiceInstanceEvent(DiscoveryEventType.ADDED, instance)));
-            pending.forEach(listener::onEvent);
-            pending.clear();
-            initialized = true;
+        private void start(GetResponse response) {
+            final long token;
+            synchronized (this) {
+                if (!active.get()) return;
+                token = ++generation;
+                ready = false;
+                pending.clear();
+            }
+            WatchOption option = WatchOption.builder()
+                    .isPrefix(true)
+                    .withPrevKV(true)
+                    .withRevision(response.getHeader().getRevision() + 1)
+                    .build();
+            Watch.Listener delegate = new Watch.Listener() {
+                @Override public void onNext(WatchResponse value) { acceptResponse(token, value); }
+                @Override public void onError(Throwable throwable) { watchFailed(token, throwable); }
+                @Override public void onCompleted() {
+                    watchFailed(token, new RegistryException("etcd watch completed unexpectedly"));
+                }
+            };
+            Watch.Watcher installed = watchClient.watch(servicePrefix(serviceName), option, delegate);
+            Watch.Watcher previous;
+            synchronized (this) {
+                if (!active.get() || token != generation) {
+                    installed.close();
+                    return;
+                }
+                previous = watcher;
+                watcher = installed;
+                reconcile(decodeInstances(response.getKvs()));
+            }
+            if (previous != null && previous != installed) previous.close();
         }
 
-        @Override
-        public void onNext(WatchResponse response) {
-            for (WatchEvent event : response.getEvents()) {
-                KeyValue value = event.getEventType() == WatchEvent.EventType.DELETE
-                        ? event.getPrevKV() : event.getKeyValue();
-                if (value == null || value.getValue() == null || value.getValue().isEmpty()) continue;
-                DiscoveryEventType type = switch (event.getEventType()) {
-                    case DELETE -> DiscoveryEventType.REMOVED;
-                    case PUT -> value.getCreateRevision() == value.getModRevision()
-                            ? DiscoveryEventType.ADDED : DiscoveryEventType.UPDATED;
-                    default -> null;
-                };
-                if (type != null) accept(new ServiceInstanceEvent(type, decode(value.getValue()).instance()));
+        private void acceptResponse(long token, WatchResponse response) {
+            try {
+                for (WatchEvent event : response.getEvents()) {
+                    KeyValue value = event.getEventType() == WatchEvent.EventType.DELETE
+                            ? event.getPrevKV() : event.getKeyValue();
+                    if (value == null || value.getValue() == null || value.getValue().isEmpty()) continue;
+                    DiscoveryEventType type = switch (event.getEventType()) {
+                        case DELETE -> DiscoveryEventType.REMOVED;
+                        case PUT -> value.getCreateRevision() == value.getModRevision()
+                                ? DiscoveryEventType.ADDED : DiscoveryEventType.UPDATED;
+                        default -> null;
+                    };
+                    if (type != null) accept(token,
+                            new ServiceInstanceEvent(type, decode(value.getValue()).instance()));
+                }
+            } catch (RuntimeException error) {
+                watchFailed(token, error);
             }
         }
 
-        private synchronized void accept(ServiceInstanceEvent event) {
-            if (!active.get()) return;
-            if (!initialized) pending.add(event);
-            else listener.onEvent(event);
+        private synchronized void accept(long token, ServiceInstanceEvent event) {
+            if (!active.get() || token != generation) return;
+            if (!ready) pending.add(event);
+            else applyEvent(event);
+        }
+
+        private void watchFailed(long token, Throwable throwable) {
+            synchronized (this) {
+                if (!active.get() || token != generation) return;
+                ready = false;
+            }
+            scheduleReconnect(throwable);
+        }
+
+        private void scheduleReconnect(Throwable cause) {
+            if (!active.get() || closed.get() || !reconnectScheduled.compareAndSet(false, true)) return;
+            int attempt = reconnectAttempts.getAndIncrement();
+            long delay = recoveryDelay(attempt);
+            log.warn("etcd watch lost; scheduling snapshot reconciliation in {}ms, service={}",
+                    delay, serviceName, cause);
+            try {
+                recoveryExecutor.schedule(() -> {
+                    reconnectScheduled.set(false);
+                    if (!active.get() || closed.get()) return;
+                    try {
+                        GetResponse response = await(kv.get(servicePrefix(serviceName), prefixGet()),
+                                "reconcile instances for " + serviceName);
+                        start(response);
+                        reconnectAttempts.set(0);
+                        log.info("etcd watch recovered, service={}", serviceName);
+                    } catch (RuntimeException error) {
+                        scheduleReconnect(error);
+                    }
+                }, delay, TimeUnit.MILLISECONDS);
+            } catch (RejectedExecutionException ignored) {
+                reconnectScheduled.set(false);
+            }
+        }
+
+        private void reconcile(List<ServiceInstance> latestInstances) {
+            Map<String, ServiceInstance> latest = new HashMap<>();
+            latestInstances.forEach(instance -> latest.put(instance.getKey(), instance));
+            for (ServiceInstance previous : List.copyOf(known.values())) {
+                if (!latest.containsKey(previous.getKey())) {
+                    emit(new ServiceInstanceEvent(DiscoveryEventType.REMOVED, previous));
+                }
+            }
+            for (ServiceInstance current : latest.values()) {
+                ServiceInstance previous = known.get(current.getKey());
+                if (previous == null) {
+                    emit(new ServiceInstanceEvent(DiscoveryEventType.ADDED, current));
+                } else if (!previous.equals(current)) {
+                    emit(new ServiceInstanceEvent(DiscoveryEventType.UPDATED, current));
+                }
+            }
+            known.clear();
+            known.putAll(latest);
+            ready = true;
+            List<ServiceInstanceEvent> queued = List.copyOf(pending);
+            pending.clear();
+            queued.forEach(this::applyEvent);
+        }
+
+        private void applyEvent(ServiceInstanceEvent event) {
+            if (event.getType() == DiscoveryEventType.REMOVED) {
+                known.remove(event.getInstance().getKey());
+            } else {
+                known.put(event.getInstance().getKey(), event.getInstance());
+            }
+            emit(event);
+        }
+
+        private void emit(ServiceInstanceEvent event) {
+            try {
+                listener.onEvent(event);
+            } catch (RuntimeException error) {
+                log.warn("service instance listener failed, service={}, event={}", serviceName, event.getType(), error);
+            }
         }
 
         @Override
-        public void onError(Throwable throwable) {
-            active.set(false);
-            watches.remove(this);
-        }
-
-        @Override
-        public void onCompleted() {
-            active.set(false);
-            watches.remove(this);
-        }
-
-        @Override
-        public void close() {
+        public synchronized void close() {
             if (!active.compareAndSet(true, false)) return;
+            generation++;
+            ready = false;
+            pending.clear();
             if (watcher != null) watcher.close();
             watches.remove(this);
         }
     }
 
-    private static final class KeepAliveObserver implements StreamObserver<io.etcd.jetcd.lease.LeaseKeepAliveResponse> {
-        @Override public void onNext(io.etcd.jetcd.lease.LeaseKeepAliveResponse value) { }
-        @Override public void onError(Throwable throwable) { }
-        @Override public void onCompleted() { }
+    private final class KeepAliveObserver implements StreamObserver<io.etcd.jetcd.lease.LeaseKeepAliveResponse> {
+        private final long observedLeaseId;
+
+        private KeepAliveObserver(long observedLeaseId) {
+            this.observedLeaseId = observedLeaseId;
+        }
+
+        @Override public void onNext(io.etcd.jetcd.lease.LeaseKeepAliveResponse value) {
+            if (value.getTTL() <= 0) {
+                keepAliveFailed(observedLeaseId,
+                        new RegistryException("etcd lease keepalive returned a non-positive TTL"));
+            }
+        }
+        @Override public void onError(Throwable throwable) {
+            keepAliveFailed(observedLeaseId, throwable);
+        }
+        @Override public void onCompleted() {
+            keepAliveFailed(observedLeaseId,
+                    new RegistryException("etcd lease keepalive completed unexpectedly"));
+        }
     }
 }
