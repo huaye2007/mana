@@ -2,7 +2,6 @@ package cn.managame.dev.server;
 
 import cn.managame.dev.protocol.GamePacketDecoder;
 import cn.managame.dev.protocol.GamePacketEncoder;
-import cn.managame.network.handler.pipeline.IPipelineConfigurator;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.timeout.IdleStateHandler;
 
@@ -10,7 +9,7 @@ import io.netty.handler.timeout.IdleStateHandler;
  * 外网管线：读空闲检测（踢掉心跳断供的连接）+ 外网帧编解码。
  * 该 configurator 每个 channel 调用一次，handler 都是新实例，可安全携带状态。
  */
-public class CustomTcpPipelineConfigurator implements IPipelineConfigurator {
+public class CustomTcpPipelineConfigurator {
 
     /** 默认读空闲踢人阈值（秒）：客户端心跳间隔的数倍，漏一两拍不误杀。 */
     public static final int DEFAULT_READER_IDLE_SECONDS = 180;
@@ -26,7 +25,6 @@ public class CustomTcpPipelineConfigurator implements IPipelineConfigurator {
         this.readerIdleSeconds = readerIdleSeconds;
     }
 
-    @Override
     public void configure(ChannelPipeline pipeline) {
         if (readerIdleSeconds > 0) {
             pipeline.addLast(new IdleStateHandler(readerIdleSeconds, 0, 0));

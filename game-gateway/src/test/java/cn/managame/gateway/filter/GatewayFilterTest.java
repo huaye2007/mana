@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class GatewayFilterTest {
-    private static GatewaySession session(long id, String ip) { return new GatewaySession(new FakeConnection(id, ip), ip); }
+    private static GatewaySession session(long id, String ip) { return new GatewaySession(id, new FakeConnection(id, ip), ip); }
     private static GatewayPacket packet(int command) { return GatewayPacket.of(command, 1, 0, GatewayPacketConstant.EMPTY_BODY); }
 
     @Test void gatesUnauthenticatedCommands() {

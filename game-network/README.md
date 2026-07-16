@@ -1,350 +1,162 @@
-[English](README.en.md) | 中文
-
 # game-network
 
-`game-network` 是一个轻量级游戏服务器网络框架。它的边界刻意保持精简：负责接入连接、管理连接/会话生命周期、执行传输层 pipeline，并把网络事件和已解码的消息投递给 `INetworkHandler`。HTTP 请求/响应使用独立的 `IHttpHandler`。
+`game-network` 是 Netty 网络接入组件。它负责 Server 生命周期、长连接事件投递、TCP/WebSocket pipeline，以及统一的 HTTP 请求/响应语义。
 
-框架不负责游戏协议路由、命令分发、玩家业务逻辑，也不负责房间/场景调度。这些职责都属于上层游戏业务模块。
+Session、玩家/账号身份、登录态，以及 `connection -> session` 映射全部属于业务层，不由本模块定义或管理。HTTP 业务层只处理统一的 `HttpRequest` 和 `IHttpResponder`，不需要知道底层是 HTTP/1 还是 HTTP/2。
 
-## 架构边界
-
-```mermaid
-flowchart LR
-    Client["客户端 TCP / WebSocket / HTTP"] --> Transport["传输接入器"]
-    Transport --> Pipeline["Netty Pipeline"]
-    Pipeline --> Adapter["Netty Channel Handler"]
-    Adapter --> Connection["IConnection"]
-    Connection --> Session["ISession"]
-    Session --> Handler["INetworkHandler"]
-    Handler --> Game["上层游戏服务器"]
-```
-
-## 模块划分
+## 模块边界
 
 - `game-network-core`
-  - 定义与传输实现无关的核心契约。
-  - 提供 `IConnection`、`ISession`、连接/会话管理器，以及生命周期桥接接口。
+  - `IConnection`：连接的发送、关闭、状态和传输类型。
+  - `IConnectionHandler`：连接建立、消息、断开、异常和空闲事件。
+  - `INetworkServer`：最小化的 `start/stop` 生命周期契约。
+- `game-network-http`
+  - `HttpRequest` / `HttpResponse`：与具体网络实现无关的完整 HTTP 消息。
+  - `IHttpHandler` / `IHttpResponder`：不依赖 `CompletionStage` 的请求和响应回调。
 - `game-network-netty`
-  - 将 Netty `Channel` 事件适配为 core 层契约。
-  - 提供 TCP/WebSocket 连接实现和 pipeline 扩展点。
+  - `NettyConnection` / `WebsocketConnection`：Netty Channel 适配。
+  - `NettyServer` / `NettyServerBuilder`：统一 TCP、WebSocket 和完全自定义 Server。
+  - `NettyHttpServer`：将 HTTP/1、HTTP/2 和 h2c 适配到统一 HTTP Handler。
+  - WebSocket 帧与消息之间的默认转换。
 
-## 核心职责
+组件不再提供 Session、SessionManager、ConnectionManager、网络配置 DTO 或通用 pipeline 配置接口。需要 Netty 参数时直接配置 `ServerBootstrap`、`ChannelOption` 和 `ChannelPipeline`，从而避免重复包装随 Netty 版本变化的接口。
 
-网络框架负责：
+## 业务接入
 
-- 接入 TCP/WebSocket 连接。
-- 接入 HTTP/1.1 和 HTTP/2 h2c 请求。
-- 创建并维护 `IConnection`。
-- 创建并维护 `ISession`。
-- 将连接生命周期事件转发给 `INetworkHandler`。
-- 将收到的消息转发给 `INetworkHandler.onMessage(session, packet)`。
-- 通过 `session.writeMsg(...)` 提供出站消息发送能力。
-- `ISession` 不定义业务唯一标识，也不承载业务属性；玩家 ID、账号 ID、登录态等业务上下文由上层模块自行维护。
-- 干净地关闭连接和会话。
-- 为 SSL、IP 过滤、流量控制、拆包粘包、空闲检测、编解码、指标统计、业务投递 handler 提供 pipeline 插槽。
-
-网络框架不负责：
-
-- 游戏协议路由。
-- 命令 handler 查找。
-- 玩家登录语义。
-- 房间、战斗、场景或 actor 调度。
-- 跨服 RPC。
-- 持久化。
-- 业务重试或游戏事务逻辑。
-
-## 生命周期流程
-
-```mermaid
-sequenceDiagram
-    participant Netty
-    participant Adapter as NettyConnectionChannelHandler
-    participant ConnMgr as ConnectionManager
-    participant Bridge as ServerConnectionHandler
-    participant SessMgr as SessionManager
-    participant Biz as INetworkHandler
-
-    Netty->>Adapter: channelActive
-    Adapter->>ConnMgr: addConnection
-    Adapter->>Bridge: onConnect(connection)
-    Bridge->>SessMgr: addSession
-    Bridge->>Biz: onConnect(session)
-
-    Netty->>Adapter: channelRead(packet)
-    Adapter->>ConnMgr: getConnection(channel)
-    Adapter->>Bridge: onMessage(connection, packet)
-    Bridge->>SessMgr: getSession(connection)
-    Bridge->>Biz: onMessage(session, packet)
-
-    Netty->>Adapter: IdleStateEvent
-    Adapter->>Bridge: onIdle(connection)
-    Bridge->>Biz: onIdle(session)
-
-    Netty->>Adapter: exceptionCaught
-    Adapter->>Bridge: onException(connection, cause)
-    Bridge->>Biz: onException(session, cause)
-
-    Netty->>Adapter: channelInactive
-    Adapter->>ConnMgr: removeConnectionByChannel
-    Adapter->>Bridge: onDisconnect(connection)
-    Bridge->>SessMgr: removeSession
-    Bridge->>Biz: onDisconnect(session)
-```
-
-## `INetworkHandler` 契约
-
-上层模块通过实现 `INetworkHandler` 接入网络框架：
+业务实现 `IConnectionHandler`。如果业务需要 Session，应在连接建立时创建，并在业务自己的管理器中维护映射：
 
 ```java
-public interface INetworkHandler {
-
-    void onConnect(ISession session);
-
-    void onMessage(ISession session, Object packet);
-
-    void onDisconnect(ISession session);
-
-    void onException(ISession session, Throwable cause);
-
-    default boolean onIdle(ISession session) {
-        return false;
+IConnectionHandler handler = new IConnectionHandler() {
+    @Override
+    public void onConnect(IConnection connection) {
+        sessions.add(new PlayerSession(connection));
     }
-}
+
+    @Override
+    public void onMessage(IConnection connection, Object message) {
+        PlayerSession session = sessions.get(connection);
+        router.dispatch(session, message);
+    }
+
+    @Override
+    public void onDisconnect(IConnection connection) {
+        sessions.remove(connection);
+    }
+
+    @Override
+    public void onException(IConnection connection, Throwable cause) {
+        connection.close();
+    }
+
+    @Override
+    public void onIdle(IConnection connection) {
+        connection.close();
+    }
+};
 ```
 
-`onIdle` 的返回值表示框架是否需要关闭会话。返回 `true` 时框架关闭会话；返回 `false` 时连接保持打开，由上层业务自行决定后续处理。
-
-## Pipeline 模型
-
-Pipeline handler 按 `PipelineConstants` 中定义的优先级排序：
-
-| 优先级 | 阶段 |
-| --- | --- |
-| `100` | SSL |
-| `200` | IP 过滤 |
-| `300` | 流量控制 |
-| `350` | 指标统计 |
-| `400` | 拆包粘包 |
-| `500` | 空闲检测 |
-| `600` | 编解码 |
-| `700` | 认证钩子 |
-| `1000` | 业务投递 |
-
-这里的业务投递仍然只是网络层桥接：它只应该调用 `INetworkHandler`，不应该在 `game-network` 内部执行游戏命令路由。
-
-## 第一阶段已完成
-
-第一阶段聚焦于稳定现有骨架：
-
-- 将连接空闲事件转发给 `INetworkHandler`。
-- 生命周期方法处理缺失 session 的情况。
-- 避免重复触发断开处理。
-- 使用连接 ID 生成器替代 `channel.id().hashCode()`。
-- 扩展 `ConnectionManager`。
-- 扩展 `SessionManager`。
-
-## 第二阶段已完成
-
-第二阶段让网络框架具备可启动的 TCP 服务能力：
-
-- 增加 `INetworkServer`，统一网络服务生命周期：
-  - `start()`
-  - `stop()`
-- 增加 `NetworkServerConfig`（抽象基类），提供各协议共用的传输配置：
-  - `host`
-  - `port`
-  - `bossThreads`
-  - `workerThreads`
-  - `idleSeconds`
-  - `tcpNoDelay`
-  - `soBacklog`
-- 按协议拆出三个具体配置子类，协议特有字段各归各类，服务端构造参数也按子类收窄（编译期保证类型匹配，不再运行时校验 `connectionType`）：
-  - `NetworkTcpServerConfig`：无额外字段，留作 TCP 专属配置的落点
-  - `NetworkWsServerConfig`：`websocketPath`、`httpMaxContentLength`
-  - `NetworkHttpServerConfig`：`httpMaxContentLength`、`httpProtocol`
-- 增加 `NettyTcpServer`，负责 Netty `ServerBootstrap`、`EventLoopGroup`、端口绑定和优雅关闭。
-- 增加 `DefaultTcpPipelineConfigurator`，负责加入：
-  - `NettyConnectionChannelHandler`
-- `IdleStateHandler` 不写死在默认 TCP pipeline 中。需要空闲检测时，上层通过自定义 `IPipelineConfigurator` 添加（实现 `IPipelineConfigurator` 即可，无需依赖任何框架对象）。
-
-`DefaultTcpPipelineConfigurator` 本身只负责业务投递 handler。使用 `new NettyTcpServer(config, handler)` 时，框架不做默认编解码，Netty pipeline 上游传下来的对象会原样进入 `INetworkHandler.onMessage(session, packet)`。如果没有自定义解码，TCP 入站通常是 `ByteBuf`。
-
-## 第三阶段已完成
-
-第三阶段聚焦编解码边界、pipeline 组合和基础测试：
-
-- 不封装 packet encoder/decoder。用户完全自定义编码和解码，直接在 pipeline 中使用 Netty handler。
-- 用户自定义 decoder 输出什么，`INetworkHandler.onMessage(...)` 就收到什么；用户自定义 encoder 输出什么，Netty 就继续向后写什么。
-- 默认路径不复制、不转换 `ByteBuf`，保持 Netty 原生性能边界。
-- 如果业务想使用 `byte[]`，可以显式添加 `ByteArrayCodecPipelineConfigurator`：
-  - 入站 `ByteBuf` 转为 `byte[]`
-  - 出站 `byte[]` 转为 `ByteBuf`
-- 增加 pipeline 组合能力：
-  - `CompositePipelineConfigurator`
-  - `ByteArrayCodecPipelineConfigurator`
-- 增加基础测试：
-  - `ConnectionManager`
-  - `SessionManager`
-  - `NetworkServerConfig`
-  - byte[] codec handler
-  - pipeline 组合器
-  - `NettyTcpServer` TCP echo 集成测试
-
-如果 `ByteBuf` 直接进入 `INetworkHandler`，释放责任由业务处理；更推荐在 pipeline 中用自定义 Netty handler 解码成业务对象。
-
-## 第四阶段已完成
-
-第四阶段增加 WebSocket 支持，同时保持 TCP / WebSocket 共用同一套生命周期：
-
-- 增加 `NettyWebSocketServer`。
-- 默认 WebSocket pipeline 包含：
-  - `HttpServerCodec`
-  - `HttpObjectAggregator`
-  - `WebSocketServerProtocolHandler`
-  - `WebSocketFrameToPacketDecoder`
-  - `PacketToWebSocketFrameEncoder`
-  - `WebsocketConnectionChannelHandler`
-- WebSocket 握手完成后才触发 `INetworkHandler.onConnect(session)`。
-- WebSocket frame 和业务 packet 的默认转换：
-  - `BinaryWebSocketFrame` -> `ByteBuf`
-  - `TextWebSocketFrame` -> `String`
-  - 出站 `ByteBuf` / `byte[]` -> `BinaryWebSocketFrame`
-  - 出站 `String` -> `TextWebSocketFrame`
-- TCP / WebSocket 统一使用：
-  - `ISession`
-  - `IConnection`
-  - `INetworkHandler`
-
-## 第五阶段已完成
-
-第五阶段增加 HTTP 支持，并将 Netty 升级到 `4.2.15.Final`：
-
-- 增加 `NettyHttpServer`。
-- 增加 HTTP 协议配置：
-  - `HTTP1`
-  - `HTTP2`
-  - `HTTP1_AND_HTTP2`
-- 增加独立 HTTP 契约：
-  - `IHttpHandler`
-  - `IHttpExchange`
-- HTTP/1.1 pipeline 包含：
-  - `HttpServerCodec`
-  - `HttpObjectAggregator`
-  - `NettyHttpDispatcher`
-- HTTP/2 h2c pipeline 包含：
-  - `Http2FrameCodec`
-  - `Http2MultiplexHandler`
-  - 每个 stream 内使用 `Http2StreamFrameToHttpObjectCodec`
-  - `HttpObjectAggregator`
-  - `NettyHttpDispatcher`
-- HTTP 不复用 `INetworkHandler`、`ISession`、`IConnection`，避免把 HTTP/2 stream 请求模型塞进长连接消息模型。
-- 当前 HTTP/2 支持明文 h2c；TLS + ALPN 可以作为后续独立能力添加。
-
-## TCP Server 示例
+## 标准 TCP Server
 
 ```java
-NetworkTcpServerConfig config = new NetworkTcpServerConfig(9000);
-config.setHost("0.0.0.0");
+INetworkServer tcpServer = NettyServer.tcp(handler)
+        .bind("0.0.0.0", 9000)
+        .bootstrap(bootstrap -> bootstrap
+                .option(ChannelOption.SO_BACKLOG, 1024)
+                .childOption(ChannelOption.TCP_NODELAY, true))
+        .pipeline(pipeline -> {
+            pipeline.addLast("idle", new IdleStateHandler(60, 0, 0));
+            pipeline.addLast("decoder", packetDecoder);
+            pipeline.addLast("encoder", packetEncoder);
+        })
+        .build();
 
-INetworkHandler handler = new INetworkHandler() {
-    @Override
-    public void onConnect(ISession session) {
-    }
+tcpServer.start();
+```
 
-    @Override
-    public void onMessage(ISession session, Object packet) {
-        session.writeMsg(packet);
-    }
+`pipeline(...)` 中加入的是原生 Netty handler。没有 decoder 时，TCP 消息通常以 `ByteBuf` 投递，释放责任由消费方承担。
 
-    @Override
-    public void onDisconnect(ISession session) {
-    }
+## 标准 WebSocket Server
 
-    @Override
-    public void onException(ISession session, Throwable cause) {
-    }
+```java
+WebSocketServerProtocolConfig protocol = WebSocketServerProtocolConfig.newBuilder()
+        .websocketPath("/ws")
+        .checkStartsWith(true)
+        .build();
 
-    @Override
-    public boolean onIdle(ISession session) {
-        return true;
+INetworkServer wsServer = NettyServer.webSocket(protocol, handler)
+        .bind("0.0.0.0", 9001)
+        .httpMaxContentLength(64 * 1024)
+        .beforeProtocol(pipeline -> pipeline.addLast("ssl", sslHandler))
+        .pipeline(pipeline -> pipeline.addLast("packetCodec", packetCodec))
+        .build();
+```
+
+WebSocket 的连接建立事件在握手成功后触发。`beforeProtocol(...)` 适合 TLS 等必须位于 HTTP/WebSocket 协议 handler 之前的组件。
+
+## HTTP/1 与 HTTP/2
+
+业务 Handler 使用统一接口，既不接触 Netty 对象，也不需要返回 `CompletionStage`：
+
+```java
+IHttpHandler httpHandler = (request, responder) -> {
+    if (request.uri().equals("/health")) {
+        responder.text("ok");
+    } else {
+        responder.send(HttpResponse.empty(404));
     }
 };
 
-INetworkServer server = new NettyTcpServer(config, handler);
-server.start();
+INetworkServer httpServer = NettyHttpServer.builder(httpHandler)
+        .bind(8080)
+        .protocol(NettyHttpProtocol.AUTO)
+        .maxContentLength(1024 * 1024)
+        .build();
 ```
 
-## WebSocket Server 示例
+`AUTO` 在明文端口同时接受 HTTP/1.1、h2c upgrade 和 HTTP/2 prior knowledge。配置 `SslContext` 后通过 ALPN 选择 HTTP/1.1 或 HTTP/2；`SslContext` 必须使用 Netty 原生 ALPN 配置声明 `h2` 和 `http/1.1`。
+
+`IHttpResponder` 可以立即调用，也可以保留到 RPC、Actor 或其他异步业务回调中再调用。适配层保证从业务线程安全地切回对应 Netty EventLoop，并限制一个请求只完成一次。HTTP/2 的每个 Stream 独立适配成一次请求，但这些协议差异不会暴露给业务 Handler。
+
+第一版聚合完整请求体和响应体，不覆盖流式上传、SSE、HTTP/2 Push 等流式能力。
+
+## 完全自定义 Server
+
+用户需要自定义协议或完整控制 pipeline 时，可以只复用 Server 生命周期：
 
 ```java
-NetworkWsServerConfig config = new NetworkWsServerConfig(9000);
-config.setHost("0.0.0.0");
-config.setWebsocketPath("/ws");
-
-INetworkHandler handler = new INetworkHandler() {
+INetworkServer customServer = NettyServer.custom(new ChannelInitializer<SocketChannel>() {
     @Override
-    public void onConnect(ISession session) {
+    protected void initChannel(SocketChannel channel) {
+        channel.pipeline().addLast(customProtocolHandler);
     }
-
-    @Override
-    public void onMessage(ISession session, Object packet) {
-        session.writeMsg(packet);
-    }
-
-    @Override
-    public void onDisconnect(ISession session) {
-    }
-
-    @Override
-    public void onException(ISession session, Throwable cause) {
-    }
-};
-
-INetworkServer server = new NettyWebSocketServer(config, handler);
-server.start();
+})
+.bind(9100)
+.bootstrap(bootstrap -> bootstrap.childOption(ChannelOption.SO_KEEPALIVE, true))
+.build();
 ```
 
-## HTTP Server 示例
+也可以在 TCP/WebSocket preset 上调用 `initializer(...)`，完整替换其默认 pipeline。
+
+## 多个 Server
+
+每次 `build()` 都会创建独立的 `NettyServer`，因此一个进程可以同时监听多个 TCP、WebSocket 或自定义端口：
 
 ```java
-NetworkHttpServerConfig config = new NetworkHttpServerConfig(8080);
-config.setHost("0.0.0.0");
-config.setHttpProtocol(HttpProtocol.HTTP1_AND_HTTP2);
+INetworkServer clientTcp = NettyServer.tcp(clientHandler).bind(9000).build();
+INetworkServer clientWs  = NettyServer.webSocket(wsProtocol, clientHandler).bind(9001).build();
+INetworkServer adminHttp = NettyHttpServer.builder(httpHandler).bind(8080).build();
+INetworkServer internal  = NettyServer.tcp(rpcHandler).bind("127.0.0.1", 9100).build();
 
-IHttpHandler handler = exchange -> {
-    exchange.writeResponse(200, "ok");
-};
-
-INetworkServer server = new NettyHttpServer(config, handler);
-server.start();
+clientTcp.start();
+clientWs.start();
+adminHttp.start();
+internal.start();
 ```
 
-## 自定义编解码
-
-上层直接写自己的 Netty 编码、解码 handler，使用时添加进去即可。网络框架不关心协议格式，也不额外包装 encoder/decoder；handler 输出什么就是什么：
+默认情况下，每个 Server 创建并关闭自己的 `EventLoopGroup`，生命周期互不影响。如果多个 Server 需要共享线程组，应由上层统一创建和关闭，并对每个 Server 使用：
 
 ```java
-IPipelineConfigurator codecPipeline = pipeline -> {
-    pipeline.addLast(PipelineConstants.NAME_DECODER, new MyPacketDecoder());
-    pipeline.addLast(PipelineConstants.NAME_ENCODER, new MyPacketEncoder());
-};
-
-INetworkServer server = new NettyTcpServer(config, handler, codecPipeline);
-server.start();
+.eventLoopGroups(sharedBoss, sharedWorker, false)
 ```
 
-如果还需要拆包、心跳、指标等 handler，也是在同一个 pipeline 里继续 `addLast(...)`。
-
-## 自定义空闲检测
-
-空闲检测也是同样方式，直接添加 Netty handler：
-
-```java
-IPipelineConfigurator idlePipeline = pipeline -> {
-    pipeline.addLast(PipelineConstants.NAME_IDLE_STATE,
-            new IdleStateHandler(30, 0, 0, TimeUnit.SECONDS));
-};
-
-INetworkServer server = new NettyTcpServer(config, handler, idlePipeline);
-server.start();
-```
+只有明确由某一个 Server 独占并负责关闭线程组时，才将最后一个参数设为 `true`。

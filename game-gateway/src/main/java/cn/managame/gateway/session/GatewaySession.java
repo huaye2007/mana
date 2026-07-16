@@ -1,25 +1,31 @@
 package cn.managame.gateway.session;
 
 import cn.managame.network.connection.IConnection;
-import cn.managame.network.session.DefaultSession;
+import cn.managame.network.connection.IWriteCallback;
 
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
-public final class GatewaySession extends DefaultSession {
+public final class GatewaySession {
     private final long sessionId;
+    private final IConnection connection;
     private final String clientIp;
     private volatile boolean authenticated;
     private volatile long roleId;
     private final ConcurrentHashMap<String, String> backendBindings = new ConcurrentHashMap<>();
 
-    public GatewaySession(IConnection connection, String clientIp) {
-        super(Objects.requireNonNull(connection, "connection"));
-        this.sessionId = connection.getConnectionId();
+    public GatewaySession(long sessionId, IConnection connection, String clientIp) {
+        if (sessionId <= 0) throw new IllegalArgumentException("sessionId must be positive");
+        this.sessionId = sessionId;
+        this.connection = Objects.requireNonNull(connection, "connection");
         this.clientIp = normalizeIp(clientIp);
     }
 
     public long getSessionId() { return sessionId; }
+    public IConnection getConnection() { return connection; }
+    public void writeMsg(Object message) { connection.writeMsg(message); }
+    public void writeMsg(Object message, IWriteCallback callback) { connection.writeMsg(message, callback); }
+    public void close() { connection.close(); }
     public String getClientIp() { return clientIp; }
     public boolean isAuthenticated() { return authenticated; }
     public void setAuthenticated(boolean authenticated) { this.authenticated = authenticated; }

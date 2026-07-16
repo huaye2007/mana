@@ -11,9 +11,8 @@ import cn.managame.dev.server.PlayerSessionManager;
 import cn.managame.config.ConfigCenter;
 import cn.managame.config.ConfigFactory;
 import cn.managame.config.ConfigOptions;
-import cn.managame.network.connection.ServerConnectionIdGenerator;
-import cn.managame.network.server.NettyTcpServer;
-import cn.managame.network.server.NetworkTcpServerConfig;
+import cn.managame.network.server.NettyServer;
+import io.netty.channel.ChannelOption;
 import cn.managame.registry.api.ServiceInstance;
 import cn.managame.registry.api.ServiceRegistry;
 import cn.managame.registry.factory.RegistryConfig;
@@ -84,9 +83,14 @@ public class Game {
                 applicationContext.getBean(GameRouterManager.class));
 
         int port = resolvePort(configManager);
-        NetworkTcpServerConfig serverConfig = new NetworkTcpServerConfig(port);
-        NettyTcpServer nettyTcpServer = new NettyTcpServer(serverConfig, gameHandler,
-                new ServerConnectionIdGenerator(100), new CustomTcpPipelineConfigurator());
+        CustomTcpPipelineConfigurator pipeline = new CustomTcpPipelineConfigurator();
+        NettyServer nettyTcpServer = NettyServer.tcp(gameHandler)
+                .bind(port)
+                .bootstrap(bootstrap -> bootstrap
+                        .option(ChannelOption.SO_BACKLOG, 1024)
+                        .childOption(ChannelOption.TCP_NODELAY, true))
+                .pipeline(pipeline::configure)
+                .build();
         nettyTcpServer.start();
 
         // 端口就绪后再注册到注册中心，避免被发现却连不上；失败要停掉 netty，
@@ -113,7 +117,7 @@ public class Game {
      * 停网络（关连接、不再收请求）→ 排空执行器组（在途业务写完缓存/发起落库）→
      * 关 jpa（刷异步写队列到库）→ 关配置管理器 → 关容器。
      */
-    private static void shutdown(ServiceRegistry serviceRegistry, NettyTcpServer server, GameJpaContext jpaContext,
+    private static void shutdown(ServiceRegistry serviceRegistry, NettyServer server, GameJpaContext jpaContext,
                                  ConfigCenter configManager,
                                  AnnotationConfigApplicationContext applicationContext) {
         logger.info("game server shutting down");

@@ -21,8 +21,9 @@ import cn.managame.registry.api.ServiceRegistry;
 import cn.managame.registry.factory.RegistryConfig;
 import cn.managame.registry.factory.RegistryFactory;
 import cn.managame.rpc.RpcClientConfig;
-import cn.managame.network.connection.ServerConnectionIdGenerator;
+import cn.managame.network.server.INetworkServer;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -34,11 +35,10 @@ public final class Gateway implements AutoCloseable {
     private final GatewayConfig config;
     private final ServiceRegistry registry;
     private final boolean closeRegistry;
-    private final GatewaySessionManager sessions = new GatewaySessionManager();
+    private final GatewaySessionManager sessions;
     private final GatewayRpcClient rpcClient;
     private final List<BackendDiscovery> discoveries;
-    private final GatewayTcpServer tcpServer;
-    private final GatewayWebSocketServer webSocketServer;
+    private final List<INetworkServer> networkServers;
     private final ServiceInstance self;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -49,6 +49,7 @@ public final class Gateway implements AutoCloseable {
         this.config = Objects.requireNonNull(config, "config");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.closeRegistry = closeRegistry;
+        this.sessions = new GatewaySessionManager(config.serverId());
         BackendDirectory backends = new BackendDirectory(ConsistentHashRouter::new);
         CommandBackendServiceResolver serviceResolver = CommandBackendServiceResolver.parse(
                 config.backendService(), config.backendRoutes());
@@ -66,11 +67,12 @@ public final class Gateway implements AutoCloseable {
                 new RateLimitFilter(config.ratePps(), config.rateBurst()),
                 new AuthFilter(config.loginCommand())));
         GatewayNetworkHandler network = new GatewayNetworkHandler(sessions, filters, forwarder);
-        ServerConnectionIdGenerator connectionIds = new ServerConnectionIdGenerator(config.serverId());
-        tcpServer = new GatewayTcpServer(config.tcpPort(), connectionIds, config.readerIdleSeconds(), BodyCodec.IDENTITY, network);
-        webSocketServer = config.webSocketEnabled()
-                ? new GatewayWebSocketServer(config.wsPort(), config.wsPath(), connectionIds, BodyCodec.IDENTITY, network)
-                : null;
+        List<INetworkServer> servers = new ArrayList<>();
+        servers.add(new GatewayTcpServer(config.tcpPort(), config.readerIdleSeconds(), BodyCodec.IDENTITY, network));
+        if (config.webSocketEnabled()) {
+            servers.add(new GatewayWebSocketServer(config.wsPort(), config.wsPath(), BodyCodec.IDENTITY, network));
+        }
+        networkServers = List.copyOf(servers);
         self = ServiceInstance.builder().name(config.serviceName()).id(config.instanceId())
                 .address(config.advertiseAddress()).port(config.tcpPort())
                 .metadata(config.webSocketEnabled()
@@ -90,8 +92,7 @@ public final class Gateway implements AutoCloseable {
         if (!running.compareAndSet(false, true)) return;
         try {
             discoveries.forEach(BackendDiscovery::start);
-            tcpServer.start();
-            if (webSocketServer != null) webSocketServer.start();
+            networkServers.forEach(INetworkServer::start);
             registry.register(self);
         } catch (RuntimeException error) {
             close();
@@ -107,8 +108,9 @@ public final class Gateway implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         running.set(false);
         try { registry.deregister(self); } catch (RuntimeException ignored) { }
-        if (webSocketServer != null) try { webSocketServer.stop(); } catch (RuntimeException ignored) { }
-        try { tcpServer.stop(); } catch (RuntimeException ignored) { }
+        for (int i = networkServers.size() - 1; i >= 0; i--) {
+            try { networkServers.get(i).stop(); } catch (RuntimeException ignored) { }
+        }
         sessions.closeAll();
         for (int i = discoveries.size() - 1; i >= 0; i--) {
             try { discoveries.get(i).close(); } catch (RuntimeException ignored) { }

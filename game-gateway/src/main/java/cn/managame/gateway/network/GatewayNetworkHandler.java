@@ -8,15 +8,14 @@ import cn.managame.gateway.rpc.PacketForwarder;
 import cn.managame.gateway.session.GatewaySession;
 import cn.managame.gateway.session.GatewaySessionManager;
 import cn.managame.network.connection.IConnection;
-import cn.managame.network.handler.INetworkHandler;
-import cn.managame.network.session.ISession;
+import cn.managame.network.handler.IConnectionHandler;
 import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Objects;
 
-public final class GatewayNetworkHandler implements INetworkHandler {
+public final class GatewayNetworkHandler implements IConnectionHandler {
     private static final Logger log = LoggerFactory.getLogger(GatewayNetworkHandler.class);
     private final GatewaySessionManager sessionManager;
     private final FilterChain filterChain;
@@ -29,13 +28,9 @@ public final class GatewayNetworkHandler implements INetworkHandler {
         this.forwarder = Objects.requireNonNull(forwarder, "forwarder");
     }
 
-    @Override public ISession createSession(IConnection connection) {
-        return new GatewaySession(connection, connection.getRemoteAddress());
-    }
-
     @Override
-    public void onConnect(ISession rawSession) {
-        GatewaySession session = requireGatewaySession(rawSession);
+    public void onConnect(IConnection connection) {
+        GatewaySession session = sessionManager.create(connection);
         if (!filterChain.onConnect(session)) {
             session.close();
             return;
@@ -44,8 +39,13 @@ public final class GatewayNetworkHandler implements INetworkHandler {
     }
 
     @Override
-    public void onMessage(ISession rawSession, Object message) {
-        GatewaySession session = requireGatewaySession(rawSession);
+    public void onMessage(IConnection connection, Object message) {
+        GatewaySession session = sessionManager.getByConnection(connection);
+        if (session == null) {
+            ReferenceCountUtil.release(message);
+            connection.close();
+            return;
+        }
         if (!(message instanceof GatewayPacket packet)) {
             ReferenceCountUtil.release(message);
             session.close();
@@ -65,23 +65,21 @@ public final class GatewayNetworkHandler implements INetworkHandler {
     }
 
     @Override
-    public void onDisconnect(ISession rawSession) {
-        GatewaySession session = requireGatewaySession(rawSession);
-        sessionManager.remove(session);
-        filterChain.onDisconnect(session);
+    public void onDisconnect(IConnection connection) {
+        GatewaySession session = sessionManager.removeByConnection(connection);
+        if (session != null) filterChain.onDisconnect(session);
     }
 
     @Override
-    public void onException(ISession rawSession, Throwable cause) {
-        GatewaySession session = requireGatewaySession(rawSession);
-        log.debug("gateway client connection failed: sessionId={}", session.getSessionId(), cause);
-        session.close();
+    public void onException(IConnection connection, Throwable cause) {
+        GatewaySession session = sessionManager.getByConnection(connection);
+        if (session != null) {
+            log.debug("gateway client connection failed: sessionId={}", session.getSessionId(), cause);
+        } else {
+            log.debug("gateway client connection failed before session creation", cause);
+        }
+        connection.close();
     }
 
-    @Override public boolean onIdle(ISession session) { return true; }
-
-    private static GatewaySession requireGatewaySession(ISession session) {
-        if (session instanceof GatewaySession gatewaySession) return gatewaySession;
-        throw new IllegalArgumentException("expected GatewaySession, got " + session.getClass().getName());
-    }
+    @Override public void onIdle(IConnection connection) { connection.close(); }
 }

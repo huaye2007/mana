@@ -1,6 +1,5 @@
 package cn.managame.rpc.protocol;
 
-import cn.managame.network.handler.pipeline.IPipelineConfigurator;
 import cn.managame.rpc.RpcRequest;
 import cn.managame.rpc.RpcResponse;
 import cn.managame.serialization.ISerializer;
@@ -41,7 +40,7 @@ import java.util.List;
  * 解码不反序列化 body；编码序列化直写 ByteBuf，编码后超过 maxFrameLength 直接抛
  * {@link EncoderException} fail 该次调用，不把超长帧发给对端害死连接。
  */
-public final class RpcCodec implements IPipelineConfigurator {
+public final class RpcCodec {
 
     public static final byte VERSION = 1;
     public static final int DEFAULT_MAX_FRAME_LENGTH = 4 * 1024 * 1024;
@@ -65,7 +64,6 @@ public final class RpcCodec implements IPipelineConfigurator {
         this.maxFrameLength = maxFrameLength;
     }
 
-    @Override
     public void configure(ChannelPipeline pipeline) {
         pipeline.addLast("rpcDecoder", new Decoder(maxFrameLength));
         pipeline.addLast("rpcEncoder", encoder);

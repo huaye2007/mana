@@ -2,12 +2,12 @@ package cn.managame.dev.server;
 
 import cn.managame.dev.protocol.GamePacket;
 import cn.managame.network.connection.IConnection;
-import cn.managame.network.handler.INetworkHandler;
-import cn.managame.network.session.ISession;
+import cn.managame.network.handler.IConnectionHandler;
+import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class GameHandler implements INetworkHandler {
+public class GameHandler implements IConnectionHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(GameHandler.class);
 
@@ -20,28 +20,34 @@ public class GameHandler implements INetworkHandler {
     }
 
     @Override
-    public void onConnect(ISession session) {
-        // 连接建立，等待客户端首包；玩家绑定在登陆成功后由业务侧完成
+    public void onConnect(IConnection connection) {
+        playerSessionManager.addConnection(new PlayerSession(connection));
     }
 
     @Override
-    public void onMessage(ISession session, Object packet) {
-        gameRouterManager.handleGameMsg((PlayerSession) session, (GamePacket) packet);
+    public void onMessage(IConnection connection, Object packet) {
+        PlayerSession session = playerSessionManager.get(connection);
+        if (session == null) {
+            ReferenceCountUtil.release(packet);
+            connection.close();
+            return;
+        }
+        gameRouterManager.handleGameMsg(session, (GamePacket) packet);
     }
 
     @Override
-    public void onDisconnect(ISession session) {
-        playerSessionManager.unbind((PlayerSession) session);
+    public void onDisconnect(IConnection connection) {
+        playerSessionManager.unbind(playerSessionManager.removeConnection(connection));
     }
 
     @Override
-    public void onException(ISession session, Throwable cause) {
-        logger.warn("session exception, closing connection", cause);
-        session.close();
+    public void onException(IConnection connection, Throwable cause) {
+        logger.warn("connection exception, closing connection", cause);
+        connection.close();
     }
 
     @Override
-    public ISession createSession(IConnection connection) {
-        return new PlayerSession(connection);
+    public void onIdle(IConnection connection) {
+        connection.close();
     }
 }

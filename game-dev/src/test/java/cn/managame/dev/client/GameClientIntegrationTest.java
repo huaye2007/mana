@@ -6,13 +6,9 @@ import cn.managame.dev.bus.login.LoginController;
 import cn.managame.dev.server.CustomTcpPipelineConfigurator;
 import cn.managame.dev.protocol.GamePacket;
 import cn.managame.dev.protocol.GamePacketConstant;
-import cn.managame.dev.server.PlayerSession;
 import cn.managame.network.connection.IConnection;
-import cn.managame.network.connection.ServerConnectionIdGenerator;
-import cn.managame.network.handler.INetworkHandler;
-import cn.managame.network.server.NettyTcpServer;
-import cn.managame.network.server.NetworkTcpServerConfig;
-import cn.managame.network.session.ISession;
+import cn.managame.network.handler.IConnectionHandler;
+import cn.managame.network.server.NettyServer;
 import cn.managame.runtime.command.CommandRegistry;
 import cn.managame.serialization.SerializerManager;
 import org.junit.jupiter.api.Test;
@@ -47,15 +43,14 @@ class GameClientIntegrationTest {
         BlockingQueue<GamePacket> serverReceived = new LinkedBlockingQueue<>();
         int port = availablePort();
 
-        NetworkTcpServerConfig config = new NetworkTcpServerConfig(port);
-        config.setHost("127.0.0.1");
-        NettyTcpServer server = new NettyTcpServer(config, new INetworkHandler() {
+        CustomTcpPipelineConfigurator serverPipeline = new CustomTcpPipelineConfigurator();
+        NettyServer server = NettyServer.tcp(new IConnectionHandler() {
             @Override
-            public void onConnect(ISession session) {
+            public void onConnect(IConnection connection) {
             }
 
             @Override
-            public void onMessage(ISession session, Object packet) {
+            public void onMessage(IConnection connection, Object packet) {
                 GamePacket in = (GamePacket) packet;
                 serverReceived.add(in);
                 // 原样回一帧：body 必须是 byte[]（GamePacketEncoder 的契约），把收到的 LoginReq 再序列化回去
@@ -68,22 +63,22 @@ class GameClientIntegrationTest {
                 out.setCode(0);
                 out.setFlags((byte) 0);
                 out.setBody(echoBody);
-                session.writeMsg(out);
+                connection.writeMsg(out);
             }
 
             @Override
-            public void onDisconnect(ISession session) {
+            public void onDisconnect(IConnection connection) {
             }
 
             @Override
-            public void onException(ISession session, Throwable cause) {
+            public void onException(IConnection connection, Throwable cause) {
+                connection.close();
             }
 
             @Override
-            public ISession createSession(IConnection connection) {
-                return new PlayerSession(connection);
+            public void onIdle(IConnection connection) {
             }
-        }, new ServerConnectionIdGenerator(100), new CustomTcpPipelineConfigurator());
+        }).bind("127.0.0.1", port).pipeline(serverPipeline::configure).build();
 
         BlockingQueue<ClientResponse> clientReceived = new LinkedBlockingQueue<>();
         try {

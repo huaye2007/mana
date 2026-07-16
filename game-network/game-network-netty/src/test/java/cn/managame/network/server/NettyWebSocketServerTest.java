@@ -1,9 +1,9 @@
 package cn.managame.network.server;
 
 import cn.managame.network.connection.ConnectionType;
-import cn.managame.network.handler.INetworkHandler;
-import cn.managame.network.session.ISession;
-import io.netty.buffer.ByteBuf;
+import cn.managame.network.connection.IConnection;
+import cn.managame.network.handler.IConnectionHandler;
+import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolConfig;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -12,14 +12,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,45 +27,39 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class NettyWebSocketServerTest {
 
     @Test
-    void websocketUsesSameLifecycleAndEchoesFrames() throws Exception {
+    void websocketPresetUsesConnectionLifecycleAndEchoesFrames() throws Exception {
         int port = availablePort();
-        NetworkWsServerConfig config = new NetworkWsServerConfig(port);
-        config.setHost("127.0.0.1");
-        config.setWebsocketPath("/ws");
-
         CountDownLatch connectLatch = new CountDownLatch(1);
         CountDownLatch messageLatch = new CountDownLatch(2);
         CountDownLatch disconnectLatch = new CountDownLatch(1);
         AtomicReference<ConnectionType> connectionType = new AtomicReference<>();
         AtomicInteger disconnectCount = new AtomicInteger();
-        NettyWebSocketServer server = new NettyWebSocketServer(config, new INetworkHandler() {
-            @Override
-            public void onConnect(ISession session) {
-                connectionType.set(session.getConnection().getType());
+        IConnectionHandler handler = new IConnectionHandler() {
+            @Override public void onConnect(IConnection connection) {
+                connectionType.set(connection.getType());
                 connectLatch.countDown();
             }
-
-            @Override
-            public void onMessage(ISession session, Object packet) {
+            @Override public void onMessage(IConnection connection, Object packet) {
                 messageLatch.countDown();
-                session.writeMsg(packet);
+                connection.writeMsg(packet);
             }
-
-            @Override
-            public void onDisconnect(ISession session) {
+            @Override public void onDisconnect(IConnection connection) {
                 disconnectCount.incrementAndGet();
                 disconnectLatch.countDown();
             }
-
-            @Override
-            public void onException(ISession session, Throwable cause) {
-            }
-
-        });
+            @Override public void onException(IConnection connection, Throwable cause) { connection.close(); }
+            @Override public void onIdle(IConnection connection) { }
+        };
+        WebSocketServerProtocolConfig protocol = WebSocketServerProtocolConfig.newBuilder()
+                .websocketPath("/ws")
+                .allowExtensions(true)
+                .build();
+        NettyServer server = NettyServer.webSocket(protocol, handler)
+                .bind("127.0.0.1", port)
+                .build();
 
         try {
             server.start();
-
             TestWebSocketListener listener = new TestWebSocketListener();
             WebSocket webSocket = HttpClient.newHttpClient()
                     .newWebSocketBuilder()
@@ -87,15 +80,13 @@ class NettyWebSocketServerTest {
             webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "done").get(3, TimeUnit.SECONDS);
             assertTrue(disconnectLatch.await(3, TimeUnit.SECONDS));
             assertEquals(1, disconnectCount.get());
-            assertEquals(0, server.getConnectionManager().size());
-            assertEquals(0, server.getSessionManager().size());
         } finally {
             server.stop();
         }
     }
 
     private static int availablePort() throws IOException {
-        try(ServerSocket socket = new ServerSocket(0)){
+        try (ServerSocket socket = new ServerSocket(0)) {
             socket.setReuseAddress(true);
             return socket.getLocalPort();
         }
@@ -105,29 +96,20 @@ class NettyWebSocketServerTest {
         private final CompletableFuture<String> textFuture = new CompletableFuture<>();
         private final CompletableFuture<byte[]> binaryFuture = new CompletableFuture<>();
 
-        @Override
-        public void onOpen(WebSocket webSocket) {
-            webSocket.request(1);
-        }
-
-        @Override
-        public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+        @Override public void onOpen(WebSocket webSocket) { webSocket.request(1); }
+        @Override public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
             textFuture.complete(data.toString());
             webSocket.request(1);
             return CompletableFuture.completedFuture(null);
         }
-
-        @Override
-        public CompletionStage<?> onBinary(WebSocket webSocket, ByteBuffer data, boolean last) {
+        @Override public CompletionStage<?> onBinary(WebSocket webSocket, ByteBuffer data, boolean last) {
             byte[] bytes = new byte[data.remaining()];
             data.get(bytes);
             binaryFuture.complete(Arrays.copyOf(bytes, bytes.length));
             webSocket.request(1);
             return CompletableFuture.completedFuture(null);
         }
-
-        @Override
-        public void onError(WebSocket webSocket, Throwable error) {
+        @Override public void onError(WebSocket webSocket, Throwable error) {
             textFuture.completeExceptionally(error);
             binaryFuture.completeExceptionally(error);
         }

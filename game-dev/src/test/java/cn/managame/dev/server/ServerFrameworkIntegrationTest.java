@@ -9,9 +9,7 @@ import cn.managame.dev.message.LoginReq;
 import cn.managame.dev.message.LoginRes;
 import cn.managame.dev.protocol.GameErrorCode;
 import cn.managame.dev.protocol.KickConstant;
-import cn.managame.network.connection.ServerConnectionIdGenerator;
-import cn.managame.network.server.NettyTcpServer;
-import cn.managame.network.server.NetworkTcpServerConfig;
+import cn.managame.network.server.NettyServer;
 import cn.managame.runtime.annotation.GameController;
 import cn.managame.runtime.annotation.GameMethod;
 import cn.managame.runtime.command.CommandRegistry;
@@ -49,7 +47,7 @@ class ServerFrameworkIntegrationTest {
 
     private static PlayerSessionManager sessionManager;
     private static GameRouterManager router;
-    private static NettyTcpServer server;
+    private static NettyServer server;
     private static int port;
 
     /** 登陆组测试 controller：绑定 roleId=userId 并回 LoginRes，模拟登陆但不落库。 */
@@ -120,10 +118,11 @@ class ServerFrameworkIntegrationTest {
         }
 
         port = availablePort();
-        NetworkTcpServerConfig config = new NetworkTcpServerConfig(port);
-        config.setHost("127.0.0.1");
-        server = new NettyTcpServer(config, new GameHandler(sessionManager, router),
-                new ServerConnectionIdGenerator(100), new CustomTcpPipelineConfigurator(0));
+        CustomTcpPipelineConfigurator pipeline = new CustomTcpPipelineConfigurator(0);
+        server = NettyServer.tcp(new GameHandler(sessionManager, router))
+                .bind("127.0.0.1", port)
+                .pipeline(pipeline::configure)
+                .build();
         server.start();
     }
 
@@ -250,10 +249,11 @@ class ServerFrameworkIntegrationTest {
     void idleConnectionIsKicked() throws Exception {
         // 单独起一个 1 秒读空闲阈值的服务端，验证心跳断供会被踢
         int idlePort = availablePort();
-        NetworkTcpServerConfig config = new NetworkTcpServerConfig(idlePort);
-        config.setHost("127.0.0.1");
-        NettyTcpServer idleServer = new NettyTcpServer(config, new GameHandler(sessionManager, router),
-                new ServerConnectionIdGenerator(200), new CustomTcpPipelineConfigurator(1));
+        CustomTcpPipelineConfigurator idlePipeline = new CustomTcpPipelineConfigurator(1);
+        NettyServer idleServer = NettyServer.tcp(new GameHandler(sessionManager, router))
+                .bind("127.0.0.1", idlePort)
+                .pipeline(idlePipeline::configure)
+                .build();
         try {
             idleServer.start();
             try (GameClient client = new GameClient("127.0.0.1", idlePort)) {

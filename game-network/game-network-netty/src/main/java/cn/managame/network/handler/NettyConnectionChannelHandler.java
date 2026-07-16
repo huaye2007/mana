@@ -1,44 +1,35 @@
 package cn.managame.network.handler;
 
-import cn.managame.network.connection.ConnectionManager;
-import cn.managame.network.connection.DefaultConnectionIdGenerator;
 import cn.managame.network.connection.IConnection;
-import cn.managame.network.connection.IConnectionIdGenerator;
 import cn.managame.network.connection.NettyConnection;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
+
+import java.util.Objects;
 
 public class NettyConnectionChannelHandler extends ChannelInboundHandlerAdapter {
 
-    private static final IConnectionIdGenerator DEFAULT_CONNECTION_ID_GENERATOR = new DefaultConnectionIdGenerator();
+    public static final AttributeKey<IConnection> CONNECTION_KEY =
+            AttributeKey.valueOf(NettyConnectionChannelHandler.class, "connection");
 
     protected final IConnectionHandler connectionHandler;
-    protected final ConnectionManager connectionManager;
-    protected final IConnectionIdGenerator connectionIdGenerator;
 
-    public NettyConnectionChannelHandler(IConnectionHandler connectionHandler,ConnectionManager connectionManager){
-        this(connectionHandler, connectionManager, DEFAULT_CONNECTION_ID_GENERATOR);
+    public NettyConnectionChannelHandler(IConnectionHandler connectionHandler){
+        this.connectionHandler = Objects.requireNonNull(connectionHandler, "connectionHandler");
     }
 
-    public NettyConnectionChannelHandler(IConnectionHandler connectionHandler, ConnectionManager connectionManager,
-                                         IConnectionIdGenerator connectionIdGenerator){
-        this.connectionHandler = connectionHandler;
-        this.connectionManager = connectionManager;
-        this.connectionIdGenerator = connectionIdGenerator;
-    }
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         try {
-            IConnection connection = createConnection(ctx.channel());
-            connectionManager.addConnection(connection,ctx.channel());
-            connectionHandler.onConnect(connection);
+            activate(ctx);
             super.channelActive(ctx);
         } catch (Exception e) {
-            connectionManager.removeConnectionByChannel(ctx.channel());
+            ctx.channel().attr(CONNECTION_KEY).set(null);
             ctx.close();
             throw e;
         }
@@ -46,20 +37,17 @@ public class NettyConnectionChannelHandler extends ChannelInboundHandlerAdapter 
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-        IConnection connection = connectionManager.getConnection(ctx.channel());
-        if (connection != null && connectionHandler.isReadyForMessages(connection)) {
+        IConnection connection = connection(ctx.channel());
+        if (connection != null) {
             connectionHandler.onMessage(connection, msg);
         } else {
             ReferenceCountUtil.release(msg);
-            if (connection != null) {
-                connection.close();
-            }
         }
     }
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        IConnection connection = connectionManager.removeConnectionByChannel(ctx.channel());
+        IConnection connection = ctx.channel().attr(CONNECTION_KEY).getAndSet(null);
         if (connection != null) {
             connectionHandler.onDisconnect(connection);
         }
@@ -69,8 +57,10 @@ public class NettyConnectionChannelHandler extends ChannelInboundHandlerAdapter 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
         try {
-            IConnection connection = connectionManager.getConnection(ctx.channel());
-            connectionHandler.onException(connection, cause);
+            IConnection connection = connection(ctx.channel());
+            if (connection != null) {
+                connectionHandler.onException(connection, cause);
+            }
         } finally {
             ctx.close();
         }
@@ -79,7 +69,7 @@ public class NettyConnectionChannelHandler extends ChannelInboundHandlerAdapter 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
         if (evt instanceof IdleStateEvent) {
-            IConnection connection = connectionManager.getConnection(ctx.channel());
+            IConnection connection = connection(ctx.channel());
             if (connection != null) {
                 connectionHandler.onIdle(connection);
             }
@@ -88,11 +78,22 @@ public class NettyConnectionChannelHandler extends ChannelInboundHandlerAdapter 
     }
 
     public IConnection createConnection(Channel channel){
-        return new NettyConnection(nextConnectionId(),channel);
+        return new NettyConnection(channel);
     }
 
-    protected long nextConnectionId(){
-        return connectionIdGenerator.nextId();
+    protected final IConnection activate(ChannelHandlerContext ctx) {
+        IConnection existing = connection(ctx.channel());
+        if (existing != null) {
+            return existing;
+        }
+        IConnection connection = createConnection(ctx.channel());
+        ctx.channel().attr(CONNECTION_KEY).set(connection);
+        connectionHandler.onConnect(connection);
+        return connection;
+    }
+
+    public static IConnection connection(Channel channel) {
+        return channel.attr(CONNECTION_KEY).get();
     }
 
 }

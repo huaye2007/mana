@@ -15,7 +15,7 @@ class GatewayRpcMessageHandlerTest {
     @Test void successfulLoginBindsRoleAuthenticatesAndPreservesEnvelope() {
         GatewaySessionManager sessions = new GatewaySessionManager();
         FakeConnection connection = new FakeConnection(11, "1.2.3.4");
-        GatewaySession session = new GatewaySession(connection, "1.2.3.4");
+        GatewaySession session = new GatewaySession(11, connection, "1.2.3.4");
         sessions.add(session);
         GatewayRpcMessageHandler handler = new GatewayRpcMessageHandler(sessions, 1000);
         RpcRequest downlink = RpcRequest.oneway(1000)

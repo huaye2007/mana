@@ -21,7 +21,7 @@ mvn "-Dmaven.repo.local=.m2" test
 
 | 模块 | 职责 |
 | --- | --- |
-| `game-network` | 网络基础层（core + Netty）：TCP/WebSocket/HTTP 接入、连接与会话生命周期、传输 pipeline，把解码后的消息投递给 `INetworkHandler`（HTTP 走 `IHttpHandler`）。零依赖，不做协议路由与命令分发（见 [game-network/README.md](game-network/README.md)） |
+| `game-network` | 网络接入层：统一 TCP/WebSocket Server、HTTP/1/HTTP/2 业务语义、连接生命周期和原生 Netty pipeline 扩展；Session 与连接映射由业务层负责（见 [game-network/README.md](game-network/README.md)） |
 | `game-rpc` | 对内 RPC：协议编解码、握手/心跳/重连、oneway/future/callback 调用、背压与在途上限保护、按服务广播（见 [game-rpc/README.md](game-rpc/README.md)） |
 | `game-serialization` | 序列化门面，统一 JSON、Protobuf、Apache Fory 三种实现（见 [game-serialization/README.md](game-serialization/README.md)） |
 | `game-registry` | 统一的服务注册发现 API，通过 SPI 提供 memory、Nacos 与 Etcd 实现（见 [game-registry/README.md](game-registry/README.md)） |
@@ -68,7 +68,7 @@ mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 
 - Runtime（无统一装配门面，按需使用各组件单例）：命令注册 `cn.managame.runtime.command.CommandRegistry`（派发由宿主桥接：构造 `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`）、事件 `cn.managame.runtime.event.EventBus`、定时 `cn.managame.runtime.timer.TimingWheel` / `CronTask`、执行器组注册 `cn.managame.runtime.executor.ExecutorGroupRegistry`
 - ECS：核心世界 `cn.managame.ecs.World`、系统流水线 `cn.managame.ecs.SystemPipeline`、独立线程世界循环 `cn.managame.ecs.runtime.EcsWorldRunner`
-- Network：`cn.managame.network.server.NettyTcpServer` / `NettyWebSocketServer` / `NettyHttpServer`（实现 `INetworkServer`），业务侧实现 `INetworkHandler` / `IHttpHandler`
+- Network：通过 `NettyServer` 创建 TCP、WebSocket 或自定义 Server，通过 `NettyHttpServer` 创建协议透明的 HTTP/1/HTTP/2 Server
 - RPC：`cn.managame.rpc.RpcClient`、`cn.managame.rpc.RpcServer`
 - Registry：`cn.managame.registry.api.ServiceRegistry`，工厂 `cn.managame.registry.factory.RegistryFactory`
 - Config：`cn.managame.config.ConfigCenter`，工厂 `cn.managame.config.ConfigFactory`

@@ -17,6 +17,11 @@ public class RpcConnection extends NettyConnection {
         super(connectionId, channel);
     }
 
+    @Override
+    public Long getConnectionId() {
+        return (Long) super.getConnectionId();
+    }
+
     public String getServiceName() {
         return serviceName;
     }

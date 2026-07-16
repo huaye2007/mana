@@ -2,43 +2,41 @@ package cn.managame.gateway.network.websocket;
 
 import cn.managame.gateway.codec.BodyCodec;
 import cn.managame.gateway.network.GatewayNetworkHandler;
-import cn.managame.network.connection.ConnectionManager;
-import cn.managame.network.connection.ServerConnectionIdGenerator;
-import cn.managame.network.connection.IConnectionIdGenerator;
-import cn.managame.network.handler.ServerConnectionHandler;
-import cn.managame.network.server.NettyWebSocketServer;
-import cn.managame.network.server.NetworkWsServerConfig;
-import cn.managame.network.session.SessionManager;
+import cn.managame.gateway.network.tcp.GatewayTcpPipelineConfigurator;
+import cn.managame.network.server.INetworkServer;
+import cn.managame.network.server.NettyServer;
+import io.netty.channel.ChannelOption;
+import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolConfig;
 
 import java.util.Objects;
 
-public final class GatewayWebSocketServer {
-    private final NettyWebSocketServer server;
+public final class GatewayWebSocketServer implements INetworkServer {
+    private final NettyServer server;
 
-    public GatewayWebSocketServer(int port, String websocketPath, int serverId,
+    public GatewayWebSocketServer(int port, String websocketPath,
                                   BodyCodec bodyCodec, GatewayNetworkHandler networkHandler) {
-        this(port, websocketPath, new ServerConnectionIdGenerator(requireServerId(serverId)), bodyCodec, networkHandler);
+        GatewayTcpPipelineConfigurator pipeline = new GatewayTcpPipelineConfigurator(0, bodyCodec);
+        WebSocketServerProtocolConfig protocol = WebSocketServerProtocolConfig.newBuilder()
+                .websocketPath(normalizePath(websocketPath))
+                .allowExtensions(true)
+                .build();
+        this.server = NettyServer.webSocket(protocol, Objects.requireNonNull(networkHandler, "networkHandler"))
+                .bind(port)
+                .bootstrap(bootstrap -> bootstrap
+                        .option(ChannelOption.SO_BACKLOG, 1024)
+                        .childOption(ChannelOption.TCP_NODELAY, true))
+                .pipeline(pipeline::configure)
+                .build();
     }
 
-    public GatewayWebSocketServer(int port, String websocketPath, IConnectionIdGenerator connectionIdGenerator,
-                                  BodyCodec bodyCodec, GatewayNetworkHandler networkHandler) {
-        NetworkWsServerConfig config = new NetworkWsServerConfig(port);
-        config.setWebsocketPath(websocketPath);
-        SessionManager sessions = new SessionManager();
-        ConnectionManager connections = new ConnectionManager();
-        ServerConnectionHandler handler = new ServerConnectionHandler(sessions, Objects.requireNonNull(networkHandler, "networkHandler"));
-        this.server = new NettyWebSocketServer(config,
-                new GatewayWebSocketPipelineConfigurator(config, handler, connections,
-                        Objects.requireNonNull(connectionIdGenerator, "connectionIdGenerator"), bodyCodec),
-                sessions, connections);
-    }
-
+    @Override
     public void start() { server.start(); }
+    @Override
     public void stop() { server.stop(); }
-    public NettyWebSocketServer unwrap() { return server; }
+    public NettyServer unwrap() { return server; }
 
-    private static int requireServerId(int serverId) {
-        if (serverId < 0) throw new IllegalArgumentException("serverId must be non-negative");
-        return serverId;
+    private static String normalizePath(String path) {
+        if (path == null || path.isBlank()) return "/";
+        return path.startsWith("/") ? path : "/" + path;
     }
 }

@@ -8,15 +8,23 @@ import java.net.InetSocketAddress;
 public class NettyConnection implements IConnection {
 
     protected final Channel channel;
-    protected final long connectionId;
+    private final Object connectionId;
 
-    public NettyConnection(long connectionId,Channel channel){
-        this.connectionId = connectionId;
+    public NettyConnection(Channel channel){
+        this(channel,channel.id().asLongText());
+    }
+
+    public NettyConnection(Channel channel,Object connectionId){
         this.channel = channel;
+        this.connectionId = connectionId;
+    }
+
+    public NettyConnection(Object connectionId, Channel channel) {
+        this(channel, connectionId);
     }
 
     @Override
-    public long getConnectionId() {
+    public Object getConnectionId() {
         return connectionId;
     }
 

@@ -4,6 +4,7 @@ import cn.managame.dev.protocol.GameErrorCode;
 import cn.managame.dev.protocol.GamePacket;
 import cn.managame.dev.protocol.GamePacketConstant;
 import cn.managame.dev.protocol.KickConstant;
+import cn.managame.network.connection.IConnection;
 import cn.managame.network.connection.IWriteCallback;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +24,23 @@ public class PlayerSessionManager {
     private static final Logger logger = LoggerFactory.getLogger(PlayerSessionManager.class);
 
     private final Map<Long, PlayerSession> playerSessionMap = new ConcurrentHashMap<>();
+
+    private final Map<IConnection, PlayerSession> connectionPlayerSessionMap = new ConcurrentHashMap<>();
+
+    public void addConnection(PlayerSession session) {
+        PlayerSession previous = connectionPlayerSessionMap.putIfAbsent(session.getConnection(), session);
+        if (previous != null && previous != session) {
+            throw new IllegalStateException("connection already has a player session");
+        }
+    }
+
+    public PlayerSession get(IConnection connection) {
+        return connectionPlayerSessionMap.get(connection);
+    }
+
+    public PlayerSession removeConnection(IConnection connection) {
+        return connectionPlayerSessionMap.remove(connection);
+    }
 
     /** 绑定 roleId → session；同 roleId 已在线（顶号）时旧连接先收踢下线推送再被关闭。 */
     public void bind(PlayerSession session) {
@@ -57,6 +75,7 @@ public class PlayerSessionManager {
     }
 
     public void unbind(PlayerSession session) {
+        if (session == null) return;
         if (session.getRoleId() != 0) {
             playerSessionMap.remove(session.getRoleId(), session);  // 条件移除:仅当 map 中仍是该 session 才删,避免顶号重连后误删新 session
         }

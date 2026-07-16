@@ -11,8 +11,8 @@ class GatewaySessionManagerTest {
         GatewaySessionManager manager = new GatewaySessionManager();
         FakeConnection firstConnection = new FakeConnection(1, "1.1.1.1");
         FakeConnection secondConnection = new FakeConnection(2, "2.2.2.2");
-        GatewaySession first = new GatewaySession(firstConnection, "1.1.1.1");
-        GatewaySession second = new GatewaySession(secondConnection, "2.2.2.2");
+        GatewaySession first = new GatewaySession(1, firstConnection, "1.1.1.1");
+        GatewaySession second = new GatewaySession(2, secondConnection, "2.2.2.2");
         manager.add(first);
         manager.add(second);
         manager.bindRole(first, 99);

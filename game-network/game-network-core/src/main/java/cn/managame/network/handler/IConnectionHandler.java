@@ -9,15 +9,6 @@ public interface IConnectionHandler {
 
     void onMessage(IConnection connection, Object packet);
 
-    /**
-     * Lets a transport reject and release a decoded message before handing it to the application.
-     * Implementations that maintain a separate session lifecycle should return {@code false}
-     * until that session is fully installed.
-     */
-    default boolean isReadyForMessages(IConnection connection) {
-        return true;
-    }
-
 
     void onDisconnect(IConnection connection);
 
@@ -25,5 +16,5 @@ public interface IConnectionHandler {
     void onException(IConnection connection, Throwable cause);
 
 
-    default void onIdle(IConnection connection) {}
+    default void onIdle(IConnection connection) { }
 }

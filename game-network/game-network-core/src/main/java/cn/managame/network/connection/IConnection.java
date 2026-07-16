@@ -2,7 +2,7 @@ package cn.managame.network.connection;
 
 public interface IConnection {
 
-    long getConnectionId();
+    Object getConnectionId();
 
     ConnectionType getType();
 
@@ -10,7 +10,7 @@ public interface IConnection {
 
     void writeMsg(Object packet);
 
-    void writeMsg(Object packet,IWriteCallback writeCallback);
+    void writeMsg(Object packet, IWriteCallback writeCallback);
 
     void close();
 

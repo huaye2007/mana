@@ -14,7 +14,7 @@ class CommandBackendServiceResolverTest {
     @Test void resolvesExactAndRangeRoutesWithDefaultFallback() {
         CommandBackendServiceResolver resolver = CommandBackendServiceResolver.parse(
                 "scene-service", "1000=auth-service,2000-2999=chat-service");
-        GatewaySession session = new GatewaySession(new FakeConnection(7, "127.0.0.1"), "127.0.0.1");
+        GatewaySession session = new GatewaySession(7, new FakeConnection(7, "127.0.0.1"), "127.0.0.1");
         assertEquals("auth-service", resolver.resolve(session, packet(1000)));
         assertEquals("chat-service", resolver.resolve(session, packet(2500)));
         assertEquals("scene-service", resolver.resolve(session, packet(4000)));
@@ -32,7 +32,7 @@ class CommandBackendServiceResolverTest {
         ServiceInstance scene = instance("scene", "s1");
         directory.service("auth").upsert(auth);
         directory.service("scene").upsert(scene);
-        GatewaySession session = new GatewaySession(new FakeConnection(9, "127.0.0.1"), "127.0.0.1");
+        GatewaySession session = new GatewaySession(9, new FakeConnection(9, "127.0.0.1"), "127.0.0.1");
 
         assertEquals(auth, directory.resolve("auth", session));
         assertEquals(scene, directory.resolve("scene", session));

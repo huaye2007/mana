@@ -14,7 +14,7 @@ public final class FakeConnection implements IConnection {
     private boolean active = true;
 
     public FakeConnection(long id, String remoteAddress) { this.id = id; this.remoteAddress = remoteAddress; }
-    @Override public long getConnectionId() { return id; }
+    @Override public Long getConnectionId() { return id; }
     @Override public ConnectionType getType() { return ConnectionType.TCP; }
     @Override public String getRemoteAddress() { return remoteAddress; }
     @Override public void writeMsg(Object packet) { writes.add(packet); }

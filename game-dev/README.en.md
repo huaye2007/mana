@@ -10,7 +10,7 @@ A complete, runnable game server host: it assembles game-network (Netty transpor
 Client ──TCP──▶ Netty IO threads
                  │  IdleStateHandler + IdleKickHandler   read-idle kick
                  │  GamePacketEncoder / GamePacketDecoder frame codec + Fory deserialization
-                 │  GameHandler (INetworkHandler)         connect/disconnect/exception
+                 │  GameHandler (IConnectionHandler)      connect/disconnect/exception
                  ▼
            GameRouterManager.handleGameMsg               login gate → route by command
                  │ wraps GameCommandTaskRunnable

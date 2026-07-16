@@ -2,35 +2,30 @@ package cn.managame.gateway.network.tcp;
 
 import cn.managame.gateway.codec.BodyCodec;
 import cn.managame.gateway.network.GatewayNetworkHandler;
-import cn.managame.network.connection.ServerConnectionIdGenerator;
-import cn.managame.network.connection.IConnectionIdGenerator;
-import cn.managame.network.server.NettyTcpServer;
-import cn.managame.network.server.NetworkTcpServerConfig;
+import cn.managame.network.server.INetworkServer;
+import cn.managame.network.server.NettyServer;
+import io.netty.channel.ChannelOption;
 
 import java.util.Objects;
 
-public final class GatewayTcpServer {
-    private final NettyTcpServer server;
+public final class GatewayTcpServer implements INetworkServer {
+    private final NettyServer server;
 
-    public GatewayTcpServer(int port, int serverId, int readerIdleSeconds,
+    public GatewayTcpServer(int port, int readerIdleSeconds,
                             BodyCodec bodyCodec, GatewayNetworkHandler networkHandler) {
-        this(port, new ServerConnectionIdGenerator(requireServerId(serverId)), readerIdleSeconds, bodyCodec, networkHandler);
+        GatewayTcpPipelineConfigurator pipeline = new GatewayTcpPipelineConfigurator(readerIdleSeconds, bodyCodec);
+        this.server = NettyServer.tcp(Objects.requireNonNull(networkHandler, "networkHandler"))
+                .bind(port)
+                .bootstrap(bootstrap -> bootstrap
+                        .option(ChannelOption.SO_BACKLOG, 1024)
+                        .childOption(ChannelOption.TCP_NODELAY, true))
+                .pipeline(pipeline::configure)
+                .build();
     }
 
-    public GatewayTcpServer(int port, IConnectionIdGenerator connectionIdGenerator, int readerIdleSeconds,
-                            BodyCodec bodyCodec, GatewayNetworkHandler networkHandler) {
-        NetworkTcpServerConfig config = new NetworkTcpServerConfig(port);
-        this.server = new NettyTcpServer(config, Objects.requireNonNull(networkHandler, "networkHandler"),
-                Objects.requireNonNull(connectionIdGenerator, "connectionIdGenerator"),
-                new GatewayTcpPipelineConfigurator(readerIdleSeconds, bodyCodec));
-    }
-
+    @Override
     public void start() { server.start(); }
+    @Override
     public void stop() { server.stop(); }
-    public NettyTcpServer unwrap() { return server; }
-
-    private static int requireServerId(int serverId) {
-        if (serverId < 0) throw new IllegalArgumentException("serverId must be non-negative");
-        return serverId;
-    }
+    public NettyServer unwrap() { return server; }
 }
