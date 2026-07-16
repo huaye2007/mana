@@ -18,7 +18,7 @@ public final class RpcFuture {
     private static final Logger log = LoggerFactory.getLogger(RpcFuture.class);
 
     private final long requestId;
-    private final long connectionId;
+    private final String connectionId;
     private final long startNanos;
     private final SerializerManager serializerManager; // 仅回调反序列化用，可为 null
 
@@ -29,7 +29,7 @@ public final class RpcFuture {
     private RpcCallback<?> callback;
     private Timeout timeout;
 
-    RpcFuture(long requestId, long connectionId, long startNanos, SerializerManager serializerManager) {
+    RpcFuture(long requestId, String connectionId, long startNanos, SerializerManager serializerManager) {
         this.requestId = requestId;
         this.connectionId = connectionId;
         this.startNanos = startNanos;
@@ -38,7 +38,7 @@ public final class RpcFuture {
 
     /** 立即失败的 future（无连接 / 校验失败等同步错误）。 */
     static RpcFuture failed(Throwable cause) {
-        RpcFuture future = new RpcFuture(0L, 0L, System.nanoTime(), null);
+        RpcFuture future = new RpcFuture(0L, null, System.nanoTime(), null);
         future.completeExceptionally(cause);
         return future;
     }
@@ -47,7 +47,7 @@ public final class RpcFuture {
         return requestId;
     }
 
-    long getConnectionId() {
+    String getConnectionId() {
         return connectionId;
     }
 

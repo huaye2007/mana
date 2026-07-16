@@ -89,7 +89,7 @@ public class RpcServer extends RpcContainer {
     @Override
     protected void onChannelActive(Channel channel) {
         // 服务端先登记一条尚未握手的连接，身份在握手后补齐；纯 client→server 调用也能在此连接上回包
-        registerConnection(new RpcConnection(nextConnectionId(), channel));
+        registerConnection(new RpcConnection(channel));
     }
 
     public String getAuthToken() {

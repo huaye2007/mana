@@ -22,7 +22,7 @@ class RpcOnewayAdmissionTest {
         RpcContainer container = new RpcContainer();
         EmbeddedChannel channel = new EmbeddedChannel();
         try {
-            RpcConnection connection = new RpcConnection(1, channel) {
+            RpcConnection connection = new RpcConnection(channel) {
                 @Override public boolean isWritable() { return false; }
             };
             container.getOrCreateRpcPeer("logic", "1").add(connection);

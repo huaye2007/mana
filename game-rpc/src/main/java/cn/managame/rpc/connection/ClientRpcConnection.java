@@ -6,8 +6,8 @@ public class ClientRpcConnection extends RpcConnection{
     private String ip;
     private int port;
 
-    public ClientRpcConnection(long connectionId, Channel channel) {
-        super(connectionId, channel);
+    public ClientRpcConnection(Channel channel) {
+        super(channel);
     }
 
     public String getIp() {

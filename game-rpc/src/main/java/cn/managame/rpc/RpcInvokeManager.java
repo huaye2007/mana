@@ -6,6 +6,7 @@ import io.netty.util.Timeout;
 
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -70,7 +71,7 @@ public class RpcInvokeManager {
         }
         long requestId = requestIdGen.incrementAndGet();
         request.requestId(requestId);
-        RpcFuture future = new RpcFuture(requestId, connection.getRpcConnectionId(), System.nanoTime(),
+        RpcFuture future = new RpcFuture(requestId, connection.getConnectionId(), System.nanoTime(),
                 container.getSerializerManager());
         rpcFutureMap.put(requestId, future);
 
@@ -126,10 +127,10 @@ public class RpcInvokeManager {
     }
 
     /** 连接断开时，快速失败该连接上所有在途调用，而不是等各自超时。 */
-    public void failConnection(long connectionId, Throwable cause) {
+    public void failConnection(String connectionId, Throwable cause) {
         for (Iterator<Map.Entry<Long, RpcFuture>> it = rpcFutureMap.entrySet().iterator(); it.hasNext(); ) {
             Map.Entry<Long, RpcFuture> entry = it.next();
-            if (entry.getValue().getConnectionId() == connectionId) {
+            if (Objects.equals(entry.getValue().getConnectionId(), connectionId)) {
                 it.remove();
                 entry.getValue().completeExceptionally(cause);
             }

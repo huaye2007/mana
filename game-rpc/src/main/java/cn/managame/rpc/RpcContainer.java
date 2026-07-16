@@ -12,7 +12,6 @@ import io.netty.util.HashedWheelTimer;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * RPC 端点基类（客户端 / 服务端共用）：维护 channel→连接、(serviceName,serviceId)→peer 两级索引，
@@ -22,7 +21,6 @@ public class RpcContainer {
 
     private final Map<Channel, RpcConnection> rpcConnectionMap = new ConcurrentHashMap<>();
     private final Map<String, Map<String, RpcPeer>> service2RpcPeerMap = new ConcurrentHashMap<>();
-    private final AtomicLong connectionIdGen = new AtomicLong();
     private final RpcMetrics metrics = new RpcMetrics();
 
     protected SerializerManager serializerManager;       // 共享
@@ -70,7 +68,7 @@ public class RpcContainer {
         RpcPeer peer = getRpcPeer(connection.getServiceName(), connection.getServiceId());
         if (peer != null) {
             peer.remove(connection);
-            peer.getRpcInvokeManager().failConnection(connection.getRpcConnectionId(),
+            peer.getRpcInvokeManager().failConnection(connection.getConnectionId(),
                     new GameRpcException("connection closed: " + connection.getRemoteAddress()));
             if (reclaimEmptyPeers && peer.isEmpty()) {
                 // 服务端：对端连接清空（如客户端永久下线）后回收空 peer，避免 map 随身份只增不减
@@ -94,10 +92,6 @@ public class RpcContainer {
             return null;
         }
         return peerMap.remove(normalize(serviceId));
-    }
-
-    long nextConnectionId() {
-        return connectionIdGen.incrementAndGet();
     }
 
     /** 连接激活回调（IO 线程），子类登记连接。 */

@@ -178,7 +178,7 @@ public class RpcClient extends RpcContainer {
             return;
         }
         ConnectionTargetConfig cfg = slot.target.config;
-        ClientRpcConnection connection = new ClientRpcConnection(nextConnectionId(), channel);
+        ClientRpcConnection connection = new ClientRpcConnection(channel);
         connection.setServiceName(cfg.getServiceName());
         connection.setServiceId(cfg.getServiceId());
         connection.setIp(cfg.getIp());
