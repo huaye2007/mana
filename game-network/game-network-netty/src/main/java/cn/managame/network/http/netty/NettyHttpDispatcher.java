@@ -7,6 +7,7 @@ import cn.managame.network.http.IHttpResponder;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -18,8 +19,10 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.AsciiString;
 import io.netty.util.AttributeKey;
+import io.netty.util.concurrent.ScheduledFuture;
 
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -28,6 +31,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class NettyHttpDispatcher extends SimpleChannelInboundHandler<io.netty.handler.codec.http.FullHttpRequest> {
@@ -39,10 +43,19 @@ final class NettyHttpDispatcher extends SimpleChannelInboundHandler<io.netty.han
 
     private final IHttpHandler handler;
     private final boolean http2;
+    private final Duration requestTimeout;
+    private final int maxPendingRequests;
 
     NettyHttpDispatcher(IHttpHandler handler, boolean http2) {
+        this(handler, http2, Duration.ofSeconds(30), 1_024);
+    }
+
+    NettyHttpDispatcher(IHttpHandler handler, boolean http2, Duration requestTimeout,
+                        int maxPendingRequests) {
         this.handler = Objects.requireNonNull(handler, "handler");
         this.http2 = http2;
+        this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
+        this.maxPendingRequests = maxPendingRequests;
     }
 
     @Override
@@ -50,14 +63,28 @@ final class NettyHttpDispatcher extends SimpleChannelInboundHandler<io.netty.han
                                 io.netty.handler.codec.http.FullHttpRequest message) {
         boolean keepAlive = http2 || HttpUtil.isKeepAlive(message);
         boolean headRequest = "HEAD".equals(message.method().name());
-        Http1ResponseQueue.Slot responseSlot = http2 ? null : http1ResponseQueue(context.channel()).register(keepAlive);
-        NettyHttpResponder responder = new NettyHttpResponder(
-                context, keepAlive, headRequest, http2, responseSlot);
-        if (!message.decoderResult().isSuccess()) {
-            responder.send(HttpResponse.empty(400));
-            return;
+        Http1ResponseQueue.Slot responseSlot = null;
+        if (!http2) {
+            responseSlot = http1ResponseQueue(context.channel()).register(
+                    context.channel(), keepAlive, maxPendingRequests);
+            if (responseSlot == null) {
+                context.close();
+                return;
+            }
+            if (responseSlot.overflow()) {
+                new NettyHttpResponder(context, false, headRequest, false, responseSlot, false)
+                        .send(HttpResponse.empty(429));
+                return;
+            }
         }
 
+        if (!message.decoderResult().isSuccess()) {
+            new NettyHttpResponder(context, false, headRequest, http2, responseSlot, false)
+                    .send(HttpResponse.empty(400));
+            return;
+        }
+        NettyHttpResponder responder = new NettyHttpResponder(
+                context, keepAlive, headRequest, http2, responseSlot, true);
         HttpRequest request = new HttpRequest(
                 message.method().name(),
                 message.uri(),
@@ -100,52 +127,74 @@ final class NettyHttpDispatcher extends SimpleChannelInboundHandler<io.netty.han
         return existing == null ? created : existing;
     }
 
-    private static final class NettyHttpResponder implements IHttpResponder {
+    private final class NettyHttpResponder implements IHttpResponder {
         private final ChannelHandlerContext context;
         private final boolean keepAlive;
         private final boolean headRequest;
-        private final boolean http2;
+        private final boolean responseIsHttp2;
         private final Http1ResponseQueue.Slot responseSlot;
+        private final boolean guarded;
         private final AtomicBoolean completed = new AtomicBoolean();
+        private final ChannelFutureListener closeListener;
+        private volatile ScheduledFuture<?> timeoutFuture;
 
         private NettyHttpResponder(ChannelHandlerContext context, boolean keepAlive,
-                                   boolean headRequest, boolean http2,
-                                   Http1ResponseQueue.Slot responseSlot) {
+                                   boolean headRequest, boolean responseIsHttp2,
+                                   Http1ResponseQueue.Slot responseSlot, boolean guarded) {
             this.context = context;
             this.keepAlive = keepAlive;
             this.headRequest = headRequest;
-            this.http2 = http2;
+            this.responseIsHttp2 = responseIsHttp2;
             this.responseSlot = responseSlot;
+            this.guarded = guarded;
+            this.closeListener = ignored -> abandon();
+            if (guarded) {
+                context.channel().closeFuture().addListener(closeListener);
+                timeoutFuture = context.executor().schedule(
+                        () -> completeIfOpen(HttpResponse.empty(408)),
+                        requestTimeout.toNanos(), TimeUnit.NANOSECONDS);
+                if (completed.get()) {
+                    timeoutFuture.cancel(false);
+                }
+            }
         }
 
         @Override
         public void send(HttpResponse response) {
             Objects.requireNonNull(response, "response");
-            complete(() -> write(response));
+            complete(response);
         }
 
         @Override
         public void fail(Throwable cause) {
             Objects.requireNonNull(cause, "cause");
-            complete(() -> write(HttpResponse.empty(500)));
+            complete(HttpResponse.empty(500));
         }
 
         private void failIfOpen(Throwable cause) {
             Objects.requireNonNull(cause, "cause");
-            if (completed.compareAndSet(false, true)) {
-                dispatch(() -> write(HttpResponse.empty(500)));
-            }
+            completeIfOpen(HttpResponse.empty(500));
         }
 
-        private void complete(Runnable action) {
+        private void complete(HttpResponse response) {
             if (!completed.compareAndSet(false, true)) {
                 throw new IllegalStateException("HTTP response has already been completed");
             }
-            dispatch(action);
+            cancelTimeout();
+            removeCloseListener();
+            dispatch(() -> write(response));
+        }
+
+        private void completeIfOpen(HttpResponse response) {
+            if (completed.compareAndSet(false, true)) {
+                cancelTimeout();
+                removeCloseListener();
+                dispatch(() -> write(response));
+            }
         }
 
         private void dispatch(Runnable action) {
-            Runnable protocolAwareAction = http2
+            Runnable protocolAwareAction = responseIsHttp2
                     ? action
                     : () -> http1ResponseQueue(context.channel()).complete(responseSlot, action);
             if (context.executor().inEventLoop()) {
@@ -156,29 +205,57 @@ final class NettyHttpDispatcher extends SimpleChannelInboundHandler<io.netty.han
         }
 
         private void write(HttpResponse response) {
-            byte[] body = response.body();
-            boolean bodyAllowed = !headRequest && response.status() >= 200
-                    && response.status() != 204 && response.status() != 304;
-            FullHttpResponse nettyResponse = new DefaultFullHttpResponse(
-                    HttpVersion.HTTP_1_1,
-                    HttpResponseStatus.valueOf(response.status()),
-                    bodyAllowed ? Unpooled.wrappedBuffer(body) : Unpooled.EMPTY_BUFFER);
-            response.headers().forEach((name, values) -> values.forEach(
-                    value -> nettyResponse.headers().add(name, value)));
+            try {
+                byte[] body = response.body();
+                boolean bodyAllowed = !headRequest && response.status() >= 200
+                        && response.status() != 204 && response.status() != 304;
+                FullHttpResponse nettyResponse = new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1,
+                        HttpResponseStatus.valueOf(response.status()),
+                        bodyAllowed ? Unpooled.wrappedBuffer(body) : Unpooled.EMPTY_BUFFER);
+                response.headers().forEach((name, values) -> values.forEach(
+                        value -> nettyResponse.headers().add(name, value)));
 
-            if (http2) {
-                removeHttp2ProhibitedHeaders(nettyResponse);
-            } else {
-                HttpUtil.setKeepAlive(nettyResponse, keepAlive);
-            }
-            if (!nettyResponse.headers().contains(HttpHeaderNames.CONTENT_LENGTH)) {
-                HttpUtil.setContentLength(nettyResponse, headRequest ? body.length : nettyResponse.content().readableBytes());
-            }
+                if (responseIsHttp2) {
+                    removeHttp2ProhibitedHeaders(nettyResponse);
+                } else {
+                    HttpUtil.setKeepAlive(nettyResponse, keepAlive);
+                }
+                if (response.status() == 204) {
+                    nettyResponse.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
+                    nettyResponse.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
+                } else if (!nettyResponse.headers().contains(HttpHeaderNames.CONTENT_LENGTH)) {
+                    HttpUtil.setContentLength(nettyResponse,
+                            headRequest || response.status() == 304
+                                    ? body.length
+                                    : nettyResponse.content().readableBytes());
+                }
 
-            if (keepAlive) {
-                context.writeAndFlush(nettyResponse);
-            } else {
-                context.writeAndFlush(nettyResponse).addListener(ChannelFutureListener.CLOSE);
+                ChannelFuture writeFuture = context.writeAndFlush(nettyResponse);
+                if (!keepAlive) {
+                    writeFuture.addListener(ChannelFutureListener.CLOSE);
+                }
+            } catch (Throwable failure) {
+                context.close();
+            }
+        }
+
+        private void abandon() {
+            if (completed.compareAndSet(false, true)) {
+                cancelTimeout();
+            }
+        }
+
+        private void cancelTimeout() {
+            ScheduledFuture<?> current = timeoutFuture;
+            if (current != null) {
+                current.cancel(false);
+            }
+        }
+
+        private void removeCloseListener() {
+            if (guarded) {
+                context.channel().closeFuture().removeListener(closeListener);
             }
         }
 
@@ -193,9 +270,20 @@ final class NettyHttpDispatcher extends SimpleChannelInboundHandler<io.netty.han
 
     private static final class Http1ResponseQueue {
         private final Deque<Slot> slots = new ArrayDeque<>();
+        private boolean accepting = true;
 
-        private Slot register(boolean keepAlive) {
-            Slot slot = new Slot(keepAlive);
+        private Slot register(Channel channel, boolean keepAlive, int maxPendingRequests) {
+            if (!accepting) {
+                return null;
+            }
+            if (slots.size() >= maxPendingRequests) {
+                accepting = false;
+                channel.config().setAutoRead(false);
+                Slot overflow = new Slot(false, true);
+                slots.addLast(overflow);
+                return overflow;
+            }
+            Slot slot = new Slot(keepAlive, false);
             slots.addLast(slot);
             return slot;
         }
@@ -218,10 +306,16 @@ final class NettyHttpDispatcher extends SimpleChannelInboundHandler<io.netty.han
 
         private static final class Slot {
             private final boolean keepAlive;
+            private final boolean overflow;
             private Runnable action;
 
-            private Slot(boolean keepAlive) {
+            private Slot(boolean keepAlive, boolean overflow) {
                 this.keepAlive = keepAlive;
+                this.overflow = overflow;
+            }
+
+            private boolean overflow() {
+                return overflow;
             }
         }
     }

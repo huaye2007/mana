@@ -6,7 +6,7 @@ import cn.managame.network.connection.IWriteCallback;
 import java.util.Objects;
 
 public class PlayerSession {
-    private final Object sessionId;
+    private final String sessionId;
     private final IConnection connection;
     private long roleId;
 
@@ -15,7 +15,7 @@ public class PlayerSession {
         this.sessionId = connection.getConnectionId();
     }
 
-    public Object getSessionId() { return sessionId; }
+    public String getSessionId() { return sessionId; }
     public IConnection getConnection() { return connection; }
     public void writeMsg(Object message) { connection.writeMsg(message); }
     public void writeMsg(Object message, IWriteCallback callback) { connection.writeMsg(message, callback); }

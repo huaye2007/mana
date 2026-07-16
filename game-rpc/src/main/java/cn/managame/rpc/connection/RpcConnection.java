@@ -6,6 +6,8 @@ import io.netty.channel.Channel;
 
 public class RpcConnection extends NettyConnection {
 
+    private final long rpcConnectionId;
+
     // 服务端握手时由 IO 线程写、业务线程读，volatile 保证可见性
     private volatile String serviceName;
 
@@ -14,12 +16,12 @@ public class RpcConnection extends NettyConnection {
     private int index;
 
     public RpcConnection(long connectionId, Channel channel) {
-        super(connectionId, channel);
+        super(channel);
+        this.rpcConnectionId = connectionId;
     }
 
-    @Override
-    public Long getConnectionId() {
-        return (Long) super.getConnectionId();
+    public long getRpcConnectionId() {
+        return rpcConnectionId;
     }
 
     public String getServiceName() {

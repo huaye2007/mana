@@ -1,5 +1,7 @@
 # game-network
 
+[中文](README.md) | English
+
 `game-network` is the Netty network transport component. It provides server lifecycle, long-lived connection event delivery, TCP/WebSocket pipelines, and unified HTTP request/response semantics.
 
 Sessions, player/account identity, authentication state, and the `connection -> session` mapping all belong to the business layer and are neither defined nor managed here. HTTP business handlers see only a unified `HttpRequest` and `IHttpResponder`, without knowing whether HTTP/1 or HTTP/2 is used underneath.
@@ -110,12 +112,23 @@ INetworkServer httpServer = NettyHttpServer.builder(httpHandler)
         .bind(8080)
         .protocol(NettyHttpProtocol.AUTO)
         .maxContentLength(1024 * 1024)
+        .maxInitialLineLength(4 * 1024)
+        .maxHeaderSize(8 * 1024)
+        .maxPendingRequests(1024)
+        .maxConcurrentStreams(128)
+        .requestTimeout(Duration.ofSeconds(30))
         .build();
 ```
 
 On a cleartext port, `AUTO` accepts HTTP/1.1, h2c upgrade, and HTTP/2 prior knowledge. With an `SslContext`, ALPN selects HTTP/1.1 or HTTP/2; the context must use Netty's native ALPN configuration to advertise `h2` and `http/1.1`.
 
 `IHttpResponder` may be called immediately or retained until an RPC, actor, or other asynchronous callback completes. The adapter safely returns execution to the corresponding Netty event loop and allows each request to complete only once. Every HTTP/2 stream is adapted into an independent request without exposing that protocol detail to the business handler.
+
+`maxPendingRequests` bounds the ordered-response queue on each HTTP/1 connection; overflow receives 429 and closes the connection. `maxConcurrentStreams` advertises the HTTP/2 stream limit through SETTINGS. A request receives 408 when the business handler has not completed it before `requestTimeout`. Initial-line (including URI), header, and aggregated-body sizes are bounded so one connection cannot consume unbounded memory.
+
+`IConnectionHandler` and `IHttpHandler` are invoked serially on the corresponding channel's Netty event loop. Business code may call `IConnection.writeMsg` or the one-shot `IHttpResponder` from another thread; the adapter returns response work to the event loop. Reference-counted messages without a decoder, such as `ByteBuf`, are owned and released by the business handler after `IConnectionHandler.onMessage`; `HttpRequest` and `HttpResponse` instead copy headers and bodies and contain no Netty reference-counted objects.
+
+Every server `stop()` directly closes the listening socket, active connections, and owned EventLoopGroups. It neither tracks business requests nor performs protocol-level draining. A stopped server cannot be restarted.
 
 The first version aggregates complete request and response bodies; streaming uploads, SSE, and HTTP/2 Push are outside its scope.
 

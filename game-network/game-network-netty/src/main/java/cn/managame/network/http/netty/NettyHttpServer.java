@@ -41,8 +41,4 @@ public final class NettyHttpServer implements INetworkServer, AutoCloseable {
     public SocketAddress localAddress() {
         return server.localAddress();
     }
-
-    public NettyServer unwrap() {
-        return server;
-    }
 }

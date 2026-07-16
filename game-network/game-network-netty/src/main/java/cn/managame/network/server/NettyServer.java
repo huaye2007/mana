@@ -19,6 +19,7 @@ public final class NettyServer implements INetworkServer, AutoCloseable {
     private final boolean shutdownEventLoops;
 
     private volatile Channel serverChannel;
+    private volatile State state = State.NEW;
 
     NettyServer(ServerBootstrap bootstrap, SocketAddress bindAddress, ChannelGroup channels,
                 EventLoopGroup bossGroup, EventLoopGroup workerGroup, boolean shutdownEventLoops) {
@@ -46,13 +47,18 @@ public final class NettyServer implements INetworkServer, AutoCloseable {
 
     @Override
     public synchronized void start() {
-        if (serverChannel != null && serverChannel.isActive()) {
+        if (state == State.RUNNING) {
             return;
+        }
+        if (state == State.STOPPED) {
+            throw new IllegalStateException("server cannot be restarted after it has stopped");
         }
         try {
             serverChannel = bootstrap.bind(bindAddress).syncUninterruptibly().channel();
             channels.add(serverChannel);
+            state = State.RUNNING;
         } catch (RuntimeException | Error failure) {
+            state = State.STOPPED;
             shutdownEventLoops();
             throw failure;
         }
@@ -60,15 +66,22 @@ public final class NettyServer implements INetworkServer, AutoCloseable {
 
     @Override
     public synchronized void stop() {
+        if (state == State.STOPPED) {
+            return;
+        }
+        state = State.STOPPED;
         Channel current = serverChannel;
         serverChannel = null;
         try {
-            channels.close().syncUninterruptibly();
             if (current != null) {
                 current.close().syncUninterruptibly();
             }
         } finally {
-            shutdownEventLoops();
+            try {
+                channels.close().syncUninterruptibly();
+            } finally {
+                shutdownEventLoops();
+            }
         }
     }
 
@@ -78,8 +91,7 @@ public final class NettyServer implements INetworkServer, AutoCloseable {
     }
 
     public boolean isRunning() {
-        Channel current = serverChannel;
-        return current != null && current.isActive();
+        return state == State.RUNNING && serverChannel != null && serverChannel.isActive();
     }
 
     public SocketAddress localAddress() {
@@ -96,4 +108,6 @@ public final class NettyServer implements INetworkServer, AutoCloseable {
             bossGroup.shutdownGracefully().syncUninterruptibly();
         }
     }
+
+    private enum State { NEW, RUNNING, STOPPED }
 }

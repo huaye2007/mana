@@ -2,7 +2,8 @@ package cn.managame.network.connection;
 
 public interface IConnection {
 
-    Object getConnectionId();
+    /** Stable transport identifier. Implementations must not reuse it while the process is running. */
+    String getConnectionId();
 
     ConnectionType getType();
 

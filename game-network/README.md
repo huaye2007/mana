@@ -1,5 +1,7 @@
 # game-network
 
+[English](README.en.md) | 中文
+
 `game-network` 是 Netty 网络接入组件。它负责 Server 生命周期、长连接事件投递、TCP/WebSocket pipeline，以及统一的 HTTP 请求/响应语义。
 
 Session、玩家/账号身份、登录态，以及 `connection -> session` 映射全部属于业务层，不由本模块定义或管理。HTTP 业务层只处理统一的 `HttpRequest` 和 `IHttpResponder`，不需要知道底层是 HTTP/1 还是 HTTP/2。
@@ -110,12 +112,23 @@ INetworkServer httpServer = NettyHttpServer.builder(httpHandler)
         .bind(8080)
         .protocol(NettyHttpProtocol.AUTO)
         .maxContentLength(1024 * 1024)
+        .maxInitialLineLength(4 * 1024)
+        .maxHeaderSize(8 * 1024)
+        .maxPendingRequests(1024)
+        .maxConcurrentStreams(128)
+        .requestTimeout(Duration.ofSeconds(30))
         .build();
 ```
 
 `AUTO` 在明文端口同时接受 HTTP/1.1、h2c upgrade 和 HTTP/2 prior knowledge。配置 `SslContext` 后通过 ALPN 选择 HTTP/1.1 或 HTTP/2；`SslContext` 必须使用 Netty 原生 ALPN 配置声明 `h2` 和 `http/1.1`。
 
 `IHttpResponder` 可以立即调用，也可以保留到 RPC、Actor 或其他异步业务回调中再调用。适配层保证从业务线程安全地切回对应 Netty EventLoop，并限制一个请求只完成一次。HTTP/2 的每个 Stream 独立适配成一次请求，但这些协议差异不会暴露给业务 Handler。
+
+`maxPendingRequests` 限制单条 HTTP/1 连接中等待有序响应的请求数，超过限制返回 429 并关闭连接；`maxConcurrentStreams` 通过 HTTP/2 SETTINGS 限制并发 Stream。请求超过 `requestTimeout` 且业务仍未完成响应时返回 408。初始行（包含 URI）、Header 和完整 Body 都有上限，避免单连接无限占用内存。
+
+`IConnectionHandler` 和 `IHttpHandler` 由对应 Channel 的 Netty EventLoop 串行调用。业务可以在其他线程调用 `IConnection.writeMsg` 或一次性的 `IHttpResponder`；适配层负责切回 EventLoop。未解码的引用计数消息（例如 `ByteBuf`）交给 `IConnectionHandler.onMessage` 后由业务释放；`HttpRequest`/`HttpResponse` 则复制 Header 和 Body，不携带 Netty 引用计数对象。
+
+所有 Server 的 `stop()` 都直接关闭监听端口、已有连接和自身持有的 EventLoopGroup，不追踪业务请求，也不执行协议级排空。Server 停止后不能再次启动。
 
 第一版聚合完整请求体和响应体，不覆盖流式上传、SSE、HTTP/2 Push 等流式能力。
 

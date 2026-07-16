@@ -70,7 +70,7 @@ public class RpcContainer {
         RpcPeer peer = getRpcPeer(connection.getServiceName(), connection.getServiceId());
         if (peer != null) {
             peer.remove(connection);
-            peer.getRpcInvokeManager().failConnection(connection.getConnectionId(),
+            peer.getRpcInvokeManager().failConnection(connection.getRpcConnectionId(),
                     new GameRpcException("connection closed: " + connection.getRemoteAddress()));
             if (reclaimEmptyPeers && peer.isEmpty()) {
                 // 服务端：对端连接清空（如客户端永久下线）后回收空 peer，避免 map 随身份只增不减

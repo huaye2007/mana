@@ -8,12 +8,14 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
+import io.netty.handler.codec.http.HttpDecoderConfig;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpServerUpgradeHandler;
 import io.netty.handler.codec.http2.CleartextHttp2ServerUpgradeHandler;
 import io.netty.handler.codec.http2.Http2CodecUtil;
 import io.netty.handler.codec.http2.Http2FrameCodec;
 import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.handler.codec.http2.Http2Settings;
 import io.netty.handler.codec.http2.Http2MultiplexHandler;
 import io.netty.handler.codec.http2.Http2ServerUpgradeCodec;
 import io.netty.handler.codec.http2.Http2StreamFrameToHttpObjectCodec;
@@ -23,6 +25,7 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.util.AsciiString;
 import io.netty.util.ReferenceCountUtil;
 
+import java.time.Duration;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -34,16 +37,29 @@ final class NettyHttpChannelInitializer extends ChannelInitializer<SocketChannel
     private final NettyHttpProtocol protocol;
     private final SslContext sslContext;
     private final int maxContentLength;
+    private final int maxInitialLineLength;
+    private final int maxHeaderSize;
+    private final int maxPendingRequests;
+    private final long maxConcurrentStreams;
+    private final Duration requestTimeout;
     private final Consumer<ChannelPipeline> beforeProtocol;
     private final Consumer<ChannelPipeline> applicationPipeline;
 
     NettyHttpChannelInitializer(IHttpHandler handler, NettyHttpProtocol protocol, SslContext sslContext,
-                                int maxContentLength, Consumer<ChannelPipeline> beforeProtocol,
+                                int maxContentLength, int maxInitialLineLength, int maxHeaderSize,
+                                int maxPendingRequests, long maxConcurrentStreams,
+                                Duration requestTimeout,
+                                Consumer<ChannelPipeline> beforeProtocol,
                                 Consumer<ChannelPipeline> applicationPipeline) {
         this.handler = Objects.requireNonNull(handler, "handler");
         this.protocol = Objects.requireNonNull(protocol, "protocol");
         this.sslContext = sslContext;
         this.maxContentLength = maxContentLength;
+        this.maxInitialLineLength = maxInitialLineLength;
+        this.maxHeaderSize = maxHeaderSize;
+        this.maxPendingRequests = maxPendingRequests;
+        this.maxConcurrentStreams = maxConcurrentStreams;
+        this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
         this.beforeProtocol = Objects.requireNonNull(beforeProtocol, "beforeProtocol");
         this.applicationPipeline = Objects.requireNonNull(applicationPipeline, "applicationPipeline");
     }
@@ -85,11 +101,12 @@ final class NettyHttpChannelInitializer extends ChannelInitializer<SocketChannel
 
     private void configureHttp1(ChannelPipeline pipeline, boolean addCodec) {
         if (addCodec) {
-            pipeline.addLast("http1Codec", new HttpServerCodec());
+            pipeline.addLast("http1Codec", newHttp1Codec());
         }
         pipeline.addLast("http1Aggregator", new HttpObjectAggregator(maxContentLength));
         applicationPipeline.accept(pipeline);
-        pipeline.addLast("httpDispatcher", new NettyHttpDispatcher(handler, false));
+        pipeline.addLast("httpDispatcher", new NettyHttpDispatcher(
+                handler, false, requestTimeout, maxPendingRequests));
     }
 
     private void configureHttp2(ChannelPipeline pipeline) {
@@ -98,7 +115,7 @@ final class NettyHttpChannelInitializer extends ChannelInitializer<SocketChannel
     }
 
     private void configureH2cAndHttp1(ChannelPipeline pipeline) {
-        HttpServerCodec sourceCodec = new HttpServerCodec();
+        HttpServerCodec sourceCodec = newHttp1Codec();
         Http2FrameCodec upgradeFrameCodec = newHttp2FrameCodec();
         Http2MultiplexHandler upgradeMultiplex = new Http2MultiplexHandler(
                 newStreamInitializer(), newStreamInitializer());
@@ -136,7 +153,17 @@ final class NettyHttpChannelInitializer extends ChannelInitializer<SocketChannel
     }
 
     private Http2FrameCodec newHttp2FrameCodec() {
-        return Http2FrameCodecBuilder.forServer().build();
+        Http2Settings settings = new Http2Settings()
+                .maxConcurrentStreams(maxConcurrentStreams)
+                .maxHeaderListSize((long) maxHeaderSize);
+        return Http2FrameCodecBuilder.forServer().initialSettings(settings).build();
+    }
+
+    private HttpServerCodec newHttp1Codec() {
+        HttpDecoderConfig decoderConfig = new HttpDecoderConfig()
+                .setMaxInitialLineLength(maxInitialLineLength)
+                .setMaxHeaderSize(maxHeaderSize);
+        return new HttpServerCodec(decoderConfig);
     }
 
     private ChannelHandler newStreamInitializer() {
@@ -147,7 +174,8 @@ final class NettyHttpChannelInitializer extends ChannelInitializer<SocketChannel
                 pipeline.addLast("http2StreamCodec", new Http2StreamFrameToHttpObjectCodec(true));
                 pipeline.addLast("http2Aggregator", new HttpObjectAggregator(maxContentLength));
                 applicationPipeline.accept(pipeline);
-                pipeline.addLast("httpDispatcher", new NettyHttpDispatcher(handler, true));
+                pipeline.addLast("httpDispatcher", new NettyHttpDispatcher(
+                        handler, true, requestTimeout, maxPendingRequests));
             }
         };
     }

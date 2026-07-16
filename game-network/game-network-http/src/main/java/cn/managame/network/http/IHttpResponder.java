@@ -2,6 +2,11 @@ package cn.managame.network.http;
 
 import java.nio.charset.StandardCharsets;
 
+/**
+ * A thread-safe, one-shot response capability. Exactly one call to {@link #send(HttpResponse)} or
+ * {@link #fail(Throwable)} is allowed; later calls fail with {@link IllegalStateException}.
+ * The transport may complete an unanswered request itself when its configured timeout expires.
+ */
 public interface IHttpResponder {
 
     void send(HttpResponse response);

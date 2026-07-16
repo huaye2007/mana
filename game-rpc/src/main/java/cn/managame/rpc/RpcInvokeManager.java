@@ -70,7 +70,7 @@ public class RpcInvokeManager {
         }
         long requestId = requestIdGen.incrementAndGet();
         request.requestId(requestId);
-        RpcFuture future = new RpcFuture(requestId, connection.getConnectionId(), System.nanoTime(),
+        RpcFuture future = new RpcFuture(requestId, connection.getRpcConnectionId(), System.nanoTime(),
                 container.getSerializerManager());
         rpcFutureMap.put(requestId, future);
 

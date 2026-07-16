@@ -4,27 +4,27 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 
 import java.net.InetSocketAddress;
+import java.util.Objects;
 
 public class NettyConnection implements IConnection {
 
     protected final Channel channel;
-    private final Object connectionId;
+    private final String connectionId;
 
     public NettyConnection(Channel channel){
-        this(channel,channel.id().asLongText());
+        this(channel, channel.id().asLongText());
     }
 
-    public NettyConnection(Channel channel,Object connectionId){
-        this.channel = channel;
+    public NettyConnection(Channel channel, String connectionId){
+        this.channel = Objects.requireNonNull(channel, "channel");
+        if (connectionId == null || connectionId.isBlank()) {
+            throw new IllegalArgumentException("connectionId must not be blank");
+        }
         this.connectionId = connectionId;
     }
 
-    public NettyConnection(Object connectionId, Channel channel) {
-        this(channel, connectionId);
-    }
-
     @Override
-    public Object getConnectionId() {
+    public String getConnectionId() {
         return connectionId;
     }
 
