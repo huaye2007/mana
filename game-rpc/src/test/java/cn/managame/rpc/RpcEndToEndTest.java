@@ -206,6 +206,9 @@ class RpcEndToEndTest {
             try {
                 awaitReady(c, "rsvr", "1", 5000); // 退避重连后重新挂上
                 assertEquals("echo:b", echo(c, "rsvr", "1", "b"));
+                Thread.sleep(800); // 已成功后不能再有同槽位的遗留重连任务
+                assertEquals(1, c.getRpcPeer("rsvr", "1").connectionCount());
+                assertEquals(1, c.getMetrics().reconnectSuccesses());
             } finally {
                 s2.close();
             }
@@ -232,6 +235,25 @@ class RpcEndToEndTest {
             Thread.sleep(4000); // 静默 4s（> 服务端 3s 读空闲），仅靠心跳维持
             assertEquals("echo:alive", echo(c, "hsvr", "1", "alive"));
             assertTrue(c.getRpcPeer("hsvr", "1").connectionCount() > 0);
+        } finally {
+            c.close();
+            s.close();
+        }
+    }
+
+    @Test
+    void appliesConfiguredWriteBufferWaterMark() throws Exception {
+        int port = freePort();
+        RpcServer s = new RpcServer(new RpcServerConfig().port(port), echoHandler());
+        s.start();
+        RpcClient c = new RpcClient(new RpcClientConfig().serviceName("client-watermark").serviceId("1")
+                .writeBufferWaterMark(8 * 1024, 32 * 1024), noopHandler());
+        try {
+            c.connect(target("watermark-server", "1", port));
+            awaitReady(c, "watermark-server", "1", 2000);
+            RpcConnection connection = c.getRpcPeer("watermark-server", "1").snapshot()[0];
+            assertEquals(8 * 1024, connection.getChannel().config().getWriteBufferWaterMark().low());
+            assertEquals(32 * 1024, connection.getChannel().config().getWriteBufferWaterMark().high());
         } finally {
             c.close();
             s.close();

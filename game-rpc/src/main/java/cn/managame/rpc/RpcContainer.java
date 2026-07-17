@@ -246,22 +246,22 @@ public class RpcContainer {
         return shuttingDown;
     }
 
-    /** 所有 peer 当前在途请求总数。 */
-    public int pendingRequestCount() {
-        int sum = 0;
+    /** 是否仍有 peer 存在在途请求。 */
+    private boolean hasInFlightRequests() {
         for (Map<String, RpcPeer> peerMap : service2RpcPeerMap.values()) {
             for (RpcPeer peer : peerMap.values()) {
-                sum += peer.getRpcInvokeManager().pendingCount();
+                if (!peer.getRpcInvokeManager().isIdle()) {
+                    return true;
+                }
             }
         }
-        return sum;
+        return false;
     }
 
-    /** 阻塞等待在途请求排空，最多 graceMillis；返回剩余在途数（0 表示已排空）。 */
-    protected int awaitDrain(long graceMillis) {
+    /** 阻塞等待在途请求排空，最多 graceMillis；返回是否已排空。 */
+    protected boolean awaitDrain(long graceMillis) {
         long deadline = System.nanoTime() + graceMillis * 1_000_000L;
-        int pending;
-        while ((pending = pendingRequestCount()) > 0 && System.nanoTime() < deadline) {
+        while (hasInFlightRequests() && System.nanoTime() < deadline) {
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
@@ -269,7 +269,7 @@ public class RpcContainer {
                 break;
             }
         }
-        return pending;
+        return !hasInFlightRequests();
     }
 
     // ---- 访问器 ----

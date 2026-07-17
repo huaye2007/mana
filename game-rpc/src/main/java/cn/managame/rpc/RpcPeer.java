@@ -27,6 +27,14 @@ public class RpcPeer {
         connectionGroup.add(connection);
     }
 
+    public void configureFixedConnectionSlots(int size) {
+        connectionGroup.configureFixedSlots(size);
+    }
+
+    public void setConnectionSlot(int index, RpcConnection connection) {
+        connectionGroup.setSlot(index, connection);
+    }
+
     public void remove(RpcConnection connection) {
         connectionGroup.remove(connection);
     }

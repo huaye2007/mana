@@ -105,7 +105,7 @@ client.disconnect("logic", "1");
 | 心跳保活 | 客户端写空闲发 `PING`，服务端回 `PONG`；任一端读空闲（`idleTimeoutSeconds`）判死关连接。由 `IdleStateHandler` 驱动，配置为 0 则关闭。 |
 | 断线重连 | 连接失败或断开后按指数退避（带抖动）自动重连；`reconnectEnabled` 控制。`disconnect`/`close` 会停止重连。 |
 | 背压 | 出站缓冲到高水位（`!isWritable`）时：invoke 立即失败、oneway/broadcast 直接丢弃，计入 metrics，不撑爆堆外内存。 |
-| 在途上限 | 单 peer 在途请求超过 `maxPendingPerPeer`（默认 100000，0=不限）则拒绝新 invoke，防对端假死时 OOM。 |
+| 在途软上限 | 单 peer 在途请求接近 `maxPendingPerPeer`（默认 100000，0=不限）时拒绝新 invoke，防对端假死时 OOM；并发下允许少量越界，不在热路径加锁。 |
 | 超时 | 每个 invoke 挂哈希时间轮超时（`RpcRequest.timeoutMillis` 或 `defaultTimeoutMillis`）；到点 future/callback 收到 `GameRpcException`。 |
 | 广播 | `broadcast(serviceName, req)` 对该服务每个实例各选一条连接，body **只编码一次**再对各连接写帧的 `retainedDuplicate`。 |
 

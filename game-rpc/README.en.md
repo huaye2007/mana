@@ -98,7 +98,7 @@ client.disconnect("logic", "1");
 | Heartbeat | The client sends `PING` on write idle, the server replies `PONG`; either side declares the connection dead and closes it on read idle (`idleTimeoutSeconds`). Driven by `IdleStateHandler`; set to 0 to disable. |
 | Reconnect | After a failed connect or a disconnect, reconnects automatically with exponential backoff (with jitter); controlled by `reconnectEnabled`. `disconnect`/`close` stops reconnecting. |
 | Backpressure | When the outbound buffer hits the high watermark (`!isWritable`): invoke fails immediately, oneway/broadcast are dropped, counted in metrics — the off-heap memory is never blown up. |
-| In-flight limit | When a single peer's in-flight requests exceed `maxPendingPerPeer` (default 100000, 0 = unlimited), new invokes are rejected to prevent OOM when the remote side hangs. |
+| Soft in-flight limit | New invokes are rejected when a peer approaches `maxPendingPerPeer` (default 100000, 0 = unlimited), preventing OOM when the remote side hangs. Small concurrent overshoot is allowed to keep the hot path lock-free. |
 | Timeout | Every invoke is registered on a hashed wheel timer (`RpcRequest.timeoutMillis` or `defaultTimeoutMillis`); on expiry the future/callback receives a `GameRpcException`. |
 | Broadcast | `broadcast(serviceName, req)` picks one connection per instance of the service; the body is **encoded once**, then a `retainedDuplicate` of the frame is written per connection. |
 

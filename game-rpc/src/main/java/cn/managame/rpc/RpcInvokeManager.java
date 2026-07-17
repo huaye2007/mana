@@ -4,7 +4,6 @@ import cn.managame.network.connection.IWriteCallback;
 import cn.managame.rpc.connection.RpcConnection;
 import io.netty.util.Timeout;
 
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -63,11 +62,11 @@ public class RpcInvokeManager {
                     "connection not writable (backpressure), command=" + request.getCommand()));
         }
         int maxPending = container.getMaxPendingPerPeer();
+        // 这是防失控堆积的软上限，不承担业务一致性；并发下允许少量越界，避免热路径加锁。
         if (maxPending > 0 && rpcFutureMap.size() >= maxPending) {
-            // 对端假死/变慢时在途请求会无上限堆积，超过上限直接拒绝，防止 OOM
             metrics.onRejectedPendingLimit();
             return RpcFuture.failed(new GameRpcException(
-                    "pending requests exceed limit " + maxPending + ", command=" + request.getCommand()));
+                    "pending requests exceed soft limit " + maxPending + ", command=" + request.getCommand()));
         }
         long requestId = requestIdGen.incrementAndGet();
         request.requestId(requestId);
@@ -77,30 +76,48 @@ public class RpcInvokeManager {
 
         long timeoutMillis = request.getTimeoutMillis() > 0
                 ? request.getTimeoutMillis() : container.getDefaultTimeoutMillis();
-        Timeout timeout = container.getTimer().newTimeout(t -> {
-            RpcFuture pending = rpcFutureMap.remove(requestId);
-            if (pending != null && pending.completeExceptionally(new GameRpcException(
-                    "rpc timeout after " + timeoutMillis + "ms, command=" + request.getCommand()))) {
-                metrics.onTimeout();
+        final Timeout timeout;
+        try {
+            timeout = container.getTimer().newTimeout(t -> {
+                RpcFuture pending = removePending(requestId);
+                if (pending != null && pending.completeExceptionally(new GameRpcException(
+                        "rpc timeout after " + timeoutMillis + "ms, command=" + request.getCommand()))) {
+                    metrics.onTimeout();
+                }
+            }, timeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (Throwable timerFailure) {
+            RpcFuture pending = removePending(requestId);
+            if (pending != null) {
+                pending.completeExceptionally(new GameRpcException(
+                        "rpc timeout registration failed, command=" + request.getCommand(), timerFailure));
             }
-        }, timeoutMillis, TimeUnit.MILLISECONDS);
+            return future;
+        }
         future.setTimeout(timeout);
 
-        connection.writeMsg(request, new IWriteCallback() {
-            @Override
-            public void onSuccess() {
-                metrics.onRequestSent();
-            }
-
-            @Override
-            public void onFailure(Throwable cause) {
-                RpcFuture pending = rpcFutureMap.remove(requestId);
-                if (pending != null && pending.completeExceptionally(
-                        new GameRpcException("rpc write failed, command=" + request.getCommand(), cause))) {
-                    metrics.onWriteFailure();
+        try {
+            connection.writeMsg(request, new IWriteCallback() {
+                @Override
+                public void onSuccess() {
+                    metrics.onRequestSent();
                 }
+
+                @Override
+                public void onFailure(Throwable cause) {
+                    RpcFuture pending = removePending(requestId);
+                    if (pending != null && pending.completeExceptionally(
+                            new GameRpcException("rpc write failed, command=" + request.getCommand(), cause))) {
+                        metrics.onWriteFailure();
+                    }
+                }
+            });
+        } catch (Throwable writeFailure) {
+            RpcFuture pending = removePending(requestId);
+            if (pending != null && pending.completeExceptionally(
+                    new GameRpcException("rpc write failed, command=" + request.getCommand(), writeFailure))) {
+                metrics.onWriteFailure();
             }
-        });
+        }
         return future;
     }
 
@@ -111,7 +128,7 @@ public class RpcInvokeManager {
     /** 响应到达（IO 线程）：按 requestId 关联并完成 future。 */
     public void complete(RpcResponse response) {
         RpcMetrics metrics = container.getMetrics();
-        RpcFuture future = rpcFutureMap.remove(response.requestId());
+        RpcFuture future = removePending(response.requestId());
         if (future == null) {
             // 超时后才到 / 重复响应 / 未知 requestId
             metrics.onLateResponse();
@@ -128,26 +145,34 @@ public class RpcInvokeManager {
 
     /** 连接断开时，快速失败该连接上所有在途调用，而不是等各自超时。 */
     public void failConnection(String connectionId, Throwable cause) {
-        for (Iterator<Map.Entry<Long, RpcFuture>> it = rpcFutureMap.entrySet().iterator(); it.hasNext(); ) {
-            Map.Entry<Long, RpcFuture> entry = it.next();
+        for (Map.Entry<Long, RpcFuture> entry : rpcFutureMap.entrySet()) {
             if (Objects.equals(entry.getValue().getConnectionId(), connectionId)) {
-                it.remove();
+                if (removePending(entry.getKey(), entry.getValue())) {
+                    entry.getValue().completeExceptionally(cause);
+                }
+            }
+        }
+    }
+
+    /** 是否已经没有在途请求。 */
+    public boolean isIdle() {
+        return rpcFutureMap.isEmpty();
+    }
+
+    /** 移除目标时，快速失败本 peer 上所有在途调用。 */
+    public void failAll(Throwable cause) {
+        for (Map.Entry<Long, RpcFuture> entry : rpcFutureMap.entrySet()) {
+            if (removePending(entry.getKey(), entry.getValue())) {
                 entry.getValue().completeExceptionally(cause);
             }
         }
     }
 
-    /** 当前在途请求数。 */
-    public int pendingCount() {
-        return rpcFutureMap.size();
+    private RpcFuture removePending(long requestId) {
+        return rpcFutureMap.remove(requestId);
     }
 
-    /** 移除目标时，快速失败本 peer 上所有在途调用。 */
-    public void failAll(Throwable cause) {
-        for (Iterator<Map.Entry<Long, RpcFuture>> it = rpcFutureMap.entrySet().iterator(); it.hasNext(); ) {
-            Map.Entry<Long, RpcFuture> entry = it.next();
-            it.remove();
-            entry.getValue().completeExceptionally(cause);
-        }
+    private boolean removePending(long requestId, RpcFuture expected) {
+        return rpcFutureMap.remove(requestId, expected);
     }
 }
