@@ -63,8 +63,8 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
     private volatile ObjectMapper json;
     /** 每字段缓存 JSON 反序列化器，避免每行重建 JavaType/Reader（读热点）。随 mapper 替换失效。 */
     private final ConcurrentHashMap<RdbFieldMetadata, ObjectReader> jsonReaders = new ConcurrentHashMap<>();
-    /** 字段超长(Data too long)时自动 ALTER MODIFY 加宽到声明长度两倍再重写。默认开启。 */
-    private volatile boolean columnAutoWiden = true;
+    /** 字段超长(Data too long)时自动 ALTER MODIFY 加宽到声明长度两倍再重写。默认关闭，须显式启用。 */
+    private volatile boolean columnAutoWiden = false;
     /** 已自动加宽的列(dataSource:table:column -&gt; 已加宽到的长度)，去重避免并发重复 ALTER。 */
     private final ConcurrentHashMap<String, Integer> widenedColumns = new ConcurrentHashMap<>();
 
@@ -118,7 +118,8 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
     }
 
     /**
-     * 字段超长自动加宽开关。生产环境若不接受写路径自动 ALTER TABLE，可关闭（关闭后字段超长按确定性失败丢弃）。
+     * 字段超长自动加宽开关，默认关闭。仅在明确接受写路径执行 ALTER TABLE 时显式开启；
+     * 关闭时字段超长按确定性失败处理。
      */
     public MysqlRdbExecutor columnAutoWiden(boolean enabled) {
         this.columnAutoWiden = enabled;

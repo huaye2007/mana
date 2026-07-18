@@ -39,7 +39,7 @@ public class MysqlColumnAutoWidenTest {
 
     @Test
     @SuppressWarnings("removal")
-    public void writePathShardTableCreationCannotBeEnabled() {
+    public void writePathDdlIsDisabledByDefaultAndCanOnlyOptInToColumnWidening() throws Exception {
         DataSource dataSource = (DataSource) Proxy.newProxyInstance(
                 DataSource.class.getClassLoader(), new Class<?>[]{DataSource.class},
                 (proxy, method, args) -> null);
@@ -47,7 +47,12 @@ public class MysqlColumnAutoWidenTest {
 
         assertThrows(IllegalArgumentException.class, () -> executor.autoCreateShardTable(true));
         assertSame(executor, executor.autoCreateShardTable(false));
+
+        Field autoWiden = MysqlRdbExecutor.class.getDeclaredField("columnAutoWiden");
+        autoWiden.setAccessible(true);
+        assertFalse(autoWiden.getBoolean(executor));
         assertSame(executor, executor.columnAutoWiden(true));
+        assertTrue(autoWiden.getBoolean(executor));
     }
 
     private static RdbFieldMetadata field(String name, Class<?> javaType, int length, boolean json)

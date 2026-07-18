@@ -146,7 +146,7 @@ GameJpaContext context = new GameJpaBootstrap()
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
-`MysqlSchemaModule` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`MysqlRdbExecutor` 的 `columnAutoWiden` 默认仍开启，用于在字符串/二进制字段长度不足时自动扩列并重试写入。
+`MysqlSchemaModule` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`MysqlRdbExecutor` 的 `columnAutoWiden` 默认关闭，字符串/二进制字段长度不足时按确定性失败处理；只有明确接受写路径执行 `ALTER TABLE` 时才应显式调用 `columnAutoWiden(true)`。
 
 使用缓存读写：
 
