@@ -22,7 +22,7 @@ mvn "-Dmaven.repo.local=.m2" test
 | Module | Responsibility |
 | --- | --- |
 | `game-network` | Network transport: unified TCP/WebSocket servers, protocol-transparent HTTP/1/HTTP/2 semantics, connection lifecycle, and native Netty pipeline extension; sessions and connection mapping belong to the business layer (see [game-network/README.en.md](game-network/README.en.md)) |
-| `game-rpc` | Internal RPC: protocol codec, handshake/heartbeat/reconnect, oneway/future/callback invocation, backpressure and in-flight limit protection, per-service broadcast (see [game-rpc/README.en.md](game-rpc/README.en.md)) |
+| `game-rpc` | Unified entry artifact for internal RPC; implementation is layered into `game-rpc-core` and `game-rpc-netty`, with no dependency on `game-network` (see [game-rpc/README.en.md](game-rpc/README.en.md)) |
 | `game-serialization` | Serialization facade unifying JSON, Protobuf and Apache Fory (see [game-serialization/README.en.md](game-serialization/README.en.md)) |
 | `game-registry` | Unified service registry/discovery API with memory, Nacos, and Etcd SPI providers (see [game-registry/README.en.md](game-registry/README.en.md)) |
 | `game-config` | Immutable configuration snapshots with local, Nacos, and Etcd backends, typed reads, and change listeners (see [game-config/README.en.md](game-config/README.en.md)) |

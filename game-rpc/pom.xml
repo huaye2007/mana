@@ -10,43 +10,13 @@
     </parent>
 
     <artifactId>game-rpc</artifactId>
-
-    <properties>
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
+    <name>game-rpc</name>
+    <description>Public entry artifact for the internal RPC component.</description>
 
     <dependencies>
         <dependency>
             <groupId>cn.managame</groupId>
-            <artifactId>game-common</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>cn.managame</groupId>
-            <artifactId>game-network-netty</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-all</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>cn.managame</groupId>
-            <artifactId>game-serialization</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <scope>test</scope>
+            <artifactId>game-rpc-netty</artifactId>
         </dependency>
     </dependencies>
 </project>

@@ -4,11 +4,18 @@
 
 Internal (service-to-service) RPC framework built on Netty + game-serialization. It encodes/decodes API objects directly (no intermediate frame object), correlates requests/responses by requestId, supports the oneway, future and callback invocation styles, and ships with handshake negotiation, heartbeat keepalive, automatic reconnect, backpressure and in-flight limits, and per-service broadcast.
 
+## Module Layout
+
+- `game-rpc-core`: transport-neutral requests/responses, futures, callbacks, and metrics; it shares `game-common`'s `Metadata` and depends on neither Netty nor `game-network`.
+- `game-rpc-netty`: Netty codec, connections, client/server, handshake, heartbeat, and reconnect implementation; it depends on `game-rpc-core`.
+
+`game-rpc` is the public entry artifact and transitively exposes `game-rpc-netty`. Applications should depend directly on `cn.managame:game-rpc`; the nested `game-rpc-core` and `game-rpc-netty` modules are internal implementation layers.
+
 ## Design Highlights
 
 - **Peer-to-peer**: client and server share the `RpcContainer` base class. The connection direction does not matter — after the handshake, both sides can initiate `invoke`/`oneway` (the server can call back into connected clients).
 - **Peer model**: one remote instance = one `RpcPeer` (`serviceName` + `serviceId`), which owns a group of connections (`ConnectionGroup`, connection chosen by ring modulo over `routeKey`) plus in-flight call management (`RpcInvokeManager`, requestId unique within the peer).
-- **Zero-dependency boundary**: this module depends only on game-network-netty / game-serialization; it does not integrate a registry and does not bind a threading model. Callbacks fire on the IO thread — **dispatching to business thread groups is the host's responsibility**.
+- **Independent transport boundary**: RPC does not depend on `game-network` / `game-runtime`. The Netty implementation depends only on `game-rpc-core`, Netty, and game-serialization; it does not integrate a registry or bind a business threading model. Callbacks fire on the IO thread — **dispatching to business thread groups is the host's responsibility**.
 
 ## Quick Start
 
@@ -120,7 +127,7 @@ The event loop groups and the `HashedWheelTimer` are created inside the `RpcServ
 - **oneway is fire-and-forget**: no retry or asynchronous write-failure reporting. Plain `oneway` drops on no connection or local backpressure (metrics only); use `tryOneway` when the caller must observe local rejection.
 - **`RpcRequest` is mutable**: requestId is written by the framework at invoke time — **do not reuse the same instance concurrently across invokes**.
 - **Routing is not consistent hashing**: `floorMod(routeKey, connectionCount)` — when the connection count changes (scaling/disconnect), the same routeKey may drift to another connection.
-- **Command ranges**: business commands must be positive; `[-100, -1]` is reserved for framework-internal messages. Metadata keys `[1,99]` are reserved; business starts at `100` (`Metadata.KEY_BUSINESS_MIN`).
+- **Command ranges**: business commands must be positive; `[-100, -1]` is reserved for framework-internal messages. Metadata keys `[1,99]` are reserved; business starts at `100` (`MetadataKeys.BUSINESS_MIN`).
 - **Auth**: handshake tokens use a constant-time byte comparison, but remain plaintext on the wire and there is **no TLS** — use within a trusted internal network.
 - **Inbound backpressure**: autoread stays on and the framework does not limit inbound rate — the host must move `handleUserMsg` work off the IO thread and apply its own backpressure.
 

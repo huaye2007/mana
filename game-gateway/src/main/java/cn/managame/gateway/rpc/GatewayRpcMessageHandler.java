@@ -1,5 +1,6 @@
 package cn.managame.gateway.rpc;
 
+import cn.managame.common.context.Metadata;
 import cn.managame.common.context.MetadataKeys;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.codec.GatewayPacketConstant;
@@ -8,7 +9,6 @@ import cn.managame.gateway.session.GatewaySessionManager;
 import cn.managame.rpc.RpcMessageHandler;
 import cn.managame.rpc.RpcRequest;
 import cn.managame.rpc.connection.RpcConnection;
-import cn.managame.rpc.protocol.Metadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

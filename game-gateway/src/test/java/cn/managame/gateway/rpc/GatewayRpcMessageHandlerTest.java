@@ -1,12 +1,12 @@
 package cn.managame.gateway.rpc;
 
+import cn.managame.common.context.Metadata;
 import cn.managame.common.context.MetadataKeys;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.session.GatewaySession;
 import cn.managame.gateway.session.GatewaySessionManager;
 import cn.managame.gateway.support.FakeConnection;
 import cn.managame.rpc.RpcRequest;
-import cn.managame.rpc.protocol.Metadata;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;

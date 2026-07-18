@@ -39,8 +39,10 @@
     <modules>
         <module>game-common</module>
         <module>game-network</module>
-        <module>game-rpc</module>
         <module>game-serialization</module>
+        <module>game-rpc/game-rpc-core</module>
+        <module>game-rpc/game-rpc-netty</module>
+        <module>game-rpc</module>
 
         <module>game-registry</module>
         <module>game-config</module>
@@ -56,7 +58,7 @@
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- 框架网络栈（game-network-netty / game-rpc / game-dev）基于 4.2 的 IoHandler API。
+        <!-- 框架网络栈（game-network-netty / game-rpc-netty / game-dev）基于 4.2 的 IoHandler API。
              jetcd（vert.x 4.x + grpc-netty）与 zookeeper 客户端只兼容 4.1 线，
              对应后端模块在各自 pom 里覆盖此属性钉回 4.1.x。 -->
         <netty.version>4.2.15.Final</netty.version>
@@ -89,6 +91,16 @@
             <dependency>
                 <groupId>cn.managame</groupId>
                 <artifactId>game-serialization</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-rpc-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.managame</groupId>
+                <artifactId>game-rpc-netty</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

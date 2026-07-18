@@ -1,5 +1,6 @@
 package cn.managame.gateway.rpc;
 
+import cn.managame.common.context.Metadata;
 import cn.managame.common.context.MetadataKeys;
 import cn.managame.gateway.codec.GatewayErrorCode;
 import cn.managame.gateway.codec.GatewayPacket;
@@ -9,7 +10,6 @@ import cn.managame.gateway.router.BackendServiceResolver;
 import cn.managame.gateway.session.GatewaySession;
 import cn.managame.registry.api.ServiceInstance;
 import cn.managame.rpc.RpcRequest;
-import cn.managame.rpc.protocol.Metadata;
 
 import java.util.ArrayList;
 import java.util.List;

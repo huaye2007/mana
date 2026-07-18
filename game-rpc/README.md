@@ -6,13 +6,19 @@
 请求/响应按 requestId 关联，支持 oneway、future、callback 三种调用风格，内置握手协商、心跳保活、
 断线重连、背压与在途上限保护、按服务广播。
 
+## 模块结构
+
+- `game-rpc-core`：传输无关的请求/响应、future、callback 和 metrics，统一使用 `game-common` 的 `Metadata`，不依赖 Netty 或 `game-network`。
+- `game-rpc-netty`：Netty 编解码、连接、客户端/服务端、握手、心跳和重连实现，依赖 `game-rpc-core`。
+- `game-rpc`：对外入口制品，传递依赖 `game-rpc-netty`。其他项目统一直接依赖 `cn.managame:game-rpc`；内部的 `game-rpc-core` 和 `game-rpc-netty` 只用于实现分层。
+
 ## 设计要点
 
 - **对等**：客户端、服务端共用 `RpcContainer` 基类。建连方向无关，握手后双方都能发起 `invoke`/`oneway`
   （服务端可反向调用已连上的客户端）。
 - **peer 模型**：一个对端实例 = 一个 `RpcPeer`（`serviceName` + `serviceId`），下挂一组连接
   （`ConnectionGroup`，按 `routeKey` 环形取模选连接）+ 在途调用管理（`RpcInvokeManager`，requestId 在 peer 内唯一）。
-- **零依赖边界**：本模块只依赖 game-network-netty / game-serialization，不接注册中心、不绑线程模型。
+- **独立传输边界**：RPC 不依赖 `game-network` / `game-runtime`；Netty 实现只依赖 `game-rpc-core`、Netty 与 game-serialization，不接注册中心、不绑业务线程模型。
   回调在 IO 线程触发，**投递到业务线程组由宿主负责**。
 
 ## 快速开始
@@ -133,7 +139,7 @@ client.disconnect("logic", "1");
 - **oneway 是 fire-and-forget**：不重试、不报告异步写失败；普通 `oneway` 在连接不可写或无可用连接时直接丢弃（只计 metrics）。需要感知本地拒绝时使用 `tryOneway`。
 - **`RpcRequest` 可变**：requestId 由框架在 invoke 时写入，**不要把同一个实例并发复用于多次 invoke**。
 - **路由非一致性哈希**：`floorMod(routeKey, 连接数)`，连接数变化（扩缩容/断线）时同一 routeKey 可能漂到别的连接。
-- **命令段**：业务 command 必须为正数；`[-100, -1]` 保留给框架内部消息。metadata key `[1,99]` 保留，业务从 `100`（`Metadata.KEY_BUSINESS_MIN`）起。
+- **命令段**：业务 command 必须为正数；`[-100, -1]` 保留给框架内部消息。metadata key `[1,99]` 保留，业务从 `100`（`MetadataKeys.BUSINESS_MIN`）起。
 - **鉴权**：握手 token 使用常量时间字节比较，但线上仍是明文传输且**无 TLS**，按“对内可信网络”使用。
 - **入站背压**：autoread 常开，框架不限制入站速率——宿主须把 `handleUserMsg` 的活儿移出 IO 线程并自行施加背压。
 

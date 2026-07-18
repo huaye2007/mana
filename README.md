@@ -22,7 +22,7 @@ mvn "-Dmaven.repo.local=.m2" test
 | 模块 | 职责 |
 | --- | --- |
 | `game-network` | 网络接入层：统一 TCP/WebSocket Server、HTTP/1/HTTP/2 业务语义、连接生命周期和原生 Netty pipeline 扩展；Session 与连接映射由业务层负责（见 [game-network/README.md](game-network/README.md)） |
-| `game-rpc` | 对内 RPC：协议编解码、握手/心跳/重连、oneway/future/callback 调用、背压与在途上限保护、按服务广播（见 [game-rpc/README.md](game-rpc/README.md)） |
+| `game-rpc` | 对内 RPC 统一入口；内部按 `game-rpc-core`、`game-rpc-netty` 分层，不依赖 `game-network`（见 [game-rpc/README.md](game-rpc/README.md)） |
 | `game-serialization` | 序列化门面，统一 JSON、Protobuf、Apache Fory 三种实现（见 [game-serialization/README.md](game-serialization/README.md)） |
 | `game-registry` | 统一的服务注册发现 API，通过 SPI 提供 memory、Nacos 与 Etcd 实现（见 [game-registry/README.md](game-registry/README.md)） |
 | `game-config` | 基于不可变快照的配置中心，提供 local、Nacos、Etcd 后端、类型化读取与变更监听（见 [game-config/README.md](game-config/README.md)） |
