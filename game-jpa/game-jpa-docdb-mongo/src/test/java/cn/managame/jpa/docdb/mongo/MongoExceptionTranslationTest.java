@@ -2,6 +2,9 @@ package cn.managame.jpa.docdb.mongo;
 
 import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoCommandException;
+import com.mongodb.MongoExecutionTimeoutException;
+import com.mongodb.MongoNodeIsRecoveringException;
+import com.mongodb.MongoNotPrimaryException;
 import com.mongodb.MongoSocketOpenException;
 import com.mongodb.MongoTimeoutException;
 import com.mongodb.MongoWriteException;
@@ -13,13 +16,17 @@ import com.mongodb.bulk.WriteConcernError;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import cn.managame.jpa.core.exception.ConnectionException;
+import cn.managame.jpa.core.exception.ConcurrentWriteException;
+import cn.managame.jpa.core.exception.DataTooLargeException;
 import cn.managame.jpa.core.exception.DuplicateKeyException;
 import cn.managame.jpa.core.exception.GameJpaException;
 import cn.managame.jpa.core.exception.RetriableWriteException;
+import cn.managame.jpa.core.exception.WriteTimeoutException;
 import cn.managame.jpa.docdb.annotation.Document;
 import cn.managame.jpa.core.annotation.Id;
 import cn.managame.jpa.docdb.metadata.DocEntityMetadataResolver;
 import org.bson.BsonDocument;
+import org.bson.BsonMaximumSizeExceededException;
 import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 
@@ -30,7 +37,8 @@ import java.util.Set;
 
 /**
  * Mongo 驱动异常 → game-jpa 异常分类的纯逻辑单元测试。
- * 与 FlushScheduler 的重试分流约定对齐：网络 / 选主切换 / 超时 → RetriableWriteException（重试），
+ * 与 FlushScheduler 的重试分流约定对齐：按驱动异常类型和官方 error label 翻译，
+ * 网络 / 选主切换 / 超时 → RetriableWriteException（重试），
  * 重复键 → DuplicateKeyException，其余确定性失败 → GameJpaException（异步路径丢弃）。
  * 真实 MongoDB 行为由集成测试覆盖。
  */
@@ -53,15 +61,28 @@ public class MongoExceptionTranslationTest {
 
     @Test
     public void serverSelectionTimeoutIsRetriable() {
-        assertInstanceOf(RetriableWriteException.class,
+        assertInstanceOf(ConnectionException.class,
                 translate(new MongoTimeoutException("no primary")));
     }
 
     @Test
     public void notPrimaryCommandErrorIsRetriable() {
-        MongoCommandException notPrimary = new MongoCommandException(
+        MongoNotPrimaryException notPrimary = new MongoNotPrimaryException(
                 BsonDocument.parse("{ok: 0.0, code: 10107, errmsg: 'not writable primary'}"), ADDRESS);
-        assertInstanceOf(RetriableWriteException.class, translate(notPrimary));
+        assertInstanceOf(ConcurrentWriteException.class, translate(notPrimary));
+    }
+
+    @Test
+    public void nodeRecoveringIsConcurrentWriteFailure() {
+        MongoNodeIsRecoveringException recovering = new MongoNodeIsRecoveringException(
+                BsonDocument.parse("{ok: 0.0, code: 11600, errmsg: 'node is recovering'}"), ADDRESS);
+        assertInstanceOf(ConcurrentWriteException.class, translate(recovering));
+    }
+
+    @Test
+    public void executionTimeoutMapsToWriteTimeout() {
+        assertInstanceOf(WriteTimeoutException.class,
+                translate(new MongoExecutionTimeoutException("write timed out")));
     }
 
     @Test
@@ -69,7 +90,7 @@ public class MongoExceptionTranslationTest {
         MongoCommandException labeled = new MongoCommandException(
                 BsonDocument.parse("{ok: 0.0, code: 112, errmsg: 'write conflict',"
                         + " errorLabels: ['RetryableWriteError']}"), ADDRESS);
-        assertInstanceOf(RetriableWriteException.class, translate(labeled));
+        assertInstanceOf(ConcurrentWriteException.class, translate(labeled));
     }
 
     @Test
@@ -98,10 +119,10 @@ public class MongoExceptionTranslationTest {
     }
 
     @Test
-    public void transientWriteErrorIsRetriable() {
+    public void errorCodeAloneDoesNotEnableRetry() {
         MongoWriteException stepdown = new MongoWriteException(
-                new WriteError(189, "primary stepped down", new BsonDocument()), ADDRESS, Set.of());
-        assertInstanceOf(RetriableWriteException.class, translate(stepdown));
+            new WriteError(189, "primary stepped down", new BsonDocument()), ADDRESS, Set.of());
+        assertFalse(translate(stepdown) instanceof RetriableWriteException);
     }
 
     @Test
@@ -111,9 +132,14 @@ public class MongoExceptionTranslationTest {
     }
 
     @Test
-    public void bulkTransientErrorsAreRetriable() {
-        assertInstanceOf(RetriableWriteException.class, translate(bulk(
-                List.of(bulkError(91, 0)), null)));
+    public void bulkErrorCodeAloneDoesNotEnableRetry() {
+        assertFalse(translate(bulk(List.of(bulkError(91, 0)), null)) instanceof RetriableWriteException);
+    }
+
+    @Test
+    public void bulkRetryableLabelMapsToConcurrentWriteException() {
+        assertInstanceOf(ConcurrentWriteException.class, translate(bulk(
+                List.of(bulkError(91, 0)), null, Set.of("RetryableWriteError"))));
     }
 
     @Test
@@ -129,7 +155,7 @@ public class MongoExceptionTranslationTest {
         WriteConcernError writeConcernError =
                 new WriteConcernError(64, "WriteConcernTimeout", "waiting for replication timed out",
                         new BsonDocument());
-        assertInstanceOf(RetriableWriteException.class, translate(bulk(List.of(), writeConcernError)));
+        assertInstanceOf(WriteTimeoutException.class, translate(bulk(List.of(), writeConcernError)));
     }
 
     @Test
@@ -146,9 +172,24 @@ public class MongoExceptionTranslationTest {
                 () -> executor.insert(metadata, new Item(2L), null));
     }
 
+    @Test
+    public void executorMapsOversizedDocumentsByExceptionType() {
+        MongoDocExecutor executor = new MongoDocExecutor(throwingDatabase(
+                new BsonMaximumSizeExceededException("document exceeds max BSON size")));
+        var metadata = new DocEntityMetadataResolver().resolve(Item.class);
+
+        assertThrows(DataTooLargeException.class,
+                () -> executor.batchSave(metadata, List.of(new Item(1L)), null));
+    }
+
     private static MongoBulkWriteException bulk(List<BulkWriteError> errors, WriteConcernError writeConcernError) {
+        return bulk(errors, writeConcernError, Set.of());
+    }
+
+    private static MongoBulkWriteException bulk(List<BulkWriteError> errors, WriteConcernError writeConcernError,
+            Set<String> labels) {
         return new MongoBulkWriteException(BulkWriteResult.unacknowledged(), errors,
-                writeConcernError, ADDRESS, Set.of());
+                writeConcernError, ADDRESS, labels);
     }
 
     private static BulkWriteError bulkError(int code, int index) {

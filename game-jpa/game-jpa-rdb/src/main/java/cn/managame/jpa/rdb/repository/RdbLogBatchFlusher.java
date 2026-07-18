@@ -12,7 +12,8 @@ import java.util.List;
  * 日志追加通道落库器：把异步缓冲攒下的 append-only 记录整批 {@code batchInsert} 写入物理表。
  * <p>
  * 物理目标已在提交期路由好、由调度器以 {@link ExecutorContext} 传入；列默认值由执行器
- * {@code batchInsert} 内部兜底。字段超长默认作为确定性失败；只有具体执行器被显式配置后才可能自愈。
+ * {@code batchInsert} 内部兜底。字段超长由执行器翻译为可重试异常；只有具体执行器被显式配置后
+ * 才可能在写路径自动扩容，否则重试仍受现有 Schema 限制。
  */
 public class RdbLogBatchFlusher implements AppendFlusher {
 

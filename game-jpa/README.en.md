@@ -148,7 +148,7 @@ GameJpaContext context = new GameJpaBootstrap()
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
-`MysqlSchemaModule` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `MysqlRdbExecutor.columnAutoWiden` is disabled by default, so undersized string/binary columns are treated as deterministic write failures. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
+`MysqlSchemaModule` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `MysqlRdbExecutor.columnAutoWiden` is disabled by default and never alters columns on the write path; undersized string/binary columns are translated to `DataTooLargeException` and follow the async retry policy. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
 
 Read/write through the cache:
 
@@ -250,7 +250,7 @@ Suits flexible, document-shaped data. Cache write-back matches the RDB-side capa
 
 Nested POJO fields map to nested documents automatically, no annotations needed; types with a registered custom `TypeConverter` go through the converter first.
 
-`MongoDocExecutor` translates driver exceptions into framework exceptions: transient errors such as network disconnects / primary elections / timeouts are wrapped as `RetriableWriteException` (async write-back retries up to `maxRetries`), duplicate keys as `DuplicateKeyException`, and the remaining deterministic failures are dropped after notifying the permanent failure handler — the same failure triage as the MySQL executor.
+`MongoDocExecutor` translates by driver exception type and official retryable error labels instead of maintaining a retryable error-code table: network failures become `ConnectionException`, primary changes/retryable write conflicts become `ConcurrentWriteException`, timeouts become `WriteTimeoutException`, and BSON size violations become `DataTooLargeException`. All extend `RetriableWriteException`, so async write-back retries them up to `maxRetries`; duplicate keys become `DuplicateKeyException`, while other deterministic failures are dropped after notifying the permanent failure handler.
 
 ## Sharding
 

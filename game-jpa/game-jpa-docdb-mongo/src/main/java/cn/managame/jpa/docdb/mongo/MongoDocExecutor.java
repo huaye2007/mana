@@ -2,8 +2,15 @@ package cn.managame.jpa.docdb.mongo;
 
 import com.mongodb.ErrorCategory;
 import com.mongodb.MongoBulkWriteException;
+import com.mongodb.MongoConnectionPoolClearedException;
+import com.mongodb.MongoExecutionTimeoutException;
 import com.mongodb.MongoException;
+import com.mongodb.MongoNodeIsRecoveringException;
+import com.mongodb.MongoNotPrimaryException;
+import com.mongodb.MongoOperationTimeoutException;
+import com.mongodb.MongoServerUnavailableException;
 import com.mongodb.MongoSocketException;
+import com.mongodb.MongoStalePrimaryException;
 import com.mongodb.MongoTimeoutException;
 import com.mongodb.MongoWriteConcernException;
 import com.mongodb.MongoWriteException;
@@ -19,9 +26,12 @@ import com.mongodb.client.model.ReplaceOneModel;
 import com.mongodb.client.model.ReplaceOptions;
 import com.mongodb.client.model.WriteModel;
 import cn.managame.jpa.core.exception.ConnectionException;
+import cn.managame.jpa.core.exception.ConcurrentWriteException;
+import cn.managame.jpa.core.exception.DataTooLargeException;
 import cn.managame.jpa.core.exception.DuplicateKeyException;
 import cn.managame.jpa.core.exception.GameJpaException;
 import cn.managame.jpa.core.exception.RetriableWriteException;
+import cn.managame.jpa.core.exception.WriteTimeoutException;
 import cn.managame.jpa.core.executor.ExecutorContext;
 import cn.managame.jpa.core.converter.TypeConverterAware;
 import cn.managame.jpa.core.converter.TypeConverterRegistry;
@@ -34,6 +44,7 @@ import cn.managame.jpa.docdb.metadata.DocFieldMetadata;
 import cn.managame.jpa.docdb.metadata.DocTypes;
 import cn.managame.jpa.docdb.query.DocQuerySpec;
 import cn.managame.jpa.docdb.query.DocUpdateSpec;
+import org.bson.BsonMaximumSizeExceededException;
 import org.bson.Document;
 
 import java.io.Closeable;
@@ -115,6 +126,8 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
     public void insert(DocEntityMetadata metadata, Object entity, ExecutorContext context) {
         try {
             collection(metadata, context).insertOne(new Document(mapToDocument(metadata, entity)));
+        } catch (BsonMaximumSizeExceededException e) {
+            throw dataTooLarge("insert", metadata, e);
         } catch (MongoException e) {
             throw wrapMongoException("insert", metadata, context,
                     metadata.idField().accessor().get(entity), e);
@@ -129,6 +142,8 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
                     Filters.eq("_id", id),
                     new Document(mapToDocument(metadata, entity)),
                     new ReplaceOptions().upsert(true));
+        } catch (BsonMaximumSizeExceededException e) {
+            throw dataTooLarge("save", metadata, e);
         } catch (MongoException e) {
             throw wrapMongoException("save", metadata, context, id, e);
         }
@@ -163,6 +178,8 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
         }
         try {
             collection(metadata, context).bulkWrite(models, new BulkWriteOptions().ordered(false));
+        } catch (BsonMaximumSizeExceededException e) {
+            throw dataTooLarge("batchSave", metadata, e);
         } catch (MongoException e) {
             throw wrapMongoException("batchSave", metadata, context, null, e);
         }
@@ -233,6 +250,8 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
         try {
             collection(metadata, context).updateOne(
                     Filters.eq("_id", storageId(metadata, id)), update);
+        } catch (BsonMaximumSizeExceededException e) {
+            throw dataTooLarge("update", metadata, e);
         } catch (MongoException e) {
             throw wrapMongoException("update", metadata, context, id, e);
         }
@@ -268,22 +287,6 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
 
     // ==================== 异常翻译 ====================
 
-    /** MongoDB 官方可重试写错误码：选主切换 / 节点关闭 / 网络类，重试通常能成功。 */
-    private static final Set<Integer> TRANSIENT_ERROR_CODES = Set.of(
-            6,      // HostUnreachable
-            7,      // HostNotFound
-            89,     // NetworkTimeout
-            91,     // ShutdownInProgress
-            189,    // PrimarySteppedDown
-            262,    // ExceededTimeLimit
-            9001,   // SocketException
-            10107,  // NotWritablePrimary
-            11600,  // InterruptedAtShutdown
-            11602,  // InterruptedDueToReplStateChange
-            13435,  // NotPrimaryNoSecondaryOk
-            13436   // NotPrimaryOrSecondary
-    );
-
     private GameJpaException wrapMongoException(String operation, DocEntityMetadata metadata,
             ExecutorContext context, Object id, MongoException e) {
         ExecutorContext actualContext = context != null ? context : ExecutorContext.defaultContext();
@@ -292,21 +295,39 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
     }
 
     /**
-     * Mongo 驱动异常 → game-jpa 异常分类，与 MySQL 执行器的 wrapSqlException 对齐：
-     * 网络 / 选主切换 / 超时等瞬时错误 → {@link RetriableWriteException}（FlushScheduler 会重试到 maxRetries）；
+     * Mongo 驱动异常 → game-jpa 异常分类，与 MySQL 执行器的 wrapSqlException 对齐。
+     * 重试语义由驱动异常类型及官方 retryable error label 决定，不维护 vendor error code 列表：
+     * 网络、选主切换、超时和文档过大分别翻译为对应的 {@link RetriableWriteException} 子类；
      * 重复键 → {@link DuplicateKeyException}；其余按确定性失败包装（异步路径通知失败处理器后丢弃）。
      */
     static GameJpaException translateMongoException(String operation, String collection,
             String dataSourceName, Object id, MongoException e) {
         String target = operation + " failed: " + collection;
+        if (e instanceof MongoOperationTimeoutException || e instanceof MongoExecutionTimeoutException) {
+            return new WriteTimeoutException(target + " (write timeout)", e);
+        }
+        if (e instanceof MongoSocketException
+                || e instanceof MongoTimeoutException
+                || e instanceof MongoConnectionPoolClearedException
+                || e instanceof MongoServerUnavailableException) {
+            return new ConnectionException(target + " (connection error)", dataSourceName, e);
+        }
+        if (e instanceof MongoNotPrimaryException
+                || e instanceof MongoNodeIsRecoveringException
+                || e instanceof MongoStalePrimaryException) {
+            return new ConcurrentWriteException(target + " (primary state changed)", e);
+        }
         if (e instanceof MongoBulkWriteException bulk) {
             List<BulkWriteError> errors = bulk.getWriteErrors();
             if (bulk.getWriteConcernError() == null && allDuplicateKey(errors)) {
                 return new DuplicateKeyException(collection, id, e);
             }
-            // write concern 未满足视为瞬时（数据可能已写入，重试的 upsert/delete 幂等）
-            if (bulk.getWriteConcernError() != null || allTransient(errors)) {
-                return new RetriableWriteException(target + " (transient bulk write)", e);
+            // write concern 未满足视为超时；带官方可重试标签的 bulk 冲突按并发异常处理。
+            if (bulk.getWriteConcernError() != null) {
+                return new WriteTimeoutException(target + " (write concern timeout)", e);
+            }
+            if (hasRetryableLabel(e)) {
+                return new ConcurrentWriteException(target + " (retryable bulk write)", e);
             }
             return new GameJpaException(target, e);
         }
@@ -315,21 +336,29 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
             if (ErrorCategory.fromErrorCode(code) == ErrorCategory.DUPLICATE_KEY) {
                 return new DuplicateKeyException(collection, id, e);
             }
-            if (TRANSIENT_ERROR_CODES.contains(code)) {
-                return new RetriableWriteException(target + " (transient write error)", e);
+            if (hasRetryableLabel(e)) {
+                return new ConcurrentWriteException(target + " (retryable write conflict)", e);
             }
             return new GameJpaException(target, e);
         }
-        if (e instanceof MongoSocketException || e instanceof MongoTimeoutException) {
-            return new ConnectionException(target + " (connection error)", dataSourceName, e);
+        if (e instanceof MongoWriteConcernException) {
+            return new WriteTimeoutException(target + " (write concern timeout)", e);
         }
-        if (e instanceof MongoWriteConcernException
-                || e.hasErrorLabel("RetryableWriteError")
-                || e.hasErrorLabel(MongoException.TRANSIENT_TRANSACTION_ERROR_LABEL)
-                || TRANSIENT_ERROR_CODES.contains(e.getCode())) {
-            return new RetriableWriteException(target + " (transient)", e);
+        if (hasRetryableLabel(e)) {
+            return new ConcurrentWriteException(target + " (retryable write conflict)", e);
         }
         return new GameJpaException(target, e);
+    }
+
+    private static boolean hasRetryableLabel(MongoException e) {
+        return e.hasErrorLabel("RetryableWriteError")
+                || e.hasErrorLabel(MongoException.TRANSIENT_TRANSACTION_ERROR_LABEL);
+    }
+
+    private static DataTooLargeException dataTooLarge(String operation, DocEntityMetadata metadata,
+            BsonMaximumSizeExceededException e) {
+        return new DataTooLargeException(operation + " failed (document too large): "
+                + metadata.logicalName(), e);
     }
 
     private static boolean allDuplicateKey(List<BulkWriteError> errors) {
@@ -338,18 +367,6 @@ public class MongoDocExecutor implements DocExecutor, Closeable, TypeConverterAw
         }
         for (BulkWriteError error : errors) {
             if (ErrorCategory.fromErrorCode(error.getCode()) != ErrorCategory.DUPLICATE_KEY) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean allTransient(List<BulkWriteError> errors) {
-        if (errors.isEmpty()) {
-            return false;
-        }
-        for (BulkWriteError error : errors) {
-            if (!TRANSIENT_ERROR_CODES.contains(error.getCode())) {
                 return false;
             }
         }

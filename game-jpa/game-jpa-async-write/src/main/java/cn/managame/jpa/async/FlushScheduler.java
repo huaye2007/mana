@@ -206,8 +206,9 @@ public class FlushScheduler implements Closeable {
     }
 
     /**
-     * 单条写失败分流：仅瞬时错误（网络 / 死锁 / 锁超时，{@link RetriableWriteException}）才重试到
-     * maxRetries；约束冲突 / 字段超长 / 类型错误等确定性失败重试也不会成功，直接通知失败处理器并丢弃。
+     * 单条写失败分流：异常链中包含 {@link RetriableWriteException}（网络、可重新执行的并发冲突、
+     * 写超时或数据过大）时重试到 maxRetries；重复键、类型错误和乐观锁版本冲突等确定性失败
+     * 直接通知失败处理器并丢弃。
      */
     private void handleSingleFailure(TableBuffer buffer, WriteTask task, Exception ex) {
         String entity = task.entityName();

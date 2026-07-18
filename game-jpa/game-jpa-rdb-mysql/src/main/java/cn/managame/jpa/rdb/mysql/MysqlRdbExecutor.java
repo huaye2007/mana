@@ -1,10 +1,13 @@
 package cn.managame.jpa.rdb.mysql;
 
 import cn.managame.jpa.core.exception.ConnectionException;
+import cn.managame.jpa.core.exception.ConcurrentWriteException;
+import cn.managame.jpa.core.exception.DataTooLargeException;
 import cn.managame.jpa.core.exception.DuplicateKeyException;
 import cn.managame.jpa.core.exception.GameJpaException;
 import cn.managame.jpa.core.exception.OptimisticLockException;
 import cn.managame.jpa.core.exception.RetriableWriteException;
+import cn.managame.jpa.core.exception.WriteTimeoutException;
 import cn.managame.jpa.core.converter.TypeConverterAware;
 import cn.managame.jpa.core.converter.TypeConverterRegistry;
 import cn.managame.jpa.core.executor.ExecutorContext;
@@ -50,10 +53,6 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
 
     private static final Logger log = LoggerFactory.getLogger(MysqlRdbExecutor.class);
 
-    private static final int MYSQL_DUPLICATE_ENTRY = 1062;
-    private static final int MYSQL_DEADLOCK = 1213;
-    private static final int MYSQL_LOCK_WAIT_TIMEOUT = 1205;
-    private static final int MYSQL_DATA_TOO_LONG = 1406;
     private static final Pattern DATA_TOO_LONG_COLUMN =
             Pattern.compile("Data too long for column '([^']+)'", Pattern.CASE_INSENSITIVE);
 
@@ -119,7 +118,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
 
     /**
      * 字段超长自动加宽开关，默认关闭。仅在明确接受写路径执行 ALTER TABLE 时显式开启；
-     * 关闭时字段超长按确定性失败处理。
+     * 关闭时不会执行 DDL，但字段超长仍会翻译为 {@link DataTooLargeException} 交给异步写回重试。
      */
     public MysqlRdbExecutor columnAutoWiden(boolean enabled) {
         this.columnAutoWiden = enabled;
@@ -178,7 +177,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         } catch (GameJpaException e) {
             throw e;
         } catch (SQLException e) {
-            throw wrapInsertException(metadata, entity, e);
+            throw wrapInsertException(metadata, entity, context, e);
         } catch (Exception e) {
             throw new GameJpaException("insert failed: " + metadata.tableName(), e);
         }
@@ -224,7 +223,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
             ps.setObject(1, converterRegistry.write(id));
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw wrapSqlException("deleteById", metadata, e);
+            throw wrapSqlException("deleteById", metadata, context, e);
         } catch (Exception e) {
             throw new GameJpaException("deleteById failed: " + metadata.tableName(), e);
         }
@@ -246,7 +245,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
             ps.executeBatch();
             tx.commit();
         } catch (SQLException e) {
-            throw wrapSqlException("batchDelete", metadata, e);
+            throw wrapSqlException("batchDelete", metadata, context, e);
         } catch (Exception e) {
             throw new GameJpaException("batchDelete failed: " + metadata.tableName(), e);
         }
@@ -278,7 +277,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
                 batchInsert(metadata, entities, context, false);
                 return;
             }
-            throw wrapSqlException("batchInsert", metadata, e);
+            throw wrapSqlException("batchInsert", metadata, context, e);
         } catch (Exception e) {
             throw new GameJpaException("batchInsert failed: " + metadata.tableName(), e);
         }
@@ -306,7 +305,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         } catch (GameJpaException e) {
             throw e;
         } catch (SQLException e) {
-            throw wrapSqlException("batchUpdate", metadata, e);
+            throw wrapSqlException("batchUpdate", metadata, context, e);
         } catch (Exception e) {
             throw new GameJpaException("batchUpdate failed: " + metadata.tableName(), e);
         }
@@ -368,7 +367,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
                 batchUpsert(metadata, entities, context, false);
                 return;
             }
-            throw wrapSqlException("batchUpsert", metadata, e);
+            throw wrapSqlException("batchUpsert", metadata, context, e);
         } catch (Exception e) {
             throw new GameJpaException("batchUpsert failed: " + metadata.tableName(), e);
         }
@@ -507,7 +506,7 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         } catch (GameJpaException e) {
             throw e;
         } catch (SQLException e) {
-            throw wrapSqlException(operation, metadata, e);
+            throw wrapSqlException(operation, metadata, context, e);
         } catch (Exception e) {
             throw new GameJpaException(operation + " failed: " + metadata.tableName(), e);
         }
@@ -715,46 +714,60 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         }
     }
 
-    private GameJpaException wrapInsertException(RdbEntityMetadata metadata, Object entity, SQLException e) {
-        if (e instanceof SQLIntegrityConstraintViolationException
-                || e.getErrorCode() == MYSQL_DUPLICATE_ENTRY) {
+    private GameJpaException wrapInsertException(RdbEntityMetadata metadata, Object entity,
+            ExecutorContext context, SQLException e) {
+        if (findSqlException(e, SQLIntegrityConstraintViolationException.class) != null) {
             Object id = metadata.idField().accessor().get(entity);
             return new DuplicateKeyException(metadata.tableName(), id, e);
         }
-        return wrapSqlException("insert", metadata, e);
+        return wrapSqlException("insert", metadata, context, e);
     }
 
     /**
-     * 通用 SQLException 包装，识别连接类异常。
+     * 通用 SQLException 包装。重试语义只由 JDBC 异常类型决定，不读取 vendor error code 或 SQLState。
      */
-    private GameJpaException wrapSqlException(String operation, RdbEntityMetadata metadata, SQLException e) {
-        String sqlState = e.getSQLState();
-        int errorCode = e.getErrorCode();
-        // SQLState 08xxx = connection exception（可重试）
-        if (sqlState != null && sqlState.startsWith("08")) {
-            return new ConnectionException(
-                    operation + " failed (connection error): " + metadata.tableName(), "default", e);
+    private GameJpaException wrapSqlException(String operation, RdbEntityMetadata metadata,
+            ExecutorContext context, SQLException e) {
+        return translateSqlException(operation, metadata.tableName(), dataSourceName(context), e);
+    }
+
+    static GameJpaException translateSqlException(String operation, String tableName,
+            String dataSourceName, SQLException failure) {
+        String target = operation + " failed: " + tableName;
+        DataTruncation truncation = findSqlException(failure, DataTruncation.class);
+        if (truncation != null) {
+            String column = parseDataTooLongColumn(truncation.getMessage());
+            String suffix = column != null ? " (data too large for column " + column + ")" : " (data too large)";
+            return new DataTooLargeException(target + suffix, failure);
         }
-        // 死锁 / 锁等待超时：瞬时冲突，重试通常能成功
-        if (errorCode == MYSQL_DEADLOCK || errorCode == MYSQL_LOCK_WAIT_TIMEOUT
-                || "40001".equals(sqlState)) {
-            return new RetriableWriteException(
-                    operation + " failed (transient lock): " + metadata.tableName(), e);
+        if (findSqlException(failure, SQLTransactionRollbackException.class) != null) {
+            return new ConcurrentWriteException(target + " (concurrent transaction rollback)", failure);
         }
-        return new GameJpaException(operation + " failed: " + metadata.tableName(), e);
+        if (findSqlException(failure, SQLTimeoutException.class) != null) {
+            return new WriteTimeoutException(target + " (write timeout)", failure);
+        }
+        if (findSqlException(failure, SQLTransientConnectionException.class) != null
+                || findSqlException(failure, SQLRecoverableException.class) != null) {
+            return new ConnectionException(target + " (connection error)", dataSourceName, failure);
+        }
+        if (findSqlException(failure, SQLTransientException.class) != null) {
+            return new RetriableWriteException(target + " (transient JDBC failure)", failure);
+        }
+        return new GameJpaException(target, failure);
     }
 
     // ==================== 字段超长自愈 ====================
 
     /**
-     * 字段超长(Data too long, 1406)自愈：解析超长列 → ALTER MODIFY 到声明长度两倍 → 返回 true 让调用方重写一次。
-     * 仅当开关开启、错误码为 1406、能解析出可加宽的列时才尝试；数据若超过两倍仍会失败并最终按确定性失败丢弃。
+     * 字段超长自愈：识别 JDBC {@link DataTruncation} → 解析超长列 → ALTER MODIFY 到声明长度两倍
+     * → 返回 true 让调用方重写一次。仅当开关开启且能解析出可加宽列时才尝试。
      */
     private boolean tryAutoWiden(RdbEntityMetadata metadata, ExecutorContext context, SQLException e) {
-        if (!columnAutoWiden || e.getErrorCode() != MYSQL_DATA_TOO_LONG) {
+        DataTruncation truncation = findSqlException(e, DataTruncation.class);
+        if (!columnAutoWiden || truncation == null) {
             return false;
         }
-        String column = parseDataTooLongColumn(e.getMessage());
+        String column = parseDataTooLongColumn(truncation.getMessage());
         if (column == null) {
             return false;
         }
@@ -771,6 +784,20 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         }
         Matcher matcher = DATA_TOO_LONG_COLUMN.matcher(message);
         return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private static <T extends SQLException> T findSqlException(SQLException failure, Class<T> type) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (type.isInstance(current)) {
+                return type.cast(current);
+            }
+        }
+        for (SQLException current = failure.getNextException(); current != null; current = current.getNextException()) {
+            if (type.isInstance(current)) {
+                return type.cast(current);
+            }
+        }
+        return null;
     }
 
     private static RdbFieldMetadata findWidenableField(RdbEntityMetadata metadata, String column) {
