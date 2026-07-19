@@ -27,8 +27,8 @@ public final class TimingWheel {
         return INSTANCE;
     }
 
-    private final long tickNanos;
-    private final long startNanos;
+    private final long tickMs;
+    private final long startTimeMs;
     private final int mask;
     private final List<TimeoutTask>[] buckets;
     private final ConcurrentLinkedQueue<TimeoutTask> pending = new ConcurrentLinkedQueue<>();
@@ -43,8 +43,8 @@ public final class TimingWheel {
             throw new IllegalArgumentException("invalid tickMs: " + tickMs);
         }
         int normalized = normalizeToPowerOfTwo(wheelSize);
-        this.tickNanos = tickMs * 1_000_000L;
-        this.startNanos = System.nanoTime();
+        this.tickMs = tickMs;
+        this.startTimeMs = GameTime.currentTimeMillis();
         this.mask = normalized - 1;
         this.buckets = new List[normalized];
         for (int i = 0; i < normalized; i++) {
@@ -73,12 +73,12 @@ public final class TimingWheel {
         if (normalizedDelayMs > Long.MAX_VALUE / 4 / 1_000_000L) {
             throw new IllegalArgumentException("delayMs is too large: " + delayMs);
         }
-        long deadlineNanos = System.nanoTime() + normalizedDelayMs * 1_000_000L;
+        long deadlineMs = addWithSaturation(GameTime.currentTimeMillis(), normalizedDelayMs);
         synchronized (lifecycleLock) {
             if (!running) {
                 throw new IllegalStateException("timing wheel already shut down");
             }
-            TimeoutTask timeout = new TimeoutTask(this, task, deadlineNanos);
+            TimeoutTask timeout = new TimeoutTask(this, task, deadlineMs);
             pendingCount.incrementAndGet();
             pending.add(timeout);
             return timeout;
@@ -116,16 +116,18 @@ public final class TimingWheel {
         long tick = 0;
         try {
             while (running) {
-                long sleepNanos = startNanos + (tick + 1) * tickNanos - System.nanoTime();
-                if (sleepNanos > 0) {
+                long tickDeadlineMs = addWithSaturation(startTimeMs,
+                        multiplyWithSaturation(tick + 1, tickMs));
+                long sleepMs = tickDeadlineMs - GameTime.currentTimeMillis();
+                if (sleepMs > 0) {
                     try {
-                        Thread.sleep(sleepNanos / 1_000_000L, (int) (sleepNanos % 1_000_000L));
+                        Thread.sleep(Math.min(sleepMs, tickMs));
                     } catch (InterruptedException e) {
                         if (!running) {
                             return;
                         }
-                        continue;
                     }
+                    continue;
                 }
                 transferPending(tick);
                 expireBucket(buckets[(int) (tick & mask)]);
@@ -142,10 +144,10 @@ public final class TimingWheel {
             if (timeout.isCancelled()) {
                 continue;
             }
-            long nanosFromStart = timeout.deadlineNanos - startNanos;
-            long deadlineTick = nanosFromStart <= 0
+            long millisFromStart = timeout.deadlineMs - startTimeMs;
+            long deadlineTick = millisFromStart <= 0
                     ? tick
-                    : (nanosFromStart + tickNanos - 1) / tickNanos - 1;
+                    : (millisFromStart - 1) / tickMs;
             long targetTick = Math.max(deadlineTick, tick);
             timeout.remainingRounds = (targetTick - tick) / buckets.length;
             buckets[(int) (targetTick & mask)].add(timeout);
@@ -180,6 +182,24 @@ public final class TimingWheel {
         }
     }
 
+    private static long addWithSaturation(long left, long right) {
+        long result = left + right;
+        if (((left ^ result) & (right ^ result)) < 0) {
+            return right < 0 ? Long.MIN_VALUE : Long.MAX_VALUE;
+        }
+        return result;
+    }
+
+    private static long multiplyWithSaturation(long left, long right) {
+        if (left == 0 || right == 0) {
+            return 0;
+        }
+        if (left > Long.MAX_VALUE / right) {
+            return Long.MAX_VALUE;
+        }
+        return left * right;
+    }
+
     private static final class TimeoutTask implements Timeout {
 
         private static final int WAITING = 0;
@@ -190,14 +210,14 @@ public final class TimingWheel {
 
         private final TimingWheel owner;
         private final Runnable task;
-        private final long deadlineNanos;
+        private final long deadlineMs;
         private long remainingRounds;
         private volatile int state = WAITING;
 
-        private TimeoutTask(TimingWheel owner, Runnable task, long deadlineNanos) {
+        private TimeoutTask(TimingWheel owner, Runnable task, long deadlineMs) {
             this.owner = owner;
             this.task = task;
-            this.deadlineNanos = deadlineNanos;
+            this.deadlineMs = deadlineMs;
         }
 
         @Override

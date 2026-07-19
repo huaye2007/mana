@@ -119,7 +119,24 @@ EventBus.getInstance().publishEvent(new LevelUpEvent(playerId)); // routerKey co
 
 ## Timers (TIMER)
 
-Timing uses a hashed wheel (shared default: 100ms × 512 slots) and monotonic absolute deadlines. Under normal load a callback never runs before its deadline and may be late by at most one tick. Cancellation immediately makes the Timeout terminal and updates pendingCount; shutdown cancels outstanding handles. `CronTask.start()` is single-shot and `cancel()` cancels its underlying Timeout.
+`TimingWheel` and cron obtain their current time from the public `GameTime` source. It uses the
+system clock by default; hosts can install a standard `java.time.Clock` to adjust game time without
+changing the operating-system clock:
+
+```java
+GameTime.setClock(Clock.offset(Clock.systemUTC(), Duration.ofDays(1))); // advance game time one day
+long now = GameTime.currentTimeMillis();
+
+// Restore real time after a test or time adjustment
+GameTime.resetClock();
+```
+
+An offset clock keeps advancing naturally, while `Clock.fixed(...)` freezes timer time for
+controlled tests. A custom clock must support concurrent access. Executor shutdown timeouts and
+task-duration monitoring do not use game time, so changing `GameTime` does not break framework
+timeouts.
+
+Timing uses a hashed wheel (shared default: 100ms × 512 slots) and absolute `GameTime` deadlines. Under normal load a callback never runs before its deadline and may be late by at most one tick. Cancellation immediately makes the Timeout terminal and updates pendingCount; shutdown cancels outstanding handles. `CronTask.start()` is single-shot and `cancel()` cancels its underlying Timeout.
 
 ```java
 // One-shot delay: the wheel only computes the due time; on firing, dispatch the task to an

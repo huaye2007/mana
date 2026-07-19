@@ -3,6 +3,9 @@ package cn.managame.runtime.timer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -120,5 +123,23 @@ class TimingWheelTest {
         assertTrue(shutdown.isCancelled());
         assertEquals(0, wheel.pendingCount());
         assertThrows(IllegalStateException.class, () -> wheel.schedule(1, () -> { }));
+    }
+
+    @Test
+    void sharedClockCanAdvanceScheduledTimeoutWithoutChangingSystemTime() throws Exception {
+        Instant base = Instant.ofEpochMilli(System.currentTimeMillis());
+        GameTime.setClock(Clock.fixed(base, ZoneOffset.UTC));
+        TimingWheel wheel = new TimingWheel("adjustable-clock-wheel", 20, 16);
+        try {
+            CountDownLatch fired = new CountDownLatch(1);
+            wheel.schedule(200, fired::countDown);
+
+            assertFalse(fired.await(100, TimeUnit.MILLISECONDS));
+            GameTime.setClock(Clock.fixed(base.plusMillis(200), ZoneOffset.UTC));
+            assertTrue(fired.await(1, TimeUnit.SECONDS));
+        } finally {
+            wheel.shutdown();
+            GameTime.resetClock();
+        }
     }
 }

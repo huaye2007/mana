@@ -65,7 +65,7 @@ public class CronExpression {
      * 以表达式时区的当前时间计算距下一次触发的毫秒数。2 年内无匹配返回 -1。
      */
     public long nextDelayMs() {
-        return nextDelayMs(LocalDateTime.now(zoneId));
+        return nextDelayMs(GameTime.now(zoneId));
     }
 
     /**
