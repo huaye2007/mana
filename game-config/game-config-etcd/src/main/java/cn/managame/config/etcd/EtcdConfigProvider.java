@@ -1,21 +1,28 @@
 package cn.managame.config.etcd;
 
 import cn.managame.config.ConfigOptions;
+import cn.managame.config.spi.ConfigData;
 import cn.managame.config.spi.ConfigProvider;
 import cn.managame.config.spi.ConfigSource;
 import cn.managame.config.support.PropertiesDocument;
 import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.Client;
 import io.etcd.jetcd.Watch;
-import io.etcd.jetcd.watch.WatchEvent;
+import io.etcd.jetcd.options.GetOption;
+import io.etcd.jetcd.options.WatchOption;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 
 public final class EtcdConfigProvider implements ConfigProvider {
     @Override public String type() { return "etcd"; }
@@ -25,14 +32,15 @@ public final class EtcdConfigProvider implements ConfigProvider {
         private final List<String> resources;
         private final long timeoutMillis;
         private final ClientAdapter client;
-        private final Map<String, Map<String, String>> cache = new LinkedHashMap<>();
+        private final AtomicLong latestRevision = new AtomicLong(ConfigData.UNVERSIONED);
         private final List<Watch.Watcher> watchers = new ArrayList<>();
+        private final ExecutorService eventExecutor = Executors.newSingleThreadExecutor(
+                Thread.ofPlatform().daemon().name("game-config-etcd-", 0).factory());
 
         EtcdSource(ConfigOptions options) {
             if (options.endpoint().isBlank()) throw new IllegalArgumentException("etcd endpoint must not be blank");
             resources = options.resources();
-            timeoutMillis = Long.parseLong(options.property("timeoutMillis", "3000"));
-            if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
+            timeoutMillis = parseTimeout(options);
             String[] endpoints = java.util.Arrays.stream(options.endpoint().split(","))
                     .map(String::trim).filter(value -> !value.isEmpty()).toArray(String[]::new);
             var builder = Client.builder().endpoints(endpoints);
@@ -45,34 +53,46 @@ public final class EtcdConfigProvider implements ConfigProvider {
 
         EtcdSource(ConfigOptions options, ClientAdapter client) {
             resources = options.resources();
-            timeoutMillis = Long.parseLong(options.property("timeoutMillis", "3000"));
-            if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
+            timeoutMillis = parseTimeout(options);
             this.client = client;
         }
 
-        @Override public synchronized Map<String, String> load() throws Exception {
-            Map<String, Map<String, String>> refreshed = new LinkedHashMap<>();
-            for (String resource : resources) {
-                refreshed.put(resource, PropertiesDocument.parse(client.get(resource, timeoutMillis)));
-            }
-            cache.clear();
-            cache.putAll(refreshed);
-            return merged();
+        private static long parseTimeout(ConfigOptions options) {
+            long timeoutMillis = Long.parseLong(options.property("timeoutMillis", "3000"));
+            if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
+            return timeoutMillis;
         }
 
-        @Override public synchronized AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
-                                                           Consumer<Throwable> onError) {
+        @Override public Map<String, String> load() throws Exception {
+            return loadData().values();
+        }
+
+        @Override public ConfigData loadData() throws Exception {
+            VersionedContents contents = client.getAll(resources, 0, timeoutMillis);
+            latestRevision.accumulateAndGet(contents.revision(), Math::max);
+            return parse(contents);
+        }
+
+        private ConfigData parse(VersionedContents contents) {
+            Map<String, String> merged = new LinkedHashMap<>();
+            resources.forEach(resource -> merged.putAll(PropertiesDocument.parse(
+                    contents.values().getOrDefault(resource, ""))));
+            return new ConfigData(contents.revision(), merged);
+        }
+
+        @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
+                                             Consumer<Throwable> onError) {
+            return watchData(data -> onUpdate.accept(data.values()), onError);
+        }
+
+        @Override public synchronized AutoCloseable watchData(Consumer<ConfigData> onUpdate,
+                                                               Consumer<Throwable> onError) {
             if (!watchers.isEmpty()) throw new IllegalStateException("Etcd config watch is already active");
+            long startRevision = Math.max(1, latestRevision.get() + 1);
             try {
                 for (String resource : resources) {
-                    Watch.Watcher watcher = client.watch(resource, content -> {
-                        try {
-                            synchronized (EtcdSource.this) {
-                                cache.put(resource, PropertiesDocument.parse(content));
-                                onUpdate.accept(merged());
-                            }
-                        } catch (Throwable e) { onError.accept(e); }
-                    }, onError);
+                    Watch.Watcher watcher = client.watch(resource, startRevision,
+                            revision -> submitRefresh(revision, onUpdate, onError), onError);
                     watchers.add(watcher);
                 }
             } catch (RuntimeException | Error error) {
@@ -82,10 +102,23 @@ public final class EtcdConfigProvider implements ConfigProvider {
             return this::stopWatching;
         }
 
-        private Map<String, String> merged() {
-            Map<String, String> result = new LinkedHashMap<>();
-            resources.forEach(resource -> result.putAll(cache.getOrDefault(resource, Map.of())));
-            return Map.copyOf(result);
+        private void submitRefresh(long revision, Consumer<ConfigData> onUpdate, Consumer<Throwable> onError) {
+            try {
+                eventExecutor.execute(() -> refresh(revision, onUpdate, onError));
+            } catch (RejectedExecutionException ignored) {
+                // Source is closing.
+            }
+        }
+
+        private void refresh(long revision, Consumer<ConfigData> onUpdate, Consumer<Throwable> onError) {
+            if (revision <= latestRevision.get()) return;
+            try {
+                VersionedContents contents = client.getAll(resources, revision, timeoutMillis);
+                long previous = latestRevision.getAndAccumulate(contents.revision(), Math::max);
+                if (contents.revision() > previous) onUpdate.accept(parse(contents));
+            } catch (Throwable error) {
+                onError.accept(error);
+            }
         }
 
         private synchronized void stopWatching() {
@@ -95,13 +128,21 @@ public final class EtcdConfigProvider implements ConfigProvider {
 
         @Override public void close() {
             stopWatching();
+            eventExecutor.shutdownNow();
             client.close();
         }
     }
 
+    record VersionedContents(long revision, Map<String, String> values) {
+        VersionedContents {
+            if (revision < 0) throw new IllegalArgumentException("revision must be non-negative");
+            values = Map.copyOf(values);
+        }
+    }
+
     interface ClientAdapter extends AutoCloseable {
-        String get(String key, long timeoutMillis) throws Exception;
-        Watch.Watcher watch(String key, Consumer<String> update, Consumer<Throwable> error);
+        VersionedContents getAll(List<String> keys, long revision, long timeoutMillis) throws Exception;
+        Watch.Watcher watch(String key, long startRevision, LongConsumer update, Consumer<Throwable> error);
         @Override void close();
     }
 
@@ -113,18 +154,29 @@ public final class EtcdConfigProvider implements ConfigProvider {
         private final Client client;
         JetcdAdapter(Client client) { this.client = client; }
 
-        @Override public String get(String key, long timeoutMillis) throws Exception {
-            var response = client.getKVClient().get(bytes(key)).get(timeoutMillis, TimeUnit.MILLISECONDS);
-            return response.getKvs().isEmpty() ? "" :
-                    response.getKvs().getFirst().getValue().toString(StandardCharsets.UTF_8);
+        @Override public VersionedContents getAll(List<String> keys, long requestedRevision,
+                                                   long timeoutMillis) throws Exception {
+            Map<String, String> values = new LinkedHashMap<>();
+            long revision = requestedRevision;
+            for (int index = 0; index < keys.size(); index++) {
+                String key = keys.get(index);
+                var future = revision == 0 && index == 0
+                        ? client.getKVClient().get(bytes(key))
+                        : client.getKVClient().get(bytes(key), GetOption.builder().withRevision(revision).build());
+                var response = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
+                if (revision == 0) revision = response.getHeader().getRevision();
+                String content = response.getKvs().isEmpty() ? ""
+                        : response.getKvs().getFirst().getValue().toString(StandardCharsets.UTF_8);
+                values.put(key, content);
+            }
+            return new VersionedContents(revision, values);
         }
 
-        @Override public Watch.Watcher watch(String key, Consumer<String> update, Consumer<Throwable> error) {
-            return client.getWatchClient().watch(bytes(key), Watch.listener(response -> {
-                for (WatchEvent event : response.getEvents()) {
-                    update.accept(event.getEventType() == WatchEvent.EventType.PUT
-                            ? event.getKeyValue().getValue().toString(StandardCharsets.UTF_8) : "");
-                }
+        @Override public Watch.Watcher watch(String key, long startRevision, LongConsumer update,
+                                              Consumer<Throwable> error) {
+            WatchOption option = WatchOption.builder().withRevision(startRevision).build();
+            return client.getWatchClient().watch(bytes(key), option, Watch.listener(response -> {
+                if (!response.getEvents().isEmpty()) update.accept(response.getHeader().getRevision());
             }, error::accept));
         }
 

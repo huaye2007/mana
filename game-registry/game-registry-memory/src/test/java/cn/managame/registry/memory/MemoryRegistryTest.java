@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -52,6 +53,51 @@ class MemoryRegistryTest {
         MemoryRegistry registry = new MemoryRegistry(UUID.randomUUID().toString());
         registry.close();
         assertThrows(IllegalStateException.class, () -> registry.getInstances("game"));
+    }
+
+    @Test
+    void closeRacingRegistrationsNeverLeavesGhostInstances() throws Exception {
+        for (int round = 0; round < 25; round++) {
+            String namespace = UUID.randomUUID().toString();
+            MemoryRegistry registry = new MemoryRegistry(namespace);
+            try (MemoryRegistry observer = new MemoryRegistry(namespace)) {
+                int workers = 32;
+                CountDownLatch ready = new CountDownLatch(workers + 1);
+                CountDownLatch start = new CountDownLatch(1);
+                List<Thread> threads = new ArrayList<>();
+                for (int index = 0; index < workers; index++) {
+                    int id = index;
+                    threads.add(Thread.startVirtualThread(() -> {
+                        ready.countDown();
+                        try {
+                            start.await();
+                            registry.register(instance("node-" + id, 10_000 + id));
+                        } catch (IllegalStateException ignored) {
+                            // close linearized before this registration
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }));
+                }
+                Thread closer = Thread.startVirtualThread(() -> {
+                    ready.countDown();
+                    try {
+                        start.await();
+                        registry.close();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                ready.await();
+                start.countDown();
+                for (Thread thread : threads) thread.join();
+                closer.join();
+
+                assertEquals(List.of(), observer.getInstances("game"));
+            } finally {
+                registry.close();
+            }
+        }
     }
 
     private static ServiceInstance instance(String id, int port) {

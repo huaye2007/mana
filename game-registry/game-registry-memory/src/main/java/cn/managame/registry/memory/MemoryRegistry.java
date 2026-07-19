@@ -37,6 +37,7 @@ public final class MemoryRegistry implements ServiceRegistry {
         ServiceInstanceEvent event;
         List<Watch> listeners;
         synchronized (store) {
+            requireOpen();
             Map<String, Entry> service = store.services.computeIfAbsent(instance.getName(), ignored -> new LinkedHashMap<>());
             Entry previous = service.put(instance.getKey(), new Entry(owner, instance));
             if (previous != null && previous.instance.equals(instance)) return;
@@ -58,6 +59,7 @@ public final class MemoryRegistry implements ServiceRegistry {
         requireOpen();
         requireServiceName(serviceName);
         synchronized (store) {
+            requireOpen();
             Map<String, Entry> service = store.services.get(serviceName);
             if (service == null) return List.of();
             return service.values().stream().map(Entry::instance).toList();
@@ -72,11 +74,12 @@ public final class MemoryRegistry implements ServiceRegistry {
         Watch watch = new Watch(serviceName, listener);
         List<ServiceInstance> initial;
         synchronized (store) {
+            requireOpen();
             store.watches.computeIfAbsent(serviceName, ignored -> new ArrayList<>()).add(watch);
+            watches.add(watch);
             Map<String, Entry> service = store.services.get(serviceName);
             initial = service == null ? List.of() : service.values().stream().map(Entry::instance).toList();
         }
-        watches.add(watch);
         try {
             watch.initialize(initial);
             return watch;
@@ -88,11 +91,11 @@ public final class MemoryRegistry implements ServiceRegistry {
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        List.copyOf(watches).forEach(Watch::close);
         List<ServiceInstance> removed = new ArrayList<>();
         Map<String, List<Watch>> listenersByService = new HashMap<>();
         synchronized (store) {
+            if (!closed.compareAndSet(false, true)) return;
+            List.copyOf(watches).forEach(Watch::close);
             store.services.forEach((name, instances) -> {
                 instances.values().removeIf(entry -> {
                     if (!entry.owner.equals(owner)) return false;
@@ -111,6 +114,7 @@ public final class MemoryRegistry implements ServiceRegistry {
         ServiceInstance removed = null;
         List<Watch> listeners = List.of();
         synchronized (store) {
+            requireOpen();
             Map<String, Entry> service = store.services.get(serviceName);
             if (service != null) {
                 Entry entry = service.get(key);

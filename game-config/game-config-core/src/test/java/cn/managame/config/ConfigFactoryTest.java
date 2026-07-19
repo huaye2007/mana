@@ -1,13 +1,17 @@
 package cn.managame.config;
 
+import cn.managame.config.spi.ConfigData;
 import cn.managame.config.spi.ConfigSource;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -108,6 +112,93 @@ class ConfigFactoryTest {
         }
     }
 
+    @Test
+    void retainsValidInitialSnapshotWhenPostWatchReloadFails() {
+        FailingPostWatchReloadSource source = new FailingPostWatchReloadSource();
+        try (ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none())) {
+            assertEquals("initial", center.snapshot().get("value"));
+            assertFalse(center.isHealthy());
+            assertTrue(center.lastError().isPresent());
+        }
+    }
+
+    @Test
+    void rejectsLateSourceRevision() {
+        VersionedSource source = new VersionedSource();
+        try (ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none())) {
+            source.emit(new ConfigData(12, Map.of("value", "new")));
+            source.emit(new ConfigData(11, Map.of("value", "stale")));
+            assertEquals("new", center.snapshot().get("value"));
+        }
+    }
+
+    @Test
+    void slowListenerIsIsolatedAndPendingChangesAreCoalesced() throws Exception {
+        FakeSource source = new FakeSource(Map.of("value", "0"));
+        ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none());
+        CountDownLatch slowEntered = new CountDownLatch(1);
+        CountDownLatch releaseSlow = new CountDownLatch(1);
+        CountDownLatch slowLatest = new CountDownLatch(1);
+        CountDownLatch fastLatest = new CountDownLatch(1);
+        AtomicInteger slowCalls = new AtomicInteger();
+        AtomicReference<String> fastValue = new AtomicReference<>();
+        center.listen(change -> {
+            if (slowCalls.incrementAndGet() == 1) {
+                slowEntered.countDown();
+                try { releaseSlow.await(2, TimeUnit.SECONDS); }
+                catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            }
+            if ("1000".equals(change.current().get("value"))) slowLatest.countDown();
+        });
+        center.listen(change -> {
+            fastValue.set(change.current().get("value"));
+            if ("1000".equals(fastValue.get())) fastLatest.countDown();
+        });
+        try {
+            source.emit(Map.of("value", "1"));
+            assertTrue(slowEntered.await(1, TimeUnit.SECONDS));
+            for (int value = 2; value <= 1000; value++) source.emit(Map.of("value", Integer.toString(value)));
+            assertTrue(fastLatest.await(1, TimeUnit.SECONDS));
+            assertEquals("1000", fastValue.get());
+            releaseSlow.countDown();
+            assertTrue(slowLatest.await(1, TimeUnit.SECONDS));
+            assertEquals(2, slowCalls.get());
+        } finally {
+            releaseSlow.countDown();
+            center.close();
+        }
+    }
+
+    @Test
+    void activeHealthCheckDetectsAndClearsConnectivityFailure() throws Exception {
+        HealthSource source = new HealthSource();
+        try (ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none(),
+                Duration.ofMillis(20), Duration.ofMillis(100))) {
+            source.failLoads = true;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (center.isHealthy() && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertFalse(center.isHealthy());
+            assertTrue(center.lastError().isPresent());
+
+            source.failLoads = false;
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!center.isHealthy() && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(center.isHealthy());
+        }
+    }
+
+    @Test
+    void staleThresholdMarksSourceUnhealthyWithoutRecentContact() throws Exception {
+        HealthSource source = new HealthSource();
+        try (ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none(),
+                Duration.ZERO, Duration.ofMillis(30))) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (center.isHealthy() && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertFalse(center.isHealthy());
+            assertTrue(center.lastError().orElseThrow().getMessage().contains("stale"));
+        }
+    }
+
     private static final class FakeSource implements ConfigSource {
         private final Map<String, String> initial;
         private Consumer<Map<String, String>> onUpdate;
@@ -170,6 +261,54 @@ class ConfigFactoryTest {
         @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
                                              Consumer<Throwable> onError) {
             current = Map.of("value", "new");
+            return () -> { };
+        }
+    }
+
+    private static final class FailingPostWatchReloadSource implements ConfigSource {
+        private int loadCount;
+
+        @Override public Map<String, String> load() {
+            if (++loadCount > 1) throw new IllegalStateException("temporarily unavailable");
+            return Map.of("value", "initial");
+        }
+
+        @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
+                                             Consumer<Throwable> onError) {
+            return () -> { };
+        }
+    }
+
+    private static final class VersionedSource implements ConfigSource {
+        private ConfigData current = new ConfigData(10, Map.of("value", "old"));
+        private Consumer<ConfigData> onUpdate;
+
+        @Override public Map<String, String> load() { return current.values(); }
+        @Override public ConfigData loadData() { return current; }
+        @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
+                                             Consumer<Throwable> onError) {
+            return () -> { };
+        }
+        @Override public AutoCloseable watchData(Consumer<ConfigData> onUpdate,
+                                                 Consumer<Throwable> onError) {
+            this.onUpdate = onUpdate;
+            return () -> this.onUpdate = null;
+        }
+        private void emit(ConfigData data) {
+            current = data;
+            onUpdate.accept(data);
+        }
+    }
+
+    private static final class HealthSource implements ConfigSource {
+        private volatile boolean failLoads;
+
+        @Override public Map<String, String> load() {
+            if (failLoads) throw new IllegalStateException("unreachable");
+            return Map.of("value", "ok");
+        }
+        @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
+                                             Consumer<Throwable> onError) {
             return () -> { };
         }
     }

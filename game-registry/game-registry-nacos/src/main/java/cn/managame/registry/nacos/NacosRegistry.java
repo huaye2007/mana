@@ -37,6 +37,7 @@ public final class NacosRegistry implements ServiceRegistry {
     private final Map<String, ServiceInstance> registrations = new ConcurrentHashMap<>();
     private final Set<NacosWatch> watches = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final Object lifecycleLock = new Object();
 
     NacosRegistry(RegistryConfig config) {
         this(createNamingService(config), config.getProperties().getOrDefault(GROUP_PROPERTY, DEFAULT_GROUP));
@@ -49,113 +50,160 @@ public final class NacosRegistry implements ServiceRegistry {
 
     @Override
     public void register(ServiceInstance instance) {
-        requireOpen();
         Objects.requireNonNull(instance, "instance");
-        String key = registrationKey(instance);
-        ServiceInstance previous = registrations.get(key);
-        try {
-            namingService.registerInstance(instance.getName(), group, toNacos(instance));
-            if (previous != null && endpointChanged(previous, instance)) {
-                try {
-                    namingService.deregisterInstance(previous.getName(), group, toNacos(previous));
-                } catch (NacosException e) {
-                    try {
-                        namingService.deregisterInstance(instance.getName(), group, toNacos(instance));
-                    } catch (NacosException rollback) {
-                        e.addSuppressed(rollback);
-                    }
-                    throw e;
+        synchronized (lifecycleLock) {
+            requireOpen();
+            String key = registrationKey(instance);
+            ServiceInstance previous = registrations.get(key);
+            List<ServiceInstance> before = serviceRegistrations(instance.getName(), null, null);
+            List<ServiceInstance> desired = serviceRegistrations(instance.getName(), key, instance);
+            try {
+                // Nacos keeps reconnect redo state per service. Always publish the complete
+                // service-local set so multiple registrations survive a client reconnect.
+                namingService.batchRegisterInstance(instance.getName(), group, toNacos(desired));
+                if (previous != null && endpointChanged(previous, instance)) {
+                    // batchDeregister preserves the current batch redo set while removing
+                    // an obsolete endpoint that may still exist on the server.
+                    namingService.batchDeregisterInstance(previous.getName(), group, List.of(toNacos(previous)));
                 }
+                registrations.put(key, instance);
+            } catch (NacosException e) {
+                // Nacos updates its redo cache before the remote request completes, so
+                // restore that cache even when batchRegisterInstance itself throws.
+                rollbackService(instance.getName(), before, desired, e);
+                throw failure("register " + instance, e);
             }
-            registrations.put(key, instance);
-        } catch (NacosException e) {
-            throw failure("register " + instance, e);
         }
     }
 
     @Override
     public void deregister(ServiceInstance instance) {
-        requireOpen();
         Objects.requireNonNull(instance, "instance");
-        ServiceInstance owned = registrations.get(registrationKey(instance));
-        if (owned == null) return;
-        try {
-            namingService.deregisterInstance(owned.getName(), group, toNacos(owned));
-            registrations.remove(registrationKey(owned), owned);
-        } catch (NacosException e) {
-            throw failure("deregister " + owned, e);
+        synchronized (lifecycleLock) {
+            requireOpen();
+            ServiceInstance owned = registrations.get(registrationKey(instance));
+            if (owned == null) return;
+            try {
+                namingService.batchDeregisterInstance(owned.getName(), group, List.of(toNacos(owned)));
+                registrations.remove(registrationKey(owned), owned);
+            } catch (NacosException e) {
+                throw failure("deregister " + owned, e);
+            }
         }
     }
 
     @Override
     public List<ServiceInstance> getInstances(String serviceName) {
-        requireOpen();
         requireServiceName(serviceName);
-        try {
-            return namingService.getAllInstances(serviceName, group).stream()
-                    .map(instance -> fromNacos(serviceName, instance)).toList();
-        } catch (NacosException e) {
-            throw failure("get instances for " + serviceName, e);
+        synchronized (lifecycleLock) {
+            requireOpen();
+            try {
+                return namingService.getAllInstances(serviceName, group).stream()
+                        .map(instance -> fromNacos(serviceName, instance)).toList();
+            } catch (NacosException e) {
+                throw failure("get instances for " + serviceName, e);
+            }
         }
     }
 
     @Override
     public AutoCloseable watchService(String serviceName, ServiceInstanceListener listener) {
-        requireOpen();
         requireServiceName(serviceName);
         Objects.requireNonNull(listener, "listener");
-        NacosWatch watch = new NacosWatch(serviceName, listener);
-        try {
-            namingService.subscribe(serviceName, group, watch);
-            List<ServiceInstance> initial = namingService.getAllInstances(serviceName, group).stream()
-                    .map(instance -> fromNacos(serviceName, instance)).toList();
-            watches.add(watch);
+        synchronized (lifecycleLock) {
+            requireOpen();
+            NacosWatch watch = new NacosWatch(serviceName, listener);
             try {
-                watch.initialize(initial);
-                return watch;
-            } catch (RuntimeException e) {
+                namingService.subscribe(serviceName, group, watch);
+                List<ServiceInstance> initial = namingService.getAllInstances(serviceName, group).stream()
+                        .map(instance -> fromNacos(serviceName, instance)).toList();
+                watches.add(watch);
                 try {
-                    watch.close();
-                } catch (RuntimeException closeFailure) {
-                    e.addSuppressed(closeFailure);
+                    watch.initialize(initial);
+                    return watch;
+                } catch (RuntimeException e) {
+                    try {
+                        watch.close();
+                    } catch (RuntimeException closeFailure) {
+                        e.addSuppressed(closeFailure);
+                    }
+                    throw e;
                 }
-                throw e;
+            } catch (NacosException e) {
+                try {
+                    namingService.unsubscribe(serviceName, group, watch);
+                } catch (NacosException suppressed) {
+                    e.addSuppressed(suppressed);
+                }
+                throw failure("watch service " + serviceName, e);
             }
-        } catch (NacosException e) {
-            try {
-                namingService.unsubscribe(serviceName, group, watch);
-            } catch (NacosException suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw failure("watch service " + serviceName, e);
         }
     }
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        RegistryException failure = null;
-        for (NacosWatch watch : List.copyOf(watches)) {
-            try {
-                watch.close();
-            } catch (RegistryException e) {
-                failure = append(failure, e);
+        synchronized (lifecycleLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            RegistryException failure = null;
+            for (NacosWatch watch : List.copyOf(watches)) {
+                try {
+                    watch.close();
+                } catch (RegistryException e) {
+                    failure = append(failure, e);
+                }
             }
-        }
-        for (ServiceInstance instance : List.copyOf(registrations.values())) {
             try {
-                namingService.deregisterInstance(instance.getName(), group, toNacos(instance));
-                registrations.remove(registrationKey(instance), instance);
+                Map<String, List<Instance>> byService = new LinkedHashMap<>();
+                registrations.values().forEach(instance -> byService
+                        .computeIfAbsent(instance.getName(), ignored -> new ArrayList<>()).add(toNacos(instance)));
+                for (Map.Entry<String, List<Instance>> entry : byService.entrySet()) {
+                    try {
+                        namingService.batchDeregisterInstance(entry.getKey(), group, entry.getValue());
+                        registrations.values().removeIf(instance -> instance.getName().equals(entry.getKey()));
+                    } catch (NacosException e) {
+                        failure = append(failure, failure("deregister " + entry.getKey() + " instances while closing", e));
+                    }
+                }
+            } catch (RuntimeException e) {
+                failure = append(failure, new RegistryException("failed to prepare Nacos registrations for closing", e));
+            }
+            try {
+                namingService.shutDown();
             } catch (NacosException e) {
-                failure = append(failure, failure("deregister " + instance + " while closing", e));
+                failure = append(failure, failure("shutdown Nacos client", e));
             }
+            if (failure != null) throw failure;
         }
+    }
+
+    private List<ServiceInstance> serviceRegistrations(String serviceName, String replacedKey,
+                                                        ServiceInstance replacement) {
+        List<ServiceInstance> result = registrations.entrySet().stream()
+                .filter(entry -> entry.getValue().getName().equals(serviceName))
+                .filter(entry -> !entry.getKey().equals(replacedKey))
+                .map(Map.Entry::getValue)
+                .sorted(java.util.Comparator.comparing(ServiceInstance::getKey))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (replacement != null) result.add(replacement);
+        result.sort(java.util.Comparator.comparing(ServiceInstance::getKey));
+        return result;
+    }
+
+    private static List<Instance> toNacos(List<ServiceInstance> instances) {
+        return instances.stream().map(NacosRegistry::toNacos).toList();
+    }
+
+    private void rollbackService(String serviceName, List<ServiceInstance> previous,
+                                 List<ServiceInstance> attempted, NacosException failure) {
         try {
-            namingService.shutDown();
-        } catch (NacosException e) {
-            failure = append(failure, failure("shutdown Nacos client", e));
+            if (previous.isEmpty()) {
+                namingService.batchDeregisterInstance(serviceName, group, toNacos(attempted));
+            } else {
+                namingService.batchRegisterInstance(serviceName, group, toNacos(previous));
+            }
+        } catch (NacosException rollback) {
+            failure.addSuppressed(rollback);
         }
-        if (failure != null) throw failure;
     }
 
     private static NamingService createNamingService(RegistryConfig config) {
@@ -271,13 +319,15 @@ public final class NacosRegistry implements ServiceRegistry {
 
         @Override
         public void close() {
-            if (!active.compareAndSet(true, false)) return;
-            try {
-                namingService.unsubscribe(serviceName, group, this);
-            } catch (NacosException e) {
-                throw failure("stop watching " + serviceName, e);
-            } finally {
-                watches.remove(this);
+            synchronized (lifecycleLock) {
+                if (!active.compareAndSet(true, false)) return;
+                try {
+                    namingService.unsubscribe(serviceName, group, this);
+                } catch (NacosException e) {
+                    throw failure("stop watching " + serviceName, e);
+                } finally {
+                    watches.remove(this);
+                }
             }
         }
     }

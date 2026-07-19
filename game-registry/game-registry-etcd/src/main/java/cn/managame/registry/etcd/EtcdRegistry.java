@@ -47,6 +47,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
@@ -54,6 +55,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class EtcdRegistry implements ServiceRegistry {
     private static final Logger log = LoggerFactory.getLogger(EtcdRegistry.class);
@@ -85,8 +87,11 @@ public final class EtcdRegistry implements ServiceRegistry {
     private final Object leaseLock = new Object();
     private final AtomicBoolean leaseRecoveryScheduled = new AtomicBoolean();
     private final AtomicInteger leaseRecoveryAttempts = new AtomicInteger();
-    private final ScheduledExecutorService recoveryExecutor = Executors.newSingleThreadScheduledExecutor(
-            Thread.ofVirtual().name("etcd-registry-recovery-", 0).factory());
+    private final AtomicReference<LeaseFailure> pendingLeaseFailure = new AtomicReference<>();
+    private final ScheduledExecutorService recoveryScheduler = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofVirtual().name("etcd-registry-recovery-scheduler-", 0).factory());
+    private final ExecutorService recoveryExecutor = Executors.newThreadPerTaskExecutor(
+            Thread.ofVirtual().name("etcd-registry-recovery-worker-", 0).factory());
 
     EtcdRegistry(RegistryConfig config) {
         Client created = createClient(config);
@@ -107,6 +112,7 @@ public final class EtcdRegistry implements ServiceRegistry {
             leaseId = createdLeaseId;
             keepAlive = createdLease.keepAlive(createdLeaseId, new KeepAliveObserver(createdLeaseId));
         } catch (RuntimeException e) {
+            recoveryScheduler.shutdownNow();
             recoveryExecutor.shutdownNow();
             created.close();
             throw e;
@@ -181,6 +187,7 @@ public final class EtcdRegistry implements ServiceRegistry {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        recoveryScheduler.shutdownNow();
         recoveryExecutor.shutdownNow();
         RuntimeException failure = null;
         for (EtcdWatch watch : List.copyOf(watches)) {
@@ -369,16 +376,16 @@ public final class EtcdRegistry implements ServiceRegistry {
 
     private void scheduleLeaseRecovery(long observedLeaseId, Throwable cause) {
         if (closed.get() || leaseId != observedLeaseId) return;
-        if (!leaseRecoveryScheduled.compareAndSet(false, true)) return;
+        if (!leaseRecoveryScheduled.compareAndSet(false, true)) {
+            pendingLeaseFailure.set(new LeaseFailure(observedLeaseId, cause));
+            return;
+        }
         int attempt = leaseRecoveryAttempts.getAndIncrement();
         long delay = recoveryDelay(attempt);
         log.warn("etcd lease keepalive lost; scheduling recovery in {}ms, leaseId={}",
                 delay, observedLeaseId, cause);
-        try {
-            recoveryExecutor.schedule(() -> recoverLease(observedLeaseId), delay, TimeUnit.MILLISECONDS);
-        } catch (RejectedExecutionException ignored) {
-            leaseRecoveryScheduled.set(false);
-        }
+        scheduleRecovery(() -> recoverLease(observedLeaseId), delay,
+                () -> leaseRecoveryScheduled.set(false));
     }
 
     void keepAliveFailed(long observedLeaseId, Throwable cause) {
@@ -392,12 +399,18 @@ public final class EtcdRegistry implements ServiceRegistry {
                 if (closed.get() || leaseId != observedLeaseId) return;
                 long newLeaseId = await(lease.grant(leaseTtlSeconds), "re-grant etcd lease").getID();
                 CloseableClient newKeepAlive = null;
+                CloseableClient oldKeepAlive = keepAlive;
+                long oldLeaseId = leaseId;
                 try {
                     for (ServiceInstance instance : List.copyOf(registrations.values())) {
                         putOnLease(instance, newLeaseId);
                     }
+                    // Publish the new id before starting the stream. A keepalive can fail
+                    // immediately and its callback must be associated with this lease.
+                    leaseId = newLeaseId;
                     newKeepAlive = lease.keepAlive(newLeaseId, new KeepAliveObserver(newLeaseId));
                 } catch (RuntimeException recoveryFailure) {
+                    leaseId = oldLeaseId;
                     if (newKeepAlive != null) {
                         try { newKeepAlive.close(); } catch (RuntimeException closeFailure) {
                             recoveryFailure.addSuppressed(closeFailure);
@@ -408,9 +421,6 @@ public final class EtcdRegistry implements ServiceRegistry {
                     throw recoveryFailure;
                 }
 
-                CloseableClient oldKeepAlive = keepAlive;
-                long oldLeaseId = leaseId;
-                leaseId = newLeaseId;
                 keepAlive = newKeepAlive;
                 recovered = true;
                 try { oldKeepAlive.close(); }
@@ -424,12 +434,30 @@ public final class EtcdRegistry implements ServiceRegistry {
             log.warn("etcd lease recovery attempt failed, leaseId={}", observedLeaseId, failure);
         } finally {
             leaseRecoveryScheduled.set(false);
+            LeaseFailure pending = pendingLeaseFailure.getAndSet(null);
             if (recovered) {
                 leaseRecoveryAttempts.set(0);
-            } else if (!closed.get() && leaseId == observedLeaseId) {
+            }
+            if (pending != null && !closed.get() && leaseId == pending.leaseId()) {
+                scheduleLeaseRecovery(pending.leaseId(), pending.cause());
+            } else if (!recovered && !closed.get() && leaseId == observedLeaseId) {
                 scheduleLeaseRecovery(observedLeaseId,
                         new RegistryException("previous etcd lease recovery attempt failed"));
             }
+        }
+    }
+
+    private void scheduleRecovery(Runnable task, long delayMillis, Runnable rejected) {
+        try {
+            recoveryScheduler.schedule(() -> {
+                try {
+                    recoveryExecutor.execute(task);
+                } catch (RejectedExecutionException ignored) {
+                    rejected.run();
+                }
+            }, delayMillis, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ignored) {
+            rejected.run();
         }
     }
 
@@ -447,12 +475,16 @@ public final class EtcdRegistry implements ServiceRegistry {
     record Envelope(String owner, ServiceInstance instance) {
     }
 
+    private record LeaseFailure(long leaseId, Throwable cause) {
+    }
+
     private final class EtcdWatch implements AutoCloseable {
         private final String serviceName;
         private final ServiceInstanceListener listener;
         private final AtomicBoolean active = new AtomicBoolean(true);
         private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
         private final AtomicInteger reconnectAttempts = new AtomicInteger();
+        private final AtomicReference<Throwable> pendingReconnectFailure = new AtomicReference<>();
         private final List<ServiceInstanceEvent> pending = new ArrayList<>();
         private final Map<String, ServiceInstance> known = new HashMap<>();
         private boolean ready;
@@ -533,27 +565,37 @@ public final class EtcdRegistry implements ServiceRegistry {
         }
 
         private void scheduleReconnect(Throwable cause) {
-            if (!active.get() || closed.get() || !reconnectScheduled.compareAndSet(false, true)) return;
+            if (!active.get() || closed.get()) return;
+            if (!reconnectScheduled.compareAndSet(false, true)) {
+                pendingReconnectFailure.set(cause);
+                return;
+            }
             int attempt = reconnectAttempts.getAndIncrement();
             long delay = recoveryDelay(attempt);
             log.warn("etcd watch lost; scheduling snapshot reconciliation in {}ms, service={}",
                     delay, serviceName, cause);
+            scheduleRecovery(this::reconnect, delay, () -> reconnectScheduled.set(false));
+        }
+
+        private void reconnect() {
+            RuntimeException failure = null;
             try {
-                recoveryExecutor.schedule(() -> {
-                    reconnectScheduled.set(false);
-                    if (!active.get() || closed.get()) return;
-                    try {
-                        GetResponse response = await(kv.get(servicePrefix(serviceName), prefixGet()),
-                                "reconcile instances for " + serviceName);
-                        start(response);
-                        reconnectAttempts.set(0);
-                        log.info("etcd watch recovered, service={}", serviceName);
-                    } catch (RuntimeException error) {
-                        scheduleReconnect(error);
-                    }
-                }, delay, TimeUnit.MILLISECONDS);
-            } catch (RejectedExecutionException ignored) {
+                if (!active.get() || closed.get()) return;
+                GetResponse response = await(kv.get(servicePrefix(serviceName), prefixGet()),
+                        "reconcile instances for " + serviceName);
+                start(response);
+                reconnectAttempts.set(0);
+                log.info("etcd watch recovered, service={}", serviceName);
+            } catch (RuntimeException error) {
+                failure = error;
+            } finally {
                 reconnectScheduled.set(false);
+                Throwable pending = pendingReconnectFailure.getAndSet(null);
+                if (pending != null && active.get() && !closed.get()) {
+                    scheduleReconnect(pending);
+                } else if (failure != null && active.get() && !closed.get()) {
+                    scheduleReconnect(failure);
+                }
             }
         }
 

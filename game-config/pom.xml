@@ -10,10 +10,35 @@
     </parent>
     <artifactId>game-config</artifactId>
     <packaging>pom</packaging>
+    <properties>
+        <testcontainers.version>2.0.5</testcontainers.version>
+    </properties>
     <modules>
         <module>game-config-core</module>
         <module>game-config-local</module>
         <module>game-config-nacos</module>
         <module>game-config-etcd</module>
     </modules>
+    <profiles>
+        <profile>
+            <id>integration-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <version>3.2.5</version>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

@@ -2,8 +2,10 @@ package cn.managame.config.local;
 
 import cn.managame.config.ConfigException;
 import cn.managame.config.ConfigOptions;
+import cn.managame.config.spi.ConfigData;
 import cn.managame.config.spi.ConfigProvider;
 import cn.managame.config.spi.ConfigSource;
+import cn.managame.config.support.ConfigRevisions;
 import cn.managame.config.support.PropertiesDocument;
 
 import java.io.IOException;
@@ -15,6 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -32,7 +35,10 @@ public final class LocalConfigProvider implements ConfigProvider {
     static final class LocalSource implements ConfigSource {
         private final List<Path> files;
         private final boolean required;
+        private final String revisionKey;
         private final AtomicBoolean closed = new AtomicBoolean();
+        private long contentRevision;
+        private Map<String, String> lastLoadedValues = Map.of();
         private WatchService watchService;
         private Thread watchThread;
 
@@ -43,28 +49,53 @@ public final class LocalConfigProvider implements ConfigProvider {
                 throw new IllegalArgumentException("required must be true or false");
             }
             required = Boolean.parseBoolean(requiredValue);
+            revisionKey = options.property("revisionKey", "_revision").trim();
         }
 
         @Override public Map<String, String> load() {
+            return loadData().values();
+        }
+
+        @Override public synchronized ConfigData loadData() {
             Map<String, String> merged = new LinkedHashMap<>();
+            List<Map<String, String>> documents = new ArrayList<>(files.size());
+            boolean multipleResources = files.size() > 1;
             for (Path file : files) {
                 if (!Files.exists(file)) {
                     if (required) throw new ConfigException("local config file does not exist: " + file);
+                    documents.add(Map.of());
                     continue;
                 }
                 if (!Files.isRegularFile(file)) throw new ConfigException("local config resource is not a file: " + file);
                 try {
                     String content = Files.readString(file, StandardCharsets.UTF_8);
                     Map<String, String> values = parse(file, content);
-                    for (String key : values.keySet()) {
+                    documents.add(values);
+                    Map<String, String> visibleValues = values;
+                    if (multipleResources) {
+                        visibleValues = new LinkedHashMap<>(values);
+                        visibleValues.remove(revisionKey);
+                    }
+                    for (String key : visibleValues.keySet()) {
                         if (merged.containsKey(key)) merged.keySet().removeIf(existing -> existing.startsWith(key + "["));
                     }
-                    merged.putAll(values);
+                    merged.putAll(visibleValues);
                 } catch (IOException e) {
                     throw new ConfigException("cannot read local config: " + file, e);
                 }
             }
-            return Map.copyOf(merged);
+            Map<String, String> values = Map.copyOf(merged);
+            long revision;
+            if (multipleResources) {
+                revision = ConfigRevisions.commonRevision(documents, revisionKey);
+            } else {
+                if (!lastLoadedValues.equals(values)) {
+                    lastLoadedValues = values;
+                    contentRevision++;
+                }
+                revision = contentRevision;
+            }
+            return new ConfigData(revision, values);
         }
 
         private static Map<String, String> parse(Path file, String content) {
@@ -73,8 +104,13 @@ public final class LocalConfigProvider implements ConfigProvider {
             return PropertiesDocument.parse(content);
         }
 
-        @Override public synchronized AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
-                                                           Consumer<Throwable> onError) throws IOException {
+        @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
+                                             Consumer<Throwable> onError) throws IOException {
+            return watchData(data -> onUpdate.accept(data.values()), onError);
+        }
+
+        @Override public synchronized AutoCloseable watchData(Consumer<ConfigData> onUpdate,
+                                                               Consumer<Throwable> onError) throws IOException {
             if (closed.get()) throw new IllegalStateException("local config source is closed");
             if (watchService != null) throw new IllegalStateException("local config watch is already active");
             WatchService service = FileSystems.getDefault().newWatchService();
@@ -121,7 +157,7 @@ public final class LocalConfigProvider implements ConfigProvider {
                             directories.remove(key);
                             topologyChanged = true;
                         }
-                        if (changed) onUpdate.accept(load());
+                        if (changed) onUpdate.accept(loadData());
                         if (topologyChanged) {
                             onError.accept(new IOException("local config watch directory changed"));
                             return;

@@ -28,8 +28,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -185,6 +188,78 @@ class EtcdRegistryTest {
         verify(keepAlive, timeout(2000)).close();
         registry.close();
         verify(recoveredKeepAlive).close();
+    }
+
+    @Test
+    void immediateFailureOfRecoveredKeepAliveTriggersAnotherRecovery() {
+        when(kv.put(any(), any(), any(PutOption.class))).thenReturn(CompletableFuture.completedFuture(mock()));
+        LeaseGrantResponse firstGrant = mock(LeaseGrantResponse.class);
+        LeaseGrantResponse secondGrant = mock(LeaseGrantResponse.class);
+        when(firstGrant.getID()).thenReturn(84L);
+        when(secondGrant.getID()).thenReturn(126L);
+        when(lease.grant(anyLong())).thenReturn(
+                CompletableFuture.completedFuture(firstGrant), CompletableFuture.completedFuture(secondGrant));
+        CloseableClient failedKeepAlive = mock(CloseableClient.class);
+        CloseableClient stableKeepAlive = mock(CloseableClient.class);
+        when(lease.keepAlive(anyLong(), any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            io.grpc.stub.StreamObserver<io.etcd.jetcd.lease.LeaseKeepAliveResponse> observer = invocation.getArgument(1);
+            observer.onError(new IllegalStateException("failed immediately"));
+            return failedKeepAlive;
+        }).thenReturn(stableKeepAlive);
+        when(lease.revoke(anyLong())).thenReturn(
+                CompletableFuture.completedFuture(mock(LeaseRevokeResponse.class)));
+        EtcdRegistry registry = registry();
+        registry.register(instance("node-1", 9001));
+
+        registry.keepAliveFailed(42L, new IllegalStateException("lost"));
+
+        verify(lease, timeout(3000).times(2)).grant(EtcdRegistry.DEFAULT_TTL_SECONDS);
+        verify(lease, timeout(3000).times(2)).keepAlive(anyLong(), any());
+        registry.close();
+        verify(stableKeepAlive).close();
+    }
+
+    @Test
+    void blockedWatchReconciliationDoesNotBlockLeaseRecovery() throws Exception {
+        ServiceInstance recoveredInstance = instance("node-1", 9001);
+        GetResponse initial = response(List.of(), 10L);
+        GetResponse recovered = response(List.of(keyValue(recoveredInstance, 1, 1)), 20L);
+        when(kv.get(any(), any(GetOption.class))).thenReturn(
+                CompletableFuture.completedFuture(initial), CompletableFuture.completedFuture(recovered));
+        ArgumentCaptor<Watch.Listener> listeners = ArgumentCaptor.forClass(Watch.Listener.class);
+        when(watchClient.watch(any(), any(WatchOption.class), listeners.capture()))
+                .thenReturn(mock(Watch.Watcher.class), mock(Watch.Watcher.class));
+        LeaseGrantResponse grant = mock(LeaseGrantResponse.class);
+        when(grant.getID()).thenReturn(84L);
+        when(lease.grant(anyLong())).thenReturn(CompletableFuture.completedFuture(grant));
+        when(lease.keepAlive(anyLong(), any())).thenReturn(mock(CloseableClient.class));
+        when(lease.revoke(anyLong())).thenReturn(
+                CompletableFuture.completedFuture(mock(LeaseRevokeResponse.class)));
+        CountDownLatch listenerEntered = new CountDownLatch(1);
+        CountDownLatch releaseListener = new CountDownLatch(1);
+        EtcdRegistry registry = registry();
+        AutoCloseable handle = registry.watchService("game", event -> {
+            listenerEntered.countDown();
+            try {
+                releaseListener.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        try {
+            listeners.getAllValues().getFirst().onError(new IllegalStateException("watch lost"));
+            assertTrue(listenerEntered.await(2, TimeUnit.SECONDS));
+
+            registry.keepAliveFailed(42L, new IllegalStateException("lease lost"));
+
+            verify(lease, timeout(2000)).grant(EtcdRegistry.DEFAULT_TTL_SECONDS);
+        } finally {
+            releaseListener.countDown();
+            handle.close();
+            registry.close();
+        }
     }
 
     private EtcdRegistry registry() {

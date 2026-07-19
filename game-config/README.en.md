@@ -56,7 +56,7 @@ ConfigOptions.builder("nacos")
         .build();
 ```
 
-Nacos client properties such as `namespace`, `username`, and `password` may also be supplied through `properties`; `group` and `timeoutMillis` are interpreted by this library.
+Nacos client properties such as `namespace`, `username`, and `password` may also be supplied through `properties`; this library consumes `group`, `timeoutMillis`, and `revisionKey` itself.
 
 Etcd:
 
@@ -72,12 +72,41 @@ ConfigOptions.builder("etcd")
 
 Separate multiple endpoints with commas. `timeoutMillis` defaults to `3000`. For local files, `required=false` permits resources that do not exist yet.
 
+### Multi-resource consistency
+
+When local or Nacos declares multiple resources, every document must carry the same non-negative integer `_revision`, for example:
+
+```properties
+_revision=42
+game.server.port=8080
+```
+
+Publish the next release by writing every document with its new revision. The client retains its last-known-good snapshot until all document revisions agree. `_revision` is coordination metadata and is excluded from application snapshots; rename it with `.property("revisionKey", "configRevision")`. An intentionally empty document must still retain its revision line.
+
+Etcd reads every key at one server revision. Publish a multi-key change in one Etcd transaction so the entire release occupies one revision.
+
 ## Semantics
 
 - `ConfigFactory.open` completes the initial load synchronously and never returns a partially initialized center.
 - The initial snapshot and every update pass through the optional `ConfigValidator` first. A rejected candidate leaves the last-known-good snapshot in place; inspect `isHealthy()` / `lastError()` for status.
 - A push creates a new version and `ConfigChange` only when the merged content actually changes.
-- Listeners run on a separate ordered executor, so a slow or failing listener cannot block snapshot publication or the provider thread.
+- Each listener runs independently with at most one notification executing and one pending. A slow listener coalesces intermediate changes and eventually receives the latest snapshot without blocking other listeners, snapshot publication, or provider threads.
 - A failed provider watch is recreated with exponential backoff and followed by a fresh snapshot load.
-- Empty/deleted Nacos content and deleted Etcd keys become empty documents while other resources remain intact.
+- By default, the source is actively loaded every 30 seconds and becomes unhealthy after 90 seconds without successful contact. Configure these with `healthCheckInterval(Duration)` and `staleAfter(Duration)`; `Duration.ZERO` disables the corresponding mechanism.
+- `isHealthy()` requires a healthy watch, no current load or validation error, and non-stale data. `lastError()` returns the latest failure or staleness reason.
+- Empty/deleted single-resource Nacos content and deleted Etcd keys become empty documents. An empty local/Nacos document in a multi-resource release must retain the common revision.
 - `close()` unregisters listeners and closes filesystem watchers or remote clients.
+
+## Testing
+
+Regular tests require no external services:
+
+```powershell
+mvn "-Dmaven.repo.local=..\.m2" -f game-config\pom.xml test
+```
+
+Real Nacos and Etcd read, watch, and multi-resource consistency tests use Testcontainers and require Docker:
+
+```powershell
+mvn "-Dmaven.repo.local=..\.m2" -f game-config\pom.xml -Pintegration-tests verify
+```

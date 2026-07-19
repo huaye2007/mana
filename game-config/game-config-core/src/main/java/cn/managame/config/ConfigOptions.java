@@ -1,5 +1,6 @@
 package cn.managame.config;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,6 +12,8 @@ public final class ConfigOptions {
     private final List<String> resources;
     private final Map<String, String> properties;
     private final ConfigValidator validator;
+    private final Duration healthCheckInterval;
+    private final Duration staleAfter;
 
     private ConfigOptions(Builder builder) {
         type = requireText(builder.type, "type").toLowerCase(java.util.Locale.ROOT);
@@ -19,6 +22,8 @@ public final class ConfigOptions {
         if (resources.isEmpty()) throw new IllegalArgumentException("at least one resource is required");
         properties = Map.copyOf(builder.properties);
         validator = builder.validator;
+        healthCheckInterval = requireNonNegative(builder.healthCheckInterval, "healthCheckInterval");
+        staleAfter = requireNonNegative(builder.staleAfter, "staleAfter");
     }
 
     public static Builder builder(String type) { return new Builder(type); }
@@ -27,11 +32,19 @@ public final class ConfigOptions {
     public List<String> resources() { return resources; }
     public Map<String, String> properties() { return properties; }
     public ConfigValidator validator() { return validator; }
+    public Duration healthCheckInterval() { return healthCheckInterval; }
+    public Duration staleAfter() { return staleAfter; }
     public String property(String key, String defaultValue) { return properties.getOrDefault(key, defaultValue); }
 
     private static String requireText(String value, String name) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException(name + " must not be blank");
         return value.trim();
+    }
+
+    private static Duration requireNonNegative(Duration value, String name) {
+        java.util.Objects.requireNonNull(value, name);
+        if (value.isNegative()) throw new IllegalArgumentException(name + " must not be negative");
+        return value;
     }
 
     public static final class Builder {
@@ -40,6 +53,8 @@ public final class ConfigOptions {
         private final List<String> resources = new ArrayList<>();
         private final Map<String, String> properties = new LinkedHashMap<>();
         private ConfigValidator validator = ConfigValidator.none();
+        private Duration healthCheckInterval = Duration.ofSeconds(30);
+        private Duration staleAfter = Duration.ofSeconds(90);
 
         private Builder(String type) { this.type = type; }
         public Builder endpoint(String value) { endpoint = value; return this; }
@@ -52,6 +67,14 @@ public final class ConfigOptions {
         public Builder properties(Map<String, String> values) { values.forEach(this::property); return this; }
         public Builder validator(ConfigValidator value) {
             validator = java.util.Objects.requireNonNull(value, "validator");
+            return this;
+        }
+        public Builder healthCheckInterval(Duration value) {
+            healthCheckInterval = java.util.Objects.requireNonNull(value, "healthCheckInterval");
+            return this;
+        }
+        public Builder staleAfter(Duration value) {
+            staleAfter = java.util.Objects.requireNonNull(value, "staleAfter");
             return this;
         }
         public ConfigOptions build() { return new ConfigOptions(this); }

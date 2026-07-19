@@ -20,15 +20,18 @@ class LocalConfigProviderTest {
     @Test void mergesFilesAndWatchesChanges() throws Exception {
         Path base = directory.resolve("base.properties");
         Path override = directory.resolve("override.properties");
-        Files.writeString(base, "port=7000\nname=base\n");
-        Files.writeString(override, "name=override\n");
+        Files.writeString(base, "_revision=1\nport=7000\nname=base\n");
+        Files.writeString(override, "_revision=1\nname=override\n");
         try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
                 .resource(base.toString()).resource(override.toString()).build())) {
             assertEquals(7000, center.snapshot().getInt("port", 0));
             assertEquals("override", center.snapshot().get("name"));
+            assertNull(center.snapshot().get("_revision"));
             CountDownLatch changed = new CountDownLatch(1);
             center.listen(event -> changed.countDown());
-            Files.writeString(override, "name=latest\n");
+            Files.writeString(base, "_revision=2\nport=7000\nname=base\n");
+            assertFalse(changed.await(300, TimeUnit.MILLISECONDS));
+            Files.writeString(override, "_revision=2\nname=latest\n");
             assertTrue(changed.await(5, TimeUnit.SECONDS));
             assertEquals("latest", center.snapshot().get("name"));
         }
@@ -120,21 +123,22 @@ class LocalConfigProviderTest {
     @Test void laterJsonFileOverridesPropertiesFile() throws Exception {
         Path properties = directory.resolve("base.properties");
         Path json = directory.resolve("override.json");
-        Files.writeString(properties, "game.server.port=7000\nname=base\n");
-        Files.writeString(json, "{\"game\":{\"server\":{\"port\":8000}}}");
+        Files.writeString(properties, "_revision=1\ngame.server.port=7000\nname=base\n");
+        Files.writeString(json, "{\"_revision\":1,\"game\":{\"server\":{\"port\":8000}}}");
 
         try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
                 .resource(properties.toString()).resource(json.toString()).build())) {
             assertEquals(8000, center.snapshot().getInt("game.server.port", 0));
             assertEquals("base", center.snapshot().get("name"));
+            assertNull(center.snapshot().get("_revision"));
         }
     }
 
     @Test void laterArrayRemovesStaleIndexes() throws Exception {
         Path base = directory.resolve("base.json");
         Path override = directory.resolve("override.json");
-        Files.writeString(base, "{\"regions\":[\"cn\",\"us\"]}");
-        Files.writeString(override, "{\"regions\":[\"eu\"]}");
+        Files.writeString(base, "{\"_revision\":1,\"regions\":[\"cn\",\"us\"]}");
+        Files.writeString(override, "{\"_revision\":1,\"regions\":[\"eu\"]}");
 
         try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
                 .resource(base.toString()).resource(override.toString()).build())) {
