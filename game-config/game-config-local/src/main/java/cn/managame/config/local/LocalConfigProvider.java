@@ -15,9 +15,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -38,7 +38,11 @@ public final class LocalConfigProvider implements ConfigProvider {
 
         LocalSource(ConfigOptions options) {
             files = options.resources().stream().map(Path::of).map(Path::toAbsolutePath).map(Path::normalize).toList();
-            required = Boolean.parseBoolean(options.property("required", "true"));
+            String requiredValue = options.property("required", "true").trim();
+            if (!requiredValue.equalsIgnoreCase("true") && !requiredValue.equalsIgnoreCase("false")) {
+                throw new IllegalArgumentException("required must be true or false");
+            }
+            required = Boolean.parseBoolean(requiredValue);
         }
 
         @Override public Map<String, String> load() {
@@ -72,29 +76,56 @@ public final class LocalConfigProvider implements ConfigProvider {
         @Override public synchronized AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
                                                            Consumer<Throwable> onError) throws IOException {
             if (closed.get()) throw new IllegalStateException("local config source is closed");
-            watchService = FileSystems.getDefault().newWatchService();
+            if (watchService != null) throw new IllegalStateException("local config watch is already active");
+            WatchService service = FileSystems.getDefault().newWatchService();
             Map<WatchKey, Path> directories = new HashMap<>();
             Set<Path> targets = Set.copyOf(files);
-            for (Path directory : files.stream().map(Path::getParent).distinct().toList()) {
-                if (directory != null && Files.isDirectory(directory)) {
-                    WatchKey key = directory.register(watchService,
+            try {
+                Set<Path> watchedDirectories = new LinkedHashSet<>();
+                for (Path file : files) {
+                    Path directory = nearestExistingDirectory(file.getParent());
+                    if (directory == null) throw new IOException("no existing directory can be watched");
+                    watchedDirectories.add(directory);
+                    if (directory.getParent() != null) watchedDirectories.add(directory.getParent());
+                }
+                for (Path directory : watchedDirectories) {
+                    WatchKey key = directory.register(service,
                             StandardWatchEventKinds.ENTRY_CREATE,
                             StandardWatchEventKinds.ENTRY_MODIFY,
                             StandardWatchEventKinds.ENTRY_DELETE);
                     directories.put(key, directory);
                 }
+            } catch (IOException | RuntimeException error) {
+                service.close();
+                throw error;
             }
+            watchService = service;
             watchThread = Thread.ofPlatform().daemon().name("game-config-local-watch").start(() -> {
                 while (!closed.get()) {
                     try {
-                        WatchKey key = watchService.take();
+                        WatchKey key = service.take();
                         Path directory = directories.get(key);
-                        boolean changed = key.pollEvents().stream()
-                                .filter(event -> event.context() instanceof Path)
-                                .map(event -> directory.resolve((Path) event.context()).toAbsolutePath().normalize())
-                                .anyMatch(targets::contains);
-                        if (!key.reset()) directories.remove(key);
+                        boolean changed = false;
+                        boolean topologyChanged = directory == null;
+                        for (var event : key.pollEvents()) {
+                            if (event.kind() == StandardWatchEventKinds.OVERFLOW) {
+                                topologyChanged = true;
+                            } else if (directory != null && event.context() instanceof Path context) {
+                                Path affected = directory.resolve(context).toAbsolutePath().normalize();
+                                changed |= targets.contains(affected);
+                                topologyChanged |= targets.stream()
+                                        .anyMatch(target -> !target.equals(affected) && target.startsWith(affected));
+                            }
+                        }
+                        if (!key.reset()) {
+                            directories.remove(key);
+                            topologyChanged = true;
+                        }
                         if (changed) onUpdate.accept(load());
+                        if (topologyChanged) {
+                            onError.accept(new IOException("local config watch directory changed"));
+                            return;
+                        }
                     } catch (ClosedWatchServiceException e) {
                         return;
                     } catch (InterruptedException e) {
@@ -102,10 +133,18 @@ public final class LocalConfigProvider implements ConfigProvider {
                         return;
                     } catch (Throwable e) {
                         onError.accept(e);
+                        return;
                     }
                 }
             });
             return this::stopWatch;
+        }
+
+        private static Path nearestExistingDirectory(Path directory) {
+            for (Path candidate = directory; candidate != null; candidate = candidate.getParent()) {
+                if (Files.isDirectory(candidate)) return candidate;
+            }
+            return null;
         }
 
         private synchronized void stopWatch() throws IOException {

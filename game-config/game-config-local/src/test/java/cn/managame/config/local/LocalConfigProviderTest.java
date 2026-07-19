@@ -41,6 +41,47 @@ class LocalConfigProviderTest {
         }
     }
 
+    @Test void rejectsInvalidRequiredOption() {
+        assertThrows(IllegalArgumentException.class, () -> new LocalConfigProvider.LocalSource(
+                ConfigOptions.builder("local").resource(directory.resolve("missing.properties").toString())
+                        .property("required", "ture").build()));
+    }
+
+    @Test void watchesOptionalFileWhoseParentDoesNotExistYet() throws Exception {
+        Path file = directory.resolve("created-later").resolve("application.properties");
+        try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
+                .resource(file.toString()).property("required", "false").build())) {
+            CountDownLatch changed = new CountDownLatch(1);
+            center.listen(event -> changed.countDown());
+
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, "name=latest\n");
+
+            assertTrue(changed.await(5, TimeUnit.SECONDS));
+            assertEquals("latest", center.snapshot().get("name"));
+        }
+    }
+
+    @Test void recoversAfterWatchedDirectoryIsReplaced() throws Exception {
+        Path configDirectory = directory.resolve("config");
+        Files.createDirectories(configDirectory);
+        Path file = configDirectory.resolve("application.properties");
+        Files.writeString(file, "name=old\n");
+
+        try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
+                .resource(file.toString()).build())) {
+            CountDownLatch changed = new CountDownLatch(1);
+            center.listen(event -> changed.countDown());
+
+            Files.move(configDirectory, directory.resolve("config-old"));
+            Files.createDirectories(configDirectory);
+            Files.writeString(file, "name=new\n");
+
+            assertTrue(changed.await(5, TimeUnit.SECONDS));
+            assertEquals("new", center.snapshot().get("name"));
+        }
+    }
+
     @Test void loadsAndFlattensJsonFile() throws Exception {
         Path json = directory.resolve("application.json");
         Files.writeString(json, """

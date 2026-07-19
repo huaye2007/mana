@@ -3,6 +3,8 @@ package cn.managame.config;
 import cn.managame.config.spi.ConfigSource;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -72,11 +74,37 @@ class ConfigFactoryTest {
         try {
             source.failWatch(new IllegalStateException("lost"));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (source.watchCount < 2 && System.nanoTime() < deadline) Thread.onSpinWait();
+            while ((source.watchCount < 2 || !center.isHealthy()) && System.nanoTime() < deadline) Thread.onSpinWait();
             assertTrue(source.watchCount >= 2);
             assertTrue(center.isHealthy());
+            source.emitFromWatch(0, Map.of("value", "stale"));
+            assertEquals("ok", center.snapshot().get("value"));
+            source.emit(Map.of("value", "recovered"));
+            assertEquals("recovered", center.snapshot().get("value"));
         } finally {
             center.close();
+        }
+    }
+
+    @Test
+    void reloadDoesNotOverwriteNewerWatchUpdate() {
+        RacingReloadSource source = new RacingReloadSource();
+        ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none());
+        try {
+            ConfigSnapshot reloaded = center.reload();
+            assertEquals("new", reloaded.get("value"));
+            assertEquals("new", center.snapshot().get("value"));
+        } finally {
+            center.close();
+        }
+    }
+
+    @Test
+    void reloadsAfterWatchRegistrationToCloseInitializationGap() {
+        ChangeDuringRegistrationSource source = new ChangeDuringRegistrationSource();
+        try (ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none())) {
+            assertEquals("new", center.snapshot().get("value"));
+            assertEquals(2, source.loadCount);
         }
     }
 
@@ -84,6 +112,7 @@ class ConfigFactoryTest {
         private final Map<String, String> initial;
         private Consumer<Map<String, String>> onUpdate;
         private Consumer<Throwable> onError;
+        private final List<Consumer<Map<String, String>>> updates = new ArrayList<>();
         private volatile int watchCount;
         private boolean closed;
 
@@ -93,14 +122,55 @@ class ConfigFactoryTest {
                                              Consumer<Throwable> onError) {
             this.onUpdate = onUpdate;
             this.onError = onError;
+            updates.add(onUpdate);
             watchCount++;
             return () -> {
-                if (this.onUpdate == onUpdate) this.onUpdate = null;
-                if (this.onError == onError) this.onError = null;
+                this.onUpdate = null;
+                this.onError = null;
             };
         }
         private void emit(Map<String, String> values) { onUpdate.accept(values); }
+        private void emitFromWatch(int index, Map<String, String> values) { updates.get(index).accept(values); }
         private void failWatch(Throwable error) { onError.accept(error); }
         @Override public void close() { closed = true; }
+    }
+
+    private static final class RacingReloadSource implements ConfigSource {
+        private Consumer<Map<String, String>> onUpdate;
+        private Map<String, String> current = Map.of("value", "old");
+        private int loadCount;
+
+        @Override public Map<String, String> load() {
+            loadCount++;
+            if (loadCount == 3) {
+                Map<String, String> stale = current;
+                current = Map.of("value", "new");
+                onUpdate.accept(current);
+                return stale;
+            }
+            return current;
+        }
+
+        @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
+                                             Consumer<Throwable> onError) {
+            this.onUpdate = onUpdate;
+            return () -> this.onUpdate = null;
+        }
+    }
+
+    private static final class ChangeDuringRegistrationSource implements ConfigSource {
+        private Map<String, String> current = Map.of("value", "old");
+        private int loadCount;
+
+        @Override public Map<String, String> load() {
+            loadCount++;
+            return current;
+        }
+
+        @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
+                                             Consumer<Throwable> onError) {
+            current = Map.of("value", "new");
+            return () -> { };
+        }
     }
 }

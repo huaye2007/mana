@@ -19,6 +19,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -48,6 +49,8 @@ public final class ConfigFactory {
                 Thread.ofVirtual().name("config-watch-recovery-", 0).factory());
         private final AtomicBoolean watchRecoveryScheduled = new AtomicBoolean();
         private final AtomicInteger watchRecoveryAttempts = new AtomicInteger();
+        private final AtomicLong watchGeneration = new AtomicLong();
+        private final AtomicLong updateSequence = new AtomicLong();
         private final AtomicBoolean closed = new AtomicBoolean();
         private volatile AutoCloseable watch;
 
@@ -58,14 +61,21 @@ public final class ConfigFactory {
         }
 
         static ConfigCenter open(ConfigSource source, ConfigValidator validator) {
+            DefaultConfigCenter center = null;
             try {
                 ConfigSnapshot initial = new ConfigSnapshot(1, Instant.now(), Map.copyOf(source.load()));
                 validator.validate(initial);
-                DefaultConfigCenter center = new DefaultConfigCenter(source, validator, initial);
-                center.watch = source.watch(center::acceptUpdate, center::watchFailed);
+                center = new DefaultConfigCenter(source, validator, initial);
+                center.watch = center.startWatch();
+                center.loadAndApply();
                 return center;
             } catch (Exception e) {
-                try { source.close(); } catch (Exception closeError) { e.addSuppressed(closeError); }
+                try {
+                    if (center == null) source.close();
+                    else center.close();
+                } catch (Exception closeError) {
+                    e.addSuppressed(closeError);
+                }
                 throw new ConfigException("cannot open config center", e);
             }
         }
@@ -75,9 +85,7 @@ public final class ConfigFactory {
         @Override public ConfigSnapshot reload() {
             ensureOpen();
             try {
-                ConfigSnapshot result = apply(source.load());
-                lastError.set(null);
-                return result;
+                return loadAndApply();
             } catch (Exception e) {
                 lastError.set(e);
                 throw new ConfigException("cannot reload config", e);
@@ -90,8 +98,24 @@ public final class ConfigFactory {
             return () -> listeners.remove(listener);
         }
 
+        private ConfigSnapshot loadAndApply() throws Exception {
+            for (int attempt = 0; attempt < 2; attempt++) {
+                long observedSequence = updateSequence.get();
+                Map<String, String> values = source.load();
+                ConfigSnapshot applied = applyLoaded(observedSequence, values);
+                if (applied != null) return applied;
+            }
+            return snapshot.get();
+        }
+
+        private synchronized ConfigSnapshot applyLoaded(long observedSequence, Map<String, String> values) {
+            if (observedSequence != updateSequence.get()) return null;
+            return apply(values);
+        }
+
         private synchronized ConfigSnapshot apply(Map<String, String> values) {
             if (closed.get()) return snapshot.get();
+            updateSequence.incrementAndGet();
             Map<String, String> immutable = Map.copyOf(values);
             ConfigSnapshot previous = snapshot.get();
             if (previous.values().equals(immutable)) {
@@ -116,7 +140,14 @@ public final class ConfigFactory {
             return current;
         }
 
-        private void acceptUpdate(Map<String, String> values) {
+        private AutoCloseable startWatch() throws Exception {
+            long generation = watchGeneration.incrementAndGet();
+            return source.watch(values -> acceptUpdate(generation, values),
+                    error -> watchFailed(generation, error));
+        }
+
+        private synchronized void acceptUpdate(long generation, Map<String, String> values) {
+            if (closed.get() || generation != watchGeneration.get()) return;
             try {
                 apply(values);
             } catch (RuntimeException error) {
@@ -125,7 +156,9 @@ public final class ConfigFactory {
             }
         }
 
-        private void watchFailed(Throwable error) {
+        private synchronized void watchFailed(long generation, Throwable error) {
+            if (closed.get() || generation != watchGeneration.get()) return;
+            updateSequence.incrementAndGet();
             lastError.set(error);
             log.warn("config watch failed", error);
             scheduleWatchRecovery();
@@ -146,28 +179,38 @@ public final class ConfigFactory {
             AutoCloseable replacement = null;
             boolean installed = false;
             try {
-                replacement = source.watch(this::acceptUpdate, this::watchFailed);
-                Map<String, String> latest = source.load();
                 AutoCloseable previous;
+                synchronized (this) {
+                    if (closed.get()) return;
+                    previous = watch;
+                    watch = null;
+                    watchGeneration.incrementAndGet();
+                }
+                if (previous != null) previous.close();
+                if (closed.get()) return;
+                replacement = startWatch();
                 synchronized (this) {
                     if (closed.get()) {
                         replacement.close();
                         return;
                     }
-                    previous = watch;
                     watch = replacement;
-                    installed = true;
                 }
-                if (previous != null) {
-                    try { previous.close(); }
-                    catch (Exception closeError) { log.debug("failed to close obsolete config watch", closeError); }
+                try {
+                    loadAndApply();
+                } catch (RuntimeException error) {
+                    lastError.set(error);
+                    log.warn("config update rejected after watch recovery; retaining last known good snapshot", error);
                 }
-                acceptUpdate(latest);
+                installed = true;
                 watchRecoveryAttempts.set(0);
                 log.info("config watch recovered");
             } catch (Exception error) {
                 if (replacement != null) {
                     try { replacement.close(); } catch (Exception closeError) { error.addSuppressed(closeError); }
+                    synchronized (this) {
+                        if (watch == replacement) watch = null;
+                    }
                 }
                 lastError.set(error);
                 log.warn("config watch recovery failed", error);
@@ -191,6 +234,7 @@ public final class ConfigFactory {
 
         @Override public void close() {
             if (!closed.compareAndSet(false, true)) return;
+            watchGeneration.incrementAndGet();
             watchRecoveryExecutor.shutdownNow();
             listeners.clear();
             Exception failure = null;

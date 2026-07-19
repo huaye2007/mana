@@ -51,27 +51,33 @@ public final class EtcdConfigProvider implements ConfigProvider {
         }
 
         @Override public synchronized Map<String, String> load() throws Exception {
+            Map<String, Map<String, String>> refreshed = new LinkedHashMap<>();
             for (String resource : resources) {
-                cache.put(resource, PropertiesDocument.parse(client.get(resource, timeoutMillis)));
+                refreshed.put(resource, PropertiesDocument.parse(client.get(resource, timeoutMillis)));
             }
+            cache.clear();
+            cache.putAll(refreshed);
             return merged();
         }
 
         @Override public synchronized AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
                                                            Consumer<Throwable> onError) {
-            stopWatching();
-            for (String resource : resources) {
-                Watch.Watcher watcher = client.watch(resource, content -> {
-                    try {
-                        Map<String, String> latest;
-                        synchronized (EtcdSource.this) {
-                            cache.put(resource, PropertiesDocument.parse(content));
-                            latest = merged();
-                        }
-                        onUpdate.accept(latest);
-                    } catch (Throwable e) { onError.accept(e); }
-                }, onError);
-                watchers.add(watcher);
+            if (!watchers.isEmpty()) throw new IllegalStateException("Etcd config watch is already active");
+            try {
+                for (String resource : resources) {
+                    Watch.Watcher watcher = client.watch(resource, content -> {
+                        try {
+                            synchronized (EtcdSource.this) {
+                                cache.put(resource, PropertiesDocument.parse(content));
+                                onUpdate.accept(merged());
+                            }
+                        } catch (Throwable e) { onError.accept(e); }
+                    }, onError);
+                    watchers.add(watcher);
+                }
+            } catch (RuntimeException | Error error) {
+                stopWatching();
+                throw error;
             }
             return this::stopWatching;
         }

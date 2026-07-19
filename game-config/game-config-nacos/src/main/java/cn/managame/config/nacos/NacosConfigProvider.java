@@ -32,14 +32,18 @@ public final class NacosConfigProvider implements ConfigProvider {
         private final List<Registration> registrations = new ArrayList<>();
 
         NacosSource(ConfigOptions options) {
-            this(options, createService(options));
+            Settings settings = Settings.parse(options);
+            resources = settings.resources();
+            timeoutMillis = settings.timeoutMillis();
+            service = createService(options);
+            executor = Executors.newSingleThreadExecutor(
+                    Thread.ofPlatform().daemon().name("game-config-nacos-", 0).factory());
         }
 
         NacosSource(ConfigOptions options, ConfigService service) {
-            String defaultGroup = options.property("group", "DEFAULT_GROUP");
-            resources = options.resources().stream().map(value -> Resource.parse(value, defaultGroup)).toList();
-            timeoutMillis = Long.parseLong(options.property("timeoutMillis", "3000"));
-            if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
+            Settings settings = Settings.parse(options);
+            resources = settings.resources();
+            timeoutMillis = settings.timeoutMillis();
             this.service = service;
             executor = Executors.newSingleThreadExecutor(Thread.ofPlatform().daemon().name("game-config-nacos-", 0).factory());
         }
@@ -48,34 +52,37 @@ public final class NacosConfigProvider implements ConfigProvider {
             if (options.endpoint().isBlank()) throw new IllegalArgumentException("nacos endpoint must not be blank");
             Properties properties = new Properties();
             properties.putAll(options.properties());
+            properties.remove("group");
+            properties.remove("timeoutMillis");
             properties.setProperty("serverAddr", options.endpoint());
             try { return NacosFactory.createConfigService(properties); }
             catch (Exception e) { throw new ConfigException("cannot create Nacos config service", e); }
         }
 
         @Override public synchronized Map<String, String> load() throws Exception {
+            Map<Resource, Map<String, String>> refreshed = new LinkedHashMap<>();
             for (Resource resource : resources) {
-                cache.put(resource, PropertiesDocument.parse(
+                refreshed.put(resource, PropertiesDocument.parse(
                         service.getConfig(resource.dataId(), resource.group(), timeoutMillis)));
             }
+            cache.clear();
+            cache.putAll(refreshed);
             return merged();
         }
 
         @Override public synchronized AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
                                                            Consumer<Throwable> onError) throws Exception {
-            stopWatching();
+            if (!registrations.isEmpty()) throw new IllegalStateException("Nacos config watch is already active");
             try {
                 for (Resource resource : resources) {
                     Listener listener = new Listener() {
                         @Override public Executor getExecutor() { return executor; }
                         @Override public void receiveConfigInfo(String content) {
                             try {
-                                Map<String, String> latest;
                                 synchronized (NacosSource.this) {
                                     cache.put(resource, PropertiesDocument.parse(content));
-                                    latest = merged();
+                                    onUpdate.accept(merged());
                                 }
-                                onUpdate.accept(latest);
                             } catch (Throwable e) { onError.accept(e); }
                         }
                     };
@@ -115,6 +122,16 @@ public final class NacosConfigProvider implements ConfigProvider {
             String dataId = separator < 0 ? value.trim() : value.substring(separator + 1).trim();
             if (group.isBlank() || dataId.isBlank()) throw new IllegalArgumentException("invalid Nacos resource: " + value);
             return new Resource(group, dataId);
+        }
+    }
+    record Settings(List<Resource> resources, long timeoutMillis) {
+        static Settings parse(ConfigOptions options) {
+            String defaultGroup = options.property("group", "DEFAULT_GROUP");
+            List<Resource> resources = options.resources().stream()
+                    .map(value -> Resource.parse(value, defaultGroup)).toList();
+            long timeoutMillis = Long.parseLong(options.property("timeoutMillis", "3000"));
+            if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
+            return new Settings(resources, timeoutMillis);
         }
     }
     record Registration(Resource resource, Listener listener) { }
