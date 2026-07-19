@@ -6,13 +6,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.jpa.core.routing.RoutingStrategy;
 import cn.managame.jpa.demo.domain.PlayerAccount;
+import cn.managame.jpa.demo.domain.PlayerProfile;
 import cn.managame.jpa.demo.executor.InMemoryDocExecutor;
 import cn.managame.jpa.demo.executor.InMemoryRdbExecutor;
 import cn.managame.jpa.demo.repository.PlayerAccountRepository;
 import cn.managame.jpa.demo.repository.PlayerProfileRepository;
 import cn.managame.jpa.docdb.DocdbModule;
+import cn.managame.jpa.docdb.metadata.DocEntityMetadata;
 import cn.managame.jpa.rdb.RdbModule;
 import cn.managame.jpa.rdb.metadata.RdbEntityMetadata;
+import cn.managame.jpa.starter.GameJpaContext;
 import cn.managame.jpa.starter.GameJpaScan;
 import cn.managame.jpa.starter.GameJpaBootstrap;
 import org.junit.jupiter.api.Test;
@@ -22,6 +25,20 @@ import org.junit.jupiter.api.Test;
  * -> 实例化。RDB 与 DocDB 两个扩展同时启用,证明扫描器自动覆盖所有已启用扩展、不硬编码类型。
  */
 public class GameJpaScanPackagesTest {
+
+    @Test
+    public void bootstrapDiscoversAnnotatedEntitiesFromPackages() {
+        try (GameJpaContext context = new GameJpaBootstrap()
+                .use(RdbModule.withExecutor(new InMemoryRdbExecutor()))
+                .use(DocdbModule.withExecutor(new InMemoryDocExecutor()))
+                .routingStrategy(new ModuloRoutingStrategy())
+                .bootstrap("cn.managame.jpa.demo.domain")) {
+            assertTrue(context.metadataRegistry()
+                    .get(PlayerAccount.class, RdbEntityMetadata.class).isPresent());
+            assertTrue(context.metadataRegistry()
+                    .get(PlayerProfile.class, DocEntityMetadata.class).isPresent());
+        }
+    }
 
     @Test
     public void scanPackagesAutowiresEntitiesAndRepositoriesAcrossModules() {

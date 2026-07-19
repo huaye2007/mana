@@ -24,6 +24,7 @@ import cn.managame.jpa.core.write.WriteTask;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -248,6 +249,29 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
     }
 
     /**
+     * Scans the given packages recursively and bootstraps every entity recognized by
+     * the enabled persistence extensions. For example, enabling the RDB and DocDB
+     * extensions discovers classes annotated with {@code @Entity} and
+     * {@code @Document} respectively.
+     *
+     * @param basePackages package names to scan, including their subpackages
+     */
+    public GameJpaContext bootstrap(String... basePackages) {
+        return bootstrap(null, basePackages);
+    }
+
+    /**
+     * Explicit ClassLoader variant of {@link #bootstrap(String...)}.
+     */
+    public GameJpaContext bootstrap(ClassLoader classLoader, String... basePackages) {
+        List<Class<?>> entityClasses = scanClasses(classLoader, basePackages).stream()
+                .filter(candidate -> !candidate.isInterface())
+                .filter(this::supportsEntity)
+                .toList();
+        return bootstrap(entityClasses);
+    }
+
+    /**
      * 启动期校验：每个实体解析出的 home 数据源名都必须已在某个执行器（{@link DataSourceCatalog}）注册，
      * 否则 fail-fast。把"路由/绑定产出的库名未注册"从运行期静默丢弃提前到布局阶段暴露。
      * 执行器未暴露 catalog（如内存执行器）时跳过。
@@ -291,20 +315,18 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
     public GameJpaScan scanPackages(ClassLoader classLoader, String... basePackages) {
         List<Class<?>> entityClasses = new ArrayList<>();
         List<Class<?>> repositoryInterfaces = new ArrayList<>();
-        for (String basePackage : basePackages) {
-            for (Class<?> candidate : ClasspathScanner.scan(basePackage, classLoader)) {
-                if (candidate.isInterface()) {
-                    if (supportsRepository(candidate)) {
-                        repositoryInterfaces.add(candidate);
-                    } else if (candidate.isAnnotationPresent(GameRepository.class)) {
-                        // 显式声明了 @GameRepository 却无人支持:多半继承错基接口或对应扩展没 use。
-                        throw new IllegalStateException("@GameRepository 接口 " + candidate.getName()
-                                + " 没有任何已启用扩展的 RepositoryFactory 支持;请检查它是否继承了正确的 "
-                                + "Repository 基接口,以及对应存储扩展是否已 use。");
-                    }
-                } else if (supportsEntity(candidate)) {
-                    entityClasses.add(candidate);
+        for (Class<?> candidate : scanClasses(classLoader, basePackages)) {
+            if (candidate.isInterface()) {
+                if (supportsRepository(candidate)) {
+                    repositoryInterfaces.add(candidate);
+                } else if (candidate.isAnnotationPresent(GameRepository.class)) {
+                    // 显式声明了 @GameRepository 却无人支持:多半继承错基接口或对应扩展没 use。
+                    throw new IllegalStateException("@GameRepository 接口 " + candidate.getName()
+                            + " 没有任何已启用扩展的 RepositoryFactory 支持;请检查它是否继承了正确的 "
+                            + "Repository 基接口,以及对应存储扩展是否已 use。");
                 }
+            } else if (supportsEntity(candidate)) {
+                entityClasses.add(candidate);
             }
         }
 
@@ -315,6 +337,20 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
             repositories.put(repositoryType, context.getRepository(repositoryType));
         }
         return new GameJpaScan(context, repositories);
+    }
+
+    private List<Class<?>> scanClasses(ClassLoader classLoader, String... basePackages) {
+        if (basePackages == null || basePackages.length == 0) {
+            throw new IllegalArgumentException("At least one base package is required");
+        }
+        LinkedHashSet<Class<?>> classes = new LinkedHashSet<>();
+        for (String basePackage : basePackages) {
+            if (basePackage == null || basePackage.isBlank()) {
+                throw new IllegalArgumentException("Base package must not be blank");
+            }
+            classes.addAll(ClasspathScanner.scan(basePackage.trim(), classLoader));
+        }
+        return List.copyOf(classes);
     }
 
     private boolean supportsEntity(Class<?> candidate) {

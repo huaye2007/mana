@@ -140,10 +140,12 @@ GameJpaContext context = new GameJpaBootstrap()
         .maxFlushBatchSize(500)
         .maxRetries(3)
         .maxPendingWriteTasks(1_000_000)
-        .bootstrap(List.of(Player.class));
+        .bootstrap("cn.managame.game.domain");
 
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
+
+`bootstrap(String... basePackages)` 会递归扫描指定包及其子包，只注册当前已启用扩展能够识别的注解实体，例如 RDB 的 `@Entity` 和 DocDB 的 `@Document`。可以一次传入多个业务包，不需要再维护实体类清单。
 
 `MysqlStorage` 统一持有 DataSource、MySQL 执行器和可选 Schema 策略，因此 DataSource 只配置一次；`RdbCacheModule` 只选择缓存 Repository，不再负责创建数据库执行器。`updateSchema()` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`columnAutoWiden` 默认关闭，不会在写路径修改列；字符串/二进制字段长度不足会翻译为 `DataTooLargeException` 并按异步策略重试。只有明确接受写路径执行 `ALTER TABLE` 时才应显式调用 `columnAutoWiden(true)`。
 
@@ -158,7 +160,7 @@ GameJpaContext context = new GameJpaBootstrap()
         .use(mysql)
         .use(RdbCacheModule.defaults())
         .dataSource("cn.managame.log", "log")
-        .bootstrap(entityClasses);
+        .bootstrap("cn.managame.game", "cn.managame.log");
 ```
 
 也可以在日志实体上声明 `@Table(dataSource = "log")`。读写和 `updateSchema()` 使用相同的最终 home DataSource 解析规则；Schema 更新会按数据源拆分元数据，游戏表只更新游戏库，日志表只更新日志库。带 `@ShardKey` 的实体仍由受控 migration 管理。
@@ -229,7 +231,7 @@ RdbCacheModule cacheModule = RdbCacheModule.defaults()
 GameJpaContext context = new GameJpaBootstrap()
         .use(MysqlStorage.using(dataSource).updateSchema())
         .use(cacheModule)
-        .bootstrap(entityClasses);
+        .bootstrap("cn.managame.game.domain");
 ```
 
 角色相关表需要显式标出 roleId 字段，避免框架靠字段名或 key 顺序猜测：

@@ -142,10 +142,12 @@ GameJpaContext context = new GameJpaBootstrap()
         .maxFlushBatchSize(500)
         .maxRetries(3)
         .maxPendingWriteTasks(1_000_000)
-        .bootstrap(List.of(Player.class));
+        .bootstrap("cn.managame.game.domain");
 
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
+
+`bootstrap(String... basePackages)` recursively scans each package and its subpackages, registering only annotated entities recognized by the enabled extensions, such as RDB `@Entity` and DocDB `@Document`. Multiple business packages can be supplied without maintaining an entity class list.
 
 `MysqlStorage` owns the DataSource, MySQL executor, and optional schema policy, so the DataSource is configured only once; `RdbCacheModule` now only selects cache-backed repositories and does not construct a database executor. `updateSchema()` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `columnAutoWiden` is disabled by default and never alters columns on the write path; undersized string/binary columns are translated to `DataTooLargeException` and follow the async retry policy. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
 
@@ -160,7 +162,7 @@ GameJpaContext context = new GameJpaBootstrap()
         .use(mysql)
         .use(RdbCacheModule.defaults())
         .dataSource("cn.managame.log", "log")
-        .bootstrap(entityClasses);
+        .bootstrap("cn.managame.game", "cn.managame.log");
 ```
 
 Alternatively, declare `@Table(dataSource = "log")` on log entities. Reads, writes, and `updateSchema()` use the same final home-data-source resolution. Schema metadata is partitioned by data source, so game tables update only the game database and log tables update only the log database. Entities carrying `@ShardKey` still require controlled migrations.
@@ -229,7 +231,7 @@ RdbCacheModule cacheModule = RdbCacheModule.defaults()
 GameJpaContext context = new GameJpaBootstrap()
         .use(MysqlStorage.using(dataSource).updateSchema())
         .use(cacheModule)
-        .bootstrap(entityClasses);
+        .bootstrap("cn.managame.game.domain");
 ```
 
 Role-related tables must mark the roleId field explicitly, so the framework never guesses by field name or key order:
