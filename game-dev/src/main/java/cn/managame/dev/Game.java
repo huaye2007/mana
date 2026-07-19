@@ -20,8 +20,7 @@ import cn.managame.registry.factory.RegistryFactory;
 import cn.managame.registry.factory.RegistryType;
 import cn.managame.jpa.rdb.cache.RdbCacheModule;
 import cn.managame.jpa.rdb.mysql.MysqlDataSourceFactory;
-import cn.managame.jpa.rdb.mysql.MysqlRdbExecutor;
-import cn.managame.jpa.rdb.mysql.MysqlSchemaModule;
+import cn.managame.jpa.rdb.mysql.MysqlStorage;
 import cn.managame.jpa.starter.GameJpaContext;
 import javax.sql.DataSource;
 import cn.managame.runtime.annotation.EventHandler;
@@ -58,13 +57,12 @@ public class Game {
 
         // 扫描 game-jpa Repository 接口并注册为容器单例。必须在 refresh 之前完成，
         // 否则 @GameController 在 refresh 阶段注入 Repository 时容器里还没有对应 bean。
-        // 模块顺序：先 MysqlSchemaModule 按实体补建表（UPDATE：只增不删），再 RdbCacheModule
-        // 提供 RDB + 主键缓存；两者共用同一个 DataSource。
+        // MysqlStorage 统一持有 DataSource、执行器和 Schema 策略；RdbCacheModule 只启用缓存 Repository。
         DataSource dataSource = createDataSource(configManager);
         GameJpaContext jpaContext = GameJpaRepositoryRegistrar.registerInto(
                 applicationContext.getDefaultListableBeanFactory(), BASE_PACKAGE,
-                MysqlSchemaModule.update(dataSource),
-                RdbCacheModule.withExecutor(new MysqlRdbExecutor(dataSource)));
+                MysqlStorage.using(dataSource).updateSchema(),
+                RdbCacheModule.defaults());
 
         applicationContext.refresh();
 

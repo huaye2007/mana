@@ -149,6 +149,22 @@ PlayerRepository players = context.getRepository(PlayerRepository.class);
 
 `MysqlStorage` owns the DataSource, MySQL executor, and optional schema policy, so the DataSource is configured only once; `RdbCacheModule` now only selects cache-backed repositories and does not construct a database executor. `updateSchema()` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `columnAutoWiden` is disabled by default and never alters columns on the write path; undersized string/binary columns are translated to `DataTooLargeException` and follow the async retry policy. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
 
+When the game database and log database use different DataSources, enable only one `MysqlStorage`:
+
+```java
+MysqlStorage mysql = MysqlStorage.using(gameDataSource)
+        .addDataSource("log", logDataSource)
+        .updateSchema();
+
+GameJpaContext context = new GameJpaBootstrap()
+        .use(mysql)
+        .use(RdbCacheModule.defaults())
+        .dataSource("cn.managame.log", "log")
+        .bootstrap(entityClasses);
+```
+
+Alternatively, declare `@Table(dataSource = "log")` on log entities. Reads, writes, and `updateSchema()` use the same final home-data-source resolution. Schema metadata is partitioned by data source, so game tables update only the game database and log tables update only the log database. Entities carrying `@ShardKey` still require controlled migrations.
+
 Async write-back schedules only physical tables that received submissions instead of scanning empty buckets. Each entity channel and physical table has at most one in-flight batch; data beyond `maxFlushBatchSize` is chunked sequentially, while different physical tables run in parallel up to `flushThreadCount`. Transient batch failures are requeued as a batch, whereas data-level failures are isolated by binary splitting instead of immediately expanding into one write per row.
 
 Read/write through the cache:

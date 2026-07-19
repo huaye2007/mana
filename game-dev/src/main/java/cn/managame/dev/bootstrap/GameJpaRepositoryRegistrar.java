@@ -1,6 +1,6 @@
 package cn.managame.dev.bootstrap;
 
-import cn.managame.jpa.core.bootstrap.PersistenceModule;
+import cn.managame.jpa.core.bootstrap.GameJpaExtension;
 import cn.managame.jpa.starter.GameJpaBootstrap;
 import cn.managame.jpa.starter.GameJpaContext;
 import cn.managame.jpa.starter.GameJpaScan;
@@ -31,10 +31,10 @@ public final class GameJpaRepositoryRegistrar {
      */
     public static GameJpaContext registerInto(ConfigurableListableBeanFactory beanFactory,
                                               String basePackage,
-                                              PersistenceModule... modules) {
+                                              GameJpaExtension... extensions) {
         GameJpaBootstrap bootstrap = new GameJpaBootstrap();
-        for (PersistenceModule module : modules) {
-            bootstrap.install(module);
+        for (GameJpaExtension extension : extensions) {
+            bootstrap.use(extension);
         }
         GameJpaScan scan = bootstrap.scanPackages(basePackage);
         scan.repositories().forEach((type, bean) -> {

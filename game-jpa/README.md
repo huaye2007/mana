@@ -147,6 +147,22 @@ PlayerRepository players = context.getRepository(PlayerRepository.class);
 
 `MysqlStorage` 统一持有 DataSource、MySQL 执行器和可选 Schema 策略，因此 DataSource 只配置一次；`RdbCacheModule` 只选择缓存 Repository，不再负责创建数据库执行器。`updateSchema()` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`columnAutoWiden` 默认关闭，不会在写路径修改列；字符串/二进制字段长度不足会翻译为 `DataTooLargeException` 并按异步策略重试。只有明确接受写路径执行 `ALTER TABLE` 时才应显式调用 `columnAutoWiden(true)`。
 
+游戏库和日志库使用不同 DataSource 时，仍然只启用一个 `MysqlStorage`：
+
+```java
+MysqlStorage mysql = MysqlStorage.using(gameDataSource)
+        .addDataSource("log", logDataSource)
+        .updateSchema();
+
+GameJpaContext context = new GameJpaBootstrap()
+        .use(mysql)
+        .use(RdbCacheModule.defaults())
+        .dataSource("cn.managame.log", "log")
+        .bootstrap(entityClasses);
+```
+
+也可以在日志实体上声明 `@Table(dataSource = "log")`。读写和 `updateSchema()` 使用相同的最终 home DataSource 解析规则；Schema 更新会按数据源拆分元数据，游戏表只更新游戏库，日志表只更新日志库。带 `@ShardKey` 的实体仍由受控 migration 管理。
+
 异步写回只调度发生过提交的物理表，不周期扫描空桶。同一实体通道、同一物理表始终只有一个在途批次，超过 `maxFlushBatchSize` 的数据按顺序分片；不同物理表最多按 `flushThreadCount` 并行。瞬时批次错误整批回灌，数据级错误使用二分拆批定位，不再直接放大为整批逐条写入。
 
 使用缓存读写：

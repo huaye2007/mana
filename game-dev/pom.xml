@@ -107,12 +107,12 @@
             <groupId>cn.managame</groupId>
             <artifactId>game-jpa-rdb-cache</artifactId>
         </dependency>
-        <!-- GameJpaBootstrap / GameJpaContext：组装模块、创建上下文、取 Repository -->
+        <!-- GameJpaBootstrap / GameJpaContext：启用扩展、创建上下文、取 Repository -->
         <dependency>
             <groupId>cn.managame</groupId>
             <artifactId>game-jpa-starter</artifactId>
         </dependency>
-        <!-- MysqlRdbExecutor / MysqlDataSourceFactory，并传递引入 HikariCP -->
+        <!-- MysqlStorage / MysqlDataSourceFactory，并传递引入 HikariCP -->
         <dependency>
             <groupId>cn.managame</groupId>
             <artifactId>game-jpa-rdb-mysql</artifactId>
