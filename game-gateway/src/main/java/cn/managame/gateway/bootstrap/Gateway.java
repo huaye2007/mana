@@ -1,7 +1,8 @@
 package cn.managame.gateway.bootstrap;
 
 import cn.managame.gateway.codec.BodyCodec;
-import cn.managame.gateway.filter.GatewayGuard;
+import cn.managame.gateway.filter.GatewayFilter;
+import cn.managame.gateway.filter.GatewayFilters;
 import cn.managame.gateway.network.GatewayNetworkHandler;
 import cn.managame.gateway.network.tcp.GatewayTcpServer;
 import cn.managame.gateway.network.websocket.GatewayWebSocketServer;
@@ -42,16 +43,24 @@ public final class Gateway implements AutoCloseable {
     private volatile boolean running;
     private volatile boolean closed;
 
-    public Gateway(GatewayConfig config, ServiceRegistry registry) { this(config, registry, false); }
+    public Gateway(GatewayConfig config, ServiceRegistry registry) {
+        this(config, registry, false, defaultFilters(config));
+    }
 
-    private Gateway(GatewayConfig config, ServiceRegistry registry, boolean closeRegistry) {
+    /** Creates a gateway with exactly the supplied filters, in execution order. */
+    public Gateway(GatewayConfig config, ServiceRegistry registry, GatewayFilter... filters) {
+        this(config, registry, false, filters);
+    }
+
+    private Gateway(GatewayConfig config, ServiceRegistry registry,
+                    boolean closeRegistry, GatewayFilter... filters) {
         this.config = Objects.requireNonNull(config, "config");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.closeRegistry = closeRegistry;
+        Objects.requireNonNull(filters, "filters");
         GatewayConfig.Transport transport = config.transport();
         GatewayConfig.Identity identity = config.identity();
         GatewayConfig.Backend backend = config.backend();
-        GatewayConfig.Limits limits = config.limits();
         this.sessions = new GatewaySessionManager(identity.serverId());
         this.backends = new BackendDirectory();
         CommandBackendServiceResolver serviceResolver = CommandBackendServiceResolver.parse(
@@ -63,9 +72,7 @@ public final class Gateway implements AutoCloseable {
         rpcClient = new GatewayRpcClient(rpcConfig, downlink, backend.connections());
         backendServices = List.copyOf(serviceResolver.serviceNames());
         PacketForwarder forwarder = new PacketForwarder(rpcClient, backends, serviceResolver, backend.loginCommand());
-        GatewayGuard guard = new GatewayGuard(backend.loginCommand(), limits.maxConnectionsPerIp(),
-                limits.sessionPps(), limits.sessionBurst(), limits.ipPps(), limits.ipBurst());
-        GatewayNetworkHandler network = new GatewayNetworkHandler(sessions, guard, forwarder);
+        GatewayNetworkHandler network = new GatewayNetworkHandler(sessions, filters, forwarder);
         List<INetworkServer> servers = new ArrayList<>();
         servers.add(new GatewayTcpServer(transport.tcpPort(), transport.readerIdleSeconds(),
                 BodyCodec.IDENTITY, network));
@@ -84,11 +91,32 @@ public final class Gateway implements AutoCloseable {
     }
 
     public static Gateway create(GatewayConfig config) {
+        return create(config, defaultFilters(config));
+    }
+
+    /** Creates a gateway with exactly the supplied filters, in execution order. */
+    public static Gateway create(GatewayConfig config, GatewayFilter... filters) {
         GatewayConfig.Registry registryConfig = config.registry();
         ServiceRegistry registry = RegistryFactory.startRegistry(RegistryConfig.builder()
                 .type(registryConfig.type()).endpoints(registryConfig.endpoints()).build());
-        try { return new Gateway(config, registry, true); }
+        try { return new Gateway(config, registry, true, filters); }
         catch (RuntimeException error) { registry.close(); throw error; }
+    }
+
+    /** Standard filters plus optional application filters appended in order. */
+    public static GatewayFilter[] defaultFilters(GatewayConfig config, GatewayFilter... additionalFilters) {
+        Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(additionalFilters, "additionalFilters");
+        GatewayConfig.Backend backend = config.backend();
+        GatewayConfig.Limits limits = config.limits();
+        GatewayFilter[] filters = new GatewayFilter[3 + additionalFilters.length];
+        filters[0] = GatewayFilters.ipProtection(
+                limits.maxConnectionsPerIp(), limits.ipPps(), limits.ipBurst());
+        filters[1] = GatewayFilters.sessionRateLimit(limits.sessionPps(), limits.sessionBurst());
+        filters[2] = GatewayFilters.loginRequired(backend.loginCommand());
+        System.arraycopy(additionalFilters, 0, filters, 3, additionalFilters.length);
+        for (GatewayFilter filter : filters) Objects.requireNonNull(filter, "filter");
+        return filters;
     }
 
     public synchronized void start() {

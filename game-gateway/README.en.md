@@ -7,7 +7,7 @@
 ## Architecture
 
 ```text
-Data plane:    TCP / WebSocket → codec → admission guard → session/router → game-rpc → game server
+Data plane:    TCP / WebSocket → codec → filters → session/router → game-rpc → game server
 Control plane: game-registry.watchService ───────────────────────────────→ backend directory/RPC pool
 ```
 
@@ -17,11 +17,29 @@ Control plane: game-registry.watchService ────────────�
 
 - TCP and WebSocket share one binary frame: `bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes)`.
 - A packet is limited to 1 MiB by default. Negative lengths, oversized frames, and unexpected message types close the connection.
-- Admission checks run in this order: aggregate IP protection, session token bucket, login gate. All three share one session state, and the login command remains available before authentication.
+- Default filters run in this order: aggregate IP protection, session rate limiting, and login gating. Filters live in a fixed array, so the hot path performs no dynamic lookup or collection allocation.
 - Sessions route by `sessionId` first and by `roleId` after a successful login binds the role. A duplicate role login receives a kick packet before the old connection closes.
 - Commands first resolve to a logical service type such as authentication, scene, or chat, then select an instance within that type.
 - Every service type subscribes directly through `ServiceRegistry.watchService` and has its own consistent-hash ring and RPC targets.
 - Stickiness is tracked independently per service type. Losing one type's instance does not disturb the session's bindings to other backend services.
+
+## Extending filters
+
+Implement `GatewayFilter` to add a blacklist, maintenance mode, protocol-version check, or region rule. Application filters can be appended after the defaults:
+
+```java
+GatewayFilter maintenance = new GatewayFilter() {
+    @Override
+    public int onPacket(GatewaySession session, GatewayPacket packet) {
+        return maintenanceEnabled ? GatewayErrorCode.GATEWAY_ERROR : GatewayErrorCode.OK;
+    }
+};
+
+Gateway gateway = Gateway.create(config,
+        Gateway.defaultFilters(config, maintenance));
+```
+
+The network handler directly short-circuits a fixed filter array in order and cleans up accepted filters in reverse order when a connection is rejected; there is no extra Guard or Chain object. Rate limiting is also a `GatewayFilter`: the built-in IP/session filters use an internal token bucket, while custom sliding-window or distributed limits read session and packet context directly instead of going through a separate limiter interface. Filters run on network I/O threads and must not perform blocking remote calls.
 
 ## Forwarding contract
 

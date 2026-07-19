@@ -3,7 +3,7 @@ package cn.managame.gateway.network;
 import cn.managame.gateway.codec.GatewayErrorCode;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.codec.GatewayPacketConstant;
-import cn.managame.gateway.filter.GatewayGuard;
+import cn.managame.gateway.filter.GatewayFilter;
 import cn.managame.gateway.rpc.PacketForwarder;
 import cn.managame.gateway.session.GatewaySession;
 import cn.managame.gateway.session.GatewaySessionManager;
@@ -18,24 +18,36 @@ import java.util.Objects;
 public final class GatewayNetworkHandler implements IConnectionHandler {
     private static final Logger log = LoggerFactory.getLogger(GatewayNetworkHandler.class);
     private final GatewaySessionManager sessionManager;
-    private final GatewayGuard guard;
+    private final GatewayFilter[] filters;
     private final PacketForwarder forwarder;
 
-    public GatewayNetworkHandler(GatewaySessionManager sessionManager, GatewayGuard guard,
+    public GatewayNetworkHandler(GatewaySessionManager sessionManager, GatewayFilter[] filters,
                                  PacketForwarder forwarder) {
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
-        this.guard = Objects.requireNonNull(guard, "guard");
+        this.filters = Objects.requireNonNull(filters, "filters").clone();
+        for (GatewayFilter filter : this.filters) Objects.requireNonNull(filter, "filter");
         this.forwarder = Objects.requireNonNull(forwarder, "forwarder");
     }
 
     @Override
     public void onConnect(IConnection connection) {
         GatewaySession session = sessionManager.create(connection);
-        if (!guard.onConnect(session)) {
+        try {
+            if (!accept(filters, session)) {
+                session.close();
+                return;
+            }
+        } catch (RuntimeException error) {
             session.close();
-            return;
+            throw error;
         }
-        sessionManager.add(session);
+        try {
+            sessionManager.add(session);
+        } catch (RuntimeException error) {
+            disconnect(filters, session);
+            session.close();
+            throw error;
+        }
     }
 
     @Override
@@ -56,7 +68,7 @@ public final class GatewayNetworkHandler implements IConnectionHandler {
                     GatewayErrorCode.BAD_REQUEST, GatewayPacketConstant.EMPTY_BODY));
             return;
         }
-        int code = guard.onPacket(session, packet);
+        int code = filter(filters, session, packet);
         if (code != GatewayErrorCode.OK) {
             session.writeMsg(GatewayPacket.of(packet.getCommand(), packet.getSeq(), code, GatewayPacketConstant.EMPTY_BODY));
             return;
@@ -67,7 +79,7 @@ public final class GatewayNetworkHandler implements IConnectionHandler {
     @Override
     public void onDisconnect(IConnection connection) {
         GatewaySession session = sessionManager.removeByConnection(connection);
-        if (session != null) guard.onDisconnect(session);
+        if (session != null) disconnect(filters, session);
     }
 
     @Override
@@ -82,4 +94,40 @@ public final class GatewayNetworkHandler implements IConnectionHandler {
     }
 
     @Override public void onIdle(IConnection connection) { connection.close(); }
+
+    static boolean accept(GatewayFilter[] filters, GatewaySession session) {
+        int accepted = 0;
+        try {
+            for (; accepted < filters.length; accepted++) {
+                if (!filters[accepted].onConnect(session)) {
+                    disconnect(filters, session, accepted);
+                    return false;
+                }
+            }
+            return true;
+        } catch (RuntimeException error) {
+            disconnect(filters, session, accepted);
+            throw error;
+        }
+    }
+
+    static int filter(GatewayFilter[] filters, GatewaySession session, GatewayPacket packet) {
+        for (GatewayFilter filter : filters) {
+            int code = filter.onPacket(session, packet);
+            if (code != GatewayErrorCode.OK) return code;
+        }
+        return GatewayErrorCode.OK;
+    }
+
+    static void disconnect(GatewayFilter[] filters, GatewaySession session) {
+        disconnect(filters, session, filters.length);
+    }
+
+    private static void disconnect(GatewayFilter[] filters, GatewaySession session, int accepted) {
+        for (int i = accepted - 1; i >= 0; i--) {
+            try {
+                filters[i].onDisconnect(session);
+            } catch (RuntimeException ignored) { }
+        }
+    }
 }

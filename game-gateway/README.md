@@ -7,7 +7,7 @@
 ## 架构
 
 ```text
-数据面：TCP / WebSocket → 编解码 → 接入保护 → 会话/路由 → game-rpc → 游戏服
+数据面：TCP / WebSocket → 编解码 → 过滤器 → 会话/路由 → game-rpc → 游戏服
 控制面：game-registry.watchService ───────────────→ 后端目录与 RPC 连接池
 ```
 
@@ -17,11 +17,29 @@
 
 - TCP 与 WebSocket 使用同一二进制帧：`bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes)`。
 - 单包默认上限 1 MiB；负长度、超长包或非法消息类型会关闭连接。
-- 接入保护顺序为 IP 聚合保护、会话令牌桶、登录门禁；三项检查共用一个会话状态，登录命令在未认证时仍可通过。
+- 默认过滤器依次为 IP 聚合保护、会话限流、登录门禁；过滤器存放在固定数组中，热路径无动态查找和集合分配。
 - 会话先按 `sessionId` 路由，登录成功并绑定 `roleId` 后改按角色路由；同一角色重复登录会先写踢线包再关闭旧连接。
 - 先按命令映射到登录服、场景服、聊天服等逻辑服务类型，再在该类型的实例中选择节点。
 - 每种后端服务直接执行 `ServiceRegistry.watchService`。健康实例进入各自的一致性哈希环并建立 RPC 连接，更新或下线时同步摘除。
 - 会话对每种服务分别保持粘滞；某类型的实例失效只重选该类型，不影响会话绑定的其他后端服务。
+
+## 扩展过滤器
+
+实现 `GatewayFilter` 即可增加黑名单、维护模式、协议版本或区域校验。默认过滤器后可以直接追加业务过滤器：
+
+```java
+GatewayFilter maintenance = new GatewayFilter() {
+    @Override
+    public int onPacket(GatewaySession session, GatewayPacket packet) {
+        return maintenanceEnabled ? GatewayErrorCode.GATEWAY_ERROR : GatewayErrorCode.OK;
+    }
+};
+
+Gateway gateway = Gateway.create(config,
+        Gateway.defaultFilters(config, maintenance));
+```
+
+网络处理器直接按顺序短路执行固定过滤器数组，并在连接拒绝时逆序清理已接受的过滤器，没有额外的 Guard 或 Chain 对象。限流同样是 `GatewayFilter`；内置 IP/会话过滤器使用包内令牌桶，自定义滑动窗口、分布式限流等实现直接读取 session 和 packet 上下文，不再经过单独的限流接口。过滤器运行在网络 I/O 线程，扩展实现不得执行阻塞式远程调用。
 
 ## 转发约定
 
