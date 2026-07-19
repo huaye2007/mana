@@ -136,8 +136,8 @@ GameJpaContext context = new GameJpaBootstrap()
         .install(MysqlSchemaModule.update(dataSource))
         .install(RdbCacheModule.withExecutor(new MysqlRdbExecutor(dataSource)))
         .flushIntervalMillis(5000)
-        .flushThreadMode(FlushThreadMode.VIRTUAL) // 刷盘 worker 线程模型，默认虚拟线程；选 PLATFORM 时用 flushThreadCount
-        .flushThreadCount(2)
+        .flushThreadMode(FlushThreadMode.VIRTUAL) // 仅选择线程类型；两种模式的 worker 数都严格有界
+        .flushThreadCount(2)                      // 不同物理表的最大并发数
         .maxFlushBatchSize(500)
         .maxRetries(3)
         .maxPendingWriteTasks(1_000_000)
@@ -147,6 +147,8 @@ PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
 `MysqlSchemaModule` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`MysqlRdbExecutor` 的 `columnAutoWiden` 默认关闭，不会在写路径修改列；字符串/二进制字段长度不足会翻译为 `DataTooLargeException` 并按异步策略重试。只有明确接受写路径执行 `ALTER TABLE` 时才应显式调用 `columnAutoWiden(true)`。
+
+异步写回只调度发生过提交的物理表，不周期扫描空桶。同一实体通道、同一物理表始终只有一个在途批次，超过 `maxFlushBatchSize` 的数据按顺序分片；不同物理表最多按 `flushThreadCount` 并行。瞬时批次错误整批回灌，数据级错误使用二分拆批定位，不再直接放大为整批逐条写入。
 
 使用缓存读写：
 
@@ -290,7 +292,7 @@ long count = repo.count(new RdbQuerySpec().eq("roleId", roleId).gte("level", 10)
 - 缓存写回是最终一致，不适合作为必须落库成功后才能响应的强一致路径。
 - 缓存写回保留实体对象引用以避免快照开销；提交后不要继续并发修改同一实体对象。
 - RDB 缓存写回会对带 `@Version` 的 MySQL 实体执行版本感知 upsert；版本不匹配按确定性失败处理，通知 permanent failure handler 后丢弃。
-- 关注 `asyncWrite.pending` 指标；`maxPendingWriteTasks` 是提交阶段背压阈值，超过后会拒绝新的唯一键写任务，同一 key 的更新仍会合并。
+- 关注 `asyncWrite.pending` 指标；它同时包含排队和在途任务，也是 `maxPendingWriteTasks` 背压依据。达到阈值后会拒绝新的唯一键写任务，同一 pending key 的更新仍会合并。
 - 配置 async write permanent failure handler，用于告警或补偿。
 - 服务停机必须调用 `GameJpaContext.close()`。
 - 缓存写回分片路由由执行层从实体 `@ShardKey` 自动提取；`cacheLoad(id)` / `cacheDelete(id)` 只有在实体已在缓存中或 `@ShardKey` 就是主键时能自动路由，其他场景使用存储相关 Repository 的 `cacheLoad(id, routingKey)` / `cacheDelete(id, routingKey)`。

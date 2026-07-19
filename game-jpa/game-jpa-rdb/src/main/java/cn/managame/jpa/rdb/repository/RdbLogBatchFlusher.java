@@ -36,4 +36,9 @@ public class RdbLogBatchFlusher implements AppendFlusher {
             metrics.recordCount("asyncWrite.append", tag, entities.size());
         });
     }
+
+    @Override
+    public boolean atomicBatch() {
+        return true;
+    }
 }

@@ -118,8 +118,8 @@ public class FlushSchedulerBatchSizeTest {
 
             assertTrue(handlerStarted.await(1, TimeUnit.SECONDS));
             assertTrue(elapsed < 1000, "flush should not block forever on a hung batch");
-            assertTrue(queue.isEmpty(),
-                    "drained tasks leave the queue immediately; a hung batch is no longer tracked");
+            assertFalse(queue.isEmpty(), "结果未知的在途任务必须继续计入 pending");
+            assertEquals(1, queue.size());
         } finally {
             releaseHandler.countDown();
             scheduler.close();

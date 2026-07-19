@@ -161,7 +161,7 @@ public class FlushSchedulerTest {
     }
 
     @Test
-    public void maxConcurrencyCapsParallelFlushUnits() {
+    public void maxConcurrencyCapsParallelPhysicalTables() {
         AsyncWriteQueue queue = new AsyncWriteQueue(100);
         AtomicInteger active = new AtomicInteger();
         AtomicInteger maxObserved = new AtomicInteger();

@@ -3,11 +3,10 @@ package cn.managame.jpa.async;
 /**
  * 刷盘 worker 的线程模型。
  * <ul>
- *   <li>{@link #VIRTUAL}（默认）：每个刷盘单元一个虚拟线程，阻塞 JDBC/Mongo 不占用平台线程，
- *       天然按物理表并发；实际并发由后端连接池上限收敛。</li>
- *   <li>{@link #PLATFORM}：有界平台线程池（线程数 = flushThreadCount），规模可控、行为可预测。</li>
+ *   <li>{@link #VIRTUAL}（默认）：有界虚拟 worker 池。</li>
+ *   <li>{@link #PLATFORM}：有界平台 worker 池。</li>
  * </ul>
- * 周期触发始终是单线程定时器，与本设置无关。
+ * 两种模式的并发度都由 flushThreadCount/flushMaxConcurrency 决定；同一物理表仍保持单在途批次。
  */
 public enum FlushThreadMode {
     VIRTUAL,

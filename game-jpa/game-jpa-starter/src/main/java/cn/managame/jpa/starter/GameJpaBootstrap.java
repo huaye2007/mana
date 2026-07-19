@@ -53,7 +53,6 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
     private int maxRetries = 3;
     private FlushThreadMode flushThreadMode = FlushThreadMode.VIRTUAL;
     private int flushThreadCount = Math.max(2, Runtime.getRuntime().availableProcessors());
-    private int flushMaxConcurrency = 0;
     private int maxFlushBatchSize = 500;
     private int maxPendingWriteTasks = 1_000_000;
     private Consumer<WriteTask> permanentFailureHandler;
@@ -134,8 +133,8 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
     }
 
     /**
-     * 刷盘 worker 线程模型，默认 {@link FlushThreadMode#VIRTUAL}（虚拟线程）。
-     * 选 {@link FlushThreadMode#PLATFORM} 时 {@link #flushThreadCount(int)} 决定有界平台池大小。
+     * 刷盘 worker 线程模型，默认 {@link FlushThreadMode#VIRTUAL}。两种模式都使用
+     * {@link #flushThreadCount(int)} 指定的有界 worker 数。
      */
     public GameJpaBootstrap flushThreadMode(FlushThreadMode mode) {
         this.flushThreadMode = mode != null ? mode : FlushThreadMode.VIRTUAL;
@@ -143,11 +142,13 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
     }
 
     /**
-     * 单轮并发执行的刷盘单元上限，{@code <= 0}（默认）表示不限。VIRTUAL 模式下建议设为略大于数据库连接池大小，
-     * 防止分库分表时一次 fan-out 出过多 vthread 全部争抢连接、撑爆连接池或触发刷盘超时。
+     * @deprecated 异步刷盘不再提供无界 fan-out；请直接使用 {@link #flushThreadCount(int)} 设置有界并发度。
      */
+    @Deprecated(forRemoval = false)
     public GameJpaBootstrap flushMaxConcurrency(int maxConcurrency) {
-        this.flushMaxConcurrency = Math.max(0, maxConcurrency);
+        if (maxConcurrency > 0) {
+            this.flushThreadCount = maxConcurrency;
+        }
         return this;
     }
 
@@ -205,7 +206,7 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
         AsyncWriteQueue writeQueue = new AsyncWriteQueue(maxPendingWriteTasks, metricsCollector);
         FlushScheduler flushScheduler = new FlushScheduler(writeQueue, flushIntervalMillis, maxRetries,
                 flushThreadMode, flushThreadCount, metricsCollector, maxFlushBatchSize,
-                FlushScheduler.DEFAULT_BATCH_TIMEOUT_MILLIS, flushMaxConcurrency);
+                FlushScheduler.DEFAULT_BATCH_TIMEOUT_MILLIS);
         if (permanentFailureHandler != null) {
             flushScheduler.onFailure(permanentFailureHandler);
         }

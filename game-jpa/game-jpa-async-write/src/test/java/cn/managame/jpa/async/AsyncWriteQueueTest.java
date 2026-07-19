@@ -45,8 +45,11 @@ public class AsyncWriteQueueTest {
     /** 摘取全部任务（跨所有物理表缓冲），用于断言。 */
     private static List<WriteTask> drainTasks(AsyncWriteQueue queue) {
         List<WriteTask> all = new ArrayList<>();
-        for (FlushUnit unit : queue.drainAll(Integer.MAX_VALUE)) {
-            all.addAll(unit.tasks());
+        for (TableBuffer.Drain drain : queue.drainReady()) {
+            all.addAll(drain.saves());
+            all.addAll(drain.deletes());
+            queue.complete(drain.size());
+            queue.finish(drain.buffer());
         }
         return all;
     }
@@ -64,18 +67,18 @@ public class AsyncWriteQueueTest {
     }
 
     @Test
-    public void slicesEachPhysicalTableByMaxBatchSize() {
+    public void drainsOneSnapshotPerPhysicalTable() {
         AsyncWriteQueue queue = mergeQueue(100);
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 1L);
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 2L);
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 3L);
 
-        List<FlushUnit> units = queue.drainAll(2);
+        List<TableBuffer.Drain> drains = queue.drainReady();
 
-        assertEquals(2, units.size(), "3 SAVE 任务按 maxBatchSize=2 切成 2 片");
-        int total = units.stream().mapToInt(FlushUnit::size).sum();
-        assertEquals(3, total);
-        assertTrue(units.stream().allMatch(u -> u.size() <= 2));
+        assertEquals(1, drains.size(), "同一物理表一次只产生一个快照");
+        assertEquals(3, drains.getFirst().saves().size());
+        queue.complete(3);
+        queue.finish(drains.getFirst().buffer());
     }
 
     @Test
@@ -89,11 +92,13 @@ public class AsyncWriteQueueTest {
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 2L);
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 3L);
 
-        List<FlushUnit> units = queue.drainAll(Integer.MAX_VALUE);
+        List<TableBuffer.Drain> drains = queue.drainReady();
 
         Set<String> tables = new java.util.HashSet<>();
-        for (FlushUnit unit : units) {
-            tables.add(unit.buffer().ctx.physicalTableName());
+        for (TableBuffer.Drain drain : drains) {
+            tables.add(drain.buffer().context.physicalTableName());
+            queue.complete(drain.size());
+            queue.finish(drain.buffer());
         }
         assertEquals(Set.of("player_0", "player_1"), tables);
     }
@@ -124,11 +129,17 @@ public class AsyncWriteQueueTest {
     }
 
     @Test
-    public void drainedTasksLeaveTheQueueImmediately() {
+    public void pendingIncludesDrainedTasksUntilTheyComplete() {
         AsyncWriteQueue queue = mergeQueue(10);
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 1L);
 
-        assertEquals(1, drainTasks(queue).size());
+        TableBuffer.Drain drain = queue.drainReady().getFirst();
+        assertEquals(1, drain.size());
+        assertEquals(1, queue.size(), "在途任务仍计入 pending");
+        assertFalse(queue.isEmpty());
+
+        queue.complete(1);
+        queue.finish(drain.buffer());
         assertEquals(0, queue.size());
         assertTrue(queue.isEmpty());
     }
@@ -154,11 +165,12 @@ public class AsyncWriteQueueTest {
         Object newEntity = new Object();
 
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, oldEntity, 1L);
-        FlushUnit unit = queue.drainAll(Integer.MAX_VALUE).get(0);
-        WriteTask oldTask = unit.tasks().get(0);
+        TableBuffer.Drain drain = queue.drainReady().getFirst();
+        WriteTask oldTask = drain.saves().getFirst();
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, newEntity, 1L);
 
-        queue.reSubmit(unit.buffer(), oldTask);
+        queue.requeue(drain.buffer(), List.of(oldTask));
+        queue.finish(drain.buffer());
 
         List<WriteTask> tasks = drainTasks(queue);
         assertEquals(1, tasks.size());
@@ -173,11 +185,12 @@ public class AsyncWriteQueueTest {
         Object updated = new Object();
 
         queue.submit(ENTITY, WriteTaskSubmitter.Op.INSERT, inserted, 1L);
-        FlushUnit unit = queue.drainAll(Integer.MAX_VALUE).get(0);
-        WriteTask oldTask = unit.tasks().get(0);
+        TableBuffer.Drain drain = queue.drainReady().getFirst();
+        WriteTask oldTask = drain.saves().getFirst();
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, updated, 1L);
 
-        queue.reSubmit(unit.buffer(), oldTask);
+        queue.requeue(drain.buffer(), List.of(oldTask));
+        queue.finish(drain.buffer());
 
         List<WriteTask> tasks = drainTasks(queue);
         assertEquals(WriteTask.Op.SAVE, tasks.get(0).op());
@@ -206,10 +219,12 @@ public class AsyncWriteQueueTest {
         queue.append(ENTITY, "b", 1);
         queue.append(ENTITY, "c", 2);
 
-        List<FlushUnit> units = queue.drainAll(Integer.MAX_VALUE);
+        List<TableBuffer.Drain> drains = queue.drainReady();
         Map<String, Integer> perTable = new ConcurrentHashMap<>();
-        for (FlushUnit unit : units) {
-            perTable.merge(unit.buffer().ctx.physicalTableName(), unit.size(), Integer::sum);
+        for (TableBuffer.Drain drain : drains) {
+            perTable.merge(drain.buffer().context.physicalTableName(), drain.size(), Integer::sum);
+            queue.complete(drain.size());
+            queue.finish(drain.buffer());
         }
         assertEquals(2, perTable.get("log_1"));
         assertEquals(1, perTable.get("log_2"));
@@ -264,10 +279,15 @@ public class AsyncWriteQueueTest {
         Future<?> drainer = executor.submit(() -> {
             await(start);
             while (submitted.getCount() > 0 || !queue.isEmpty()) {
-                for (FlushUnit unit : queue.drainAll(17)) {
-                    for (WriteTask task : unit.tasks()) {
+                for (TableBuffer.Drain drain : queue.drainReady()) {
+                    for (WriteTask task : drain.saves()) {
                         drainedIds.add(task.id());
                     }
+                    for (WriteTask task : drain.deletes()) {
+                        drainedIds.add(task.id());
+                    }
+                    queue.complete(drain.size());
+                    queue.finish(drain.buffer());
                 }
             }
         });
@@ -283,21 +303,15 @@ public class AsyncWriteQueueTest {
     }
 
     @Test
-    public void idleBuffersAreReclaimedAfterSeveralEmptyDrains() {
+    public void inactiveBuffersAreNotPutBackOnTheReadyQueue() {
         AsyncWriteQueue queue = mergeQueue(100);
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 1L);
 
-        drainTasks(queue); // 摘走任务，该轮缓冲非空 → 重置空闲计数
-        assertEquals(1, queue.bufferCount(), "缓冲对象仍在（已空但未到回收阈值）");
+        assertEquals(1, drainTasks(queue).size());
+        assertTrue(queue.drainReady().isEmpty(), "空缓冲不会在每个周期被重复扫描");
+        assertEquals(1, queue.bufferCount(), "保留路由缓冲以消除回收与提交竞态");
 
-        for (int i = 0; i < 5; i++) {
-            queue.drainAll(Integer.MAX_VALUE); // 连续 5 轮空闲 → 回收
-        }
-        assertEquals(0, queue.bufferCount(), "连续空闲后空缓冲对象被回收");
-
-        // 回收后再次提交能正常重建并落盘，不丢任务。
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 2L);
-        assertEquals(1, queue.bufferCount());
         assertEquals(1, drainTasks(queue).size());
     }
 
@@ -331,10 +345,11 @@ public class AsyncWriteQueueTest {
     public void internalRetryCanResubmitAfterCloseForSubmissions() {
         AsyncWriteQueue queue = mergeQueue(10);
         queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Object(), 1L);
-        FlushUnit unit = queue.drainAll(Integer.MAX_VALUE).get(0);
+        TableBuffer.Drain drain = queue.drainReady().getFirst();
 
         queue.closeForSubmissions();
-        queue.reSubmit(unit.buffer(), unit.tasks().get(0));
+        queue.requeue(drain.buffer(), drain.saves());
+        queue.finish(drain.buffer());
 
         assertEquals(1, queue.size());
         assertFalse(queue.isEmpty());

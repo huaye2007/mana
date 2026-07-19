@@ -15,4 +15,12 @@ import java.util.List;
 public interface AppendFlusher {
 
     void flush(List<Object> entities, ExecutorContext ctx);
+
+    /**
+     * 批次失败时是否保证本批没有部分提交。默认 false；只有真正以事务/savepoint 包裹整个批次的实现才可返回 true。
+     * 即使返回 true，连接中断造成的 commit 结果未知仍不会自动重放 append-only 数据。
+     */
+    default boolean atomicBatch() {
+        return false;
+    }
 }

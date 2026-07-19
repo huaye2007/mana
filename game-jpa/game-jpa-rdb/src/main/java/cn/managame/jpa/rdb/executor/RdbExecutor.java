@@ -30,6 +30,10 @@ public interface RdbExecutor {
 
     void batchDelete(RdbEntityMetadata metadata, List<?> ids, ExecutorContext context);
 
+    /**
+     * 批量插入。用于异步日志追加时，实现必须以事务或 savepoint 保证失败批次不会部分提交；
+     * commit 结果未知的连接异常仍由上层按非幂等写处理，不会盲目重放。
+     */
     void batchInsert(RdbEntityMetadata metadata, List<?> entities, ExecutorContext context);
 
     void batchUpdate(RdbEntityMetadata metadata, List<?> entities, ExecutorContext context);

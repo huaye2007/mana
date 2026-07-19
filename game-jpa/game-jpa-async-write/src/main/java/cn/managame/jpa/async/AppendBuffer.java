@@ -6,52 +6,71 @@ import cn.managame.jpa.core.write.WriteTask;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * 追加缓冲：日志等 append-only 写回，只入队、不按 id 合并。
- * <p>
- * 用无锁 {@link ConcurrentLinkedQueue}；摘取按 {@code poll} 逐条出队切成 maxBatchSize 批，
- * 与并发 {@code offer} 互不阻塞、不丢失。任务包装为 {@link WriteTask}（仅复用其重试计数，op 不参与）。
- */
+/** append-only 缓冲。失败结果可能不确定，因此不声明可安全重放。 */
 final class AppendBuffer extends TableBuffer {
 
-    private final ConcurrentLinkedQueue<WriteTask> items = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedDeque<WriteTask> tasks = new ConcurrentLinkedDeque<>();
+    private final AtomicInteger queued = new AtomicInteger();
     private final AppendFlusher flusher;
 
-    AppendBuffer(WriteDestination dest, AppendFlusher flusher) {
-        super(dest);
+    AppendBuffer(WriteDestination destination, AppendFlusher flusher) {
+        super(destination);
         this.flusher = flusher;
     }
 
     void add(WriteTask task) {
-        items.offer(task);
+        tasks.addLast(task);
+        queued.incrementAndGet();
     }
 
     @Override
-    boolean reAdd(WriteTask task) {
-        items.offer(task);
-        return true;
-    }
-
-    @Override
-    List<FlushUnit> drainSlices(int maxBatchSize) {
-        List<FlushUnit> units = new ArrayList<>();
-        while (true) {
-            List<WriteTask> slice = new ArrayList<>(Math.min(maxBatchSize, 256));
-            WriteTask task;
-            while (slice.size() < maxBatchSize && (task = items.poll()) != null) {
-                slice.add(task);
-            }
-            if (slice.isEmpty()) {
+    Drain drain() {
+        int snapshotSize = queued.get();
+        List<WriteTask> saves = new ArrayList<>(snapshotSize);
+        for (int i = 0; i < snapshotSize; i++) {
+            WriteTask task = tasks.pollFirst();
+            if (task == null) {
                 break;
             }
-            units.add(new FlushUnit(this, slice,
-                    subset -> flusher.flush(subset.stream().map(WriteTask::entity).toList(), ctx)));
-            if (slice.size() < maxBatchSize) {
-                break; // 队列已抽干
-            }
+            queued.decrementAndGet();
+            saves.add(task);
         }
-        return units;
+        return new Drain(this, saves, List.of());
+    }
+
+    @Override
+    boolean isEmpty() {
+        return queued.get() == 0;
+    }
+
+    @Override
+    int requeue(List<WriteTask> retryTasks) {
+        for (int i = retryTasks.size() - 1; i >= 0; i--) {
+            tasks.addFirst(retryTasks.get(i));
+            queued.incrementAndGet();
+        }
+        return 0;
+    }
+
+    @Override
+    void flush(WriteTask.Op op, List<WriteTask> batch) {
+        List<Object> entities = new ArrayList<>(batch.size());
+        for (WriteTask task : batch) {
+            entities.add(task.entity());
+        }
+        flusher.flush(entities, context);
+    }
+
+    @Override
+    boolean replaySafe() {
+        return false;
+    }
+
+    @Override
+    boolean atomicBatch() {
+        return flusher.atomicBatch();
     }
 }

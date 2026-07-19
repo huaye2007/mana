@@ -138,8 +138,8 @@ GameJpaContext context = new GameJpaBootstrap()
         .install(MysqlSchemaModule.update(dataSource))
         .install(RdbCacheModule.withExecutor(new MysqlRdbExecutor(dataSource)))
         .flushIntervalMillis(5000)
-        .flushThreadMode(FlushThreadMode.VIRTUAL) // flush worker thread model, virtual threads by default; with PLATFORM use flushThreadCount
-        .flushThreadCount(2)
+        .flushThreadMode(FlushThreadMode.VIRTUAL) // selects only the thread type; both modes are strictly bounded
+        .flushThreadCount(2)                      // maximum concurrency across physical tables
         .maxFlushBatchSize(500)
         .maxRetries(3)
         .maxPendingWriteTasks(1_000_000)
@@ -149,6 +149,8 @@ PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
 `MysqlSchemaModule` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `MysqlRdbExecutor.columnAutoWiden` is disabled by default and never alters columns on the write path; undersized string/binary columns are translated to `DataTooLargeException` and follow the async retry policy. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
+
+Async write-back schedules only physical tables that received submissions instead of scanning empty buckets. Each entity channel and physical table has at most one in-flight batch; data beyond `maxFlushBatchSize` is chunked sequentially, while different physical tables run in parallel up to `flushThreadCount`. Transient batch failures are requeued as a batch, whereas data-level failures are isolated by binary splitting instead of immediately expanding into one write per row.
 
 Read/write through the cache:
 
@@ -287,7 +289,7 @@ long count = repo.count(new RdbQuerySpec().eq("roleId", roleId).gte("level", 10)
 - Cache write-back is eventually consistent; it is not a strongly consistent path where a response requires a confirmed database write.
 - Cache write-back keeps references to entity objects to avoid snapshot overhead; do not keep mutating the same entity object concurrently after submitting.
 - RDB cache write-back performs version-aware upserts for MySQL entities with `@Version`; a version mismatch is treated as a deterministic failure — dropped after notifying the permanent failure handler.
-- Watch the `asyncWrite.pending` metric; `maxPendingWriteTasks` is the submission-phase backpressure threshold — beyond it, new unique-key write tasks are rejected, while updates to the same key still merge.
+- Watch `asyncWrite.pending`; it includes both queued and in-flight tasks and drives `maxPendingWriteTasks` backpressure. At the limit, new unique-key tasks are rejected while updates to an already-pending key still merge.
 - Configure the async write permanent failure handler for alerting or compensation.
 - Service shutdown must call `GameJpaContext.close()`.
 - Shard routing for cache write-back is extracted automatically by the execution layer from the entity's `@ShardKey`; `cacheLoad(id)` / `cacheDelete(id)` can only route automatically when the entity is already cached or `@ShardKey` is the primary key — otherwise use the storage-specific Repository's `cacheLoad(id, routingKey)` / `cacheDelete(id, routingKey)`.
