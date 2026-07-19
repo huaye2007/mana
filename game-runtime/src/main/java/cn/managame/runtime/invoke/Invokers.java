@@ -31,6 +31,11 @@ public final class Invokers {
         void invoke(Object controller, Object para, Object message);
     }
 
+    @FunctionalInterface
+    private interface PrimitiveLongCommandInvoker {
+        void invoke(Object controller, long para, Object message);
+    }
+
     /** 路由键提取器：message.routerKeyMethod()，int/Integer/Long 返回值统一适配成 long */
     @FunctionalInterface
     public interface RouterKeyExtractor {
@@ -62,6 +67,15 @@ public final class Invokers {
     }
 
     public static CommandInvoker commandInvoker(Method method) {
+        if (method.getParameterTypes()[0] == long.class) {
+            MethodType primitiveSam = MethodType.methodType(void.class,
+                    Object.class, long.class, Object.class);
+            MethodType primitiveInstantiated = MethodType.methodType(void.class,
+                    method.getDeclaringClass(), long.class, method.getParameterTypes()[1]);
+            PrimitiveLongCommandInvoker primitive = (PrimitiveLongCommandInvoker) createLambda(
+                    method, PrimitiveLongCommandInvoker.class, primitiveSam, primitiveInstantiated);
+            return (controller, para, message) -> primitive.invoke(controller, (Long) para, message);
+        }
         // samType 必须与函数式接口 CommandInvoker.invoke(Object, Object, Object) 的擦除签名一致，
         // 三个参数都是 Object；具体类型由 instantiated（实例化签名）携带，由 LambdaMetafactory
         // 在调用点插入向下转型。中间槽误写成 GameTaskContext 会导致 controller 首参（如 PlayerSession/

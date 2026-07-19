@@ -6,15 +6,15 @@ import java.util.Arrays;
 
 public class GameTaskContext {
 
-    private GameTaskType taskType;
+    private final GameTaskType taskType;
 
-    private byte group;
+    private final byte group;
 
-    private long routerKey;
+    private final long routerKey;
 
-    private byte busType;
+    private final byte busType;
 
-    private long busId;
+    private final long busId;
 
     private Metadata[] metadatas;
 
@@ -29,7 +29,7 @@ public class GameTaskContext {
         this.routerKey = routerKey;
         this.busType = busType;
         this.busId = busId;
-        this.metadatas = metadatas;
+        this.metadatas = copyMetadatas(metadatas);
     }
 
     public void addMetadataStrVal(short key,String val){
@@ -41,19 +41,11 @@ public class GameTaskContext {
     }
 
     public Metadata getMetadata(short key){
-        if (metadatas == null) {
-            return null;
-        }
-        for (Metadata metadata : metadatas) {
-            if (metadata != null && metadata.getKey() == key) {
-                return metadata;
-            }
-        }
-        return null;
+        return copyMetadata(findMetadata(key));
     }
 
     private Metadata findOrCreateMetadata(short key) {
-        Metadata existing = getMetadata(key);
+        Metadata existing = findMetadata(key);
         if (existing != null) {
             return existing;
         }
@@ -66,6 +58,38 @@ public class GameTaskContext {
             metadatas[metadatas.length - 1] = metadata;
         }
         return metadata;
+    }
+
+    private Metadata findMetadata(short key) {
+        if (metadatas == null) {
+            return null;
+        }
+        for (Metadata metadata : metadatas) {
+            if (metadata != null && metadata.getKey() == key) {
+                return metadata;
+            }
+        }
+        return null;
+    }
+
+    private static Metadata[] copyMetadatas(Metadata[] source) {
+        if (source == null) {
+            return null;
+        }
+        Metadata[] copy = new Metadata[source.length];
+        for (int i = 0; i < source.length; i++) {
+            copy[i] = copyMetadata(source[i]);
+        }
+        return copy;
+    }
+
+    private static Metadata copyMetadata(Metadata metadata) {
+        if (metadata == null) {
+            return null;
+        }
+        return metadata.getType() == Metadata.TYPE_STRING
+                ? Metadata.ofString(metadata.getKey(), metadata.getStrVal())
+                : Metadata.ofLong(metadata.getKey(), metadata.getVal());
     }
 
     public GameTaskType getTaskType() {
@@ -89,6 +113,6 @@ public class GameTaskContext {
     }
 
     public Metadata[] getMetadatas() {
-        return metadatas;
+        return copyMetadatas(metadatas);
     }
 }

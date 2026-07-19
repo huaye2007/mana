@@ -38,7 +38,7 @@ public final class GameTaskExceptionHandlers {
     public static void handle(GameTaskContext context, Throwable cause) {
         try {
             handler.handle(context, cause);
-        } catch (Throwable e) {
+        } catch (Exception e) {
             logger.error("exception handler itself failed", e);
             logger.error("original task exception", cause);
         }

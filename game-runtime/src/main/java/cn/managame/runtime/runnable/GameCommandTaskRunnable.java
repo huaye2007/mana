@@ -10,7 +10,7 @@ import cn.managame.common.context.Metadata;
 /**
  * <p>执行期间把上下文绑定到 {@link GameTaskContextHolder}，使 command handler 内部
  * 通过 {@code EventBus.publishEvent(event)} 发布的事件也能命中"同组同 routerKey 内联"
- * 优化；handler 仍可通过方法第一个参数显式拿到 context。</p>
+ * 优化；handler 通过 {@code current()} 获取 {@link GameCommandTaskContext}。</p>
  */
 public class GameCommandTaskRunnable implements IGameTaskRunnable{
 
@@ -30,8 +30,8 @@ public class GameCommandTaskRunnable implements IGameTaskRunnable{
 
     @Override
     public void run() {
-        Class para1 = commandMeta.getParamTypes()[0];
-        if(para1.equals(Long.class)){
+        Class<?> para1 = commandMeta.getParamTypes()[0];
+        if (para1 == Long.class || para1 == long.class) {
             GameTaskContextHolder.runWith(gameCommandTaskContext,
                     () -> commandMeta.invoke(gameCommandTaskContext,gameCommandTaskContext.getBusId(), para));
         }

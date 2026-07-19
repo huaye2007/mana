@@ -38,11 +38,13 @@ class EventBusTest {
     private static final AtomicReference<Thread> UNBOUND_THREAD = new AtomicReference<>();
     private static final AtomicReference<Thread> KEY_MISMATCH_THREAD = new AtomicReference<>();
     private static final AtomicReference<GameTaskType> INLINE_CTX_TYPE = new AtomicReference<>();
+    private static final AtomicReference<Thread> EXPLICIT_SAME_KEY_THREAD = new AtomicReference<>();
     private static final List<Integer> ORDER = new CopyOnWriteArrayList<>();
     private static final CountDownLatch CROSS_DONE = new CountDownLatch(1);
     private static final CountDownLatch UNBOUND_DONE = new CountDownLatch(1);
     private static final CountDownLatch KEY_MISMATCH_DONE = new CountDownLatch(1);
     private static final CountDownLatch INLINE_CTX_DONE = new CountDownLatch(1);
+    private static final CountDownLatch EXPLICIT_SAME_KEY_DONE = new CountDownLatch(1);
 
     static {
         ExecutorGroupRegistry.getInstance().register(A);
@@ -94,6 +96,13 @@ class EventBusTest {
         }
     }
 
+    public static class ExplicitSameKeyEvent implements IGameEvent {
+        @Override
+        public long routerKey() {
+            return KEY;
+        }
+    }
+
     @EventHandler(group = GROUP_A)
     public static class TestListeners {
 
@@ -134,6 +143,12 @@ class EventBusTest {
         public void inlineCtx(InlineCtxEvent e) {
             INLINE_CTX_TYPE.set(GameTaskContextHolder.current().getTaskType());
             INLINE_CTX_DONE.countDown();
+        }
+
+        @EventMethod(group = GROUP_C)
+        public void explicitSameKey(ExplicitSameKeyEvent e) {
+            EXPLICIT_SAME_KEY_THREAD.set(Thread.currentThread());
+            EXPLICIT_SAME_KEY_DONE.countDown();
         }
     }
 
@@ -213,5 +228,19 @@ class EventBusTest {
         assertTrue(INLINE_CTX_DONE.await(5, TimeUnit.SECONDS));
         assertEquals(GameTaskType.CALLBACK, INLINE_CTX_TYPE.get(),
                 "内联监听者应复用发布方上下文，taskType 保持 CALLBACK");
+    }
+
+    @Test
+    void explicitMatchingContextCannotForceInlineWhenNotBound() throws Exception {
+        GameEventTaskContext context = new GameEventTaskContext(GameTaskType.EVENT,
+                GROUP_C, KEY, (byte) 0, 0L, null);
+
+        EventPublishResult result = EventBus.getInstance().tryPublishEvent(context, new ExplicitSameKeyEvent());
+
+        assertEquals(1, result.acceptedSubmissions());
+        assertEquals(0, result.inlineExecutions());
+        assertTrue(EXPLICIT_SAME_KEY_DONE.await(5, TimeUnit.SECONDS));
+        assertNotEquals(Thread.currentThread(), EXPLICIT_SAME_KEY_THREAD.get());
+        assertTrue(EXPLICIT_SAME_KEY_THREAD.get().getName().startsWith("bus-c"));
     }
 }

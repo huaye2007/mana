@@ -1,134 +1,166 @@
 package cn.managame.runtime.event;
 
-
+import cn.managame.common.context.Metadata;
 import cn.managame.runtime.annotation.EventHandler;
 import cn.managame.runtime.annotation.EventMethod;
 import cn.managame.runtime.context.GameEventTaskContext;
 import cn.managame.runtime.context.GameTaskContext;
 import cn.managame.runtime.context.GameTaskContextHolder;
 import cn.managame.runtime.context.GameTaskType;
-import cn.managame.common.context.Metadata;
 import cn.managame.runtime.executor.ExecutorGroupRegistry;
+import cn.managame.runtime.executor.TaskSubmissionResult;
 import cn.managame.runtime.invoke.Invokers;
 import cn.managame.runtime.runnable.GameEventTaskRunnable;
+
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
+import java.util.Objects;
 
 /**
- * 进程内事件总线。
- *
- * <p><b>使用契约：</b>{@link #register(Object)} 只允许在启动期（开始处理任务前）
- * 单线程完成，运行期注册表只读，因此内部使用非线程安全的 HashMap 无需加锁。</p>
- *
- * <p>事件类型为<b>精确匹配</b>：注册在父类/接口上的监听不会被子类事件触发。</p>
+ * In-process event bus. The first publication freezes registration, after which publication is
+ * lock-free. Event types match exactly rather than polymorphically.
  */
 public final class EventBus {
 
-    private final Map<Class<?>, List<EventMeta>> map = new HashMap<>();
+    private static final EventBus INSTANCE = new EventBus();
 
-    private final static EventBus INSTANCE = new EventBus();
+    private final Map<Class<?>, List<EventMeta>> listeners = new HashMap<>();
+    private volatile boolean frozen;
 
-    public static EventBus getInstance(){
+    public static EventBus getInstance() {
         return INSTANCE;
     }
 
-    public void register(Object handler) {
-        Class<?> clazz = handler.getClass();
-        EventHandler eventHandler = clazz.getAnnotation(EventHandler.class);
-        if (eventHandler == null) {
-            throw new IllegalArgumentException(clazz.getName() + " is not annotated with @EventHandler");
+    /** Registers all valid methods atomically for one handler instance. */
+    public synchronized void register(Object handler) {
+        if (frozen) {
+            throw new IllegalStateException("event bus is frozen after first publish");
+        }
+        Objects.requireNonNull(handler, "handler");
+        Class<?> type = handler.getClass();
+        EventHandler handlerAnnotation = type.getAnnotation(EventHandler.class);
+        if (handlerAnnotation == null) {
+            throw new IllegalArgumentException(type.getName() + " is not annotated with @EventHandler");
         }
 
-        for (Method method : clazz.getDeclaredMethods()) {
-            EventMethod em = method.getAnnotation(EventMethod.class);
-            if (em == null) {
+        List<EventMeta> pending = new ArrayList<>();
+        for (Method method : type.getDeclaredMethods()) {
+            EventMethod methodAnnotation = method.getAnnotation(EventMethod.class);
+            if (methodAnnotation == null) {
                 continue;
             }
-            // 方法级 group 为 0 时继承类级 @EventHandler 的 group；
-            // 两级都不指定则落到玩家线程池组（ExecutorGroups.PLAYER）
-            byte group = em.group() != 0 ? em.group() : eventHandler.group();
-            int order = em.order();
-            Class<?>[] paramTypes = method.getParameterTypes();
-            if (paramTypes.length != 1) {
-                throw new IllegalStateException("@EventMethod " + clazz.getName() + "#" + method.getName() +
-                        " must have exactly 1 parameter: (EventObject event)");
+            Class<?>[] parameterTypes = method.getParameterTypes();
+            String methodName = type.getName() + "#" + method.getName();
+            if (parameterTypes.length != 1 || !IGameEvent.class.isAssignableFrom(parameterTypes[0])) {
+                throw new IllegalStateException("@EventMethod " + methodName
+                        + " must have exactly one IGameEvent parameter");
+            }
+            if (method.getReturnType() != void.class) {
+                throw new IllegalStateException("@EventMethod " + methodName + " must return void");
             }
             Invokers.requireInvokable(method);
-            Class<?> cls = paramTypes[0];
-            List<EventMeta> eventMetas = map.computeIfAbsent(cls, k -> new ArrayList<>());
+            byte group = methodAnnotation.group() != 0
+                    ? methodAnnotation.group()
+                    : handlerAnnotation.group();
+            pending.add(new EventMeta(handler, method, group, parameterTypes[0], methodAnnotation.order()));
+        }
 
-            EventMeta eventMeta = new EventMeta(handler,method,group,cls,order);
-            eventMetas.add(eventMeta);
-            eventMetas.sort(Comparator.comparingInt(EventMeta::getOrder));
+        for (EventMeta listener : pending) {
+            listeners.computeIfAbsent(listener.getEventType(), ignored -> new ArrayList<>()).add(listener);
+        }
+        for (Class<?> eventType : pending.stream().map(EventMeta::getEventType).distinct().toList()) {
+            listeners.get(eventType).sort(Comparator.comparingInt(EventMeta::getOrder));
         }
     }
 
+    /** Legacy fire-and-forget entry point. Use {@link #tryPublishEvent} when rejection matters. */
+    public void publishEvent(IGameEvent event) {
+        tryPublishEvent(event);
+    }
+
+    public EventPublishResult tryPublishEvent(IGameEvent event) {
+        Objects.requireNonNull(event, "event");
+        freeze();
+        return publish(GameTaskContextHolder.current(), event, false);
+    }
+
     /**
-     * 从业务代码直接发布事件，来源上下文取当前线程绑定的 GameTaskContext。
-     *
-     * <p>逐个监听者判断：监听者的 group 与当前任务相同、且事件 routerKey 与当前任务
-     * 相同（即必然路由到当前线程）时直接内联执行；否则封装成事件任务投递到监听者
-     * 所在执行器组。</p>
-     *
-     * <p>内联执行直接复用当前上下文：监听者本来就跑在当前 worker 上，taskType/busType
-     * 等语义信息应保持发布方的原值，而不是被改写成 EVENT。</p>
+     * Publishes with an explicit source context. Inline execution is allowed only when that same
+     * context is currently bound and owns the event key.
      */
-    public void publishEvent(IGameEvent gameEvent) {
-        List<EventMeta> eventMetas = map.get(gameEvent.getClass());
-        if (eventMetas == null) {
-            return;
+    public void publishEvent(GameEventTaskContext sourceContext, IGameEvent event) {
+        tryPublishEvent(sourceContext, event);
+    }
+
+    public EventPublishResult tryPublishEvent(GameEventTaskContext sourceContext, IGameEvent event) {
+        Objects.requireNonNull(sourceContext, "sourceContext");
+        Objects.requireNonNull(event, "event");
+        freeze();
+        return publish(sourceContext, event, true);
+    }
+
+    private EventPublishResult publish(GameTaskContext sourceContext, IGameEvent event,
+                                       boolean requireSameBoundContext) {
+        List<EventMeta> eventListeners = listeners.get(event.getClass());
+        if (eventListeners == null) {
+            return EventPublishResult.NO_LISTENERS;
         }
-        GameTaskContext current = GameTaskContextHolder.current();
-        long routerKey = gameEvent.routerKey();
-        for (EventMeta e : eventMetas) {
-            if (current != null && e.getGroup() == current.getGroup() && routerKey == current.getRouterKey()) {
-                e.invoke(current, gameEvent);
+
+        int inline = 0;
+        int accepted = 0;
+        int rejected = 0;
+        long routerKey = event.routerKey();
+        for (EventMeta listener : eventListeners) {
+            boolean boundContextMatches = !requireSameBoundContext
+                    || GameTaskContextHolder.current() == sourceContext;
+            if (boundContextMatches && canRunInline(sourceContext, listener.getGroup(), routerKey)) {
+                listener.invoke(sourceContext, event);
+                inline++;
+            } else if (dispatchToGroup(sourceContext, event, listener).isAccepted()) {
+                accepted++;
             } else {
-                dispatchToGroup(current, gameEvent, e);
+                rejected++;
             }
         }
+        return new EventPublishResult(inline, accepted, rejected);
     }
 
-    /**
-     * 以显式事件上下文发布（事件任务自身派发监听者时走这里）。
-     *
-     * <p>内联条件与 {@link #publishEvent(IGameEvent)} 一致：监听者 group 与上下文相同、
-     * 且事件 routerKey 与上下文相同（必然路由到当前 worker）才内联；否则按事件
-     * routerKey 投递，保证同 routerKey 串行不被破坏。</p>
-     */
-    public void publishEvent(GameEventTaskContext gameEventTaskContext, IGameEvent gameEvent){
-        List<EventMeta> eventMetas = map.get(gameEvent.getClass());
-        if(eventMetas == null){
-            return;
-        }
-        long routerKey = gameEvent.routerKey();
-        for(EventMeta e : eventMetas){
-            if (e.getGroup() == gameEventTaskContext.getGroup()
-                    && routerKey == gameEventTaskContext.getRouterKey()) {
-                e.invoke(gameEventTaskContext, gameEvent);
-            } else {
-                dispatchToGroup(gameEventTaskContext, gameEvent, e);
-            }
-        }
-    }
-
-    /**
-     * 监听者无法在当前线程内联执行时，按事件的 routerKey 投递到目标执行器组。
-     * sourceContext 为 null（无绑定上下文）时 bus 来源信息置空。
-     */
-    private void dispatchToGroup(GameTaskContext sourceContext, IGameEvent gameEvent, EventMeta eventMeta) {
+    private TaskSubmissionResult dispatchToGroup(GameTaskContext sourceContext, IGameEvent event,
+                                                  EventMeta listener) {
         byte busType = sourceContext != null ? sourceContext.getBusType() : 0;
         long busId = sourceContext != null ? sourceContext.getBusId() : 0;
-        Metadata[] metadatas = sourceContext != null ? sourceContext.getMetadatas() : null;
+        Metadata[] metadata = sourceContext != null ? sourceContext.getMetadatas() : null;
         GameEventTaskContext targetContext = new GameEventTaskContext(GameTaskType.EVENT,
-                eventMeta.getGroup(), gameEvent.routerKey(), busType, busId, metadatas);
-        ExecutorGroupRegistry.getInstance().execute(
-                new GameEventTaskRunnable(targetContext, eventMeta, gameEvent));
+                listener.getGroup(), event.routerKey(), busType, busId, metadata);
+        return ExecutorGroupRegistry.getInstance().tryExecute(
+                new GameEventTaskRunnable(targetContext, listener, event));
     }
 
+    /** Hosts may freeze explicitly after startup; the first publish does this automatically. */
+    public void freeze() {
+        if (frozen) {
+            return;
+        }
+        synchronized (this) {
+            if (frozen) {
+                return;
+            }
+            listeners.replaceAll((type, values) -> List.copyOf(values));
+            frozen = true;
+        }
+    }
+
+    public boolean isFrozen() {
+        return frozen;
+    }
+
+    private static boolean canRunInline(GameTaskContext context, byte listenerGroup, long routerKey) {
+        return context != null
+                && listenerGroup == context.getGroup()
+                && routerKey == context.getRouterKey();
+    }
 }

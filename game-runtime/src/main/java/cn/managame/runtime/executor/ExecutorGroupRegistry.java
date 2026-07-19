@@ -46,7 +46,7 @@ public final class ExecutorGroupRegistry {
         for (IExecutorGroup executorGroup : groups.values()) {
             try {
                 executorGroup.shutdown(Math.max(0, deadline - System.currentTimeMillis()));
-            } catch (Throwable e) {
+            } catch (Exception e) {
                 logger.error("shutdown executor group failed, group={}", executorGroup.group(), e);
             }
         }
@@ -56,13 +56,23 @@ public final class ExecutorGroupRegistry {
      * 按任务上下文中的 group 派发任务。未注册对应组时记录错误并丢弃任务。
      */
     public void execute(IGameTaskRunnable gameTaskRunnable) {
+        tryExecute(gameTaskRunnable);
+    }
+
+    /**
+     * Attempts to dispatch a task and returns an immediate, actionable result.
+     */
+    public TaskSubmissionResult tryExecute(IGameTaskRunnable gameTaskRunnable) {
         byte group = gameTaskRunnable.getGameTaskContext().getGroup();
         IExecutorGroup executorGroup = groups.get(group);
         if (executorGroup == null) {
             logger.error("No executor group registered: {}, task dropped, taskType={}",
                     group, gameTaskRunnable.getGameTaskContext().getTaskType());
-            return;
+            cn.managame.runtime.monitor.GameTaskMonitors.taskRejected(
+                    gameTaskRunnable.getGameTaskContext(), TaskSubmissionResult.REJECTED_NO_GROUP);
+            return TaskSubmissionResult.REJECTED_NO_GROUP;
         }
-        executorGroup.execGameTask(gameTaskRunnable);
+        return executorGroup.tryExecGameTask(gameTaskRunnable);
     }
+
 }

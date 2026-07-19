@@ -1,6 +1,7 @@
 package cn.managame.runtime.monitor;
 
 import cn.managame.runtime.context.GameTaskContext;
+import cn.managame.runtime.executor.TaskSubmissionResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,6 +28,12 @@ public final class GameTaskMonitors {
         public void onTaskDropped(GameTaskContext context) {
             logger.error("worker queue full, task dropped, taskType={}, group={}, routerKey={}",
                     context.getTaskType(), context.getGroup(), context.getRouterKey());
+        }
+
+        @Override
+        public void onTaskRejected(GameTaskContext context, TaskSubmissionResult result) {
+            logger.error("task submission rejected, reason={}, taskType={}, group={}, routerKey={}",
+                    result, context.getTaskType(), context.getGroup(), context.getRouterKey());
         }
     };
 
@@ -62,16 +69,20 @@ public final class GameTaskMonitors {
     public static void taskComplete(GameTaskContext context, long queueDelayMs, long execMs) {
         try {
             monitor.onTaskComplete(context, queueDelayMs, execMs);
-        } catch (Throwable e) {
+        } catch (Exception e) {
             logger.error("task monitor onTaskComplete failed", e);
         }
     }
 
     public static void taskDropped(GameTaskContext context) {
+        taskRejected(context, TaskSubmissionResult.REJECTED_OVERLOADED);
+    }
+
+    public static void taskRejected(GameTaskContext context, TaskSubmissionResult result) {
         try {
-            monitor.onTaskDropped(context);
-        } catch (Throwable e) {
-            logger.error("task monitor onTaskDropped failed", e);
+            monitor.onTaskRejected(context, result);
+        } catch (Exception e) {
+            logger.error("task monitor onTaskRejected failed", e);
         }
     }
 }

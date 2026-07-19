@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class TimingWheelTest {
 
@@ -85,5 +86,39 @@ class TimingWheelTest {
         WHEEL.schedule(150, fired::countDown);
 
         assertTrue(fired.await(2, TimeUnit.SECONDS), "前一个任务抛异常后时间轮应继续工作");
+    }
+    @Test
+    void deadlineNearTickBoundaryNeverFiresEarly() throws Exception {
+        TimingWheel wheel = new TimingWheel("deadline-wheel", 50, 16);
+        try {
+            CountDownLatch boundary = new CountDownLatch(1);
+            wheel.schedule(0, boundary::countDown);
+            assertTrue(boundary.await(1, TimeUnit.SECONDS));
+            Thread.sleep(35);
+
+            CountDownLatch fired = new CountDownLatch(1);
+            long start = System.nanoTime();
+            wheel.schedule(50, fired::countDown);
+            assertTrue(fired.await(1, TimeUnit.SECONDS));
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            assertTrue(elapsedMs >= 45, "timer fired before deadline, elapsed=" + elapsedMs);
+        } finally {
+            wheel.shutdown();
+        }
+    }
+
+    @Test
+    void cancelAndShutdownMakeOutstandingHandlesTerminal() {
+        TimingWheel wheel = new TimingWheel("shutdown-wheel", 20, 16);
+        Timeout cancelled = wheel.schedule(60_000, () -> { });
+        assertEquals(1, wheel.pendingCount());
+        assertTrue(cancelled.cancel());
+        assertEquals(0, wheel.pendingCount());
+
+        Timeout shutdown = wheel.schedule(60_000, () -> { });
+        assertTrue(wheel.shutdown(1_000));
+        assertTrue(shutdown.isCancelled());
+        assertEquals(0, wheel.pendingCount());
+        assertThrows(IllegalStateException.class, () -> wheel.schedule(1, () -> { }));
     }
 }

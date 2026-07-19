@@ -4,40 +4,50 @@ import cn.managame.runtime.executor.ExecutorGroupRegistry;
 import cn.managame.runtime.runnable.GameTimerTaskRunnable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.time.ZoneId;
+import java.util.Objects;
 
 /**
- * Cron 定时任务。调用 {@link #start()} 注册到默认时间轮，每次触发后自动计算下一次
- * 执行时间并重新调度，直到 {@link #cancel()}。触发时按 {@link GameTimerTaskRunnable}
- * 上下文中的 group 派发到对应执行器组，不在计时线程上跑业务。
- *
- * <p>周期/固定频率等其它调度形态由业务在 {@link TimingWheel} 上自行封装。</p>
+ * Cron task backed by the shared timing wheel and a routed game task.
  */
 public class CronTask {
 
-    private final static Logger logger = LoggerFactory.getLogger(CronTask.class);
+    private static final Logger logger = LoggerFactory.getLogger(CronTask.class);
 
     private final CronExpression cronExpression;
     private final GameTimerTaskRunnable gameTimerTaskRunnable;
+    private final Object lifecycleLock = new Object();
+    private boolean started;
+    private Timeout scheduled;
     private volatile boolean cancelled;
 
     public CronTask(String cron, GameTimerTaskRunnable gameTimerTaskRunnable) {
         this(cron, ZoneId.systemDefault(), gameTimerTaskRunnable);
     }
 
-    /**
-     * @param zoneId cron 按哪个时区解释，跨时区部署时显式指定
-     */
     public CronTask(String cron, ZoneId zoneId, GameTimerTaskRunnable gameTimerTaskRunnable) {
         this.cronExpression = new CronExpression(cron, zoneId);
-        this.gameTimerTaskRunnable = gameTimerTaskRunnable;
+        this.gameTimerTaskRunnable = Objects.requireNonNull(gameTimerTaskRunnable, "gameTimerTaskRunnable");
     }
 
-    /**
-     * 启动调度：算出下一次触发并挂到默认时间轮，到点派发任务后自动重排，直到 {@link #cancel()}。
-     */
+    /** Starts exactly one scheduling chain. */
     public void start() {
-        scheduleNext();
+        synchronized (lifecycleLock) {
+            if (started) {
+                throw new IllegalStateException("cron task already started");
+            }
+            if (cancelled) {
+                throw new IllegalStateException("cron task already cancelled");
+            }
+            started = true;
+        }
+        try {
+            scheduleNext();
+        } catch (RuntimeException e) {
+            cancel();
+            throw e;
+        }
     }
 
     private void scheduleNext() {
@@ -49,17 +59,42 @@ public class CronTask {
             logger.warn("Cron task has no next fire time within 2 years, stop scheduling");
             return;
         }
-        TimingWheel.getInstance().schedule(delayMs, () -> {
+        Timeout next = TimingWheel.getInstance().schedule(delayMs, this::fire);
+        synchronized (lifecycleLock) {
+            if (cancelled) {
+                next.cancel();
+            } else {
+                scheduled = next;
+            }
+        }
+    }
+
+    private void fire() {
+        synchronized (lifecycleLock) {
+            scheduled = null;
             if (cancelled) {
                 return;
             }
-            ExecutorGroupRegistry.getInstance().execute(gameTimerTaskRunnable);
+        }
+        ExecutorGroupRegistry.getInstance().tryExecute(gameTimerTaskRunnable);
+        try {
             scheduleNext();
-        });
+        } catch (IllegalStateException e) {
+            cancel();
+            logger.debug("Cron task stopped because the timing wheel is shut down", e);
+        }
     }
 
     public void cancel() {
-        cancelled = true;
+        Timeout toCancel;
+        synchronized (lifecycleLock) {
+            cancelled = true;
+            toCancel = scheduled;
+            scheduled = null;
+        }
+        if (toCancel != null) {
+            toCancel.cancel();
+        }
     }
 
     public boolean isCancelled() {

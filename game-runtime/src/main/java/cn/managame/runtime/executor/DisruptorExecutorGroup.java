@@ -43,16 +43,25 @@ public class DisruptorExecutorGroup implements IExecutorGroup {
     private static final ExceptionHandler<TaskEvent> EXCEPTION_HANDLER = new ExceptionHandler<>() {
         @Override
         public void handleEventException(Throwable ex, long sequence, TaskEvent event) {
+            if (ex instanceof Error error) {
+                throw error;
+            }
             logger.error("uncaught exception in disruptor worker, sequence={}", sequence, ex);
         }
 
         @Override
         public void handleOnStartException(Throwable ex) {
+            if (ex instanceof Error error) {
+                throw error;
+            }
             logger.error("disruptor worker start failed", ex);
         }
 
         @Override
         public void handleOnShutdownException(Throwable ex) {
+            if (ex instanceof Error error) {
+                throw error;
+            }
             logger.error("disruptor worker shutdown failed", ex);
         }
     };
@@ -109,12 +118,30 @@ public class DisruptorExecutorGroup implements IExecutorGroup {
 
     @Override
     public void execGameTask(IGameTaskRunnable gameTaskRunnable) {
+        tryExecGameTask(gameTaskRunnable);
+    }
+
+    @Override
+    public TaskSubmissionResult tryExecGameTask(IGameTaskRunnable gameTaskRunnable) {
         long routerKey = gameTaskRunnable.getGameTaskContext().getRouterKey();
         int index = (int) Math.floorMod(routerKey, ringBuffers.length);
-        if (shuttingDown || !ringBuffers[index].tryPublishEvent(TRANSLATOR, gameTaskRunnable)) {
-            droppedCount.incrementAndGet();
-            GameTaskMonitors.taskDropped(gameTaskRunnable.getGameTaskContext());
+        TaskSubmissionResult result;
+        if (shuttingDown) {
+            result = TaskSubmissionResult.REJECTED_SHUTDOWN;
+        } else if (!ringBuffers[index].tryPublishEvent(TRANSLATOR, gameTaskRunnable)) {
+            result = TaskSubmissionResult.REJECTED_OVERLOADED;
+        } else {
+            result = TaskSubmissionResult.ACCEPTED;
         }
+        if (!result.isAccepted()) {
+            reject(gameTaskRunnable, result);
+        }
+        return result;
+    }
+
+    private void reject(IGameTaskRunnable task, TaskSubmissionResult result) {
+        droppedCount.incrementAndGet();
+        GameTaskMonitors.taskRejected(task.getGameTaskContext(), result);
     }
 
     /**

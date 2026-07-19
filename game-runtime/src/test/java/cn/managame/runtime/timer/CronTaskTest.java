@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class CronTaskTest {
 
@@ -68,5 +69,13 @@ class CronTaskTest {
         int after = runs.get();
         Thread.sleep(1500);
         assertEquals(after, runs.get(), "取消后 cron 不应再触发");
+    }
+    @Test
+    void startIsSingleShotAndCancelStopsPendingTimeout() {
+        CronTask cronTask = new CronTask("0 0 0 1 1 *", timerTask(() -> { }));
+        cronTask.start();
+        assertThrows(IllegalStateException.class, cronTask::start);
+        cronTask.cancel();
+        assertTrue(cronTask.isCancelled());
     }
 }

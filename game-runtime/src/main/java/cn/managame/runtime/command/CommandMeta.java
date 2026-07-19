@@ -1,16 +1,11 @@
 package cn.managame.runtime.command;
 
 import cn.managame.runtime.context.GameCommandTaskContext;
-import cn.managame.runtime.context.GameTaskContext;
 import cn.managame.runtime.exception.GameTaskExceptionHandlers;
 import cn.managame.runtime.invoke.Invokers;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import java.lang.reflect.Method;
 
 public final class CommandMeta {
-
-    private final static Logger logger = LoggerFactory.getLogger(CommandMeta.class);
 
     private final int command;
     private final Object controllerInstance;
@@ -19,7 +14,7 @@ public final class CommandMeta {
     private final byte group;
     private final Method routerKeyMethod;
     private final Invokers.RouterKeyExtractor routerKeyExtractor;
-    private Class<?>[] paramTypes;
+    private final Class<?>[] paramTypes;
 
 
     CommandMeta(int command, Object controllerInstance, Method method, byte group, Class<?>[] paramTypes, Method routerKeyMethod) {
@@ -28,7 +23,7 @@ public final class CommandMeta {
         this.method = method;
         this.invoker = Invokers.commandInvoker(method);
         this.group = group;
-        this.paramTypes = paramTypes;
+        this.paramTypes = paramTypes.clone();
         this.routerKeyMethod = routerKeyMethod;
         this.routerKeyExtractor = routerKeyMethod != null ? Invokers.routerKeyExtractor(routerKeyMethod) : null;
     }
@@ -50,7 +45,7 @@ public final class CommandMeta {
     }
 
     public Class<?>[] getParamTypes() {
-        return paramTypes;
+        return paramTypes.clone();
     }
 
     public boolean hasRouterKeyMethod() {
@@ -58,7 +53,7 @@ public final class CommandMeta {
     }
 
     /**
-     * 从消息对象中提取路由键。未配置 routerKeyMethod 或提取失败时返回 defaultKey。
+     * 从消息对象中提取路由键。未配置 routerKeyMethod 时返回 defaultKey；配置后提取失败则拒绝请求。
      */
     public long extractRouterKey(Object message, long defaultKey) {
         if (routerKeyExtractor == null) {
@@ -66,16 +61,15 @@ public final class CommandMeta {
         }
         try {
             return routerKeyExtractor.extract(message);
-        } catch (Throwable e) {
-            logger.error("extract routerKey failed, command={}", command, e);
-            return defaultKey;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("extract routerKey failed, command=" + command, e);
         }
     }
 
     public void invoke(GameCommandTaskContext taskContext,Object para1, Object message) {
         try {
             invoker.invoke(controllerInstance, para1, message);
-        } catch (Throwable e) {
+        } catch (Exception e) {
             GameTaskExceptionHandlers.handle(taskContext, e);
         }
     }

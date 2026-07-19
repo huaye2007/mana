@@ -17,7 +17,9 @@ public @interface EventMethod {
 
 
     /**
-     * Listener order. Smaller values run first.
+     * Optional listener submission order, defaulting to 0. Smaller values are invoked/submitted
+     * first. Listeners on different executor groups run asynchronously, so this is not a
+     * cross-group completion order.
      */
     int order() default 0;
 }

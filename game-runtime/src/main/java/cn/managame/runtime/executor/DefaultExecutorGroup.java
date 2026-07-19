@@ -8,6 +8,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -61,10 +62,7 @@ public class DefaultExecutorGroup implements IExecutorGroup {
             workers[i] = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
                     new ArrayBlockingQueue<>(queueCapacity),
                     threadFactory,
-                    (r, executor) -> {
-                        droppedCount.incrementAndGet();
-                        GameTaskMonitors.taskDropped(((MonitoredTask) r).task.getGameTaskContext());
-                    });
+                    new ThreadPoolExecutor.AbortPolicy());
         }
     }
 
@@ -75,9 +73,29 @@ public class DefaultExecutorGroup implements IExecutorGroup {
 
     @Override
     public void execGameTask(IGameTaskRunnable gameTaskRunnable) {
+        tryExecGameTask(gameTaskRunnable);
+    }
+
+    @Override
+    public TaskSubmissionResult tryExecGameTask(IGameTaskRunnable gameTaskRunnable) {
         long routerKey = gameTaskRunnable.getGameTaskContext().getRouterKey();
         int index = (int) Math.floorMod(routerKey, workers.length);
-        workers[index].execute(new MonitoredTask(gameTaskRunnable));
+        ThreadPoolExecutor worker = workers[index];
+        try {
+            worker.execute(new MonitoredTask(gameTaskRunnable));
+            return TaskSubmissionResult.ACCEPTED;
+        } catch (RejectedExecutionException e) {
+            TaskSubmissionResult result = worker.isShutdown()
+                    ? TaskSubmissionResult.REJECTED_SHUTDOWN
+                    : TaskSubmissionResult.REJECTED_OVERLOADED;
+            reject(gameTaskRunnable, result);
+            return result;
+        }
+    }
+
+    private void reject(IGameTaskRunnable task, TaskSubmissionResult result) {
+        droppedCount.incrementAndGet();
+        GameTaskMonitors.taskRejected(task.getGameTaskContext(), result);
     }
 
     /**
@@ -136,12 +154,19 @@ public class DefaultExecutorGroup implements IExecutorGroup {
             try {
                 long remain = deadline - System.currentTimeMillis();
                 if (remain <= 0 || !worker.awaitTermination(remain, TimeUnit.MILLISECONDS)) {
-                    worker.shutdownNow();
+                    rejectQueued(worker.shutdownNow());
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                worker.shutdownNow();
+                rejectQueued(worker.shutdownNow());
             }
+        }
+    }
+
+    private void rejectQueued(java.util.List<Runnable> queued) {
+        for (Runnable runnable : queued) {
+            MonitoredTask monitored = (MonitoredTask) runnable;
+            reject(monitored.task, TaskSubmissionResult.REJECTED_SHUTDOWN);
         }
     }
 }

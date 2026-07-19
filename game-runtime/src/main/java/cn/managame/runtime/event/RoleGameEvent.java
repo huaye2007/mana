@@ -2,7 +2,7 @@ package cn.managame.runtime.event;
 
 public class RoleGameEvent implements IGameEvent{
 
-    private long roleId;
+    private final long roleId;
 
     public RoleGameEvent(long roleId){
         this.roleId = roleId;

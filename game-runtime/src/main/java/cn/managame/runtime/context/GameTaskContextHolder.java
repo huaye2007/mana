@@ -3,10 +3,10 @@ package cn.managame.runtime.context;
 /**
  * 隐式任务上下文绑定。
  *
- * <p>{@link GameTaskType#COMMAND} 的上下文作为方法参数显式传递，不经过这里；
- * EVENT/TIMER/CALLBACK 的上下文在任务执行期间隐式绑定到当前线程：
+ * <p>COMMAND/EVENT/TIMER/CALLBACK 的上下文都在任务执行期间隐式绑定到当前线程：
  * 虚拟线程绑定到 {@link ScopedValue}，平台线程绑定到 {@link ThreadLocal}。
- * 业务代码只在需要时通过 {@link #current()} 获取。</p>
+ * 业务代码只在需要时通过 {@link #current()} 获取。COMMAND handler 的首参是 busId 或 session，
+ * 不是 context。</p>
  */
 public final class GameTaskContextHolder {
 

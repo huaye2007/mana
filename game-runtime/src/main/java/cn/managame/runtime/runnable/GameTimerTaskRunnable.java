@@ -22,7 +22,7 @@ public class GameTimerTaskRunnable implements IGameTaskRunnable{
     public void run() {
         try{
             GameTaskContextHolder.runWith(gameTimerTaskContext, runnable);
-        } catch (Throwable e) {
+        } catch (Exception e) {
             GameTaskExceptionHandlers.handle(gameTimerTaskContext, e);
         }
     }

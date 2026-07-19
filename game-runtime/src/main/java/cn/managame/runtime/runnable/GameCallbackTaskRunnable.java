@@ -23,7 +23,7 @@ public class GameCallbackTaskRunnable implements IGameTaskRunnable{
     public void run() {
         try{
             GameTaskContextHolder.runWith(gameCallbackTaskContext, runnable);
-        } catch (Throwable e) {
+        } catch (Exception e) {
             GameTaskExceptionHandlers.handle(gameCallbackTaskContext, e);
         }
     }

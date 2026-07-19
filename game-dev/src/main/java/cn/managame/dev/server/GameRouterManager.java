@@ -9,6 +9,7 @@ import cn.managame.runtime.context.GameCommandTaskContext;
 import cn.managame.runtime.context.GameTaskContextHolder;
 import cn.managame.runtime.executor.ExecutorGroupRegistry;
 import cn.managame.runtime.executor.ExecutorGroups;
+import cn.managame.runtime.executor.TaskSubmissionResult;
 import cn.managame.runtime.runnable.GameCommandTaskRunnable;
 import cn.managame.serialization.ISerializer;
 import cn.managame.serialization.SerializerManager;
@@ -58,7 +59,8 @@ public class GameRouterManager {
         byte busType;
         long busId;
         long routerKey;
-        switch (meta.getGroup()) {
+        try {
+            switch (meta.getGroup()) {
             case ExecutorGroups.LOGIN -> {
                 // 未登陆、无 roleId：按消息内的键（如 userId）打散，避免登陆全部串行到单 worker
                 busType = BusTypeConstant.DEFAULT;
@@ -76,11 +78,24 @@ public class GameRouterManager {
                         GameErrorCode.INTERNAL_ERROR, GamePacketConstant.EMPTY_BODY));
                 return;
             }
+            }
+        } catch (IllegalArgumentException e) {
+            logger.warn("invalid router key, command={}, msg dropped", meta.getCommand(), e);
+            playerSession.writeMsg(GamePacket.of(gamePacket.getCommand(), gamePacket.getSeq(),
+                    GameErrorCode.BAD_REQUEST, GamePacketConstant.EMPTY_BODY));
+            return;
         }
 
         GameCommandTaskRunnable runnable = new GameCommandTaskRunnable(
                 meta, routerKey, busType, busId, gamePacket.getSeq(), null, body, playerSession);
-        ExecutorGroupRegistry.getInstance().execute(runnable);
+        TaskSubmissionResult result = ExecutorGroupRegistry.getInstance().tryExecute(runnable);
+        if (!result.isAccepted()) {
+            int errorCode = result == TaskSubmissionResult.REJECTED_OVERLOADED
+                    ? GameErrorCode.SERVER_BUSY
+                    : GameErrorCode.INTERNAL_ERROR;
+            playerSession.writeMsg(GamePacket.of(gamePacket.getCommand(), gamePacket.getSeq(),
+                    errorCode, GamePacketConstant.EMPTY_BODY));
+        }
     }
 
     /** 回当前请求：command/seq 取当前 COMMAND 任务上下文，code=OK。只能在 handler 线程里调。 */

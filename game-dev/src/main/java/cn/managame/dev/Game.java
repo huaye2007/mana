@@ -171,6 +171,8 @@ public class Game {
         AnnotationScanner scanner = new AnnotationScanner(context);
         scanner.process(GameController.class, controller -> CommandRegistry.getInstance().register(controller));
         scanner.process(EventHandler.class, handler -> EventBus.getInstance().register(handler));
+        CommandRegistry.getInstance().freeze();
+        EventBus.getInstance().freeze();
     }
 
     /**

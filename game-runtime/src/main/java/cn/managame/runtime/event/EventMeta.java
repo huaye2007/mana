@@ -57,7 +57,7 @@ public final class EventMeta {
     public void invoke(GameTaskContext context, IGameEvent gameEvent) {
         try {
             invoker.invoke(handlerInstance, gameEvent);
-        } catch (Throwable e) {
+        } catch (Exception e) {
             GameTaskExceptionHandlers.handle(context, e);
         }
     }

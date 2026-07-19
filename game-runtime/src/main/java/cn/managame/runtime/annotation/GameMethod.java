@@ -8,9 +8,10 @@ import java.lang.annotation.Target;
 /**
  * Marks one game protocol handler method.
  *
- * <p>The method signature must be {@code (GameTaskContext, MessageObject)}.
- * Leave {@link #routerKeyMethod()} empty to use the runtime group default, or
- * dispatch with an explicit router key from the transport layer.</p>
+ * <p>The method signature must contain exactly two parameters. A first parameter of
+ * {@code long}/{@link Long} receives the task bus id; any other reference type receives the
+ * session object supplied by the host. The second parameter is the decoded message object.
+ * Task context is available through {@code GameTaskContextHolder.current()}.</p>
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
