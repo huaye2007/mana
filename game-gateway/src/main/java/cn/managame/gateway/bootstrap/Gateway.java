@@ -48,36 +48,45 @@ public final class Gateway implements AutoCloseable {
         this.config = Objects.requireNonNull(config, "config");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.closeRegistry = closeRegistry;
-        this.sessions = new GatewaySessionManager(config.serverId());
+        GatewayConfig.Transport transport = config.transport();
+        GatewayConfig.Identity identity = config.identity();
+        GatewayConfig.Backend backend = config.backend();
+        GatewayConfig.Limits limits = config.limits();
+        this.sessions = new GatewaySessionManager(identity.serverId());
         this.backends = new BackendDirectory();
         CommandBackendServiceResolver serviceResolver = CommandBackendServiceResolver.parse(
-                config.backendService(), config.backendRoutes());
-        GatewayRpcMessageHandler downlink = new GatewayRpcMessageHandler(sessions, config.loginCommand());
+                backend.service(), backend.routes());
+        GatewayRpcMessageHandler downlink = new GatewayRpcMessageHandler(sessions, backend.loginCommand());
         RpcClientConfig rpcConfig = new RpcClientConfig()
-                .serviceName(config.serviceName()).serviceId(config.instanceId())
-                .authToken(config.rpcAuthToken());
-        rpcClient = new GatewayRpcClient(rpcConfig, downlink, config.backendConnections());
+                .serviceName(identity.serviceName()).serviceId(identity.instanceId())
+                .authToken(backend.rpcAuthToken());
+        rpcClient = new GatewayRpcClient(rpcConfig, downlink, backend.connections());
         backendServices = List.copyOf(serviceResolver.serviceNames());
-        PacketForwarder forwarder = new PacketForwarder(rpcClient, backends, serviceResolver, config.loginCommand());
-        GatewayGuard guard = new GatewayGuard(config.loginCommand(), config.ddosMaxConnectionsPerIp(),
-                config.ratePps(), config.rateBurst(), config.ddosPpsPerIp(), config.ddosBurstPerIp());
+        PacketForwarder forwarder = new PacketForwarder(rpcClient, backends, serviceResolver, backend.loginCommand());
+        GatewayGuard guard = new GatewayGuard(backend.loginCommand(), limits.maxConnectionsPerIp(),
+                limits.sessionPps(), limits.sessionBurst(), limits.ipPps(), limits.ipBurst());
         GatewayNetworkHandler network = new GatewayNetworkHandler(sessions, guard, forwarder);
         List<INetworkServer> servers = new ArrayList<>();
-        servers.add(new GatewayTcpServer(config.tcpPort(), config.readerIdleSeconds(), BodyCodec.IDENTITY, network));
-        if (config.webSocketEnabled()) {
-            servers.add(new GatewayWebSocketServer(config.wsPort(), config.wsPath(), BodyCodec.IDENTITY, network));
+        servers.add(new GatewayTcpServer(transport.tcpPort(), transport.readerIdleSeconds(),
+                BodyCodec.IDENTITY, network));
+        if (transport.webSocketEnabled()) {
+            servers.add(new GatewayWebSocketServer(transport.webSocketPort(), transport.webSocketPath(),
+                    BodyCodec.IDENTITY, network));
         }
         networkServers = List.copyOf(servers);
-        self = ServiceInstance.builder().name(config.serviceName()).id(config.instanceId())
-                .address(config.advertiseAddress()).port(config.tcpPort())
-                .metadata(config.webSocketEnabled()
-                        ? Map.of("ws.port", Integer.toString(config.wsPort()), "ws.path", config.wsPath()) : Map.of())
+        self = ServiceInstance.builder().name(identity.serviceName()).id(identity.instanceId())
+                .address(identity.advertiseAddress()).port(transport.tcpPort())
+                .metadata(transport.webSocketEnabled()
+                        ? Map.of("ws.port", Integer.toString(transport.webSocketPort()),
+                                "ws.path", transport.webSocketPath())
+                        : Map.of())
                 .build();
     }
 
     public static Gateway create(GatewayConfig config) {
+        GatewayConfig.Registry registryConfig = config.registry();
         ServiceRegistry registry = RegistryFactory.startRegistry(RegistryConfig.builder()
-                .type(config.registryType()).endpoints(config.registryEndpoints()).build());
+                .type(registryConfig.type()).endpoints(registryConfig.endpoints()).build());
         try { return new Gateway(config, registry, true); }
         catch (RuntimeException error) { registry.close(); throw error; }
     }

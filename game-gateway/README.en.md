@@ -31,22 +31,28 @@ If the selected RPC instance has no active connection or its local outbound buff
 
 ## Configuration
 
-Precedence is command-line `--key=value`, JVM `-Dkey=value`, `GAME_*` environment variables, `config/application.properties`, then defaults.
+Every setting has a default, so a complete property list is never required. Development can start with zero configuration. Production normally specifies only the backend service, registry, and advertised address:
+
+```properties
+game.gateway.backend.service=scene-service
+game.registry.type=nacos
+game.registry.endpoints=127.0.0.1:8848
+game.gateway.advertise-address=10.0.0.12
+```
+
+The commonly used settings are limited to:
 
 | Property | Default | Purpose |
 | --- | --- | --- |
+| `game.gateway.backend.service` | `game-dev` | Default backend service |
+| `game.registry.type` / `.endpoints` | `memory` / `local` | Registry provider |
+| `game.gateway.advertise-address` | `127.0.0.1` | Address published to discovery |
 | `game.gateway.tcp.port` | `9000` | TCP port |
 | `game.gateway.ws.port` | `9001` | WebSocket port; `0` disables it |
-| `game.gateway.ws.path` | `/ws` | WebSocket path |
-| `game.gateway.reader.idle.seconds` | `180` | Read-idle disconnect; `0` disables it |
-| `game.gateway.backend.service` | `game-dev` | Backend service name |
-| `game.gateway.backend.routes` | empty | Command-to-service mappings such as `1000=auth-service,2000-2999=chat-service`; unmatched commands use the default backend |
-| `game.gateway.backend.connections` | `4` | RPC connections per instance |
-| `game.gateway.login.command` | `1000` | Login command |
-| `game.gateway.rate.pps` / `.burst` | `50` / `100` | Per-session rate limit |
-| `game.gateway.ddos.max-connections-per-ip` | `100` | Maximum connections per IP |
-| `game.gateway.ddos.pps-per-ip` / `.burst-per-ip` | `500` / `1000` | Aggregate per-IP rate limit |
-| `game.registry.type` / `.endpoints` | `memory` / `local` | Registry provider |
+
+Routes, connection counts, login command, idle timeout, and rate limits are advanced tuning settings. Their existing property keys remain supported, but safe defaults apply when omitted. Java composition no longer needs a long constructor: use `new GatewayConfig()` or `new GatewayConfig("scene-service")`. Internally, settings are grouped as `Transport / Identity / Backend / Limits / Registry`.
+
+Precedence remains command-line `--key=value`, JVM `-Dkey=value`, `GAME_*` environment variables, `config/application.properties`, then defaults.
 
 ## Build and run
 

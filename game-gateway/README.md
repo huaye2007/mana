@@ -31,22 +31,28 @@
 
 ## 配置
 
-配置优先级为命令行 `--key=value`、JVM `-Dkey=value`、`GAME_*` 环境变量、`config/application.properties`、默认值。
+所有配置都有默认值，不需要填写完整参数表。开发环境可以零配置启动；生产环境通常只需指定后端服务、注册中心和通告地址：
+
+```properties
+game.gateway.backend.service=scene-service
+game.registry.type=nacos
+game.registry.endpoints=127.0.0.1:8848
+game.gateway.advertise-address=10.0.0.12
+```
+
+最常用的配置只有以下几项：
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
+| `game.gateway.backend.service` | `game-dev` | 默认后端服务 |
+| `game.registry.type` / `.endpoints` | `memory` / `local` | 注册中心 |
+| `game.gateway.advertise-address` | `127.0.0.1` | 注册到服务发现的地址 |
 | `game.gateway.tcp.port` | `9000` | TCP 端口 |
 | `game.gateway.ws.port` | `9001` | WebSocket 端口；`0` 关闭 |
-| `game.gateway.ws.path` | `/ws` | WebSocket 路径 |
-| `game.gateway.reader.idle.seconds` | `180` | 读空闲断连秒数；`0` 关闭 |
-| `game.gateway.backend.service` | `game-dev` | 后端服务名 |
-| `game.gateway.backend.routes` | 空 | 命令到服务的映射，如 `1000=auth-service,2000-2999=chat-service`；未匹配命令使用默认后端 |
-| `game.gateway.backend.connections` | `4` | 每实例 RPC 连接数 |
-| `game.gateway.login.command` | `1000` | 登录命令 |
-| `game.gateway.rate.pps` / `.burst` | `50` / `100` | 单会话限流 |
-| `game.gateway.ddos.max-connections-per-ip` | `100` | 单 IP 最大连接数 |
-| `game.gateway.ddos.pps-per-ip` / `.burst-per-ip` | `500` / `1000` | 单 IP 聚合限流 |
-| `game.registry.type` / `.endpoints` | `memory` / `local` | 注册中心 |
+
+路由表、连接数、登录命令、空闲时间和限流参数属于高级调优项，继续支持原有配置键，但不配置时直接使用安全默认值。Java 装配也无需长构造器，可使用 `new GatewayConfig()` 或 `new GatewayConfig("scene-service")`；内部配置按 `Transport / Identity / Backend / Limits / Registry` 分组。
+
+配置优先级仍为命令行 `--key=value`、JVM `-Dkey=value`、`GAME_*` 环境变量、`config/application.properties`、默认值。
 
 ## 构建与启动
 
