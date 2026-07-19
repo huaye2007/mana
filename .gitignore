@@ -1,0 +1,9 @@
+# 各模块的开发文档目录，暂不公开上传（见 AGENT.md「文档规范」）
+docs/
+
+# Maven build output and workspace-local repository
+target/
+.m2/
+
+# IDE
+.idea/
