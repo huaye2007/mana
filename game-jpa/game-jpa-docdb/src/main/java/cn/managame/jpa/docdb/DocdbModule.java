@@ -1,12 +1,12 @@
 package cn.managame.jpa.docdb;
 
+import cn.managame.jpa.core.bootstrap.GameJpaExtension;
 import cn.managame.jpa.core.bootstrap.PersistenceConfigurer;
-import cn.managame.jpa.core.bootstrap.PersistenceModule;
 import cn.managame.jpa.docdb.executor.DocExecutor;
 import cn.managame.jpa.docdb.metadata.DocEntityMetadataResolver;
 import cn.managame.jpa.docdb.repository.DocRepositoryFactory;
 
-public class DocdbModule implements PersistenceModule {
+public class DocdbModule implements GameJpaExtension {
 
     private final DocExecutor executor;
 
@@ -20,6 +20,10 @@ public class DocdbModule implements PersistenceModule {
 
     public static DocdbModule withExecutor(DocExecutor executor) {
         return new DocdbModule(executor);
+    }
+
+    public static DocdbModule defaults() {
+        return new DocdbModule();
     }
 
     @Override

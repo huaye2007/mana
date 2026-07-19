@@ -22,9 +22,23 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.RejectedExecutionException;
 
 public class GameJpaContextTest {
+
+    @Test
+    public void useAppliesExtensionImmediately() {
+        AtomicBoolean configured = new AtomicBoolean();
+
+        GameJpaBootstrap bootstrap = new GameJpaBootstrap()
+                .use(configurer -> configured.set(true));
+
+        assertTrue(configured.get());
+        try (GameJpaContext context = bootstrap.bootstrap(List.of())) {
+            assertNotNull(context);
+        }
+    }
 
     @Test
     public void picksHighestPriorityRepositoryFactoryIndependentOfInstallOrder() {

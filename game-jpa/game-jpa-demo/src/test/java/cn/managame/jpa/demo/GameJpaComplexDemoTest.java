@@ -36,8 +36,8 @@ public class GameJpaComplexDemoTest {
         RecordingLifecycle lifecycle = new RecordingLifecycle();
 
         GameJpaContext context = new GameJpaBootstrap()
-                .install(RdbModule.withExecutor(rdb))
-                .install(DocdbModule.withExecutor(doc))
+                .use(RdbModule.withExecutor(rdb))
+                .use(DocdbModule.withExecutor(doc))
                 .routingStrategy(new ModuloRoutingStrategy())
                 .metricsCollector(metrics)
                 .addLifecycleListener(lifecycle)

@@ -21,7 +21,7 @@ public class DocWarmupTest {
         RecordingDocExecutor executor = new RecordingDocExecutor(List.of(item, new WarmupItem(2L, "two")));
 
         GameJpaContext context = new GameJpaBootstrap()
-                .install(DocdbCacheModule.withExecutor(executor))
+                .use(DocdbCacheModule.withExecutor(executor))
                 .bootstrap(List.of(WarmupItem.class));
 
         try {
@@ -40,7 +40,7 @@ public class DocWarmupTest {
         RecordingDocExecutor executor = new RecordingDocExecutor(List.of());
 
         assertThrows(GameJpaException.class, () -> new GameJpaBootstrap()
-                .install(DocdbCacheModule.withExecutor(executor))
+                .use(DocdbCacheModule.withExecutor(executor))
                 .routingStrategy(new NumericRoutingStrategy())
                 .bootstrap(List.of(ShardedWarmupItem.class)));
     }

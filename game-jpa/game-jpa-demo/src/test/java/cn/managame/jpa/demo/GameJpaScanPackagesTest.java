@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * 验证 {@link GameJpaBootstrap#scanPackages} 端到端:扫描包 -> 复用各模块 SPI 识别实体与 Repository
- * -> 实例化。RDB 与 DocDB 两个模块同时安装,证明扫描器自动覆盖所有已装模块、不硬编码类型。
+ * -> 实例化。RDB 与 DocDB 两个扩展同时启用,证明扫描器自动覆盖所有已启用扩展、不硬编码类型。
  */
 public class GameJpaScanPackagesTest {
 
@@ -29,8 +29,8 @@ public class GameJpaScanPackagesTest {
         InMemoryDocExecutor doc = new InMemoryDocExecutor();
 
         GameJpaScan scan = new GameJpaBootstrap()
-                .install(RdbModule.withExecutor(rdb))
-                .install(DocdbModule.withExecutor(doc))
+                .use(RdbModule.withExecutor(rdb))
+                .use(DocdbModule.withExecutor(doc))
                 .routingStrategy(new ModuloRoutingStrategy())
                 .scanPackages("cn.managame.jpa.demo.domain", "cn.managame.jpa.demo.repository");
 

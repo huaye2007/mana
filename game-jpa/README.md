@@ -117,8 +117,7 @@ public interface PlayerRepository extends IRdbUniqueCacheRepository<Player, Long
 ```java
 import cn.managame.jpa.rdb.cache.RdbCacheModule;
 import cn.managame.jpa.rdb.mysql.MysqlDataSourceFactory;
-import cn.managame.jpa.rdb.mysql.MysqlRdbExecutor;
-import cn.managame.jpa.rdb.mysql.MysqlSchemaModule;
+import cn.managame.jpa.rdb.mysql.MysqlStorage;
 import cn.managame.jpa.starter.GameJpaBootstrap;
 import cn.managame.jpa.starter.GameJpaContext;
 
@@ -133,8 +132,8 @@ DataSource dataSource = MysqlDataSourceFactory.builder()
         .build();
 
 GameJpaContext context = new GameJpaBootstrap()
-        .install(MysqlSchemaModule.update(dataSource))
-        .install(RdbCacheModule.withExecutor(new MysqlRdbExecutor(dataSource)))
+        .use(MysqlStorage.using(dataSource).updateSchema())
+        .use(RdbCacheModule.defaults())
         .flushIntervalMillis(5000)
         .flushThreadMode(FlushThreadMode.VIRTUAL) // 仅选择线程类型；两种模式的 worker 数都严格有界
         .flushThreadCount(2)                      // 不同物理表的最大并发数
@@ -146,7 +145,7 @@ GameJpaContext context = new GameJpaBootstrap()
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
-`MysqlSchemaModule` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`MysqlRdbExecutor` 的 `columnAutoWiden` 默认关闭，不会在写路径修改列；字符串/二进制字段长度不足会翻译为 `DataTooLargeException` 并按异步策略重试。只有明确接受写路径执行 `ALTER TABLE` 时才应显式调用 `columnAutoWiden(true)`。
+`MysqlStorage` 统一持有 DataSource、MySQL 执行器和可选 Schema 策略，因此 DataSource 只配置一次；`RdbCacheModule` 只选择缓存 Repository，不再负责创建数据库执行器。`updateSchema()` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`columnAutoWiden` 默认关闭，不会在写路径修改列；字符串/二进制字段长度不足会翻译为 `DataTooLargeException` 并按异步策略重试。只有明确接受写路径执行 `ALTER TABLE` 时才应显式调用 `columnAutoWiden(true)`。
 
 异步写回只调度发生过提交的物理表，不周期扫描空桶。同一实体通道、同一物理表始终只有一个在途批次，超过 `maxFlushBatchSize` 的数据按顺序分片；不同物理表最多按 `flushThreadCount` 并行。瞬时批次错误整批回灌，数据级错误使用二分拆批定位，不再直接放大为整批逐条写入。
 
@@ -174,13 +173,13 @@ context.close();
 
 ### 普通 RDB
 
-使用 `RdbModule.withExecutor(new MysqlRdbExecutor(dataSource))`，业务 Repository 继承 `RdbRepository<T, ID>`。
+使用 `MysqlStorage.using(dataSource)` 配合 `RdbModule.defaults()`，业务 Repository 继承 `RdbRepository<T, ID>`。
 
 适合强一致写路径、后台管理、低频实体。
 
 ### RDB 缓存写回
 
-使用 `RdbCacheModule.withExecutor(...)`，业务 Repository 继承：
+使用 `MysqlStorage.using(dataSource)` 配合 `RdbCacheModule.defaults()`，业务 Repository 继承：
 
 - `IRdbUniqueCacheRepository<T, ID>`：主键唯一缓存
 - `IRdbMultiCacheRepository<T, ID>`：组合键多记录缓存
@@ -200,19 +199,20 @@ public class ItemConfig {
 }
 ```
 
-安装 `RdbCacheModule` 后，`GameJpaBootstrap.bootstrap(...)` 会在上下文创建完成后自动调用
+启用 `RdbCacheModule` 后，`GameJpaBootstrap.bootstrap(...)` 会在上下文创建完成后自动调用
 `findAll()` 预热这类实体；后续 `cacheLoad(id)` 会复用同一份无过期、无容量淘汰的内存缓存。
 该能力只适合数据量可控的非分片表。
 
 创角流程里，如果业务能判断某个 role 刚创建、相关表在数据库里一定没有历史记录，可以把这个判断交给缓存配置：
 
 ```java
-RdbCacheModule cacheModule = RdbCacheModule.withExecutor(executor)
+RdbCacheModule cacheModule = RdbCacheModule.defaults()
         .newRoleDetector(roleId -> roleService.isNewlyCreated(roleId), Duration.ofMinutes(10))
         .defaultConfig(CacheConfig.defaults());
 
 GameJpaContext context = new GameJpaBootstrap()
-        .install(cacheModule)
+        .use(MysqlStorage.using(dataSource).updateSchema())
+        .use(cacheModule)
         .bootstrap(entityClasses);
 ```
 
@@ -297,7 +297,7 @@ long count = repo.count(new RdbQuerySpec().eq("roleId", roleId).gte("level", 10)
 - 服务停机必须调用 `GameJpaContext.close()`。
 - 缓存写回分片路由由执行层从实体 `@ShardKey` 自动提取；`cacheLoad(id)` / `cacheDelete(id)` 只有在实体已在缓存中或 `@ShardKey` 就是主键时能自动路由，其他场景使用存储相关 Repository 的 `cacheLoad(id, routingKey)` / `cacheDelete(id, routingKey)`。
 - 查询 API 使用 Java 属性名，不使用裸 SQL 列名。
-- 生产环境如果要启动时自动补表结构，显式安装 `MysqlSchemaModule.update(dataSource)`；它只会创建缺失表、添加缺失列/索引，不会删除列、重命名列或修改已有列类型/默认值。上线前可用 `MysqlSchemaGenerator.Mode.GENERATE_ONLY` 生成 diff 报告，`-- MANUAL MIGRATION REQUIRED` 注释项应进入受控 migration。
+- 生产环境如果要启动时自动补表结构，在 `MysqlStorage.using(dataSource)` 上显式调用 `updateSchema()`；它只会创建缺失表、添加缺失列/索引，不会删除列、重命名列或修改已有列类型/默认值。上线前可用 `generateSchemaOnly()` 生成 diff 报告，`-- MANUAL MIGRATION REQUIRED` 注释项应进入受控 migration。
 - 带 `@ShardKey` 且安装了 `RoutingStrategy` 的 RDB 实体不支持自动 schema 同步；分片物理表/多数据源 DDL 应使用受控 migration 或预生成脚本。
 - `@Column(defaultValue = "...")` 只对 `null` 生效；声明默认值的字段应使用包装类型，例如 `Integer`、`Boolean`，不要使用 `int`、`boolean`。
 
@@ -325,7 +325,7 @@ mvn "-Dmaven.repo.local=..\\.m2" test
 1. 定义注解和元数据解析器，或复用现有元数据模型。
 2. 实现存储执行器。
 3. 实现 `RepositoryFactory`。
-4. 实现 `PersistenceModule` 注册 resolver、factory、executor。
+4. 实现 `GameJpaExtension` 注册 resolver、factory、executor。
 5. 如果需要缓存写回，向 `WriteChannelRegistry` 注册对应 `WriteChannel`（实体缓存用 `BatchFlusher` 合并通道，日志用 `AppendFlusher` 追加通道）。
 6. 补充元数据、路由、Repository 创建、失败行为测试。
 

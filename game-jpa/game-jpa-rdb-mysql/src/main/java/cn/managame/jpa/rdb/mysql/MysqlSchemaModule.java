@@ -1,9 +1,9 @@
 package cn.managame.jpa.rdb.mysql;
 
 import cn.managame.jpa.core.bootstrap.BootstrapHook;
+import cn.managame.jpa.core.bootstrap.GameJpaExtension;
 import cn.managame.jpa.core.bootstrap.ModelTypes;
 import cn.managame.jpa.core.bootstrap.PersistenceConfigurer;
-import cn.managame.jpa.core.bootstrap.PersistenceModule;
 import cn.managame.jpa.core.context.ComponentRegistry;
 import cn.managame.jpa.core.metadata.EntityMetadata;
 import cn.managame.jpa.core.registry.MetadataRegistry;
@@ -15,7 +15,7 @@ import java.util.Objects;
 /**
  * Bootstrap module that synchronizes MySQL table structure from registered RDB metadata.
  */
-public final class MysqlSchemaModule implements PersistenceModule {
+public final class MysqlSchemaModule implements GameJpaExtension {
 
     private final MysqlSchemaGenerator generator;
     private final MysqlSchemaGenerator.Mode mode;

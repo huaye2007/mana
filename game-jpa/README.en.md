@@ -119,8 +119,7 @@ Bootstrap the framework:
 ```java
 import cn.managame.jpa.rdb.cache.RdbCacheModule;
 import cn.managame.jpa.rdb.mysql.MysqlDataSourceFactory;
-import cn.managame.jpa.rdb.mysql.MysqlRdbExecutor;
-import cn.managame.jpa.rdb.mysql.MysqlSchemaModule;
+import cn.managame.jpa.rdb.mysql.MysqlStorage;
 import cn.managame.jpa.starter.GameJpaBootstrap;
 import cn.managame.jpa.starter.GameJpaContext;
 
@@ -135,8 +134,8 @@ DataSource dataSource = MysqlDataSourceFactory.builder()
         .build();
 
 GameJpaContext context = new GameJpaBootstrap()
-        .install(MysqlSchemaModule.update(dataSource))
-        .install(RdbCacheModule.withExecutor(new MysqlRdbExecutor(dataSource)))
+        .use(MysqlStorage.using(dataSource).updateSchema())
+        .use(RdbCacheModule.defaults())
         .flushIntervalMillis(5000)
         .flushThreadMode(FlushThreadMode.VIRTUAL) // selects only the thread type; both modes are strictly bounded
         .flushThreadCount(2)                      // maximum concurrency across physical tables
@@ -148,7 +147,7 @@ GameJpaContext context = new GameJpaBootstrap()
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
-`MysqlSchemaModule` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `MysqlRdbExecutor.columnAutoWiden` is disabled by default and never alters columns on the write path; undersized string/binary columns are translated to `DataTooLargeException` and follow the async retry policy. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
+`MysqlStorage` owns the DataSource, MySQL executor, and optional schema policy, so the DataSource is configured only once; `RdbCacheModule` now only selects cache-backed repositories and does not construct a database executor. `updateSchema()` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `columnAutoWiden` is disabled by default and never alters columns on the write path; undersized string/binary columns are translated to `DataTooLargeException` and follow the async retry policy. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
 
 Async write-back schedules only physical tables that received submissions instead of scanning empty buckets. Each entity channel and physical table has at most one in-flight batch; data beyond `maxFlushBatchSize` is chunked sequentially, while different physical tables run in parallel up to `flushThreadCount`. Transient batch failures are requeued as a batch, whereas data-level failures are isolated by binary splitting instead of immediately expanding into one write per row.
 
@@ -176,13 +175,13 @@ The built-in async queue no longer offers local file persistence; a process cras
 
 ### Plain RDB
 
-Use `RdbModule.withExecutor(new MysqlRdbExecutor(dataSource))` and have business Repositories extend `RdbRepository<T, ID>`.
+Use `MysqlStorage.using(dataSource)` with `RdbModule.defaults()` and have business Repositories extend `RdbRepository<T, ID>`.
 
 Suits strongly consistent write paths, back-office administration, and low-frequency entities.
 
 ### RDB Cache Write-back
 
-Use `RdbCacheModule.withExecutor(...)` and have business Repositories extend:
+Use `MysqlStorage.using(dataSource)` with `RdbCacheModule.defaults()` and have business Repositories extend:
 
 - `IRdbUniqueCacheRepository<T, ID>`: unique cache by primary key
 - `IRdbMultiCacheRepository<T, ID>`: multi-record cache by composite key
@@ -201,18 +200,19 @@ public class ItemConfig {
 }
 ```
 
-With `RdbCacheModule` installed, `GameJpaBootstrap.bootstrap(...)` automatically calls `findAll()` to warm such entities after the context is created; subsequent `cacheLoad(id)` calls reuse the same in-memory cache, which has no expiry and no capacity eviction.
+With `RdbCacheModule` enabled, `GameJpaBootstrap.bootstrap(...)` automatically calls `findAll()` to warm such entities after the context is created; subsequent `cacheLoad(id)` calls reuse the same in-memory cache, which has no expiry and no capacity eviction.
 This capability is only for non-sharded tables of controlled size.
 
 In the character-creation flow, if the business can tell that a role was just created and its tables definitely have no history in the database, that judgment can be handed to the cache configuration:
 
 ```java
-RdbCacheModule cacheModule = RdbCacheModule.withExecutor(executor)
+RdbCacheModule cacheModule = RdbCacheModule.defaults()
         .newRoleDetector(roleId -> roleService.isNewlyCreated(roleId), Duration.ofMinutes(10))
         .defaultConfig(CacheConfig.defaults());
 
 GameJpaContext context = new GameJpaBootstrap()
-        .install(cacheModule)
+        .use(MysqlStorage.using(dataSource).updateSchema())
+        .use(cacheModule)
         .bootstrap(entityClasses);
 ```
 
@@ -294,7 +294,7 @@ long count = repo.count(new RdbQuerySpec().eq("roleId", roleId).gte("level", 10)
 - Service shutdown must call `GameJpaContext.close()`.
 - Shard routing for cache write-back is extracted automatically by the execution layer from the entity's `@ShardKey`; `cacheLoad(id)` / `cacheDelete(id)` can only route automatically when the entity is already cached or `@ShardKey` is the primary key — otherwise use the storage-specific Repository's `cacheLoad(id, routingKey)` / `cacheDelete(id, routingKey)`.
 - The query API uses Java property names, not raw SQL column names.
-- To auto-patch the schema at startup in production, install `MysqlSchemaModule.update(dataSource)` explicitly; it only creates missing tables and adds missing columns/indexes — it never drops columns, renames columns, or alters existing column types/defaults. Before going live, `MysqlSchemaGenerator.Mode.GENERATE_ONLY` can produce a diff report; items commented `-- MANUAL MIGRATION REQUIRED` should go into a controlled migration.
+- To auto-patch the schema at startup in production, call `updateSchema()` explicitly on `MysqlStorage.using(dataSource)`; it only creates missing tables and adds missing columns/indexes — it never drops columns, renames columns, or alters existing column types/defaults. Before going live, `generateSchemaOnly()` can produce a diff report; items commented `-- MANUAL MIGRATION REQUIRED` should go into a controlled migration.
 - RDB entities with `@ShardKey` and an installed `RoutingStrategy` do not support automatic schema sync; DDL for sharded physical tables / multiple data sources should use controlled migrations or pre-generated scripts.
 - `@Column(defaultValue = "...")` only applies to `null`; fields declaring a default should use wrapper types such as `Integer`, `Boolean` — not `int`, `boolean`.
 
@@ -322,7 +322,7 @@ The general steps for a new storage backend:
 1. Define annotations and a metadata resolver, or reuse the existing metadata model.
 2. Implement the storage executor.
 3. Implement a `RepositoryFactory`.
-4. Implement a `PersistenceModule` registering the resolver, factory and executor.
+4. Implement a `GameJpaExtension` registering the resolver, factory and executor.
 5. For cache write-back, register the corresponding `WriteChannel` with `WriteChannelRegistry` (entity caches use the `BatchFlusher` merge channel, logs use the `AppendFlusher` append channel).
 6. Add tests for metadata, routing, Repository creation and failure behavior.
 

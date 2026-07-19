@@ -13,7 +13,7 @@ import java.util.Map;
  *
  * <pre>{@code
  * GameJpaScan scan = new GameJpaBootstrap()
- *         .install(RdbCacheModule.withExecutor(executor))
+ *         .use(RdbCacheModule.withExecutor(executor))
  *         .scanPackages("cn.managame.dev");
  * scan.repositories().forEach((type, bean) ->
  *         beanFactory.registerSingleton(Introspector.decapitalize(type.getSimpleName()), bean));

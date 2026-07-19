@@ -4,8 +4,8 @@ import cn.managame.jpa.async.AsyncWriteQueue;
 import cn.managame.jpa.async.FlushScheduler;
 import cn.managame.jpa.async.FlushThreadMode;
 import cn.managame.jpa.core.bootstrap.BootstrapHook;
+import cn.managame.jpa.core.bootstrap.GameJpaExtension;
 import cn.managame.jpa.core.bootstrap.PersistenceConfigurer;
-import cn.managame.jpa.core.bootstrap.PersistenceModule;
 import cn.managame.jpa.core.converter.TypeConverterRegistry;
 import cn.managame.jpa.core.exception.ConfigurationException;
 import cn.managame.jpa.core.lifecycle.LifecycleDispatcher;
@@ -69,8 +69,12 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
         return this;
     }
 
-    public GameJpaBootstrap install(PersistenceModule module) {
-        module.configure(this);
+    /**
+     * Enables a persistence capability such as a database backend or a cache-backed
+     * repository implementation.
+     */
+    public GameJpaBootstrap use(GameJpaExtension extension) {
+        Objects.requireNonNull(extension, "extension").configure(this);
         return this;
     }
 
@@ -272,9 +276,9 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
      *
      * <p>规则:被某个已注册 {@link EntityMetadataResolver} 支持的<b>具体类</b>作为实体注册;被某个已注册
      * {@link RepositoryFactory} 支持的<b>接口</b>实例化为 Repository。实体识别与 Repository 识别都复用
-     * 既有 SPI,因此自动覆盖 RDB / DocDB / 缓存等所有已安装模块,无需在这里硬编码类型。</p>
+     * 既有 SPI,因此自动覆盖 RDB / DocDB / 缓存等所有已启用扩展,无需在这里硬编码类型。</p>
      *
-     * <p>必须在 {@code install(...)} 之后调用(resolver / factory 需先就位)。框架不依赖任何 DI 容器,
+     * <p>必须在 {@code use(...)} 之后调用(resolver / factory 需先就位)。框架不依赖任何 DI 容器,
      * 返回的 {@link GameJpaScan} 让宿主自行把 Repository 实例注册进 Spring 等容器。</p>
      *
      * @param basePackages 需要扫描的包名(含子包),用线程上下文 ClassLoader 加载
@@ -293,10 +297,10 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
                     if (supportsRepository(candidate)) {
                         repositoryInterfaces.add(candidate);
                     } else if (candidate.isAnnotationPresent(GameRepository.class)) {
-                        // 显式声明了 @GameRepository 却无人支持:多半继承错基接口或对应模块没 install。
+                        // 显式声明了 @GameRepository 却无人支持:多半继承错基接口或对应扩展没 use。
                         throw new IllegalStateException("@GameRepository 接口 " + candidate.getName()
-                                + " 没有任何已安装模块的 RepositoryFactory 支持;请检查它是否继承了正确的 "
-                                + "Repository 基接口,以及对应存储模块是否已 install。");
+                                + " 没有任何已启用扩展的 RepositoryFactory 支持;请检查它是否继承了正确的 "
+                                + "Repository 基接口,以及对应存储扩展是否已 use。");
                     }
                 } else if (supportsEntity(candidate)) {
                     entityClasses.add(candidate);

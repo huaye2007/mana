@@ -4,8 +4,8 @@ import cn.managame.jpa.cache.CacheConfig;
 import cn.managame.jpa.cache.NewRoleDetector;
 import cn.managame.jpa.cache.NewRolePolicy;
 import cn.managame.jpa.core.bootstrap.BootstrapHook;
+import cn.managame.jpa.core.bootstrap.GameJpaExtension;
 import cn.managame.jpa.core.bootstrap.PersistenceConfigurer;
-import cn.managame.jpa.core.bootstrap.PersistenceModule;
 import cn.managame.jpa.core.context.ComponentRegistry;
 import cn.managame.jpa.core.registry.MetadataRegistry;
 import cn.managame.jpa.docdb.executor.DocExecutor;
@@ -13,7 +13,7 @@ import cn.managame.jpa.docdb.metadata.DocEntityMetadataResolver;
 
 import java.time.Duration;
 
-public class DocdbCacheModule implements PersistenceModule {
+public class DocdbCacheModule implements GameJpaExtension {
 
     private final DocCacheRepositoryFactory factory = new DocCacheRepositoryFactory();
     private final DocExecutor executor;
@@ -29,6 +29,14 @@ public class DocdbCacheModule implements PersistenceModule {
 
     public static DocdbCacheModule withExecutor(DocExecutor executor) {
         return new DocdbCacheModule(executor);
+    }
+
+    /**
+     * Enables cache-backed document repositories using the executor supplied by a
+     * document database storage extension.
+     */
+    public static DocdbCacheModule defaults() {
+        return new DocdbCacheModule();
     }
 
     public DocdbCacheModule defaultConfig(CacheConfig config) {

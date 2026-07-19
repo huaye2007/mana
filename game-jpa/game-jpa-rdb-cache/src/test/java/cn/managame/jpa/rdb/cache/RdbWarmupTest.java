@@ -29,7 +29,7 @@ public class RdbWarmupTest {
         RecordingExecutor executor = new RecordingExecutor(List.of(item, new WarmupItem(2L, "two")));
 
         GameJpaContext context = new GameJpaBootstrap()
-                .install(RdbCacheModule.withExecutor(executor)
+                .use(RdbCacheModule.withExecutor(executor)
                         .defaultConfig(CacheConfig.builder()
                                 .maximumSize(1)
                                 .expireAfterWrite(Duration.ZERO)
@@ -52,7 +52,7 @@ public class RdbWarmupTest {
         RecordingExecutor executor = new RecordingExecutor(List.of());
 
         assertThrows(GameJpaException.class, () -> new GameJpaBootstrap()
-                .install(RdbCacheModule.withExecutor(executor))
+                .use(RdbCacheModule.withExecutor(executor))
                 .routingStrategy(new NumericRoutingStrategy())
                 .bootstrap(List.of(ShardedWarmupItem.class)));
     }

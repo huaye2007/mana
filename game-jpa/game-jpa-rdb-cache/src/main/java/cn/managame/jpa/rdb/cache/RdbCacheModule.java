@@ -4,8 +4,8 @@ import cn.managame.jpa.cache.CacheConfig;
 import cn.managame.jpa.cache.NewRoleDetector;
 import cn.managame.jpa.cache.NewRolePolicy;
 import cn.managame.jpa.core.bootstrap.BootstrapHook;
+import cn.managame.jpa.core.bootstrap.GameJpaExtension;
 import cn.managame.jpa.core.bootstrap.PersistenceConfigurer;
-import cn.managame.jpa.core.bootstrap.PersistenceModule;
 import cn.managame.jpa.core.context.ComponentRegistry;
 import cn.managame.jpa.core.registry.MetadataRegistry;
 import cn.managame.jpa.rdb.executor.RdbExecutor;
@@ -14,7 +14,7 @@ import cn.managame.jpa.rdb.repository.RdbLogRepositoryFactory;
 
 import java.time.Duration;
 
-public class RdbCacheModule implements PersistenceModule {
+public class RdbCacheModule implements GameJpaExtension {
 
     private final RdbCacheRepositoryFactory factory = new RdbCacheRepositoryFactory();
     private final RdbExecutor executor;
@@ -30,6 +30,14 @@ public class RdbCacheModule implements PersistenceModule {
 
     public static RdbCacheModule withExecutor(RdbExecutor executor) {
         return new RdbCacheModule(executor);
+    }
+
+    /**
+     * Enables cache-backed RDB repositories using the executor supplied by a
+     * database storage extension.
+     */
+    public static RdbCacheModule defaults() {
+        return new RdbCacheModule();
     }
 
     public RdbCacheModule defaultConfig(CacheConfig config) {

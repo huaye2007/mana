@@ -164,7 +164,7 @@ public class RdbBatchExecutorTest {
     public void moduleNewRoleDetectorAppliesGloballyToRepositories() {
         RecordingExecutor executor = new RecordingExecutor();
         GameJpaContext context = new GameJpaBootstrap()
-                .install(RdbCacheModule.withExecutor(executor)
+                .use(RdbCacheModule.withExecutor(executor)
                         .newRoleDetector(roleId -> roleId.equals(7L), Duration.ofMinutes(5)))
                 .bootstrap(List.of(Player.class));
 

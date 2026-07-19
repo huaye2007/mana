@@ -81,7 +81,7 @@ public class DocMultiCacheRepositoryTest {
 
     private GameJpaContext bootstrap(RecordingDocExecutor executor, List<Class<?>> entities) {
         return new GameJpaBootstrap()
-                .install(DocdbCacheModule.withExecutor(executor))
+                .use(DocdbCacheModule.withExecutor(executor))
                 .bootstrap(entities);
     }
 
