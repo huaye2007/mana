@@ -27,11 +27,11 @@ class CommandBackendServiceResolverTest {
     }
 
     @Test void keepsIndependentStickyBindingPerServiceType() {
-        BackendDirectory directory = new BackendDirectory(ConsistentHashRouter::new);
+        BackendDirectory directory = new BackendDirectory();
         ServiceInstance auth = instance("auth", "a1");
         ServiceInstance scene = instance("scene", "s1");
-        directory.service("auth").upsert(auth);
-        directory.service("scene").upsert(scene);
+        directory.upsert(auth);
+        directory.upsert(scene);
         GatewaySession session = new GatewaySession(9, new FakeConnection(9, "127.0.0.1"), "127.0.0.1");
 
         assertEquals(auth, directory.resolve("auth", session));

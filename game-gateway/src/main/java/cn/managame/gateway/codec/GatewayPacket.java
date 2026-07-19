@@ -21,6 +21,16 @@ public final class GatewayPacket {
         return packet;
     }
 
+    /** Transfers ownership of {@code body} to the packet without copying it. */
+    public static GatewayPacket wrap(int command, int seq, int code, byte[] body) {
+        GatewayPacket packet = new GatewayPacket();
+        packet.command = command;
+        packet.seq = seq;
+        packet.code = code;
+        packet.body = body == null || body.length == 0 ? GatewayPacketConstant.EMPTY_BODY : body;
+        return packet;
+    }
+
     public int getCommand() { return command; }
     public void setCommand(int command) { this.command = command; }
     public int getSeq() { return seq; }

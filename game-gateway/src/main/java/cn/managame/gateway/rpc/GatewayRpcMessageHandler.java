@@ -49,7 +49,7 @@ public final class GatewayRpcMessageHandler extends RpcMessageHandler {
         }
         int seq = (int) Metadata.findLong(message.getMetadata(), MetadataKeys.GW_SEQ, 0);
         byte[] body = message.getBody() instanceof byte[] bytes ? bytes : GatewayPacketConstant.EMPTY_BODY;
-        GatewayPacket packet = GatewayPacket.of(message.getCommand(), seq, code, body);
+        GatewayPacket packet = GatewayPacket.wrap(message.getCommand(), seq, code, body);
         packet.setFlags((byte) Metadata.findLong(message.getMetadata(), MetadataKeys.GW_FLAGS, 0));
         session.writeMsg(packet);
     }

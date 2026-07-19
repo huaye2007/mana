@@ -10,6 +10,17 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 class GatewayPacketCodecTest {
+    @Test void makesCopyAndOwnershipTransferFactoriesExplicit() {
+        byte[] copiedBody = {1, 2};
+        GatewayPacket copied = GatewayPacket.of(1, 1, 0, copiedBody);
+        copiedBody[0] = 9;
+        assertArrayEquals(new byte[]{1, 2}, copied.getBody());
+
+        byte[] ownedBody = {3, 4};
+        GatewayPacket wrapped = GatewayPacket.wrap(1, 1, 0, ownedBody);
+        assertSame(ownedBody, wrapped.getBody());
+    }
+
     @Test void roundTripsFragmentedAndCoalescedFrames() {
         byte[] first = encode(GatewayPacket.of(1000, 7, 0, "hello".getBytes(StandardCharsets.UTF_8)));
         byte[] second = encode(GatewayPacket.of(1001, 8, 3, GatewayPacketConstant.EMPTY_BODY));

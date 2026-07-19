@@ -50,7 +50,7 @@ public final class GatewayPacketDecoder extends ByteToMessageDecoder {
             ctx.close();
             return;
         }
-        GatewayPacket packet = GatewayPacket.of(command, seq, code, body);
+        GatewayPacket packet = GatewayPacket.wrap(command, seq, code, body);
         packet.setFlags(flags);
         out.add(packet);
     }

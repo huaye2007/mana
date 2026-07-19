@@ -3,7 +3,6 @@ package cn.managame.gateway.rpc;
 import cn.managame.gateway.codec.GatewayErrorCode;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.router.BackendDirectory;
-import cn.managame.gateway.router.ConsistentHashRouter;
 import cn.managame.gateway.session.GatewaySession;
 import cn.managame.gateway.support.FakeConnection;
 import cn.managame.registry.api.ServiceInstance;
@@ -16,8 +15,8 @@ class PacketForwarderTest {
 
     @Test
     void returnsServerBusyWhenRpcDeliveryIsRejected() {
-        BackendDirectory backends = new BackendDirectory(ConsistentHashRouter::new);
-        backends.service("logic").upsert(ServiceInstance.builder().name("logic").id("node-1")
+        BackendDirectory backends = new BackendDirectory();
+        backends.upsert(ServiceInstance.builder().name("logic").id("node-1")
                 .address("127.0.0.1").port(9001).build());
         FakeConnection connection = new FakeConnection(7, "127.0.0.1:10000");
         GatewaySession session = new GatewaySession(7, connection, connection.getRemoteAddress());

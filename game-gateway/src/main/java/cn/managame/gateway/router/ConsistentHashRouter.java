@@ -10,7 +10,7 @@ import java.util.NavigableMap;
 import java.util.TreeMap;
 
 /** Immutable-snapshot consistent hash ring. Reads are lock-free. */
-public final class ConsistentHashRouter implements Router {
+public final class ConsistentHashRouter {
     public static final int DEFAULT_VIRTUAL_NODES = 160;
 
     private final int virtualNodes;
@@ -22,7 +22,6 @@ public final class ConsistentHashRouter implements Router {
         this.virtualNodes = virtualNodes;
     }
 
-    @Override
     public void refresh(List<ServiceInstance> instances) {
         List<ServiceInstance> healthy = new ArrayList<>();
         for (ServiceInstance instance : List.copyOf(instances)) if (instance.isHealthy()) healthy.add(instance);
@@ -35,7 +34,6 @@ public final class ConsistentHashRouter implements Router {
         ring = java.util.Collections.unmodifiableNavigableMap(next);
     }
 
-    @Override
     public ServiceInstance select(long routeKey) {
         NavigableMap<Long, ServiceInstance> snapshot = ring;
         if (snapshot.isEmpty()) return null;

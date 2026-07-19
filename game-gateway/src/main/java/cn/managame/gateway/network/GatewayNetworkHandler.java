@@ -3,7 +3,7 @@ package cn.managame.gateway.network;
 import cn.managame.gateway.codec.GatewayErrorCode;
 import cn.managame.gateway.codec.GatewayPacket;
 import cn.managame.gateway.codec.GatewayPacketConstant;
-import cn.managame.gateway.filter.FilterChain;
+import cn.managame.gateway.filter.GatewayGuard;
 import cn.managame.gateway.rpc.PacketForwarder;
 import cn.managame.gateway.session.GatewaySession;
 import cn.managame.gateway.session.GatewaySessionManager;
@@ -18,20 +18,20 @@ import java.util.Objects;
 public final class GatewayNetworkHandler implements IConnectionHandler {
     private static final Logger log = LoggerFactory.getLogger(GatewayNetworkHandler.class);
     private final GatewaySessionManager sessionManager;
-    private final FilterChain filterChain;
+    private final GatewayGuard guard;
     private final PacketForwarder forwarder;
 
-    public GatewayNetworkHandler(GatewaySessionManager sessionManager, FilterChain filterChain,
+    public GatewayNetworkHandler(GatewaySessionManager sessionManager, GatewayGuard guard,
                                  PacketForwarder forwarder) {
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
-        this.filterChain = Objects.requireNonNull(filterChain, "filterChain");
+        this.guard = Objects.requireNonNull(guard, "guard");
         this.forwarder = Objects.requireNonNull(forwarder, "forwarder");
     }
 
     @Override
     public void onConnect(IConnection connection) {
         GatewaySession session = sessionManager.create(connection);
-        if (!filterChain.onConnect(session)) {
+        if (!guard.onConnect(session)) {
             session.close();
             return;
         }
@@ -56,7 +56,7 @@ public final class GatewayNetworkHandler implements IConnectionHandler {
                     GatewayErrorCode.BAD_REQUEST, GatewayPacketConstant.EMPTY_BODY));
             return;
         }
-        int code = filterChain.onPacket(session, packet);
+        int code = guard.onPacket(session, packet);
         if (code != GatewayErrorCode.OK) {
             session.writeMsg(GatewayPacket.of(packet.getCommand(), packet.getSeq(), code, GatewayPacketConstant.EMPTY_BODY));
             return;
@@ -67,7 +67,7 @@ public final class GatewayNetworkHandler implements IConnectionHandler {
     @Override
     public void onDisconnect(IConnection connection) {
         GatewaySession session = sessionManager.removeByConnection(connection);
-        if (session != null) filterChain.onDisconnect(session);
+        if (session != null) guard.onDisconnect(session);
     }
 
     @Override

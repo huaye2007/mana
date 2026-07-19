@@ -1,6 +1,5 @@
 package cn.managame.gateway.rpc;
 
-import cn.managame.gateway.registry.BackendConnector;
 import cn.managame.registry.api.ServiceInstance;
 import cn.managame.rpc.ConnectionTargetConfig;
 import cn.managame.rpc.RpcClient;
@@ -10,7 +9,7 @@ import cn.managame.rpc.RpcRequest;
 import java.util.Objects;
 
 /** Gateway-specific facade over the generic RPC client's target pool. */
-public final class GatewayRpcClient implements BackendConnector, AutoCloseable {
+public final class GatewayRpcClient implements AutoCloseable {
     private final RpcClient client;
     private final int connectionsPerBackend;
 
@@ -21,7 +20,6 @@ public final class GatewayRpcClient implements BackendConnector, AutoCloseable {
         this.connectionsPerBackend = connectionsPerBackend;
     }
 
-    @Override
     public void connectBackend(ServiceInstance instance) {
         ConnectionTargetConfig target = new ConnectionTargetConfig();
         target.setServiceName(instance.getName());
@@ -32,7 +30,6 @@ public final class GatewayRpcClient implements BackendConnector, AutoCloseable {
         client.connect(target);
     }
 
-    @Override
     public void disconnectBackend(ServiceInstance instance) { client.disconnect(instance.getName(), instance.getKey()); }
 
     public void forward(String serviceName, String serviceId, RpcRequest request) {

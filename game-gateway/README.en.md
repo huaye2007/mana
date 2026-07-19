@@ -4,14 +4,23 @@
 
 `game-gateway` is the edge entry point for game clients. It accepts long-lived TCP and WebSocket connections, applies connection protection, per-session rate limiting and a login gate, maintains backend pools through service discovery, and forwards opaque business payloads bidirectionally over `game-rpc`. It reads packet headers but never deserializes business objects.
 
+## Architecture
+
+```text
+Data plane:    TCP / WebSocket → codec → admission guard → session/router → game-rpc → game server
+Control plane: game-registry.watchService ───────────────────────────────→ backend directory/RPC pool
+```
+
+`game-registry` is the only service-discovery source. It owns current snapshots, incremental events, and subscription recovery. The gateway only consumes `ADDED / UPDATED / REMOVED` events and implements no polling or second discovery mechanism. Registry events stay off the data path; the backend directory publishes immutable hash-ring snapshots so forwarding reads remain lock-free.
+
 ## Core behavior
 
 - TCP and WebSocket share one binary frame: `bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes)`.
 - A packet is limited to 1 MiB by default. Negative lengths, oversized frames, and unexpected message types close the connection.
-- Filters run in this order: aggregate IP protection, session token bucket, login gate. The login command remains available before authentication.
+- Admission checks run in this order: aggregate IP protection, session token bucket, login gate. All three share one session state, and the login command remains available before authentication.
 - Sessions route by `sessionId` first and by `roleId` after a successful login binds the role. A duplicate role login receives a kick packet before the old connection closes.
 - Commands first resolve to a logical service type such as authentication, scene, or chat, then select an instance within that type.
-- Every service type has its own `ServiceRegistry.watchService` subscription, consistent-hash ring, and RPC targets.
+- Every service type subscribes directly through `ServiceRegistry.watchService` and has its own consistent-hash ring and RPC targets.
 - Stickiness is tracked independently per service type. Losing one type's instance does not disturb the session's bindings to other backend services.
 
 ## Forwarding contract

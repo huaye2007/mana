@@ -47,12 +47,14 @@ public final class GatewaySessionManager {
         }
     }
 
-    public synchronized void remove(GatewaySession session) {
+    public void remove(GatewaySession session) {
         if (session == null) return;
         sessions.remove(session.getSessionId(), session);
         connections.remove(session.getConnection(), session);
-        long roleId = session.getRoleId();
-        if (roleId > 0) roles.remove(roleId, session);
+        synchronized (session) {
+            long roleId = session.getRoleId();
+            if (roleId > 0) roles.remove(roleId, session);
+        }
     }
 
     public GatewaySession getBySessionId(long sessionId) { return sessions.get(sessionId); }
@@ -66,14 +68,17 @@ public final class GatewaySessionManager {
     }
 
     /** Atomically binds a role and kicks the previous live session, if any. */
-    public synchronized void bindRole(GatewaySession session, long roleId) {
+    public void bindRole(GatewaySession session, long roleId) {
         Objects.requireNonNull(session, "session");
         if (roleId <= 0) throw new IllegalArgumentException("roleId must be positive");
-        if (sessions.get(session.getSessionId()) != session || !session.getConnection().isActive()) return;
-        long oldRole = session.getRoleId();
-        if (oldRole > 0 && oldRole != roleId) roles.remove(oldRole, session);
-        session.setRoleId(roleId);
-        GatewaySession previous = roles.put(roleId, session);
+        GatewaySession previous;
+        synchronized (session) {
+            if (sessions.get(session.getSessionId()) != session || !session.getConnection().isActive()) return;
+            long oldRole = session.getRoleId();
+            if (oldRole > 0 && oldRole != roleId) roles.remove(oldRole, session);
+            session.setRoleId(roleId);
+            previous = roles.put(roleId, session);
+        }
         if (previous != null && previous != session) kick(previous, GatewayErrorCode.DUPLICATE_LOGIN);
     }
 

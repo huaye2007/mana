@@ -11,8 +11,6 @@ import cn.managame.gateway.session.GatewaySession;
 import cn.managame.registry.api.ServiceInstance;
 import cn.managame.rpc.RpcRequest;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 
 public final class PacketForwarder {
@@ -48,10 +46,13 @@ public final class PacketForwarder {
             reject(session, packet, GatewayErrorCode.NO_BACKEND);
             return;
         }
-        List<Metadata> metadata = new ArrayList<>(3);
-        metadata.add(Metadata.ofLong(MetadataKeys.GW_SEQ, packet.getSeq()));
-        if (packet.getFlags() != 0) metadata.add(Metadata.ofLong(MetadataKeys.GW_FLAGS, packet.getFlags() & 0xffL));
-        if (packet.getCommand() == loginCommand) metadata.add(Metadata.ofString(MetadataKeys.GW_CLIENT_IP, session.getClientIp()));
+        boolean hasFlags = packet.getFlags() != 0;
+        boolean isLogin = packet.getCommand() == loginCommand;
+        Metadata[] metadata = new Metadata[1 + (hasFlags ? 1 : 0) + (isLogin ? 1 : 0)];
+        int metadataIndex = 0;
+        metadata[metadataIndex++] = Metadata.ofLong(MetadataKeys.GW_SEQ, packet.getSeq());
+        if (hasFlags) metadata[metadataIndex++] = Metadata.ofLong(MetadataKeys.GW_FLAGS, packet.getFlags() & 0xffL);
+        if (isLogin) metadata[metadataIndex] = Metadata.ofString(MetadataKeys.GW_CLIENT_IP, session.getClientIp());
         byte busType = session.getRoleId() > 0 ? GatewayRpcProtocol.BUS_TYPE_ROLE : GatewayRpcProtocol.BUS_TYPE_SESSION;
         long busId = session.getRoleId() > 0 ? session.getRoleId() : session.getSessionId();
         RpcRequest request = RpcRequest.oneway(packet.getCommand())
@@ -60,7 +61,7 @@ public final class PacketForwarder {
                 .busId(busId)
                 .serialType(GatewayPacketConstant.BODY_SERIAL_TYPE)
                 .body(packet.getBody())
-                .metadata(metadata.toArray(Metadata[]::new));
+                .metadata(metadata);
         try {
             if (!requestSender.forward(serviceName, backend.getKey(), request)) {
                 session.setBackendServiceId(serviceName, null);

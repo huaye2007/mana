@@ -1,22 +1,19 @@
 package cn.managame.gateway.bootstrap;
 
 import cn.managame.gateway.codec.BodyCodec;
-import cn.managame.gateway.filter.AuthFilter;
-import cn.managame.gateway.filter.DdosFilter;
-import cn.managame.gateway.filter.FilterChain;
-import cn.managame.gateway.filter.RateLimitFilter;
+import cn.managame.gateway.filter.GatewayGuard;
 import cn.managame.gateway.network.GatewayNetworkHandler;
 import cn.managame.gateway.network.tcp.GatewayTcpServer;
 import cn.managame.gateway.network.websocket.GatewayWebSocketServer;
-import cn.managame.gateway.registry.BackendDiscovery;
 import cn.managame.gateway.router.BackendDirectory;
 import cn.managame.gateway.router.CommandBackendServiceResolver;
-import cn.managame.gateway.router.ConsistentHashRouter;
 import cn.managame.gateway.rpc.GatewayRpcClient;
 import cn.managame.gateway.rpc.GatewayRpcMessageHandler;
 import cn.managame.gateway.rpc.PacketForwarder;
 import cn.managame.gateway.session.GatewaySessionManager;
+import cn.managame.registry.api.DiscoveryEventType;
 import cn.managame.registry.api.ServiceInstance;
+import cn.managame.registry.api.ServiceInstanceEvent;
 import cn.managame.registry.api.ServiceRegistry;
 import cn.managame.registry.factory.RegistryConfig;
 import cn.managame.registry.factory.RegistryFactory;
@@ -28,7 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Runnable gateway composition root. */
 public final class Gateway implements AutoCloseable {
@@ -36,12 +32,15 @@ public final class Gateway implements AutoCloseable {
     private final ServiceRegistry registry;
     private final boolean closeRegistry;
     private final GatewaySessionManager sessions;
+    private final BackendDirectory backends;
     private final GatewayRpcClient rpcClient;
-    private final List<BackendDiscovery> discoveries;
+    private final List<String> backendServices;
+    private final List<AutoCloseable> backendWatches = new ArrayList<>();
+    private final Object backendLock = new Object();
     private final List<INetworkServer> networkServers;
     private final ServiceInstance self;
-    private final AtomicBoolean running = new AtomicBoolean();
-    private final AtomicBoolean closed = new AtomicBoolean();
+    private volatile boolean running;
+    private volatile boolean closed;
 
     public Gateway(GatewayConfig config, ServiceRegistry registry) { this(config, registry, false); }
 
@@ -50,7 +49,7 @@ public final class Gateway implements AutoCloseable {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.closeRegistry = closeRegistry;
         this.sessions = new GatewaySessionManager(config.serverId());
-        BackendDirectory backends = new BackendDirectory(ConsistentHashRouter::new);
+        this.backends = new BackendDirectory();
         CommandBackendServiceResolver serviceResolver = CommandBackendServiceResolver.parse(
                 config.backendService(), config.backendRoutes());
         GatewayRpcMessageHandler downlink = new GatewayRpcMessageHandler(sessions, config.loginCommand());
@@ -58,15 +57,11 @@ public final class Gateway implements AutoCloseable {
                 .serviceName(config.serviceName()).serviceId(config.instanceId())
                 .authToken(config.rpcAuthToken());
         rpcClient = new GatewayRpcClient(rpcConfig, downlink, config.backendConnections());
-        discoveries = serviceResolver.serviceNames().stream()
-                .map(service -> new BackendDiscovery(registry, service, backends.service(service), rpcClient))
-                .toList();
+        backendServices = List.copyOf(serviceResolver.serviceNames());
         PacketForwarder forwarder = new PacketForwarder(rpcClient, backends, serviceResolver, config.loginCommand());
-        FilterChain filters = new FilterChain(List.of(
-                new DdosFilter(config.ddosMaxConnectionsPerIp(), config.ddosPpsPerIp(), config.ddosBurstPerIp()),
-                new RateLimitFilter(config.ratePps(), config.rateBurst()),
-                new AuthFilter(config.loginCommand())));
-        GatewayNetworkHandler network = new GatewayNetworkHandler(sessions, filters, forwarder);
+        GatewayGuard guard = new GatewayGuard(config.loginCommand(), config.ddosMaxConnectionsPerIp(),
+                config.ratePps(), config.rateBurst(), config.ddosPpsPerIp(), config.ddosBurstPerIp());
+        GatewayNetworkHandler network = new GatewayNetworkHandler(sessions, guard, forwarder);
         List<INetworkServer> servers = new ArrayList<>();
         servers.add(new GatewayTcpServer(config.tcpPort(), config.readerIdleSeconds(), BodyCodec.IDENTITY, network));
         if (config.webSocketEnabled()) {
@@ -87,11 +82,14 @@ public final class Gateway implements AutoCloseable {
         catch (RuntimeException error) { registry.close(); throw error; }
     }
 
-    public void start() {
-        if (closed.get()) throw new IllegalStateException("gateway is closed");
-        if (!running.compareAndSet(false, true)) return;
+    public synchronized void start() {
+        if (closed) throw new IllegalStateException("gateway is closed");
+        if (running) return;
+        running = true;
         try {
-            discoveries.forEach(BackendDiscovery::start);
+            for (String service : backendServices) {
+                backendWatches.add(registry.watchService(service, this::onBackendEvent));
+            }
             networkServers.forEach(INetworkServer::start);
             registry.register(self);
         } catch (RuntimeException error) {
@@ -100,22 +98,52 @@ public final class Gateway implements AutoCloseable {
         }
     }
 
-    public boolean isRunning() { return running.get(); }
+    public boolean isRunning() { return running; }
     public GatewaySessionManager sessions() { return sessions; }
 
     @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        running.set(false);
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        running = false;
         try { registry.deregister(self); } catch (RuntimeException ignored) { }
         for (int i = networkServers.size() - 1; i >= 0; i--) {
             try { networkServers.get(i).stop(); } catch (RuntimeException ignored) { }
         }
         sessions.closeAll();
-        for (int i = discoveries.size() - 1; i >= 0; i--) {
-            try { discoveries.get(i).close(); } catch (RuntimeException ignored) { }
+        for (int i = backendWatches.size() - 1; i >= 0; i--) {
+            try { backendWatches.get(i).close(); } catch (Exception ignored) { }
         }
-        try { rpcClient.close(); } finally { if (closeRegistry) registry.close(); }
+        backendWatches.clear();
+        try {
+            synchronized (backendLock) { rpcClient.close(); }
+        } finally {
+            if (closeRegistry) registry.close();
+        }
+    }
+
+    /** Applies discovery events supplied by game-registry to the local route and RPC pools. */
+    private void onBackendEvent(ServiceInstanceEvent event) {
+        synchronized (backendLock) {
+            if (closed) return;
+            ServiceInstance incoming = event.getInstance();
+            ServiceInstance previous = backends.get(incoming.getName(), incoming.getKey());
+            if (event.getType() == DiscoveryEventType.REMOVED || !incoming.isHealthy()) {
+                ServiceInstance removed = previous != null ? previous : incoming;
+                backends.remove(removed);
+                rpcClient.disconnectBackend(removed);
+                return;
+            }
+
+            boolean endpointChanged = previous != null
+                    && (!previous.getAddress().equals(incoming.getAddress()) || previous.getPort() != incoming.getPort());
+            if (endpointChanged) {
+                backends.remove(previous);
+                rpcClient.disconnectBackend(previous);
+            }
+            if (previous == null || endpointChanged) rpcClient.connectBackend(incoming);
+            backends.upsert(incoming);
+        }
     }
 
     public static void main(String[] args) throws InterruptedException {
