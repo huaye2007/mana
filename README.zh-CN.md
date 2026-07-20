@@ -27,12 +27,9 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-registry` | 统一的服务注册发现 API，通过 SPI 提供 memory、Nacos 与 Etcd 实现（见 [game-registry/README.zh-CN.md](game-registry/README.zh-CN.md)） |
 | `game-config` | 基于不可变快照的配置中心，提供 local、Nacos、Etcd 后端、类型化读取与变更监听（见 [game-config/README.zh-CN.md](game-config/README.zh-CN.md)） |
 | `game-runtime` | 统一运行时：命令/事件/定时器/回调四类入口收敛为任务，按 routerKey 哈希到组内固定 worker 串行执行（见 [game-runtime/README.zh-CN.md](game-runtime/README.zh-CN.md)） |
-| `game-ecs` | 面向场景模拟的 ECS：实体/组件稀疏存储、快照查询、分阶段系统流水线、延迟结构变更，以及每个世界独立线程驱动的更新循环（见 [game-ecs/README.zh-CN.md](game-ecs/README.zh-CN.md)） |
 | `game-gateway` | TCP/WebSocket 游戏边缘网关：接入防护、登录门禁、粘滞路由、服务发现及 RPC 双向透传（见 [game-gateway/README.zh-CN.md](game-gateway/README.zh-CN.md)） |
 | `game-jpa` | 轻量持久化框架，含 RDB、DocDB、缓存、异步批量写、分片、starter 和 demo（见 [game-jpa/README.zh-CN.md](game-jpa/README.zh-CN.md)） |
 | `game-dev` | 参考宿主/示例工程：外网 GamePacket 协议 + 登陆/顶号/空闲踢人等框架行为，演示 network/runtime/jpa/serialization 的桥接方式（当前为单进程宿主，尚未接入 registry/config） |
-
-> `game-aoi` / `game-ai` / `game-match` / `game-idgen` 尚未纳入当前仓库。
 
 ## 构建与测试
 

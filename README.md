@@ -27,12 +27,9 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-registry` | Unified service registry/discovery API with memory, Nacos, and Etcd SPI providers (see [game-registry/README.md](game-registry/README.md)) |
 | `game-config` | Immutable configuration snapshots with local, Nacos, and Etcd backends, typed reads, and change listeners (see [game-config/README.md](game-config/README.md)) |
 | `game-runtime` | Unified runtime: commands/events/timers/callbacks converge into tasks, hashed by routerKey to a fixed worker in the group for serial execution (see [game-runtime/README.md](game-runtime/README.md)) |
-| `game-ecs` | Scene simulation ECS with sparse component storage, snapshot queries, phased system pipelines, deferred structural changes, and a dedicated-thread update loop for each world (see [game-ecs/README.md](game-ecs/README.md)) |
 | `game-gateway` | TCP/WebSocket game edge gateway with admission protection, login gating, sticky routing, service discovery and bidirectional RPC tunneling (see [game-gateway/README.md](game-gateway/README.md)) |
 | `game-jpa` | Lightweight persistence framework with RDB, DocDB, caching, async batched writes, sharding, starter and demo (see [game-jpa/README.md](game-jpa/README.md)) |
 | `game-dev` | Reference host / sample project: external GamePacket protocol + framework behaviors such as login, duplicate-login kick and idle kick; demonstrates the bridging of network/runtime/jpa/serialization (currently a single-process host, registry/config not yet integrated) |
-
-> `game-aoi` / `game-ai` / `game-match` / `game-idgen` are not yet part of the current repository.
 
 ## Build & Test
 
