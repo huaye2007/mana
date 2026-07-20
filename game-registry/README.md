@@ -1,19 +1,19 @@
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
 # game-registry
 
-`game-registry` 提供轻量、统一的服务注册与发现能力，目前支持 memory、Nacos 和 Etcd。
+`game-registry` provides a small, unified service registration and discovery API. It currently supports memory, Nacos, and Etcd.
 
-## 模块
+## Modules
 
-- `game-registry-core`：`ServiceRegistry` API、不可变服务实例模型、SPI 工厂。
-- `game-registry-memory`：同一 JVM 内按 `endpoints` 隔离和共享的注册中心，适合开发与测试。
-- `game-registry-nacos`：基于 Nacos Naming Service 的临时实例注册、查询和订阅。
-- `game-registry-etcd`：基于 lease 和前缀 watch 的 Etcd 实现。
+- `game-registry-core`: the `ServiceRegistry` API, immutable service instance model, and SPI factory.
+- `game-registry-memory`: a same-JVM registry shared and isolated by `endpoints`, intended for development and tests.
+- `game-registry-nacos`: ephemeral instance registration, lookup, and subscriptions backed by Nacos Naming Service.
+- `game-registry-etcd`: an Etcd provider backed by leases and prefix watches.
 
-## 使用
+## Usage
 
-依赖 core，并选择至少一个运行时 provider：
+Depend on core and select at least one runtime provider:
 
 ```xml
 <dependency>
@@ -45,8 +45,8 @@ AutoCloseable watch = registry.watchService("game-server", event -> {
 });
 ```
 
-watch 建立时会同步发送当前实例的 `ADDED` 快照，随后发送增量事件。关闭 registry 会停止订阅并注销由该客户端注册的实例。
+A watch synchronously emits the current instances as `ADDED` events, followed by incremental events. Closing a registry stops its watches and deregisters instances owned by that client.
 
-Nacos 使用 `.type("nacos")` 和 Nacos 地址作为 `endpoints`。可通过 `RegistryConfig.properties(...)` 传入 Nacos 客户端属性；`group` 用于指定服务分组，默认 `DEFAULT_GROUP`。
+For Nacos, use `.type("nacos")` and the Nacos server address as `endpoints`. Nacos client properties can be passed through `RegistryConfig.properties(...)`; `group` selects the service group and defaults to `DEFAULT_GROUP`.
 
-Etcd 使用 `.type("etcd")`，`endpoints` 支持逗号分隔的地址。可选属性包括 `prefix`（默认 `/mana/services`）、`leaseTtlSeconds`（默认 10）、`operationTimeoutMillis`（默认 5000）、`username` 和 `password`。注册实例绑定到客户端 lease，关闭 registry 时会撤销 lease 并自动删除实例。keepalive 失败后客户端会重新申请 lease 并恢复本机注册；watch 失败后会重新拉取快照、从新 revision 订阅，并补发期间漏掉的实例差异。
+For Etcd, use `.type("etcd")`; `endpoints` accepts a comma-separated list. Optional properties are `prefix` (default `/mana/services`), `leaseTtlSeconds` (default 10), `operationTimeoutMillis` (default 5000), `username`, and `password`. Registered instances are attached to the client lease, which is revoked when the registry closes. A keepalive failure re-grants a lease and restores locally owned registrations. A failed watch reloads a snapshot, resumes from a new revision, and emits the instance differences missed during the outage.

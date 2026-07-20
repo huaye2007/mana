@@ -1,39 +1,39 @@
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
 # game-runtime
 
-游戏服务器统一运行时：把网络消息、事件、定时器、异步回调四类入口统一收敛成"任务"，按路由键派发到固定 worker 串行执行，业务代码无锁。
+Unified runtime for game servers: network messages, events, timers and async callbacks — the four entry types — are all converged into "tasks" that are dispatched by routing key to a fixed worker for serial execution, so business code needs no locks.
 
-## 设计原则
+## Design Principles
 
-- **轻依赖**：只依赖 game-common、slf4j-api 和 Disruptor；不依赖 game-network / game-rpc，三者互不感知，桥接代码放宿主进程。
-- **无装配门面**：没有 `GameRuntime.builder()` 这类统一入口。各组件是松散单例（`getInstance()`），宿主启动时自行注册执行器组、controller、事件监听器。
-- **同 routerKey 串行**：一个任务带 `(group, routerKey)`，routerKey 哈希到组内固定 worker。同组同 routerKey 的事件可依据当前绑定的任务 context 内联执行。
-- **过载明确拒绝**：worker 队列有界；兼容入口 `execute(...)` 保持 fire-and-forget，需处理拒绝时调用 `tryExecute(...)`，区分过载、停机和未注册组。不缓冲、不重试、不做死信。
+- **Lightweight dependencies**: depends only on game-common, slf4j-api and Disruptor. It does not depend on game-network / game-rpc; bridging code lives in the host process.
+- **No assembly facade**: there is no unified entry point like `GameRuntime.builder()`. Components are loose singletons (`getInstance()`); the host registers executor groups, controllers and event listeners itself at startup.
+- **Serial per routerKey**: a task carries `(group, routerKey)` and hashes to a fixed worker. Events for the same group and routerKey may run inline based on the currently bound task context.
+- **Explicit rejection on overload**: queues are bounded. The compatible `execute(...)` API remains fire-and-forget; callers that need rejection handling use `tryExecute(...)` to distinguish overload, shutdown and an unregistered group. There is no buffering, retry or dead letter.
 
-## 任务模型
+## Task Model
 
-| 任务类型 | 入口 | 上下文传递 |
+| Task type | Entry | Context propagation |
 |---|---|---|
-| COMMAND | 宿主桥接：查 `CommandRegistry` → 构造 `GameCommandTaskRunnable` → `ExecutorGroupRegistry.tryExecute(...)` | **隐式**：绑定到当前线程，handler 用 `current()` 获取 |
-| EVENT | `EventBus.publishEvent(...)` | **隐式**：绑定到当前线程 |
-| TIMER | `TimingWheel.schedule(delayMs, ...)`（延迟一次性）/ `CronTask.start()`（cron） | **隐式** |
-| CALLBACK | 宿主构造 `GameCallbackTaskRunnable` 投递（如 rpc 回调桥接） | **隐式** |
+| COMMAND | Host bridge: look up `CommandRegistry` → build `GameCommandTaskRunnable` → `ExecutorGroupRegistry.tryExecute(...)` | **Implicit**: bound to the current thread; handlers fetch it via `current()` |
+| EVENT | `EventBus.publishEvent(...)` | **Implicit**: bound to the current thread |
+| TIMER | `TimingWheel.schedule(delayMs, ...)` (one-shot delay) / `CronTask.start()` (cron) | **Implicit** |
+| CALLBACK | Host builds and submits `GameCallbackTaskRunnable` (e.g. rpc callback bridging) | **Implicit** |
 
-隐式绑定规则：虚拟线程用 `ScopedValue`，平台线程用 `ThreadLocal`，业务代码统一通过 `GameTaskContextHolder.current()` 惰性获取，未绑定返回 null。COMMAND 也隐式绑定：handler 方法签名里**不含** context（首参是 busId 或 session、次参是消息，见下），需要时通过 `current()` 取（可转型为 `GameCommandTaskContext`）；这也使 handler 内部发布事件时 EventBus 的"同组同 routerKey 内联"对 COMMAND 生效。
+Implicit binding rules: virtual threads use `ScopedValue`, platform threads use `ThreadLocal`; business code uniformly fetches lazily via `GameTaskContextHolder.current()`, which returns null when unbound. COMMAND is implicitly bound too: the handler method signature does **not** include a context (first parameter is busId or session, second is the message — see below); fetch it via `current()` when needed (castable to `GameCommandTaskContext`). This also makes EventBus's "inline when same group and same routerKey" apply to COMMAND when a handler publishes events.
 
-## 执行器组
+## Executor Groups
 
-标准四组见 `ExecutorGroups`，注解不指定 group 时默认落 PLAYER：
+The four standard groups are in `ExecutorGroups`; when an annotation specifies no group, PLAYER is the default:
 
-| 组 | 用途 | 线程类型 |
+| Group | Purpose | Thread type |
 |---|---|---|
-| LOGIN (1) | 登陆洪峰隔离 | 虚拟线程 |
-| PLAYER (2) | 玩家自身业务（默认组），按玩家 id 路由 | 虚拟线程 |
-| SCENE (3) | 场景/房间同步，不能阻塞 | 平台线程 |
-| COMMON (4) | 排行榜、公会等全局业务 | 虚拟线程 |
+| LOGIN (1) | Isolates login surges | Virtual threads |
+| PLAYER (2) | Per-player business (default group), routed by player id | Virtual threads |
+| SCENE (3) | Scene/room synchronization, must not block | Platform threads |
+| COMMON (4) | Global business such as leaderboards and guilds | Virtual threads |
 
-这四组之外的业务组由注解显式指定 group。宿主启动时注册：
+Business groups beyond these four are specified explicitly via the annotations. The host registers at startup:
 
 ```java
 ExecutorGroupRegistry registry = ExecutorGroupRegistry.getInstance();
@@ -43,147 +43,155 @@ registry.register(DefaultExecutorGroup.platformThreads(ExecutorGroups.SCENE, "sc
 registry.register(DefaultExecutorGroup.virtualThreads(ExecutorGroups.COMMON, "common", 16, 10_000));
 ```
 
-SCENE 这类延迟敏感组可换用 Disruptor 实现（RingBuffer + 平台线程消费者，路由/满丢语义与 `DefaultExecutorGroup` 一致，bufferSize 必须是 2 的幂）：
+Latency-sensitive groups like SCENE can switch to the Disruptor implementation (RingBuffer + platform-thread consumers, same routing and drop-when-full semantics as `DefaultExecutorGroup`; bufferSize must be a power of two):
 
 ```java
-// blockingWait：空闲挂起省 CPU；yieldingWait：空闲自旋让出，延迟更低但每个空闲 worker 吃满一个核
+// blockingWait: parks when idle to save CPU; yieldingWait: spin-yields when idle — lower latency,
+// but each idle worker burns a full core
 registry.register(DisruptorExecutorGroup.yieldingWait(ExecutorGroups.SCENE, "scene", 16, 8192));
 ```
 
-## 命令（COMMAND）
+## Commands (COMMAND)
 
 ```java
 @GameController(group = ExecutorGroups.PLAYER)
 public class BagController {
 
-    // handler 必须是 2 个参数：第一个参数由 runtime 按其类型分派——
-    //   · 类型为 long/Long 时注入任务 busId；
-    //   · 其它类型时注入宿主构造任务时传入的 session 对象；
-    // 第二个参数是消息体。任务上下文不在参数里，需要时用 GameTaskContextHolder.current()。
-    // routerKeyMethod 从「消息体」提取路由键；不配则用宿主传入的 defaultRouterKey。
+    // A handler must take exactly 2 parameters: the first is dispatched by its type —
+    //   · when the type is long/Long, the task busId is injected;
+    //   · otherwise, the session object the host passed when building the task is injected;
+    // the second parameter is the message body. The task context is not a parameter —
+    // use GameTaskContextHolder.current() when needed.
+    // routerKeyMethod extracts the routing key from the MESSAGE BODY; when unset, the
+    // host-supplied defaultRouterKey is used.
     @GameMethod(value = 1001, routerKeyMethod = "playerId")
     public void useItem(Long roleId, UseItemMsg msg) {
         GameCommandTaskContext ctx = (GameCommandTaskContext) GameTaskContextHolder.current();
         // ...
     }
 
-    // 或者第一个参数收宿主的 session 对象：
+    // Or take the host's session object as the first parameter:
     // public void useItem(PlayerSession session, UseItemMsg msg) { ... }
 }
 ```
 
-runtime 不提供统一 dispatcher 门面（符合「无装配门面 / 桥接放宿主」）。启动期注册 controller，传输层收到消息后由**宿主自行桥接派发**：
+The runtime provides no unified dispatcher facade (consistent with "no assembly facade / bridging lives in the host"). Register controllers at startup; when the transport layer receives a message, the **host does the dispatch bridging itself**:
 
 ```java
-// 启动期：
+// At startup:
 CommandRegistry.getInstance().register(new BagController());
 
-// 每条消息：查元数据 → 提取路由键 → 构造任务 → 投递执行器组
+// Per message: look up metadata → extract routing key → build task → submit to executor group
 CommandMeta meta = CommandRegistry.getInstance().getCommandMeta(command);
-if (meta == null) { /* 未注册命令，丢弃并记 error */ return; }
+if (meta == null) { /* unregistered command: drop and log error */ return; }
 long routerKey = meta.extractRouterKey(message, defaultRouterKey);
 GameCommandTaskRunnable task = new GameCommandTaskRunnable(
         meta, routerKey, busType, busId, seq, metadatas, message, session);
 TaskSubmissionResult result = ExecutorGroupRegistry.getInstance().tryExecute(task);
-if (!result.isAccepted()) { /* 回 SERVER_BUSY / INTERNAL_ERROR */ }
+if (!result.isAccepted()) { /* reply SERVER_BUSY / INTERNAL_ERROR */ }
 ```
 
-消息原样透传，是否/如何反序列化由 handler 自行决定。配置了 `routerKeyMethod` 后提取失败会拒绝请求，不再悄悄回退到 defaultRouterKey。
-（宿主桥接的完整示例见 game-dev 的 `GameRouterManager`。）
+Messages pass through as-is; whether/how to deserialize is up to the handler. Once `routerKeyMethod` is configured, extraction failure rejects the request instead of silently falling back to defaultRouterKey.
+(For a complete host bridging example, see `GameRouterManager` in game-dev.)
 
-## 事件（EVENT）
+## Events (EVENT)
 
 ```java
-@EventHandler(group = ExecutorGroups.PLAYER)   // 类级默认组
+@EventHandler(group = ExecutorGroups.PLAYER)   // class-level default group
 public class LevelUpListeners {
 
-    @EventMethod                                // order 可选，默认 0
+    @EventMethod                                // order is optional and defaults to 0
     public void sendMail(LevelUpEvent e) { ... }
 
-    @EventMethod(group = ExecutorGroups.COMMON) // 方法级覆盖
+    @EventMethod(group = ExecutorGroups.COMMON) // method-level override
     public void updateRank(LevelUpEvent e) { ... }
 }
 
 EventBus.getInstance().register(new LevelUpListeners());
-EventBus.getInstance().publishEvent(new LevelUpEvent(playerId)); // routerKey 由事件自带
+EventBus.getInstance().publishEvent(new LevelUpEvent(playerId)); // routerKey comes with the event
 ```
 
-- 事件类型**精确匹配**：注册在父类/接口上的监听不会被子类事件触发（刻意为之）。
-- `@EventMethod.order` 是可选字段，默认值为 `0`；值越小越先调用或提交，跨组不保证完成顺序。
-- 事件对象必须**深度不可变**；不同 executor group 可能并发观察同一实例。事件 context 的 metadata 在派发边界深拷贝，对外只返回防御性副本。
-- 监听者与发布方**同 group、同 routerKey 且发布方 context 当前已绑定**时内联同步执行；否则按事件 routerKey 投递到监听者所在组。
-- 需要感知扇出拒绝时调用 `tryPublishEvent(...)`，返回内联、已接收和被拒绝的监听器数量。
+- Event types match **exactly**: listeners registered on a parent class/interface are not triggered by subclass events (deliberate).
+- `@EventMethod.order` is optional and defaults to `0`; smaller values are invoked or submitted first, while cross-group completion order is not guaranteed.
+- Event objects must be **deeply immutable** because different executor groups may observe the same instance concurrently. Context metadata is deep-copied at dispatch boundaries and exposed only as defensive copies.
+- Execution is inlined only when group and routerKey match **and the publisher context is currently bound**; otherwise it is submitted to the listener group.
+- Use `tryPublishEvent(...)` when the caller needs inline/accepted/rejected listener counts.
 
-## 定时（TIMER）
+## Timers (TIMER)
 
-`TimingWheel` 与 cron 统一通过公开的 `GameTime` 获取当前时间。默认使用系统时钟；外部可以注入标准
-`java.time.Clock` 调整游戏时间，而不修改操作系统时间：
+`TimingWheel` and cron obtain their current time from the public `GameTime` source. It uses the
+system clock by default; hosts can install a standard `java.time.Clock` to adjust game time without
+changing the operating-system clock:
 
 ```java
-GameTime.setClock(Clock.offset(Clock.systemUTC(), Duration.ofDays(1))); // 游戏时间前进一天
+GameTime.setClock(Clock.offset(Clock.systemUTC(), Duration.ofDays(1))); // advance game time one day
 long now = GameTime.currentTimeMillis();
 
-// 测试结束或需要恢复真实时间时
+// Restore real time after a test or time adjustment
 GameTime.resetClock();
 ```
 
-偏移时钟会继续自然流逝；`Clock.fixed(...)` 会冻结定时器时间，适合可控测试。注入的自定义 `Clock`
-必须支持并发访问。执行器停机超时和任务耗时监控不使用游戏时间，修改 `GameTime` 不会破坏框架超时。
+An offset clock keeps advancing naturally, while `Clock.fixed(...)` freezes timer time for
+controlled tests. A custom clock must support concurrent access. Executor shutdown timeouts and
+task-duration monitoring do not use game time, so changing `GameTime` does not break framework
+timeouts.
 
-统一基于哈希时间轮（默认共享实例 tick 100ms × 512 槽），**禁止业务直接用 `ScheduledExecutorService`**。时间轮按 `GameTime` 绝对截止点调度，正常负载下绝不早于 deadline，最多晚一个 tick。取消会立即把 Timeout 推进到终态并更新 pendingCount；停机取消剩余 Timeout。`CronTask.start()` 只能调用一次，`cancel()` 会取消底层 Timeout。
+Timing uses a hashed wheel (shared default: 100ms × 512 slots) and absolute `GameTime` deadlines. Under normal load a callback never runs before its deadline and may be late by at most one tick. Cancellation immediately makes the Timeout terminal and updates pendingCount; shutdown cancels outstanding handles. `CronTask.start()` is single-shot and `cancel()` cancels its underlying Timeout.
 
 ```java
-// 延迟一次性：时间轮只算时间点，到点把任务派发到执行器组（务必在轮回调里 execute，
-// 不要直接在计时线程上跑业务）
+// One-shot delay: the wheel only computes the due time; on firing, dispatch the task to an
+// executor group (always execute inside the wheel callback — never run business logic
+// directly on the timing thread)
 GameTimerTaskRunnable body = new GameTimerTaskRunnable(group, routerKey, busType, busId, null, runnable);
 TimingWheel.getInstance().schedule(5_000,
         () -> ExecutorGroupRegistry.getInstance().execute(body));
 
-// cron：调用 start() 启动，触发后自动重排，直到 cancel()
-CronTask cron = new CronTask("0 0 5 * * *", body);                       // 秒 分 时 日 月 周
-new CronTask("0 0 5 * * *", ZoneId.of("Asia/Shanghai"), body).start();   // 跨时区部署显式指定
+// cron: call start() to begin; it reschedules itself after each firing until cancel()
+CronTask cron = new CronTask("0 0 5 * * *", body);                       // sec min hour day month weekday
+new CronTask("0 0 5 * * *", ZoneId.of("Asia/Shanghai"), body).start();   // specify explicitly for multi-timezone deployments
 cron.start();
 ```
 
-固定频率/周期等其它调度形态没有内置门面，业务在 `TimingWheel` + `CronTask` 之上自行封装。cron 的"日"与"周"采用标准 OR 语义（两者都被限制时任一匹配即触发）。
+Fixed-rate/periodic and other scheduling shapes have no built-in facade; business code composes them on top of `TimingWheel` + `CronTask`. Cron's "day" and "weekday" follow standard OR semantics (when both are restricted, matching either fires).
 
-## 异常处理
+## Exception Handling
 
-任务内未捕获异常统一路由到 `GameTaskExceptionHandlers`（默认打 error 日志），宿主启动期可替换：
+Uncaught exceptions inside tasks are routed to `GameTaskExceptionHandlers` (default: error log); the host can replace it at startup:
 
 ```java
-GameTaskExceptionHandlers.setHandler((ctx, cause) -> { 日志 + 监控告警 });
+GameTaskExceptionHandlers.setHandler((ctx, cause) -> { /* log + monitoring alert */ });
 ```
 
-业务 `Exception` 不会杀死 worker，也不会中断同事件的其他监听者；`Error` 作为 JVM/链接级致命错误继续向上传播。
+Business `Exception`s never kill a worker or interrupt other listeners; fatal JVM/linkage `Error`s continue upward.
 
-## 可观测性
+## Observability
 
-内置轻量监控，模式与异常处理器一致——默认实现开箱可用，宿主启动期可整体替换接入指标系统：
+Built-in lightweight monitoring follows the exception-handler pattern; the host can replace it at startup:
 
 ```java
-// 默认行为：执行耗时 ≥ 阈值（默认 1000ms）打 warn；队列满丢弃打 error
+// Default behavior: execution time ≥ threshold (default 1000ms) logs warn; drop on full queue logs error
 GameTaskMonitors.setSlowTaskThresholdMs(500);
 
-// 接入自有监控（回调在 worker 线程上同步执行，必须轻量非阻塞）
+// Plugging in your own monitoring (callbacks run synchronously on worker threads —
+// must be lightweight and non-blocking)
 GameTaskMonitors.setMonitor(new GameTaskMonitor() {
-    public void onTaskComplete(GameTaskContext ctx, long queueDelayMs, long execMs) { 上报耗时分布 }
-    public void onTaskDropped(GameTaskContext ctx) { 丢弃告警 }
-    public void onTaskRejected(GameTaskContext ctx, TaskSubmissionResult reason) { 按拒绝原因告警 }
+    public void onTaskComplete(GameTaskContext ctx, long queueDelayMs, long execMs) { /* report latency distribution */ }
+    public void onTaskDropped(GameTaskContext ctx) { /* drop alert */ }
+    public void onTaskRejected(GameTaskContext ctx, TaskSubmissionResult reason) { /* reason-aware alert */ }
 });
 ```
 
-采样型指标（宿主定时拉取）：
+Sampled metrics (host pulls periodically):
 
-- `DefaultExecutorGroup.queuedTasks()` — 组内所有 worker 队列等待任务总数（`DisruptorExecutorGroup` 同名方法统计 ring 占用槽位）
-- `DefaultExecutorGroup.droppedCount()` — 累计丢弃任务数（`DisruptorExecutorGroup` 同名）
-- `TimingWheel.getInstance().pendingCount()` — 时间轮上等待触发的定时任务数
+- `DefaultExecutorGroup.queuedTasks()` — total tasks waiting across all worker queues in the group (`DisruptorExecutorGroup`'s method of the same name counts occupied ring slots)
+- `DefaultExecutorGroup.droppedCount()` — cumulative dropped task count (same name on `DisruptorExecutorGroup`)
+- `TimingWheel.getInstance().pendingCount()` — timer tasks waiting to fire on the wheel
 
-## 使用契约（重要）
+## Usage Contract (Important)
 
-1. **注册只能在启动期完成并冻结**：注册完成后调用 `CommandRegistry.freeze()` / `EventBus.freeze()`；EventBus 首次发布也会自动冻结。冻结后继续注册会 fail-fast。
-2. **handler 方法和类必须 public**：注册期会生成 LambdaMetafactory 调用器替代反射（热路径零反射开销），非 public 在注册时直接抛异常 fail-fast。
-3. **停机顺序**：先 `TimingWheel.getInstance().shutdown()` 停止产生新任务，再 `ExecutorGroupRegistry.getInstance().shutdownAll(timeoutMs)`。timeoutMs 是所有组共享的总预算，耗尽后剩余任务强制中断丢弃。
-4. **SCENE 组的任务不允许阻塞**（IO、锁等待）；会阻塞的业务放虚拟线程组。
-5. **routerKey 不能为 0**：0 会让所有"无路由键"任务挤到组内 worker-0 形成热点，因此构造任务上下文时 routerKey 为 0 直接抛异常。全局/无玩家归属的业务也必须给出可散列的键（如连接 id、公会 id）。
-6. **事件必须深度不可变**：发布后不得修改事件及其引用的数组、集合或对象；跨组监听器没有全局完成顺序。
+1. **Registration must complete and freeze at startup**: call `CommandRegistry.freeze()` / `EventBus.freeze()` after registration; EventBus also freezes automatically on first publish. Later registration fails fast.
+2. **Handler methods and classes must be public**: registration generates LambdaMetafactory invokers to replace reflection (zero reflection overhead on the hot path); non-public members fail fast with an exception at registration.
+3. **Shutdown order**: first `TimingWheel.getInstance().shutdown()` to stop producing new tasks, then `ExecutorGroupRegistry.getInstance().shutdownAll(timeoutMs)`. timeoutMs is a total budget shared by all groups; when exhausted, remaining tasks are forcibly interrupted and dropped.
+4. **SCENE-group tasks must not block** (IO, lock waits); blocking business goes to a virtual-thread group.
+5. **routerKey must not be 0**: 0 would funnel every "no routing key" task onto worker-0 of the group, creating a hotspot, so building a task context with routerKey 0 throws outright. Global / player-less business must also supply a hashable key (e.g. connection id, guild id).
+6. **Events must be deeply immutable**: do not mutate an event or referenced arrays, collections or objects after publication; listeners in different groups have no global completion order.

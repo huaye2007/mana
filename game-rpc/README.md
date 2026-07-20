@@ -1,33 +1,27 @@
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
 # game-rpc
 
-对内（服务间）RPC 框架，基于 Netty + game-serialization。直接编解码 API 对象（无中间帧对象），
-请求/响应按 requestId 关联，支持 oneway、future、callback 三种调用风格，内置握手协商、心跳保活、
-断线重连、背压与在途上限保护、按服务广播。
+Internal (service-to-service) RPC framework built on Netty + game-serialization. It encodes/decodes API objects directly (no intermediate frame object), correlates requests/responses by requestId, supports the oneway, future and callback invocation styles, and ships with handshake negotiation, heartbeat keepalive, automatic reconnect, backpressure and in-flight limits, and per-service broadcast.
 
-## 模块结构
+## Module Layout
 
-- `game-rpc-core`：传输无关的请求/响应、future、callback 和 metrics，统一使用 `game-common` 的 `Metadata`，不依赖 Netty 或 `game-network`。
-- `game-rpc-netty`：Netty 编解码、连接、客户端/服务端、握手、心跳和重连实现，依赖 `game-rpc-core`。
-- `game-rpc`：对外入口制品，传递依赖 `game-rpc-netty`。其他项目统一直接依赖 `cn.managame:game-rpc`；内部的 `game-rpc-core` 和 `game-rpc-netty` 只用于实现分层。
+- `game-rpc-core`: transport-neutral requests/responses, futures, callbacks, and metrics; it shares `game-common`'s `Metadata` and depends on neither Netty nor `game-network`.
+- `game-rpc-netty`: Netty codec, connections, client/server, handshake, heartbeat, and reconnect implementation; it depends on `game-rpc-core`.
 
-## 设计要点
+`game-rpc` is the public entry artifact and transitively exposes `game-rpc-netty`. Applications should depend directly on `cn.managame:game-rpc`; the nested `game-rpc-core` and `game-rpc-netty` modules are internal implementation layers.
 
-- **对等**：客户端、服务端共用 `RpcContainer` 基类。建连方向无关，握手后双方都能发起 `invoke`/`oneway`
-  （服务端可反向调用已连上的客户端）。
-- **peer 模型**：一个对端实例 = 一个 `RpcPeer`（`serviceName` + `serviceId`），下挂一组连接
-  （`ConnectionGroup`，按 `routeKey` 环形取模选连接）+ 在途调用管理（`RpcInvokeManager`，requestId 在 peer 内唯一）。
-- **独立传输边界**：RPC 不依赖 `game-network` / `game-runtime`；Netty 实现只依赖 `game-rpc-core`、Netty 与 game-serialization，不接注册中心、不绑业务线程模型。
-  回调在 IO 线程触发，**投递到业务线程组由宿主负责**。
+## Design Highlights
 
-## 快速开始
+- **Peer-to-peer**: client and server share the `RpcContainer` base class. The connection direction does not matter — after the handshake, both sides can initiate `invoke`/`oneway` (the server can call back into connected clients).
+- **Peer model**: one remote instance = one `RpcPeer` (`serviceName` + `serviceId`), which owns a group of connections (`ConnectionGroup`, connection chosen by ring modulo over `routeKey`) plus in-flight call management (`RpcInvokeManager`, requestId unique within the peer).
+- **Independent transport boundary**: RPC does not depend on `game-network` / `game-runtime`. The Netty implementation depends only on `game-rpc-core`, Netty, and game-serialization; it does not integrate a registry or bind a business threading model. Callbacks fire on the IO thread — **dispatching to business thread groups is the host's responsibility**.
 
-### 服务端
+## Quick Start
 
-序列化器无需手动传入：`RpcServer` / `RpcClient` 默认取 `SerializerManager.getInstance()`，
-该单例已预注册 JSON / Protobuf / Fory 三种序列化方式。如需追加或覆盖某个 serialType，
-在启动时调用 `SerializerManager.getInstance().register(...)` 即可。
+### Server
+
+No serializer needs to be passed in manually: `RpcServer` / `RpcClient` default to `SerializerManager.getInstance()`, a singleton pre-registered with JSON / Protobuf / Fory. To add or override a serialType, call `SerializerManager.getInstance().register(...)` at startup.
 
 ```java
 RpcServer server = new RpcServer(
@@ -35,7 +29,7 @@ RpcServer server = new RpcServer(
         new RpcMessageHandler() {
             @Override
             protected void handleUserMsg(RpcConnection conn, RpcRequest msg) {
-                // IO 线程；msg.getBody() 是 byte[]，按 msg.getSerialType() 自行还原
+                // IO thread; msg.getBody() is byte[], restore it per msg.getSerialType()
                 if (msg.getCommand() == 1) {
                     byte[] respBody = handleLogin(msg.getBody());
                     if (!msg.isOneway()) {
@@ -44,20 +38,19 @@ RpcServer server = new RpcServer(
                 }
             }
         });
-server.start();   // 绑定端口；失败会清理线程组后抛 GameRpcException
+server.start();   // binds the port; on failure cleans up thread groups then throws GameRpcException
 // ...
 server.close();
 ```
 
-业务 handler 抛异常时，框架对**请求类**消息自动回 `RpcResponse.error(requestId, 500, ...)`，
-让调用方 fast-fail，不必干等超时（oneway 无回包）。
+When the business handler throws, the framework automatically replies `RpcResponse.error(requestId, 500, ...)` for **request-style** messages so the caller fails fast instead of waiting for the timeout (oneway has no reply).
 
-### 客户端
+### Client
 
 ```java
 RpcClient client = new RpcClient(
         new RpcClientConfig().serviceName("gateway").serviceId("1"),
-        new RpcMessageHandler() {   // 接收服务端推送（oneway / 反向 invoke）
+        new RpcMessageHandler() {   // receives server pushes (oneway / reverse invoke)
             @Override protected void handleUserMsg(RpcConnection conn, RpcRequest msg) { }
         });
 
@@ -67,15 +60,15 @@ target.setServiceId("1");
 target.setIp("127.0.0.1");
 target.setPort(9100);
 target.setConnectionSize(2);
-client.connect(target);          // 异步建连 + 握手协商；幂等，重复调用不翻倍连接
+client.connect(target);          // async connect + handshake; idempotent — repeated calls do not double connections
 ```
 
-三种调用风格：
+The three invocation styles:
 
 ```java
 byte serial = SerializationType.JSON.typeId();
 
-// 1) callback：按泛型 V 自动反序列化响应 body，回调在 IO 线程
+// 1) callback: response body auto-deserialized by generic type V, callback on the IO thread
 client.invoke("logic", "1",
         RpcRequest.of(1).routeKey(playerId).serialType(serial).body(loginReq),
         new RpcCallback<LoginResp>() {
@@ -83,67 +76,62 @@ client.invoke("logic", "1",
             @Override public void onException(Throwable e) { /* ... */ }
         });
 
-// 2) future：拿原始 RpcResponse（含 metadata）。await 只能在非 IO 线程调用！
+// 2) future: get the raw RpcResponse (incl. metadata). await may ONLY be called off the IO thread!
 RpcFuture future = client.invoke("logic", "1",
         RpcRequest.of(1).routeKey(playerId).serialType(serial).body(loginReq));
-RpcResponse resp = future.await(3000);   // 阻塞，仅限业务线程
+RpcResponse resp = future.await(3000);   // blocking, business threads only
 
-// 3) oneway：fire-and-forget，无回包、无重试
+// 3) oneway: fire-and-forget, no reply, no retry
 client.oneway("logic", "1",
         RpcRequest.oneway(2).routeKey(playerId).serialType(serial).body(event));
 
-// 需要感知“无连接/本地背压”时使用；true 仅表示本地 channel 已接受，不代表远端业务执行成功
+// Use this when the caller must detect no-connection/local-backpressure rejection.
+// true means local channel acceptance, not successful remote business processing.
 boolean accepted = client.tryOneway("logic", "1",
         RpcRequest.oneway(2).routeKey(playerId).serialType(serial).body(event));
 
-// 广播：给 "logic" 的每个实例各发一条 oneway，body 只序列化一次
+// broadcast: one oneway to every instance of "logic", body serialized only once
 client.broadcast("logic", RpcRequest.oneway(3).serialType(serial).body(notice));
 
-// 动态成员：实例下线时主动移除（停重连 + 失败在途 + 关连接 + 回收 peer）
+// dynamic membership: remove an instance when it goes offline (stop reconnect + fail in-flight + close connections + reclaim peer)
 client.disconnect("logic", "1");
 ```
 
-## 行为说明
+## Behavior
 
-| 能力 | 说明 |
+| Capability | Description |
 | --- | --- |
-| 握手协商 | 建连后客户端发 `HANDSHAKE`（带身份/token），服务端校验后回 `HANDSHAKE_ACK`；**客户端收到 ACK 才把连接挂入 peer 参与路由**。服务端在握手完成前拒绝所有业务/心跳消息，重复握手、token 不符或握手超时均直接断连。 |
-| 心跳保活 | 客户端写空闲发 `PING`，服务端回 `PONG`；任一端读空闲（`idleTimeoutSeconds`）判死关连接。由 `IdleStateHandler` 驱动，配置为 0 则关闭。 |
-| 断线重连 | 连接失败或断开后按指数退避（带抖动）自动重连；`reconnectEnabled` 控制。`disconnect`/`close` 会停止重连。 |
-| 背压 | 出站缓冲到高水位（`!isWritable`）时：invoke 立即失败、oneway/broadcast 直接丢弃，计入 metrics，不撑爆堆外内存。 |
-| 在途软上限 | 单 peer 在途请求接近 `maxPendingPerPeer`（默认 100000，0=不限）时拒绝新 invoke，防对端假死时 OOM；并发下允许少量越界，不在热路径加锁。 |
-| 超时 | 每个 invoke 挂哈希时间轮超时（`RpcRequest.timeoutMillis` 或 `defaultTimeoutMillis`）；到点 future/callback 收到 `GameRpcException`。 |
-| 广播 | `broadcast(serviceName, req)` 对该服务每个实例各选一条连接，body **只编码一次**再对各连接写帧的 `retainedDuplicate`。 |
+| Handshake | After connecting, the client sends `HANDSHAKE` (with identity/token); the server validates and replies `HANDSHAKE_ACK`; **only after receiving the ACK does the client attach the connection to the peer for routing**. Before completion the server rejects every business/heartbeat message; duplicate handshakes, token mismatches, and handshake timeouts close the connection. |
+| Heartbeat | The client sends `PING` on write idle, the server replies `PONG`; either side declares the connection dead and closes it on read idle (`idleTimeoutSeconds`). Driven by `IdleStateHandler`; set to 0 to disable. |
+| Reconnect | After a failed connect or a disconnect, reconnects automatically with exponential backoff (with jitter); controlled by `reconnectEnabled`. `disconnect`/`close` stops reconnecting. |
+| Backpressure | When the outbound buffer hits the high watermark (`!isWritable`): invoke fails immediately, oneway/broadcast are dropped, counted in metrics — the off-heap memory is never blown up. |
+| Soft in-flight limit | New invokes are rejected when a peer approaches `maxPendingPerPeer` (default 100000, 0 = unlimited), preventing OOM when the remote side hangs. Small concurrent overshoot is allowed to keep the hot path lock-free. |
+| Timeout | Every invoke is registered on a hashed wheel timer (`RpcRequest.timeoutMillis` or `defaultTimeoutMillis`); on expiry the future/callback receives a `GameRpcException`. |
+| Broadcast | `broadcast(serviceName, req)` picks one connection per instance of the service; the body is **encoded once**, then a `retainedDuplicate` of the frame is written per connection. |
 
-## 配置
+## Configuration
 
-`RpcClientConfig` 关键项：`serviceName/serviceId`（自身身份，用于握手）、`authToken`、`connectionSize`、
-`connectTimeoutMillis`、`defaultTimeoutMillis`、`maxPendingPerPeer`、`heartbeatIntervalSeconds`、
-`idleTimeoutSeconds`、`reconnectEnabled`、`reconnect{Initial,Max}BackoffMillis`、`maxFrameLength`、
-`writeBufferWaterMark(low, high)`。`validate()` 会在构造时强校验（如 `idleTimeoutSeconds > heartbeatIntervalSeconds`）。
+`RpcClientConfig` key settings: `serviceName/serviceId` (own identity, used in the handshake), `authToken`, `connectionSize`, `connectTimeoutMillis`, `defaultTimeoutMillis`, `maxPendingPerPeer`, `heartbeatIntervalSeconds`, `idleTimeoutSeconds`, `reconnectEnabled`, `reconnect{Initial,Max}BackoffMillis`, `maxFrameLength`, `writeBufferWaterMark(low, high)`. `validate()` enforces constraints at construction time (e.g. `idleTimeoutSeconds > heartbeatIntervalSeconds`).
 
-`RpcServerConfig` 关键项：`port`、`bossThreads`、`workerThreads`、`backlog`、`handshakeTimeoutMillis`、`idleTimeoutSeconds`、
-`authToken`、`defaultTimeoutMillis`、`maxPendingPerPeer`、`maxFrameLength`。
+`RpcServerConfig` key settings: `port`, `bossThreads`, `workerThreads`, `backlog`, `handshakeTimeoutMillis`, `idleTimeoutSeconds`, `authToken`, `defaultTimeoutMillis`, `maxPendingPerPeer`, `maxFrameLength`.
 
-事件循环线程组与 `HashedWheelTimer` 均由 `RpcServer` / `RpcClient` 构造方法内部创建，并在 `close()` 释放（不对外共享）。
+The event loop groups and the `HashedWheelTimer` are created inside the `RpcServer` / `RpcClient` constructors and released in `close()` (never shared externally).
 
-## 线程模型（重要）
+## Threading Model (Important)
 
-- `RpcMessageHandler.handleUserMsg`、`RpcCallback`、`RpcFuture` 的回调都在 **Netty IO 线程**（超时回调在**时间轮线程**）执行。
-  **实现内禁止阻塞**；要切到业务线程组由宿主自行投递。
-- `RpcFuture.await()` 会**阻塞调用线程**，**绝不能在 IO 线程上调用**（自锁死）。仅供业务/测试线程使用，
-  游戏内优先用 callback 风格。
+- Callbacks of `RpcMessageHandler.handleUserMsg`, `RpcCallback` and `RpcFuture` all run on **Netty IO threads** (timeout callbacks on the **wheel timer thread**). **Never block inside them**; switching to a business thread group is the host's job.
+- `RpcFuture.await()` **blocks the calling thread** and must **never be called on an IO thread** (self-deadlock). It is for business/test threads only; inside game logic prefer the callback style.
 
-## 注意事项 / 已知取舍
+## Caveats / Known Trade-offs
 
-- **oneway 是 fire-and-forget**：不重试、不报告异步写失败；普通 `oneway` 在连接不可写或无可用连接时直接丢弃（只计 metrics）。需要感知本地拒绝时使用 `tryOneway`。
-- **`RpcRequest` 可变**：requestId 由框架在 invoke 时写入，**不要把同一个实例并发复用于多次 invoke**。
-- **路由非一致性哈希**：`floorMod(routeKey, 连接数)`，连接数变化（扩缩容/断线）时同一 routeKey 可能漂到别的连接。
-- **命令段**：业务 command 必须为正数；`[-100, -1]` 保留给框架内部消息。metadata key `[1,99]` 保留，业务从 `100`（`MetadataKeys.BUSINESS_MIN`）起。
-- **鉴权**：握手 token 使用常量时间字节比较，但线上仍是明文传输且**无 TLS**，按“对内可信网络”使用。
-- **入站背压**：autoread 常开，框架不限制入站速率——宿主须把 `handleUserMsg` 的活儿移出 IO 线程并自行施加背压。
+- **oneway is fire-and-forget**: no retry or asynchronous write-failure reporting. Plain `oneway` drops on no connection or local backpressure (metrics only); use `tryOneway` when the caller must observe local rejection.
+- **`RpcRequest` is mutable**: requestId is written by the framework at invoke time — **do not reuse the same instance concurrently across invokes**.
+- **Routing is not consistent hashing**: `floorMod(routeKey, connectionCount)` — when the connection count changes (scaling/disconnect), the same routeKey may drift to another connection.
+- **Command ranges**: business commands must be positive; `[-100, -1]` is reserved for framework-internal messages. Metadata keys `[1,99]` are reserved; business starts at `100` (`MetadataKeys.BUSINESS_MIN`).
+- **Auth**: handshake tokens use a constant-time byte comparison, but remain plaintext on the wire and there is **no TLS** — use within a trusted internal network.
+- **Inbound backpressure**: autoread stays on and the framework does not limit inbound rate — the host must move `handleUserMsg` work off the IO thread and apply its own backpressure.
 
-## 不在本模块职责内（交给宿主）
+## Out of Scope (Left to the Host)
 
-- **服务发现**：`connect`/`disconnect` 是成员管理入口，由宿主桥接注册中心（如 game-registry）的上下线事件来驱动。
-- **优雅停机 draining**：`close()` 先停监听再关线程组，但不等在途请求回完（符合"不做零丢失"取舍）。
+- **Service discovery**: `connect`/`disconnect` are the membership management entry points; the host bridges registry (e.g. game-registry) online/offline events to drive them.
+- **Graceful shutdown draining**: `close()` stops listening first and then shuts down the thread groups, but does not wait for in-flight requests to complete (consistent with the "no zero-loss guarantee" trade-off).

@@ -1,31 +1,31 @@
 # game-network
 
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
-`game-network` 是 Netty 网络接入组件。它负责 Server 生命周期、长连接事件投递、TCP/WebSocket pipeline，以及统一的 HTTP 请求/响应语义。
+`game-network` is the Netty network transport component. It provides server lifecycle, long-lived connection event delivery, TCP/WebSocket pipelines, and unified HTTP request/response semantics.
 
-Session、玩家/账号身份、登录态，以及 `connection -> session` 映射全部属于业务层，不由本模块定义或管理。HTTP 业务层只处理统一的 `HttpRequest` 和 `IHttpResponder`，不需要知道底层是 HTTP/1 还是 HTTP/2。
+Sessions, player/account identity, authentication state, and the `connection -> session` mapping all belong to the business layer and are neither defined nor managed here. HTTP business handlers see only a unified `HttpRequest` and `IHttpResponder`, without knowing whether HTTP/1 or HTTP/2 is used underneath.
 
-## 模块边界
+## Module Boundary
 
 - `game-network-core`
-  - `IConnection`：连接的发送、关闭、状态和传输类型。
-  - `IConnectionHandler`：连接建立、消息、断开、异常和空闲事件。
-  - `INetworkServer`：最小化的 `start/stop` 生命周期契约。
+  - `IConnection`: send, close, state, and transport type of a connection.
+  - `IConnectionHandler`: connect, message, disconnect, exception, and idle events.
+  - `INetworkServer`: the minimal `start/stop` lifecycle contract.
 - `game-network-http`
-  - `HttpRequest` / `HttpResponse`：与具体网络实现无关的完整 HTTP 消息。
-  - `IHttpHandler` / `IHttpResponder`：不依赖 `CompletionStage` 的请求和响应回调。
+  - `HttpRequest` / `HttpResponse`: complete HTTP messages independent of the network implementation.
+  - `IHttpHandler` / `IHttpResponder`: request and response callbacks without `CompletionStage`.
 - `game-network-netty`
-  - `NettyConnection` / `WebsocketConnection`：Netty Channel 适配。
-  - `NettyServer` / `NettyServerBuilder`：统一 TCP、WebSocket 和完全自定义 Server。
-  - `NettyHttpServer`：将 HTTP/1、HTTP/2 和 h2c 适配到统一 HTTP Handler。
-  - WebSocket 帧与消息之间的默认转换。
+  - `NettyConnection` / `WebsocketConnection`: adapters for Netty channels.
+  - `NettyServer` / `NettyServerBuilder`: unified TCP, WebSocket, and fully custom servers.
+  - `NettyHttpServer`: adapts HTTP/1, HTTP/2, and h2c to the unified HTTP handler.
+  - Default conversion between WebSocket frames and messages.
 
-组件不再提供 Session、SessionManager、ConnectionManager、网络配置 DTO 或通用 pipeline 配置接口。需要 Netty 参数时直接配置 `ServerBootstrap`、`ChannelOption` 和 `ChannelPipeline`，从而避免重复包装随 Netty 版本变化的接口。
+The component no longer provides sessions, a SessionManager, a ConnectionManager, network configuration DTOs, or a generic pipeline configuration interface. Configure `ServerBootstrap`, `ChannelOption`, and `ChannelPipeline` directly when Netty options are needed, avoiding wrappers that mirror version-sensitive Netty APIs.
 
-## 业务接入
+## Business Integration
 
-业务实现 `IConnectionHandler`。如果业务需要 Session，应在连接建立时创建，并在业务自己的管理器中维护映射：
+The business layer implements `IConnectionHandler`. If it needs sessions, it creates them when connections open and maintains the mapping in its own manager:
 
 ```java
 IConnectionHandler handler = new IConnectionHandler() {
@@ -57,7 +57,7 @@ IConnectionHandler handler = new IConnectionHandler() {
 };
 ```
 
-## 标准 TCP Server
+## Standard TCP Server
 
 ```java
 INetworkServer tcpServer = NettyServer.tcp(handler)
@@ -75,9 +75,9 @@ INetworkServer tcpServer = NettyServer.tcp(handler)
 tcpServer.start();
 ```
 
-`pipeline(...)` 中加入的是原生 Netty handler。没有 decoder 时，TCP 消息通常以 `ByteBuf` 投递，释放责任由消费方承担。
+Handlers added by `pipeline(...)` are native Netty handlers. Without a decoder, TCP messages are normally delivered as `ByteBuf`; the consumer is then responsible for releasing them.
 
-## 标准 WebSocket Server
+## Standard WebSocket Server
 
 ```java
 WebSocketServerProtocolConfig protocol = WebSocketServerProtocolConfig.newBuilder()
@@ -93,11 +93,11 @@ INetworkServer wsServer = NettyServer.webSocket(protocol, handler)
         .build();
 ```
 
-WebSocket 的连接建立事件在握手成功后触发。`beforeProtocol(...)` 适合 TLS 等必须位于 HTTP/WebSocket 协议 handler 之前的组件。
+The WebSocket connect event fires after a successful handshake. `beforeProtocol(...)` is intended for TLS and other components that must precede the HTTP/WebSocket protocol handlers.
 
-## HTTP/1 与 HTTP/2
+## HTTP/1 and HTTP/2
 
-业务 Handler 使用统一接口，既不接触 Netty 对象，也不需要返回 `CompletionStage`：
+The business handler uses one interface, sees no Netty object, and does not return a `CompletionStage`:
 
 ```java
 IHttpHandler httpHandler = (request, responder) -> {
@@ -120,21 +120,21 @@ INetworkServer httpServer = NettyHttpServer.builder(httpHandler)
         .build();
 ```
 
-`AUTO` 在明文端口同时接受 HTTP/1.1、h2c upgrade 和 HTTP/2 prior knowledge。配置 `SslContext` 后通过 ALPN 选择 HTTP/1.1 或 HTTP/2；`SslContext` 必须使用 Netty 原生 ALPN 配置声明 `h2` 和 `http/1.1`。
+On a cleartext port, `AUTO` accepts HTTP/1.1, h2c upgrade, and HTTP/2 prior knowledge. With an `SslContext`, ALPN selects HTTP/1.1 or HTTP/2; the context must use Netty's native ALPN configuration to advertise `h2` and `http/1.1`.
 
-`IHttpResponder` 可以立即调用，也可以保留到 RPC、Actor 或其他异步业务回调中再调用。适配层保证从业务线程安全地切回对应 Netty EventLoop，并限制一个请求只完成一次。HTTP/2 的每个 Stream 独立适配成一次请求，但这些协议差异不会暴露给业务 Handler。
+`IHttpResponder` may be called immediately or retained until an RPC, actor, or other asynchronous callback completes. The adapter safely returns execution to the corresponding Netty event loop and allows each request to complete only once. Every HTTP/2 stream is adapted into an independent request without exposing that protocol detail to the business handler.
 
-`maxPendingRequests` 限制单条 HTTP/1 连接中等待有序响应的请求数，超过限制返回 429 并关闭连接；`maxConcurrentStreams` 通过 HTTP/2 SETTINGS 限制并发 Stream。请求超过 `requestTimeout` 且业务仍未完成响应时返回 408。初始行（包含 URI）、Header 和完整 Body 都有上限，避免单连接无限占用内存。
+`maxPendingRequests` bounds the ordered-response queue on each HTTP/1 connection; overflow receives 429 and closes the connection. `maxConcurrentStreams` advertises the HTTP/2 stream limit through SETTINGS. A request receives 408 when the business handler has not completed it before `requestTimeout`. Initial-line (including URI), header, and aggregated-body sizes are bounded so one connection cannot consume unbounded memory.
 
-`IConnectionHandler` 和 `IHttpHandler` 由对应 Channel 的 Netty EventLoop 串行调用。业务可以在其他线程调用 `IConnection.writeMsg` 或一次性的 `IHttpResponder`；适配层负责切回 EventLoop。未解码的引用计数消息（例如 `ByteBuf`）交给 `IConnectionHandler.onMessage` 后由业务释放；`HttpRequest`/`HttpResponse` 则复制 Header 和 Body，不携带 Netty 引用计数对象。
+`IConnectionHandler` and `IHttpHandler` are invoked serially on the corresponding channel's Netty event loop. Business code may call `IConnection.writeMsg` or the one-shot `IHttpResponder` from another thread; the adapter returns response work to the event loop. Reference-counted messages without a decoder, such as `ByteBuf`, are owned and released by the business handler after `IConnectionHandler.onMessage`; `HttpRequest` and `HttpResponse` instead copy headers and bodies and contain no Netty reference-counted objects.
 
-所有 Server 的 `stop()` 都直接关闭监听端口、已有连接和自身持有的 EventLoopGroup，不追踪业务请求，也不执行协议级排空。Server 停止后不能再次启动。
+Every server `stop()` directly closes the listening socket, active connections, and owned EventLoopGroups. It neither tracks business requests nor performs protocol-level draining. A stopped server cannot be restarted.
 
-第一版聚合完整请求体和响应体，不覆盖流式上传、SSE、HTTP/2 Push 等流式能力。
+The first version aggregates complete request and response bodies; streaming uploads, SSE, and HTTP/2 Push are outside its scope.
 
-## 完全自定义 Server
+## Fully Custom Server
 
-用户需要自定义协议或完整控制 pipeline 时，可以只复用 Server 生命周期：
+For a custom protocol or complete pipeline control, reuse only the server lifecycle:
 
 ```java
 INetworkServer customServer = NettyServer.custom(new ChannelInitializer<SocketChannel>() {
@@ -148,11 +148,11 @@ INetworkServer customServer = NettyServer.custom(new ChannelInitializer<SocketCh
 .build();
 ```
 
-也可以在 TCP/WebSocket preset 上调用 `initializer(...)`，完整替换其默认 pipeline。
+Calling `initializer(...)` on a TCP/WebSocket preset also replaces its default pipeline completely.
 
-## 多个 Server
+## Multiple Servers
 
-每次 `build()` 都会创建独立的 `NettyServer`，因此一个进程可以同时监听多个 TCP、WebSocket 或自定义端口：
+Every `build()` creates an independent `NettyServer`, so one process can listen on multiple TCP, WebSocket, or custom ports:
 
 ```java
 INetworkServer clientTcp = NettyServer.tcp(clientHandler).bind(9000).build();
@@ -166,10 +166,10 @@ adminHttp.start();
 internal.start();
 ```
 
-默认情况下，每个 Server 创建并关闭自己的 `EventLoopGroup`，生命周期互不影响。如果多个 Server 需要共享线程组，应由上层统一创建和关闭，并对每个 Server 使用：
+By default, each server creates and closes its own `EventLoopGroup`, so their lifecycles are isolated. To share event loops, the upper layer must create and close them and configure every server with:
 
 ```java
 .eventLoopGroups(sharedBoss, sharedWorker, false)
 ```
 
-只有明确由某一个 Server 独占并负责关闭线程组时，才将最后一个参数设为 `true`。
+Set the final argument to `true` only when one server exclusively owns those groups and is responsible for closing them.
