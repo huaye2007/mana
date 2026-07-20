@@ -56,7 +56,7 @@ ConfigOptions.builder("nacos")
         .build();
 ```
 
-Nacos client properties such as `namespace`, `username`, and `password` may also be supplied through `properties`; this library consumes `group`, `timeoutMillis`, and `revisionKey` itself.
+Nacos client properties such as `namespace`, `username`, and `password` may also be supplied through `properties`; this library consumes `group` and `timeoutMillis` itself.
 
 Etcd:
 
@@ -74,14 +74,7 @@ Separate multiple endpoints with commas. `timeoutMillis` defaults to `3000`. For
 
 ### Multi-resource consistency
 
-When local or Nacos declares multiple resources, every document must carry the same non-negative integer `_revision`, for example:
-
-```properties
-_revision=42
-game.server.port=8080
-```
-
-Publish the next release by writing every document with its new revision. The client retains its last-known-good snapshot until all document revisions agree. `_revision` is coordination metadata and is excluded from application snapshots; rename it with `.property("revisionKey", "configRevision")`. An intentionally empty document must still retain its revision line.
+Local and Nacos do not expose source revisions. When multiple resources are declared, each load reads and merges their current contents in declaration order. Updates across resources are not atomic and may briefly produce a snapshot that mixes old and new content. For atomic publication, keep related configuration in one document or use a backend with native consistency guarantees.
 
 Etcd reads every key at one server revision. Publish a multi-key change in one Etcd transaction so the entire release occupies one revision.
 
@@ -94,7 +87,7 @@ Etcd reads every key at one server revision. Publish a multi-key change in one E
 - A failed provider watch is recreated with exponential backoff and followed by a fresh snapshot load.
 - By default, the source is actively loaded every 30 seconds and becomes unhealthy after 90 seconds without successful contact. Configure these with `healthCheckInterval(Duration)` and `staleAfter(Duration)`; `Duration.ZERO` disables the corresponding mechanism.
 - `isHealthy()` requires a healthy watch, no current load or validation error, and non-stale data. `lastError()` returns the latest failure or staleness reason.
-- Empty/deleted single-resource Nacos content and deleted Etcd keys become empty documents. An empty local/Nacos document in a multi-resource release must retain the common revision.
+- Empty/deleted Nacos content and deleted Etcd keys become empty documents; a missing local file with `required=false` is also treated as an empty document.
 - `close()` unregisters listeners and closes filesystem watchers or remote clients.
 
 ## Testing

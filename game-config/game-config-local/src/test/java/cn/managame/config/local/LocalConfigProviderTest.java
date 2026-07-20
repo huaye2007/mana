@@ -20,21 +20,28 @@ class LocalConfigProviderTest {
     @Test void mergesFilesAndWatchesChanges() throws Exception {
         Path base = directory.resolve("base.properties");
         Path override = directory.resolve("override.properties");
-        Files.writeString(base, "_revision=1\nport=7000\nname=base\n");
-        Files.writeString(override, "_revision=1\nname=override\n");
+        Files.writeString(base, "port=7000\nname=base\n");
+        Files.writeString(override, "name=override\n");
         try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
                 .resource(base.toString()).resource(override.toString()).build())) {
             assertEquals(7000, center.snapshot().getInt("port", 0));
             assertEquals("override", center.snapshot().get("name"));
-            assertNull(center.snapshot().get("_revision"));
             CountDownLatch changed = new CountDownLatch(1);
             center.listen(event -> changed.countDown());
-            Files.writeString(base, "_revision=2\nport=7000\nname=base\n");
-            assertFalse(changed.await(300, TimeUnit.MILLISECONDS));
-            Files.writeString(override, "_revision=2\nname=latest\n");
+            Files.writeString(override, "name=latest\n");
             assertTrue(changed.await(5, TimeUnit.SECONDS));
             assertEquals("latest", center.snapshot().get("name"));
         }
+    }
+
+    @Test void treatsRevisionNamedPropertiesAsOrdinaryUnversionedData() throws Exception {
+        Path file = directory.resolve("application.properties");
+        Files.writeString(file, "_revision=application-value\nname=mana\n");
+        var source = new LocalConfigProvider.LocalSource(ConfigOptions.builder("local")
+                .resource(file.toString()).build());
+
+        assertFalse(source.loadData().isVersioned());
+        assertEquals("application-value", source.load().get("_revision"));
     }
 
     @Test void canIgnoreMissingOptionalFile() {
@@ -123,22 +130,21 @@ class LocalConfigProviderTest {
     @Test void laterJsonFileOverridesPropertiesFile() throws Exception {
         Path properties = directory.resolve("base.properties");
         Path json = directory.resolve("override.json");
-        Files.writeString(properties, "_revision=1\ngame.server.port=7000\nname=base\n");
-        Files.writeString(json, "{\"_revision\":1,\"game\":{\"server\":{\"port\":8000}}}");
+        Files.writeString(properties, "game.server.port=7000\nname=base\n");
+        Files.writeString(json, "{\"game\":{\"server\":{\"port\":8000}}}");
 
         try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
                 .resource(properties.toString()).resource(json.toString()).build())) {
             assertEquals(8000, center.snapshot().getInt("game.server.port", 0));
             assertEquals("base", center.snapshot().get("name"));
-            assertNull(center.snapshot().get("_revision"));
         }
     }
 
     @Test void laterArrayRemovesStaleIndexes() throws Exception {
         Path base = directory.resolve("base.json");
         Path override = directory.resolve("override.json");
-        Files.writeString(base, "{\"_revision\":1,\"regions\":[\"cn\",\"us\"]}");
-        Files.writeString(override, "{\"_revision\":1,\"regions\":[\"eu\"]}");
+        Files.writeString(base, "{\"regions\":[\"cn\",\"us\"]}");
+        Files.writeString(override, "{\"regions\":[\"eu\"]}");
 
         try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("local")
                 .resource(base.toString()).resource(override.toString()).build())) {
