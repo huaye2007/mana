@@ -11,7 +11,7 @@
 
     <name>mana</name>
     <description>Java game server framework components: networking, internal RPC, serialization,
-        service registry, configuration, runtime task scheduling, ECS simulation and JPA-style persistence.</description>
+        service registry, configuration, runtime task scheduling and JPA-style persistence.</description>
     <url>https://github.com/huaye2007/mana</url>
 
     <licenses>
@@ -25,6 +25,7 @@
     <developers>
         <developer>
             <id>huaye2007</id>
+            <name>huaye2007</name>
             <url>https://github.com/huaye2007</url>
         </developer>
     </developers>
@@ -49,7 +50,6 @@
 
         <module>game-jpa</module>
         <module>game-runtime</module>
-        <module>game-ecs</module>
         <module>game-gateway</module>
         <module>game-dev</module>
     </modules>
@@ -111,11 +111,6 @@
             <dependency>
                 <groupId>cn.managame</groupId>
                 <artifactId>game-runtime</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>cn.managame</groupId>
-                <artifactId>game-ecs</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -480,7 +475,7 @@
                 <plugin>
                     <groupId>org.sonatype.central</groupId>
                     <artifactId>central-publishing-maven-plugin</artifactId>
-                    <version>0.8.0</version>
+                    <version>0.11.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -515,7 +510,7 @@
 
     <profiles>
         <!-- 发布到 Maven Central：mvn -Prelease deploy
-             需要本机 GPG 私钥 + settings.xml 中 id 为 central 的 Sonatype 凭据 -->
+             需要本机 GPG 私钥 + settings.xml 中 id 为 managame 的 Sonatype 凭据 -->
         <profile>
             <id>release</id>
             <build>
@@ -529,6 +524,10 @@
                                 <goals>
                                     <goal>jar-no-fork</goal>
                                 </goals>
+                                <configuration>
+                                    <includePom>true</includePom>
+                                    <forceCreation>true</forceCreation>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>
@@ -562,7 +561,10 @@
                         <artifactId>central-publishing-maven-plugin</artifactId>
                         <extensions>true</extensions>
                         <configuration>
-                            <publishingServerId>central</publishingServerId>
+                            <publishingServerId>managame</publishingServerId>
+                            <deploymentName>${project.groupId}:${project.artifactId}:${project.version}</deploymentName>
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>
