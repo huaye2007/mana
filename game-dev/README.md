@@ -1,87 +1,83 @@
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
 # game-dev
 
-完整可运行的游戏服务器宿主：把 game-network（Netty 接入）、game-runtime（线程组/命令/事件/定时器）、
-game-serialization（Apache Fory）、game-jpa（异步落库）组装成一个开箱即用的单进程游戏服，
-同时作为「宿主该怎么接这些框架」的标准样板。
+A complete, runnable game server host: it assembles game-network (Netty transport), game-runtime (thread groups / commands / events / timers), game-serialization (Apache Fory) and game-jpa (async persistence) into an out-of-the-box single-process game server, and doubles as the reference template for "how a host should wire these frameworks together".
 
-## 架构
+## Architecture
 
 ```
-客户端 ──TCP──▶ Netty IO 线程
-                 │  IdleStateHandler + IdleKickHandler   读空闲踢人
-                 │  GamePacketEncoder / GamePacketDecoder 帧编解码 + Fory 反序列化
-                 │  GameHandler (IConnectionHandler)      连接/断线/异常
+Client ──TCP──▶ Netty IO threads
+                 │  IdleStateHandler + IdleKickHandler   read-idle kick
+                 │  GamePacketEncoder / GamePacketDecoder frame codec + Fory deserialization
+                 │  GameHandler (IConnectionHandler)      connect/disconnect/exception
                  ▼
-           GameRouterManager.handleGameMsg               登陆 gate → 按 command 路由
-                 │ 封装 GameCommandTaskRunnable
+           GameRouterManager.handleGameMsg               login gate → route by command
+                 │ wraps GameCommandTaskRunnable
                  ▼
-           ExecutorGroupRegistry                          LOGIN / PLAYER 执行器组
-                 │ 同 routerKey 串行（虚拟线程 worker）
+           ExecutorGroupRegistry                          LOGIN / PLAYER executor groups
+                 │ serial per routerKey (virtual-thread workers)
                  ▼
-           @GameController 业务 handler                    读写 game-jpa 缓存/仓库
+           @GameController business handlers              read/write game-jpa caches/repositories
                  │ reply / push / broadcast                EventBus.publishEvent
                  ▼                                          ▼
-           session.writeMsg（IO 线程写回）             @EventHandler 监听者
+           session.writeMsg (write back on IO thread)  @EventHandler listeners
 ```
 
-- **IO 线程只做编解码和路由校验**，业务全部在执行器组里执行；同一 routerKey（如同一玩家）严格串行，业务代码不需要加锁。
-- **回包/推送写 session 即返回**，写失败由网络层丢弃——转发失败不重试、不缓冲。
+- **IO threads only do codec work and routing checks**; all business runs in executor groups. The same routerKey (e.g. the same player) is strictly serial, so business code needs no locks.
+- **Replies/pushes return as soon as the session write is issued**; write failures are dropped by the network layer — forwarding failures are never retried or buffered.
 
-## 外网帧格式
+## External Frame Format
 
 ```
 bodyLength(int) | command(int) | seq(int) | code(int) | flags(byte) | body(bytes)
 ```
 
-| 字段 | 说明 |
+| Field | Description |
 |---|---|
-| bodyLength | body 字节数，上限 1 MiB（`GamePacketConstant.MAX_BODY_LENGTH`），超限断连 |
-| command | 业务命令号；`1~999` 保留给服务端主动推送的系统命令（如踢下线=1），业务从 `1000` 起 |
-| seq | 客户端请求序号，回包原样带回用于对包；服务端主动推送恒为 `0` |
-| code | 错误码（见下表），`0`=成功；非 0 时 body 为空 |
-| flags | 预留（压缩/加密标记） |
-| body | Fory 序列化的业务对象；所有外网 DTO 放 `cn.managame.dev.message` 包，启动期由 `ForyMessageRegistrar` 整包登记（默认 Fory 要求类注册，未登记类型直接抛异常，挡住任意类反序列化攻击面） |
+| bodyLength | body byte count, capped at 1 MiB (`GamePacketConstant.MAX_BODY_LENGTH`); exceeding it disconnects |
+| command | business command number; `1~999` is reserved for server-initiated system commands (e.g. kick-offline=1), business starts from `1000` |
+| seq | client request sequence number, echoed back in the reply for correlation; always `0` for server-initiated pushes |
+| code | error code (see table below), `0`=success; body is empty when non-zero |
+| flags | reserved (compression/encryption markers) |
+| body | Fory-serialized business object; all external DTOs live in the `cn.managame.dev.message` package and are registered wholesale at startup by `ForyMessageRegistrar` (Fory requires class registration by default — unregistered types throw outright, closing the arbitrary-class deserialization attack surface) |
 
-### 错误码（`GameErrorCode`）
+### Error Codes (`GameErrorCode`)
 
-| code | 含义 |
+| code | Meaning |
 |---|---|
 | 0 | OK |
-| 1 | INTERNAL_ERROR：handler 抛未识别异常 |
-| 2 | UNKNOWN_COMMAND：command 未注册 |
-| 3 | BAD_REQUEST：body 反序列化失败或参数非法 |
-| 4 | NOT_LOGGED_IN：未登陆调用 LOGIN 组之外的命令 |
-| 5 | SERVER_BUSY：worker 队列满，任务被丢弃（终态，不重试） |
-| 6 | DUPLICATE_LOGIN：踢下线原因——同账号在别处登陆 |
+| 1 | INTERNAL_ERROR: handler threw an unrecognized exception |
+| 2 | UNKNOWN_COMMAND: command not registered |
+| 3 | BAD_REQUEST: body deserialization failed or arguments invalid |
+| 4 | NOT_LOGGED_IN: called a command outside the LOGIN group without logging in |
+| 5 | SERVER_BUSY: worker queue full, task dropped (terminal, no retry) |
+| 6 | DUPLICATE_LOGIN: kick reason — same account logged in elsewhere |
 
-客户端不会被无声挂起：未知命令、坏包、未登陆、业务拒绝、handler 崩溃、服务器繁忙都会按原 command/seq 回一帧错误码。
+Clients are never silently hung: unknown commands, bad packets, not-logged-in, business rejections, handler crashes and server-busy all get an error-code frame back with the original command/seq.
 
-## 会话生命周期
+## Session Lifecycle
 
-- **登陆 gate**：`GameRouterManager` 对 LOGIN 组之外的命令要求 session 已绑定 roleId，否则回 `NOT_LOGGED_IN`。
-- **顶号**：`PlayerSessionManager.bind` 发现同 roleId 已在线时，先给旧连接推踢下线帧
-  （`command=1, seq=0, code=DUPLICATE_LOGIN`），写完成后关闭旧连接；条件解绑保证顶号重连不误删新 session。
-- **空闲踢人**：读空闲超过 180 秒（`CustomTcpPipelineConfigurator.DEFAULT_READER_IDLE_SECONDS`）直接断连，
-  客户端靠心跳（command=1001）保活。链路不健康时不推帧，直接关。
+- **Login gate**: `GameRouterManager` requires the session to have a bound roleId for any command outside the LOGIN group, otherwise it replies `NOT_LOGGED_IN`.
+- **Duplicate login**: when `PlayerSessionManager.bind` finds the same roleId already online, it first pushes a kick-offline frame to the old connection (`command=1, seq=0, code=DUPLICATE_LOGIN`), closes it after the write completes; conditional unbinding guarantees a kick-then-reconnect never removes the new session by mistake.
+- **Idle kick**: read idle beyond 180 seconds (`CustomTcpPipelineConfigurator.DEFAULT_READER_IDLE_SECONDS`) disconnects outright; clients keep alive via heartbeat (command=1001). When the link is unhealthy, no frame is pushed — just close.
 
-## 任务失败统一处理（`GameTaskFailureReplier`）
+## Unified Task Failure Handling (`GameTaskFailureReplier`)
 
-启动期注册为全局 `GameTaskExceptionHandler` + `GameTaskMonitor`：
+Registered at startup as the global `GameTaskExceptionHandler` + `GameTaskMonitor`:
 
-- handler 抛 `GameBusinessException(code, msg)` → 按 code 回包，不打堆栈（业务拒绝是正常流程）；
-- handler 抛其它异常 → 记错误日志 + 回 `INTERNAL_ERROR`；
-- worker 队列满任务被丢弃 → 回 `SERVER_BUSY`；
-- 慢任务（≥1s）打 warn。
+- handler throws `GameBusinessException(code, msg)` → reply with that code, no stack trace (business rejection is normal flow);
+- handler throws anything else → error log + reply `INTERNAL_ERROR`;
+- task dropped due to full worker queue → reply `SERVER_BUSY`;
+- slow tasks (≥1s) log warn.
 
-只有 COMMAND 任务有请求方可回；EVENT/TIMER 失败仅记日志。
+Only COMMAND tasks have a requester to reply to; EVENT/TIMER failures are logged only.
 
-## 写业务的方式
+## Writing Business Logic
 
-**命令 handler**：类上 `@GameController(group=...)`，方法上 `@GameMethod(value=命令号)`。
-LOGIN 组方法第一个参数是 `PlayerSession`（未绑定 roleId），其余组是 `Long roleId`；第二个参数是消息 DTO。
-LOGIN 组用 `routerKeyMethod` 从消息里取键打散（如 `getUserId`），避免登陆洪峰串行到单 worker：
+**Command handlers**: `@GameController(group=...)` on the class, `@GameMethod(value=commandNumber)` on the method.
+For LOGIN-group methods the first parameter is `PlayerSession` (roleId not yet bound); for other groups it is `Long roleId`; the second parameter is the message DTO.
+The LOGIN group uses `routerKeyMethod` to extract a key from the message for spreading (e.g. `getUserId`), so a login surge doesn't serialize onto a single worker:
 
 ```java
 @GameController(group = ExecutorGroups.LOGIN)
@@ -91,68 +87,66 @@ public class LoginController {
         if (req.getUserId() <= 0) {
             throw new GameBusinessException(GameErrorCode.BAD_REQUEST, "invalid userId");
         }
-        // ... 绑定、读写 Repository ...
-        gameRouterManager.reply(loginRes);                       // 回当前请求
-        EventBus.getInstance().publishEvent(new PlayerLoginEvent(...)); // 旁路逻辑走事件
+        // ... bind, read/write repositories ...
+        gameRouterManager.reply(loginRes);                       // reply to the current request
+        EventBus.getInstance().publishEvent(new PlayerLoginEvent(...)); // side-path logic goes through events
     }
 }
 ```
 
-**回包与推送**（`GameRouterManager`）：
+**Replies and pushes** (`GameRouterManager`):
 
-| 方法 | 语义 |
+| Method | Semantics |
 |---|---|
-| `reply(msg)` | 回当前请求（command/seq 取任务上下文，code=OK），仅 handler 线程可调 |
-| `replyError(code)` | 当前请求错误码回包；业务上更推荐直接抛 `GameBusinessException` |
-| `push(roleId, command, msg)` | 服务端主动推送，seq=0，离线丢弃；任意线程可调 |
-| `broadcast(command, msg)` | 全服在线广播，body 只序列化一次 |
+| `reply(msg)` | Reply to the current request (command/seq from the task context, code=OK); callable only from the handler thread |
+| `replyError(code)` | Reply to the current request with an error code; throwing `GameBusinessException` is generally preferred |
+| `push(roleId, command, msg)` | Server-initiated push, seq=0, dropped when offline; callable from any thread |
+| `broadcast(command, msg)` | Broadcast to all online players, body serialized only once |
 
-**事件**：`IGameEvent.routerKey()` 决定串行键；监听类 `@EventHandler(group=...)` + 方法 `@EventMethod`，
-由 Spring 扫描托管、启动期注册进 `EventBus`。与发布方同组同 routerKey 时内联执行，否则投递到监听者所在组。
-样例：`PlayerLoginEvent` / `PlayerLoginEventHandler`。
+**Events**: `IGameEvent.routerKey()` decides the serialization key; listener classes use `@EventHandler(group=...)` + `@EventMethod` methods, managed by Spring scanning and registered into `EventBus` at startup. Execution inlines when the listener shares the publisher's group and routerKey, otherwise the event is submitted to the listener's group.
+Example: `PlayerLoginEvent` / `PlayerLoginEventHandler`.
 
-**定时器**：统一用 `TimingWheel.getInstance()`（哈希时间轮，禁用 ScheduledExecutorService）。
-周期任务 = 一次性 schedule + 任务内自续期（见 `Game.scheduleOnlineReport`）。
-轮线程上只做轻量打点，重活封装成任务投递到执行器组。
+**Timers**: uniformly `TimingWheel.getInstance()` (hashed timing wheel; ScheduledExecutorService is banned).
+Periodic tasks = one-shot schedule + self-renewal inside the task (see `Game.scheduleOnlineReport`).
+Only lightweight bookkeeping on the wheel thread; heavy work is wrapped into tasks and submitted to executor groups.
 
-**消息 DTO**：放 `cn.managame.dev.message` 包即可，`ForyMessageRegistrar` 启动期按类名排序整包登记，无需手工注册。
+**Message DTOs**: just place them in the `cn.managame.dev.message` package; `ForyMessageRegistrar` registers the whole package at startup, sorted by class name — no manual registration.
 
-## 启动与停机
+## Startup & Shutdown
 
-启动顺序（`Game.main`）：Spring 扫描（include filter 接管 `@GameController`/`@EventHandler`）→
-refresh 前注册 game-jpa Repository 单例 → refresh → 注册执行器组 → 注册命令/事件 →
-Fory 登记消息类型 → 装配任务失败回包 → 起 Netty → 定时任务。
+Startup order (`Game.main`): Spring scan (include filters take over `@GameController`/`@EventHandler`) →
+register game-jpa Repository singletons before refresh → refresh → register executor groups → register commands/events →
+register Fory message types → wire the task-failure replier → start Netty → schedule timers.
 
-停机是**单一 shutdown hook 里的有序序列**（不拆多个 hook，JVM 并行执行会乱序）：
+Shutdown is an **ordered sequence inside a single shutdown hook** (not split into multiple hooks — the JVM runs them in parallel and order would be lost):
 
 ```
-停时间轮（不再产生新任务）→ 停 Netty（关连接、不再收请求）→
-排空执行器组（在途业务写完缓存）→ 关 GameJpaContext（刷异步写队列落库）→ 关 Spring 容器
+stop the timing wheel (no new tasks) → stop Netty (close connections, stop accepting requests) →
+drain executor groups (in-flight business finishes writing caches) → close GameJpaContext (flush the async write queue to the database) → close the Spring container
 ```
 
-## 配置
+## Configuration
 
-优先 `-D` 系统属性，其次环境变量，最后默认值：
+`-D` system properties first, then environment variables, then defaults:
 
-| 系统属性 | 环境变量 | 默认 |
+| System property | Environment variable | Default |
 |---|---|---|
 | `game.server.port` | `GAME_SERVER_PORT` | `8080` |
 | `game.db.url` | `GAME_DB_URL` | `jdbc:mysql://localhost:3306/test` |
 | `game.db.username` | `GAME_DB_USERNAME` | `root` |
 | `game.db.password` | `GAME_DB_PASSWORD` | `123456` |
 
-## 运行
+## Running
 
 ```bash
-# 服务端（需要本地 MySQL，按实体自动补建表）
+# Server (needs local MySQL; tables auto-created from entities)
 mvn -q -pl game-dev exec:java -Dexec.mainClass=cn.managame.dev.Game
 
-# 交互式测试客户端（login / ping / send / raw，见 GameClientMain 帮助）
+# Interactive test client (login / ping / send / raw — see GameClientMain help)
 mvn -q -pl game-dev exec:java -Dexec.mainClass=cn.managame.dev.client.GameClientMain
 
-# 测试（全链路集成测试不依赖 MySQL）
+# Tests (the end-to-end integration test does not depend on MySQL)
 mvn -pl game-dev test
 ```
 
-`ServerFrameworkIntegrationTest` 用真实管线覆盖框架行为：登陆 gate、未知命令/坏包错误帧、
-业务异常与崩溃回包、顶号踢下线推送、空闲踢人。
+`ServerFrameworkIntegrationTest` covers framework behavior over the real pipeline: the login gate, error frames for unknown commands / bad packets, replies for business exceptions and crashes, duplicate-login kick pushes, and idle kick.

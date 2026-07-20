@@ -1,23 +1,23 @@
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
 # game-jpa-demo
 
-`game-jpa-demo` 是一个集成风格的演示模块，用于在不依赖 MySQL 或 MongoDB 的情况下验证 `game-jpa` 的主运行路径。
+`game-jpa-demo` is an integration-style demo module for validating `game-jpa`'s main runtime paths without depending on MySQL or MongoDB.
 
-该演示定义了一个横跨两种存储模型的玩家场景：
+The demo defines a player scenario spanning both storage models:
 
-- `PlayerAccount`：RDB 实体，包含表映射、索引、JSON 字段、版本字段，以及非 id 分片键。
-- `PlayerProfile`：DocDB 文档，包含索引字段、内嵌字段和分片字段。
+- `PlayerAccount`: an RDB entity with table mapping, indexes, a JSON field, a version field, and a non-id shard key.
+- `PlayerProfile`: a DocDB document with indexed fields, embedded fields and a shard field.
 
-`game.jpa.demo.executor` 下的内存执行器会按 `ExecutorContext` 隔离数据，因此测试可以验证 Repository 调用是否路由到了预期的数据源、物理表或集合。
+The in-memory executors under `game.jpa.demo.executor` isolate data per `ExecutorContext`, so tests can verify that Repository calls route to the expected data source, physical table or collection.
 
-运行演示模块以及所有 `game-jpa` 模块测试：
+Run the demo module along with all `game-jpa` module tests:
 
 ```bash
 mvn "-Dmaven.repo.local=..\.m2" -f game-jpa\pom.xml test
 ```
 
-只运行演示模块及其所需的上游模块：
+Run only the demo module and its required upstream modules:
 
 ```bash
 mvn "-Dmaven.repo.local=..\.m2" -pl game-jpa/game-jpa-demo -am test

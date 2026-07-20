@@ -1,10 +1,10 @@
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
 # game-rpc-netty
 
-`game-rpc` 的 Netty 传输实现，包含线路编解码、连接与 peer 管理、客户端/服务端、握手、心跳、重连、背压和在途调用管理。
+The Netty transport for `game-rpc`, including the wire codec, connection and peer management, client/server runtime, handshake, heartbeat, reconnect, backpressure, and in-flight call management.
 
-该模块依赖 `game-rpc-core`、Netty 和 game-serialization，**不依赖 `game-network`**。完整使用说明见 [game-rpc](../README.md)。
+This module depends on `game-rpc-core`, Netty, and game-serialization, and **does not depend on `game-network`**. See [game-rpc](../README.md) for the complete usage guide.
 
 ```xml
 <dependency>

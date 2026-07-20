@@ -1,48 +1,48 @@
-[English](README.en.md) | 中文
+[中文](README.zh-CN.md) | English
 
 # game-jpa
 
-## 构建与验证
+## Build & Verify
 
-`game-jpa` 使用 Java 25，与父项目保持一致。默认测试命令不需要 Docker：
+`game-jpa` uses Java 25, consistent with the parent project. The default test command needs no Docker:
 
 ```powershell
 mvn "-Dmaven.repo.local=..\.m2" test
 ```
 
-真实 MySQL 和 MongoDB 集成测试位于 `src/it/java`，仅在启用 `integration-tests` profile 时运行：
+Real MySQL and MongoDB integration tests live under `src/it/java` and run only with the `integration-tests` profile:
 
 ```powershell
 mvn "-Dmaven.repo.local=..\.m2" -Pintegration-tests verify
 ```
 
-`game-jpa` 是面向游戏服务器的数据访问框架。它提供轻量 Repository API、实体元数据解析、关系型数据库/文档数据库适配、本地缓存、异步批量写回、分片路由、生命周期钩子和指标采集。
+`game-jpa` is a data access framework for game servers. It provides a lightweight Repository API, entity metadata resolution, relational/document database adapters, local caching, asynchronous batched write-back, shard routing, lifecycle hooks and metrics collection.
 
-它不是完整 JPA/Hibernate 替代品，也不追求复杂 ORM 能力。它更适合游戏服常见的数据模型：
+It is not a full JPA/Hibernate replacement and does not pursue heavyweight ORM features. It fits the data models common to game servers:
 
-- 玩家、角色、背包、邮件、活动数据等高频读写实体
-- 游戏逻辑先修改内存态，再合并批量落库
-- 按玩家 id、角色 id、日期、区服等维度分库分表
-- 需要明确、可控、低魔法的持久化 API
+- High-frequency read/write entities: players, roles, inventories, mail, activity data
+- Game logic mutates in-memory state first, then merges into batched database writes
+- Sharding by player id, role id, date, realm and similar dimensions
+- A persistence API that is explicit, controllable and low-magic
 
-## 模块说明
+## Modules
 
-| 模块 | 说明 |
+| Module | Description |
 | --- | --- |
-| `game-jpa-core` | 核心 SPI、元数据、Repository 工厂、路由、生命周期、指标采集（含默认内存实现）、写任务契约 |
-| `game-jpa-starter` | 启动器和运行时上下文 |
-| `game-jpa-rdb` | 关系型数据库注解、元数据、查询规格、Repository API |
-| `game-jpa-rdb-mysql` | MySQL 执行器、SQL 方言、Hikari 数据源工厂、Schema 生成器 |
-| `game-jpa-docdb` | 文档数据库注解、元数据、查询/更新规格、Repository API |
-| `game-jpa-docdb-mongo` | MongoDB 执行器 |
-| `game-jpa-cache` | 存储无关的唯一键缓存和组合键缓存 |
-| `game-jpa-rdb-cache` | RDB 缓存 Repository 和批量写回 |
-| `game-jpa-docdb-cache` | DocDB 缓存 Repository 和批量写回 |
-| `game-jpa-async-write` | 内存异步写队列和刷盘调度器 |
+| `game-jpa-core` | Core SPI, metadata, Repository factory, routing, lifecycle, metrics (with default in-memory implementation), write task contracts |
+| `game-jpa-starter` | Bootstrap and runtime context |
+| `game-jpa-rdb` | Relational database annotations, metadata, query specs, Repository API |
+| `game-jpa-rdb-mysql` | MySQL executor, SQL dialect, Hikari data source factory, schema generator |
+| `game-jpa-docdb` | Document database annotations, metadata, query/update specs, Repository API |
+| `game-jpa-docdb-mongo` | MongoDB executor |
+| `game-jpa-cache` | Storage-agnostic unique-key and composite-key caches |
+| `game-jpa-rdb-cache` | RDB cache Repository and batched write-back |
+| `game-jpa-docdb-cache` | DocDB cache Repository and batched write-back |
+| `game-jpa-async-write` | In-memory async write queue and flush scheduler |
 
-## 快速开始：RDB + MySQL + 缓存写回
+## Quick Start: RDB + MySQL + Cache Write-back
 
-添加依赖：
+Add dependencies:
 
 ```xml
 <dependency>
@@ -62,9 +62,9 @@ mvn "-Dmaven.repo.local=..\.m2" -Pintegration-tests verify
 </dependency>
 ```
 
-`game-jpa-rdb-mysql` 会带上 HikariCP 和 MySQL JDBC driver；业务方通常不需要再额外声明 `mysql-connector-j`。
+`game-jpa-rdb-mysql` brings in HikariCP and the MySQL JDBC driver; business projects usually don't need to declare `mysql-connector-j` separately.
 
-定义实体：
+Define an entity:
 
 ```java
 import cn.managame.jpa.rdb.annotation.Column;
@@ -81,7 +81,8 @@ import java.util.Map;
 @Entity
 @Table(name = "player")
 public class Player {
-    // 字段必须显式 @Column 才会映射为列；@Id/@ShardKey/@Version 等标记需与 @Column 同时声明
+    // A field maps to a column only with an explicit @Column; markers like @Id/@ShardKey/@Version
+    // must be declared together with @Column
     @Id
     @ShardKey
     @Column
@@ -93,7 +94,8 @@ public class Player {
     @Column(length = 64, defaultValue = "newbie")
     private String name;
 
-    // 复杂类型默认按 JSON 列存储；这里显式声明 type 以同时给出 JSON 默认值
+    // Complex types are stored as JSON columns by default; the type is declared explicitly here
+    // to also provide a JSON default value
     @Column(type = ColumnType.JSON, defaultValue = "{}")
     private Map<String, Integer> bag = new LinkedHashMap<>();
 
@@ -103,7 +105,7 @@ public class Player {
 }
 ```
 
-定义 Repository：
+Define a Repository:
 
 ```java
 import cn.managame.jpa.rdb.cache.IRdbUniqueCacheRepository;
@@ -112,7 +114,7 @@ public interface PlayerRepository extends IRdbUniqueCacheRepository<Player, Long
 }
 ```
 
-启动框架：
+Bootstrap the framework:
 
 ```java
 import cn.managame.jpa.rdb.cache.RdbCacheModule;
@@ -135,8 +137,8 @@ GameJpaContext context = new GameJpaBootstrap()
         .use(MysqlStorage.using(dataSource).updateSchema())
         .use(RdbCacheModule.defaults())
         .flushIntervalMillis(5000)
-        .flushThreadMode(FlushThreadMode.VIRTUAL) // 仅选择线程类型；两种模式的 worker 数都严格有界
-        .flushThreadCount(2)                      // 不同物理表的最大并发数
+        .flushThreadMode(FlushThreadMode.VIRTUAL) // selects only the thread type; both modes are strictly bounded
+        .flushThreadCount(2)                      // maximum concurrency across physical tables
         .maxFlushBatchSize(500)
         .maxRetries(3)
         .maxPendingWriteTasks(1_000_000)
@@ -145,11 +147,11 @@ GameJpaContext context = new GameJpaBootstrap()
 PlayerRepository players = context.getRepository(PlayerRepository.class);
 ```
 
-`bootstrap(String... basePackages)` 会递归扫描指定包及其子包，只注册当前已启用扩展能够识别的注解实体，例如 RDB 的 `@Entity` 和 DocDB 的 `@Document`。可以一次传入多个业务包，不需要再维护实体类清单。
+`bootstrap(String... basePackages)` recursively scans each package and its subpackages, registering only annotated entities recognized by the enabled extensions, such as RDB `@Entity` and DocDB `@Document`. Multiple business packages can be supplied without maintaining an entity class list.
 
-`MysqlStorage` 统一持有 DataSource、MySQL 执行器和可选 Schema 策略，因此 DataSource 只配置一次；`RdbCacheModule` 只选择缓存 Repository，不再负责创建数据库执行器。`updateSchema()` 只在持久化上下文初始化阶段同步普通表，并跳过带 `@ShardKey` 的实体。运行期写路径不会自动创建缺失表或物理分表；分表 DDL 必须通过显式迁移或预生成脚本管理。`columnAutoWiden` 默认关闭，不会在写路径修改列；字符串/二进制字段长度不足会翻译为 `DataTooLargeException` 并按异步策略重试。只有明确接受写路径执行 `ALTER TABLE` 时才应显式调用 `columnAutoWiden(true)`。
+`MysqlStorage` owns the DataSource, MySQL executor, and optional schema policy, so the DataSource is configured only once; `RdbCacheModule` now only selects cache-backed repositories and does not construct a database executor. `updateSchema()` synchronizes ordinary tables only while the persistence context is initializing and skips entities carrying `@ShardKey`. Runtime writes never create missing tables or physical shards; shard DDL must be managed through explicit migrations or generated scripts. `columnAutoWiden` is disabled by default and never alters columns on the write path; undersized string/binary columns are translated to `DataTooLargeException` and follow the async retry policy. Call `columnAutoWiden(true)` explicitly only when write-path `ALTER TABLE` is acceptable.
 
-游戏库和日志库使用不同 DataSource 时，仍然只启用一个 `MysqlStorage`：
+When the game database and log database use different DataSources, enable only one `MysqlStorage`:
 
 ```java
 MysqlStorage mysql = MysqlStorage.using(gameDataSource)
@@ -163,47 +165,46 @@ GameJpaContext context = new GameJpaBootstrap()
         .bootstrap("cn.managame.game", "cn.managame.log");
 ```
 
-也可以在日志实体上声明 `@Table(dataSource = "log")`。读写和 `updateSchema()` 使用相同的最终 home DataSource 解析规则；Schema 更新会按数据源拆分元数据，游戏表只更新游戏库，日志表只更新日志库。带 `@ShardKey` 的实体仍由受控 migration 管理。
+Alternatively, declare `@Table(dataSource = "log")` on log entities. Reads, writes, and `updateSchema()` use the same final home-data-source resolution. Schema metadata is partitioned by data source, so game tables update only the game database and log tables update only the log database. Entities carrying `@ShardKey` still require controlled migrations.
 
-异步写回只调度发生过提交的物理表，不周期扫描空桶。同一实体通道、同一物理表始终只有一个在途批次，超过 `maxFlushBatchSize` 的数据按顺序分片；不同物理表最多按 `flushThreadCount` 并行。瞬时批次错误整批回灌，数据级错误使用二分拆批定位，不再直接放大为整批逐条写入。
+Async write-back schedules only physical tables that received submissions instead of scanning empty buckets. Each entity channel and physical table has at most one in-flight batch; data beyond `maxFlushBatchSize` is chunked sequentially, while different physical tables run in parallel up to `flushThreadCount`. Transient batch failures are requeued as a batch, whereas data-level failures are isolated by binary splitting instead of immediately expanding into one write per row.
 
-使用缓存读写：
+Read/write through the cache:
 
 ```java
 Player player = players.cacheLoad(10001L);
-// 修改 player 的内存状态
+// mutate the player's in-memory state
 players.cacheUpdate(player);
 
-// 异步写回会从实体 @ShardKey 自动路由
+// async write-back routes automatically from the entity's @ShardKey
 players.cacheDelete(10001L);
 ```
 
-关闭服务器时必须关闭上下文：
+The context must be closed at server shutdown:
 
 ```java
 context.close();
 ```
 
-`close()` 会先拒绝新的异步写提交，再停止刷盘调度器，并对已经进入内存队列的任务执行最后一次 flush。
-内置异步队列不再提供本地文件持久化；进程崩溃不能保证内存任务不丢。必须零丢失的数据应使用同步 Repository 写入或外部可靠队列/流水线。
+`close()` first rejects new async write submissions, then stops the flush scheduler, and performs one final flush of the tasks already in the in-memory queue.
+The built-in async queue no longer offers local file persistence; a process crash may lose in-memory tasks. Data that must never be lost should use the synchronous Repository writes or an external durable queue/pipeline.
 
-## 常用接入模式
+## Common Integration Patterns
 
-### 普通 RDB
+### Plain RDB
 
-使用 `MysqlStorage.using(dataSource)` 配合 `RdbModule.defaults()`，业务 Repository 继承 `RdbRepository<T, ID>`。
+Use `MysqlStorage.using(dataSource)` with `RdbModule.defaults()` and have business Repositories extend `RdbRepository<T, ID>`.
 
-适合强一致写路径、后台管理、低频实体。
+Suits strongly consistent write paths, back-office administration, and low-frequency entities.
 
-### RDB 缓存写回
+### RDB Cache Write-back
 
-使用 `MysqlStorage.using(dataSource)` 配合 `RdbCacheModule.defaults()`，业务 Repository 继承：
+Use `MysqlStorage.using(dataSource)` with `RdbCacheModule.defaults()` and have business Repositories extend:
 
-- `IRdbUniqueCacheRepository<T, ID>`：主键唯一缓存
-- `IRdbMultiCacheRepository<T, ID>`：组合键多记录缓存
+- `IRdbUniqueCacheRepository<T, ID>`: unique cache by primary key
+- `IRdbMultiCacheRepository<T, ID>`: multi-record cache by composite key
 
-如果某张小表属于配置/字典类数据，需要在服务启动时全量加载并长期驻留内存，可以在实体类上标记
-`@Warmup`，并让业务 Repository 继承 `IRdbUniqueCacheRepository<T, ID>`：
+For a small table of config/dictionary-style data that should be fully loaded at startup and kept resident in memory, mark the entity class with `@Warmup` and have the business Repository extend `IRdbUniqueCacheRepository<T, ID>`:
 
 ```java
 import cn.managame.jpa.cache.annotation.Warmup;
@@ -217,11 +218,10 @@ public class ItemConfig {
 }
 ```
 
-启用 `RdbCacheModule` 后，`GameJpaBootstrap.bootstrap(...)` 会在上下文创建完成后自动调用
-`findAll()` 预热这类实体；后续 `cacheLoad(id)` 会复用同一份无过期、无容量淘汰的内存缓存。
-该能力只适合数据量可控的非分片表。
+With `RdbCacheModule` enabled, `GameJpaBootstrap.bootstrap(...)` automatically calls `findAll()` to warm such entities after the context is created; subsequent `cacheLoad(id)` calls reuse the same in-memory cache, which has no expiry and no capacity eviction.
+This capability is only for non-sharded tables of controlled size.
 
-创角流程里，如果业务能判断某个 role 刚创建、相关表在数据库里一定没有历史记录，可以把这个判断交给缓存配置：
+In the character-creation flow, if the business can tell that a role was just created and its tables definitely have no history in the database, that judgment can be handed to the cache configuration:
 
 ```java
 RdbCacheModule cacheModule = RdbCacheModule.defaults()
@@ -234,7 +234,7 @@ GameJpaContext context = new GameJpaBootstrap()
         .bootstrap("cn.managame.game.domain");
 ```
 
-角色相关表需要显式标出 roleId 字段，避免框架靠字段名或 key 顺序猜测：
+Role-related tables must mark the roleId field explicitly, so the framework never guesses by field name or key order:
 
 ```java
 import cn.managame.jpa.cache.annotation.CacheKey;
@@ -254,37 +254,34 @@ public class Mail {
 }
 ```
 
-`newRoleDetector` 是全局设置，不跟单张表的 `CacheConfig` 绑定。业务使用方法不变，仍然调用 `cacheLoad(...)`。缓存未命中时，框架会先按 `@RoleId` 提取 roleId，并短时间缓存新号判断；如果判定为新号，唯一键返回 `null`，组合键返回空列表，不触发数据库 loader。RDB 组合键会从带 `@RoleId` 的 `@CacheKey` 字段对应的 part 取值；唯一键只有在 `@RoleId` 同时是 `@Id`，或 `cacheLoad(id, routingKey)` 的 routingKey 对应 `@RoleId @ShardKey` 时才能在查库前判断。
+`newRoleDetector` is a global setting, not bound to a single table's `CacheConfig`. Business usage is unchanged — still `cacheLoad(...)`. On a cache miss, the framework first extracts the roleId via `@RoleId` and briefly caches the new-role verdict; when judged new, unique keys return `null` and composite keys return an empty list, without hitting the database loader. RDB composite keys take the value from the part corresponding to the `@CacheKey` field marked `@RoleId`; unique keys can only be judged before querying when `@RoleId` is also `@Id`, or when the routingKey of `cacheLoad(id, routingKey)` corresponds to a `@RoleId @ShardKey` field.
 
-适合游戏服热数据。注意它是最终一致写回，进程崩溃可能丢失尚未刷盘的内存任务。
+Suits hot data in game servers. Note that it is eventually consistent write-back — a process crash may lose in-memory tasks not yet flushed.
 
 ### Mongo DocDB
 
-使用 `DocdbModule` 或 `DocdbCacheModule`，执行器为 `MongoDocExecutor`。
+Use `DocdbModule` or `DocdbCacheModule` with the `MongoDocExecutor` executor.
 
-适合结构灵活、文档型的数据。缓存写回与 RDB 侧能力对齐：
+Suits flexible, document-shaped data. Cache write-back matches the RDB-side capabilities:
 
-- `IDocUniqueCacheRepository<T, ID>`：主键唯一缓存
-- `IDocMultiCacheRepository<T, ID>`：组合键多记录缓存（实体字段标 `@CacheKey(order = N)`）
-- `@Warmup` 文档实体在启动时自动 `findAll()` 预热并常驻内存（仅限非分片小集合）
+- `IDocUniqueCacheRepository<T, ID>`: unique cache by primary key
+- `IDocMultiCacheRepository<T, ID>`: multi-record cache by composite key (entity fields marked `@CacheKey(order = N)`)
+- `@Warmup` document entities are auto-warmed with `findAll()` at startup and stay memory-resident (non-sharded small collections only)
 
-嵌套 POJO 字段自动映射为嵌套文档，无需注解；注册了自定义 `TypeConverter` 的类型优先走转换器。
+Nested POJO fields map to nested documents automatically, no annotations needed; types with a registered custom `TypeConverter` go through the converter first.
 
-`MongoDocExecutor` 按驱动异常类型和官方 retryable error label 翻译异常，不维护可重试错误码表：网络故障为
-`ConnectionException`，选主切换/可重试写冲突为 `ConcurrentWriteException`，超时为 `WriteTimeoutException`，
-文档超过 BSON 上限为 `DataTooLargeException`。这些异常均继承 `RetriableWriteException`，异步写回会重试到
-`maxRetries`；重复键包装为 `DuplicateKeyException`，其余确定性失败在通知 permanent failure handler 后丢弃。
+`MongoDocExecutor` translates by driver exception type and official retryable error labels instead of maintaining a retryable error-code table: network failures become `ConnectionException`, primary changes/retryable write conflicts become `ConcurrentWriteException`, timeouts become `WriteTimeoutException`, and BSON size violations become `DataTooLargeException`. All extend `RetriableWriteException`, so async write-back retries them up to `maxRetries`; duplicate keys become `DuplicateKeyException`, while other deterministic failures are dropped after notifying the permanent failure handler.
 
-## 分片
+## Sharding
 
-内置策略：
+Built-in strategies:
 
 - `HashShardingStrategy`
 - `RangeShardingStrategy`
 - `DateShardingStrategy`
 - `ConsistentHashShardingStrategy`
 
-实体上最多标记一个 `@ShardKey`。写入、批量写入和缓存写回会从实体上的 `@ShardKey` 字段自动路由；条件查询在 `RdbQuerySpec` / `DocQuerySpec` 中包含单值 `@ShardKey` 条件时也会自动路由。只有按 id 查询/删除且 `@ShardKey` 不是主键时，框架无法从 id 推导分片，需要显式 routingKey：
+An entity may mark at most one `@ShardKey`. Writes, batch writes and cache write-back route automatically from the entity's `@ShardKey` field; conditional queries also route automatically when the `RdbQuerySpec` / `DocQuerySpec` contains a single-value `@ShardKey` condition. Only when querying/deleting by id while `@ShardKey` is not the primary key can the framework not derive the shard from the id — an explicit routingKey is needed:
 
 ```java
 repo.findById(id, routingKey);
@@ -293,62 +290,62 @@ cacheRepo.cacheLoad(id, routingKey);
 cacheRepo.cacheDelete(id, routingKey);
 ```
 
-如果希望唯一键缓存的 `cacheLoad(id)` 完全不传路由参数，最简单的建模方式是让 `@ShardKey` 和 `@Id` 标在同一个字段上。`cacheInsert(entity)`、`cacheUpdate(entity)` 和组合键缓存写回都会从实体注解字段自动读取路由值。
+If you want the unique cache's `cacheLoad(id)` to take no routing parameter at all, the simplest modeling is to put `@ShardKey` and `@Id` on the same field. `cacheInsert(entity)`, `cacheUpdate(entity)` and composite-key cache write-back all read the routing value from the annotated entity field automatically.
 
-RDB 条件查询和计数使用 `RdbQuerySpec`，字段名同样使用 Java 属性名：
+RDB conditional queries and counting use `RdbQuerySpec`, with field names being Java property names:
 
 ```java
 repo.findBySpec(new RdbQuerySpec().eq("roleId", roleId).limit(100));
 long count = repo.count(new RdbQuerySpec().eq("roleId", roleId).gte("level", 10));
 ```
 
-## 生产注意事项
+## Production Notes
 
-- 不要在大表热路径使用 `findAll()` 或 `warmUpAll()`。
-- `@Warmup` 会在启动时全量加载整张表并常驻内存，只用于配置表、字典表等小表；带 `RoutingStrategy` 的分片表不支持自动全量预热。
-- `newRoleDetector` 只适用于业务已明确知道后端无数据的路径，例如新角色初始化；角色相关表应标注 `@RoleId`，不要把普通登录判断成新号，否则可能把真实数据库数据当成不存在。
-- 缓存写回是最终一致，不适合作为必须落库成功后才能响应的强一致路径。
-- 缓存写回保留实体对象引用以避免快照开销；提交后不要继续并发修改同一实体对象。
-- RDB 缓存写回会对带 `@Version` 的 MySQL 实体执行版本感知 upsert；版本不匹配按确定性失败处理，通知 permanent failure handler 后丢弃。
-- 关注 `asyncWrite.pending` 指标；它同时包含排队和在途任务，也是 `maxPendingWriteTasks` 背压依据。达到阈值后会拒绝新的唯一键写任务，同一 pending key 的更新仍会合并。
-- 配置 async write permanent failure handler，用于告警或补偿。
-- 服务停机必须调用 `GameJpaContext.close()`。
-- 缓存写回分片路由由执行层从实体 `@ShardKey` 自动提取；`cacheLoad(id)` / `cacheDelete(id)` 只有在实体已在缓存中或 `@ShardKey` 就是主键时能自动路由，其他场景使用存储相关 Repository 的 `cacheLoad(id, routingKey)` / `cacheDelete(id, routingKey)`。
-- 查询 API 使用 Java 属性名，不使用裸 SQL 列名。
-- 生产环境如果要启动时自动补表结构，在 `MysqlStorage.using(dataSource)` 上显式调用 `updateSchema()`；它只会创建缺失表、添加缺失列/索引，不会删除列、重命名列或修改已有列类型/默认值。上线前可用 `generateSchemaOnly()` 生成 diff 报告，`-- MANUAL MIGRATION REQUIRED` 注释项应进入受控 migration。
-- 带 `@ShardKey` 且安装了 `RoutingStrategy` 的 RDB 实体不支持自动 schema 同步；分片物理表/多数据源 DDL 应使用受控 migration 或预生成脚本。
-- `@Column(defaultValue = "...")` 只对 `null` 生效；声明默认值的字段应使用包装类型，例如 `Integer`、`Boolean`，不要使用 `int`、`boolean`。
+- Do not use `findAll()` or `warmUpAll()` on the hot path of large tables.
+- `@Warmup` fully loads the whole table at startup and keeps it memory-resident — use only for small config/dictionary tables; sharded tables with a `RoutingStrategy` do not support automatic full warmup.
+- `newRoleDetector` applies only to paths where the business knows for sure the backend has no data, such as new-role initialization; role-related tables should be annotated with `@RoleId`. Do not classify an ordinary login as a new role, or real database data may be treated as nonexistent.
+- Cache write-back is eventually consistent; it is not a strongly consistent path where a response requires a confirmed database write.
+- Cache write-back keeps references to entity objects to avoid snapshot overhead; do not keep mutating the same entity object concurrently after submitting.
+- RDB cache write-back performs version-aware upserts for MySQL entities with `@Version`; a version mismatch is treated as a deterministic failure — dropped after notifying the permanent failure handler.
+- Watch `asyncWrite.pending`; it includes both queued and in-flight tasks and drives `maxPendingWriteTasks` backpressure. At the limit, new unique-key tasks are rejected while updates to an already-pending key still merge.
+- Configure the async write permanent failure handler for alerting or compensation.
+- Service shutdown must call `GameJpaContext.close()`.
+- Shard routing for cache write-back is extracted automatically by the execution layer from the entity's `@ShardKey`; `cacheLoad(id)` / `cacheDelete(id)` can only route automatically when the entity is already cached or `@ShardKey` is the primary key — otherwise use the storage-specific Repository's `cacheLoad(id, routingKey)` / `cacheDelete(id, routingKey)`.
+- The query API uses Java property names, not raw SQL column names.
+- To auto-patch the schema at startup in production, call `updateSchema()` explicitly on `MysqlStorage.using(dataSource)`; it only creates missing tables and adds missing columns/indexes — it never drops columns, renames columns, or alters existing column types/defaults. Before going live, `generateSchemaOnly()` can produce a diff report; items commented `-- MANUAL MIGRATION REQUIRED` should go into a controlled migration.
+- RDB entities with `@ShardKey` and an installed `RoutingStrategy` do not support automatic schema sync; DDL for sharded physical tables / multiple data sources should use controlled migrations or pre-generated scripts.
+- `@Column(defaultValue = "...")` only applies to `null`; fields declaring a default should use wrapper types such as `Integer`, `Boolean` — not `int`, `boolean`.
 
-## 测试
+## Testing
 
-运行 `game-jpa` 全模块测试：
+Run all `game-jpa` module tests:
 
 ```bash
 mvn "-Dmaven.repo.local=..\\.m2" test
 ```
 
-当前测试覆盖：
+Current test coverage:
 
-- 分片策略
-- RepositoryFactory 优先级
-- 多层泛型 Repository 类型解析
-- 异步写队列提交期路由、按物理表合并/追加与并发 drain
-- 组合键缓存一致性
-- 分片提交期路由（RDB/DocDB）与日志异步追加
+- Sharding strategies
+- RepositoryFactory priority
+- Multi-level generic Repository type resolution
+- Async write queue: submission-phase routing, per-physical-table merge/append and concurrent drain
+- Composite-key cache consistency
+- Sharded submission-phase routing (RDB/DocDB) and async log appending
 
-## 扩展
+## Extending
 
-新增存储后端的一般步骤：
+The general steps for a new storage backend:
 
-1. 定义注解和元数据解析器，或复用现有元数据模型。
-2. 实现存储执行器。
-3. 实现 `RepositoryFactory`。
-4. 实现 `GameJpaExtension` 注册 resolver、factory、executor。
-5. 如果需要缓存写回，向 `WriteChannelRegistry` 注册对应 `WriteChannel`（实体缓存用 `BatchFlusher` 合并通道，日志用 `AppendFlusher` 追加通道）。
-6. 补充元数据、路由、Repository 创建、失败行为测试。
+1. Define annotations and a metadata resolver, or reuse the existing metadata model.
+2. Implement the storage executor.
+3. Implement a `RepositoryFactory`.
+4. Implement a `GameJpaExtension` registering the resolver, factory and executor.
+5. For cache write-back, register the corresponding `WriteChannel` with `WriteChannelRegistry` (entity caches use the `BatchFlusher` merge channel, logs use the `AppendFlusher` append channel).
+6. Add tests for metadata, routing, Repository creation and failure behavior.
 
-新增缓存实现：
+Adding a cache implementation:
 
-1. 实现 `CacheStore<K, V>`。
-2. 实现 `CacheStoreFactory`。
-3. 通过 `CacheConfig.builder().cacheStoreFactory(...)` 注入。
+1. Implement `CacheStore<K, V>`.
+2. Implement a `CacheStoreFactory`.
+3. Inject via `CacheConfig.builder().cacheStoreFactory(...)`.
