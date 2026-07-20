@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa-docdb-cache</artifactId>
+    <name>game-jpa-docdb-cache</name>
 
     <dependencies>
         <dependency>

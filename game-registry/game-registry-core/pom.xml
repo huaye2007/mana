@@ -9,6 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>game-registry-core</artifactId>
+    <name>game-registry-core</name>
     <dependencies>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

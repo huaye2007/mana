@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa-cache</artifactId>
+    <name>game-jpa-cache</name>
 
     <dependencies>
         <dependency>

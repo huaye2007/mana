@@ -9,6 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>game-config-core</artifactId>
+    <name>game-config-core</name>
     <dependencies>
         <dependency>
             <groupId>org.slf4j</groupId>

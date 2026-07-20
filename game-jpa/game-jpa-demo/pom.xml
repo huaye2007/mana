@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa-demo</artifactId>
+    <name>game-jpa-demo</name>
 
     <dependencies>
         <dependency>

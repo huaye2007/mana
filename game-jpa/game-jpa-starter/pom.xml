@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa-starter</artifactId>
+    <name>game-jpa-starter</name>
 
     <dependencies>
         <dependency>

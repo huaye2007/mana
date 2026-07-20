@@ -9,6 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>game-registry-nacos</artifactId>
+    <name>game-registry-nacos</name>
     <dependencies>
         <dependency>
             <groupId>cn.managame</groupId>

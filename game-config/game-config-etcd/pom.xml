@@ -5,6 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <parent><groupId>cn.managame</groupId><artifactId>game-config</artifactId><version>1.0.0</version></parent>
     <artifactId>game-config-etcd</artifactId>
+    <name>game-config-etcd</name>
     <properties>
         <netty.version>4.1.132.Final</netty.version>
         <surefire.argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true -Dnet.bytebuddy.experimental=true</surefire.argLine>

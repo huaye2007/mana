@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-network</artifactId>
+    <name>game-network</name>
     <packaging>pom</packaging>
     <modules>
         <module>game-network-core</module>

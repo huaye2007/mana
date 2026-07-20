@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-network-core</artifactId>
+    <name>game-network-core</name>
 
     <properties>
         <maven.compiler.source>25</maven.compiler.source>

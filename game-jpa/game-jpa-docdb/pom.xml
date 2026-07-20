@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa-docdb</artifactId>
+    <name>game-jpa-docdb</name>
 
     <dependencies>
         <dependency>

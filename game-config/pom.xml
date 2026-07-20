@@ -9,6 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>game-config</artifactId>
+    <name>game-config</name>
     <packaging>pom</packaging>
     <properties>
         <testcontainers.version>2.0.5</testcontainers.version>

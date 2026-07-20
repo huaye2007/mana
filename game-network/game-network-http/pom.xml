@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-network-http</artifactId>
+    <name>game-network-http</name>
 
     <dependencies>
         <dependency>

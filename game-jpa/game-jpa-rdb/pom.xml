@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa-rdb</artifactId>
+    <name>game-jpa-rdb</name>
 
     <dependencies>
         <dependency>

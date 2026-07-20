@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa</artifactId>
+    <name>game-jpa</name>
     <version>1.0.0</version>
     <packaging>pom</packaging>
 

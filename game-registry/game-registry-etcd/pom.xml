@@ -9,6 +9,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>game-registry-etcd</artifactId>
+    <name>game-registry-etcd</name>
     <properties>
         <surefire.argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true -Dnet.bytebuddy.experimental=true</surefire.argLine>
     </properties>

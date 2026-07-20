@@ -12,6 +12,7 @@
     </parent>
 
     <artifactId>game-serialization</artifactId>
+    <name>game-serialization</name>
 
     <dependencies>
         <dependency>

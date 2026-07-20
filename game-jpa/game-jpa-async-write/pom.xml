@@ -11,6 +11,7 @@
     </parent>
 
     <artifactId>game-jpa-async-write</artifactId>
+    <name>game-jpa-async-write</name>
 
     <dependencies>
         <dependency>
