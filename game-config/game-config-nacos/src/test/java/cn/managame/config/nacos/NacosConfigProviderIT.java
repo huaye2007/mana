@@ -20,7 +20,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Testcontainers
@@ -30,13 +29,13 @@ class NacosConfigProviderIT {
     @Container
     static final NacosContainer NACOS = new NacosContainer(CLIENT_PORT);
 
-    @Test void retainsLastSnapshotUntilAllNacosResourcesShareRevision() throws Exception {
+    @Test void publishesMergedSnapshotWhenEachNacosResourceChanges() throws Exception {
         Properties properties = new Properties();
         properties.setProperty("serverAddr", "127.0.0.1:" + CLIENT_PORT);
         ConfigService publisher = NacosFactory.createConfigService(properties);
         try {
-            String initialBase = "_revision=1\nport=7000\nname=base";
-            String initialOverride = "_revision=1\nname=override";
+            String initialBase = "port=7000\nname=base";
+            String initialOverride = "name=override";
             assertTrue(publisher.publishConfig("base", "GAME", initialBase));
             assertTrue(publisher.publishConfig("override", "GAME", initialOverride));
             ConfigService verifier = NacosFactory.createConfigService(properties);
@@ -48,20 +47,20 @@ class NacosConfigProviderIT {
             try (ConfigCenter center = ConfigFactory.open(ConfigOptions.builder("nacos")
                     .endpoint("127.0.0.1:" + CLIENT_PORT)
                     .resource("GAME:base").resource("GAME:override").build())) {
-                CountDownLatch changed = new CountDownLatch(1);
-                CountDownLatch anyChange = new CountDownLatch(1);
+                CountDownLatch baseChanged = new CountDownLatch(1);
+                CountDownLatch overrideChanged = new CountDownLatch(1);
                 center.listen(event -> {
-                    anyChange.countDown();
-                    if ("8000".equals(event.current().get("port"))
-                            && "latest".equals(event.current().get("name"))) changed.countDown();
+                    if ("8000".equals(event.current().get("port"))) baseChanged.countDown();
+                    if ("latest".equals(event.current().get("name"))) overrideChanged.countDown();
                 });
 
-                assertTrue(publisher.publishConfig("base", "GAME", "_revision=2\nport=8000\nname=base"));
-                assertFalse(anyChange.await(2, TimeUnit.SECONDS));
-                assertEquals("7000", center.snapshot().get("port"));
-                assertTrue(publisher.publishConfig("override", "GAME", "_revision=2\nname=latest"));
+                assertTrue(publisher.publishConfig("base", "GAME", "port=8000\nname=base"));
+                assertTrue(baseChanged.await(15, TimeUnit.SECONDS));
+                assertEquals("8000", center.snapshot().get("port"));
+                assertEquals("override", center.snapshot().get("name"));
+                assertTrue(publisher.publishConfig("override", "GAME", "name=latest"));
 
-                assertTrue(changed.await(15, TimeUnit.SECONDS));
+                assertTrue(overrideChanged.await(15, TimeUnit.SECONDS));
                 assertEquals("8000", center.snapshot().get("port"));
                 assertEquals("latest", center.snapshot().get("name"));
             }
