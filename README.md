@@ -2,7 +2,7 @@
 
 # mana
 
-`mana` is a collection of building blocks for game servers, organized as a Maven multi-module reactor covering networking, internal RPC, serialization, service registry, configuration management, runtime task scheduling, ECS scene simulation and JPA-style persistence. Open source under the [Apache-2.0](LICENSE) license.
+`mana` is a collection of building blocks for game servers, organized as a Maven multi-module reactor covering networking, internal RPC, serialization, service registry, configuration management, runtime task scheduling and JPA-style persistence. Open source under the [Apache-2.0](LICENSE) license.
 
 ## Requirements
 
@@ -64,7 +64,6 @@ The default registry tests cover memory behavior and the Nacos/Etcd adapters wit
 ## Common Entry Points
 
 - Runtime (no unified assembly facade — use each component's singleton as needed): command registration `cn.managame.runtime.command.CommandRegistry` (dispatch bridged by the host: build `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`), events `cn.managame.runtime.event.EventBus`, timers `cn.managame.runtime.timer.TimingWheel` / `CronTask`, executor group registration `cn.managame.runtime.executor.ExecutorGroupRegistry`
-- ECS: core world `cn.managame.ecs.World`, system pipeline `cn.managame.ecs.SystemPipeline`, dedicated-thread world loop `cn.managame.ecs.runtime.EcsWorldRunner`
 - Network: create TCP, WebSocket, or custom servers through `NettyServer`, and protocol-transparent HTTP/1/HTTP/2 servers through `NettyHttpServer`
 - RPC: `cn.managame.rpc.RpcClient`, `cn.managame.rpc.RpcServer`
 - Registry: `cn.managame.registry.api.ServiceRegistry`, factory `cn.managame.registry.factory.RegistryFactory`

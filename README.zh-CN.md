@@ -2,7 +2,7 @@
 
 # mana
 
-`mana` 是一组面向游戏服务器的基础组件，采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度、ECS 场景模拟和 JPA 风格持久化。基于 [Apache-2.0](LICENSE) 许可证开源。
+`mana` 是一组面向游戏服务器的基础组件，采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化。基于 [Apache-2.0](LICENSE) 许可证开源。
 
 ## 环境要求
 
@@ -64,7 +64,6 @@ mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 ## 常用入口
 
 - Runtime（无统一装配门面，按需使用各组件单例）：命令注册 `cn.managame.runtime.command.CommandRegistry`（派发由宿主桥接：构造 `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`）、事件 `cn.managame.runtime.event.EventBus`、定时 `cn.managame.runtime.timer.TimingWheel` / `CronTask`、执行器组注册 `cn.managame.runtime.executor.ExecutorGroupRegistry`
-- ECS：核心世界 `cn.managame.ecs.World`、系统流水线 `cn.managame.ecs.SystemPipeline`、独立线程世界循环 `cn.managame.ecs.runtime.EcsWorldRunner`
 - Network：通过 `NettyServer` 创建 TCP、WebSocket 或自定义 Server，通过 `NettyHttpServer` 创建协议透明的 HTTP/1/HTTP/2 Server
 - RPC：`cn.managame.rpc.RpcClient`、`cn.managame.rpc.RpcServer`
 - Registry：`cn.managame.registry.api.ServiceRegistry`，工厂 `cn.managame.registry.factory.RegistryFactory`
