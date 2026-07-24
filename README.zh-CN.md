@@ -2,7 +2,7 @@
 
 # mana
 
-`mana` 是一组面向游戏服务器的基础组件，采用 Maven 多模块组织，覆盖网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化。基于 [Apache-2.0](LICENSE) 许可证开源。
+`mana` 是一组面向游戏服务器的基础组件，采用 Maven 多模块组织，覆盖 ECS 模拟、网络通信、对内 RPC、序列化、注册发现、配置管理、运行时调度和 JPA 风格持久化。基于 [Apache-2.0](LICENSE) 许可证开源。
 
 ## 环境要求
 
@@ -21,6 +21,7 @@ mvn "-Dmaven.repo.local=.m2" test
 
 | 模块 | 职责 |
 | --- | --- |
+| `game-ecs` | 零依赖实体组件系统核心，提供稳定实体 ID、索引查询、有序系统和延迟结构变更（见 [game-ecs/README.zh-CN.md](game-ecs/README.zh-CN.md)） |
 | `game-network` | 网络接入层：统一 TCP/WebSocket Server、HTTP/1/HTTP/2 业务语义、连接生命周期和原生 Netty pipeline 扩展；Session 与连接映射由业务层负责（见 [game-network/README.zh-CN.md](game-network/README.zh-CN.md)） |
 | `game-rpc` | 对内 RPC 统一入口；内部按 `game-rpc-core`、`game-rpc-netty` 分层，不依赖 `game-network`（见 [game-rpc/README.zh-CN.md](game-rpc/README.zh-CN.md)） |
 | `game-serialization` | 序列化门面，统一 JSON、Protobuf、Apache Fory 三种实现（见 [game-serialization/README.zh-CN.md](game-serialization/README.zh-CN.md)） |
@@ -63,6 +64,7 @@ mvn "-Dmaven.repo.local=.m2" -f game-jpa\pom.xml test
 
 ## 常用入口
 
+- ECS：世界 `cn.managame.ecs.EcsWorld`，实体 `cn.managame.ecs.Entity`，系统 `cn.managame.ecs.EntitySystem`，客户端同步 `cn.managame.ecs.change.WorldChangeSink`
 - Runtime（无统一装配门面，按需使用各组件单例）：命令注册 `cn.managame.runtime.command.CommandRegistry`（派发由宿主桥接：构造 `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`）、事件 `cn.managame.runtime.event.EventBus`、定时 `cn.managame.runtime.timer.TimingWheel` / `CronTask`、执行器组注册 `cn.managame.runtime.executor.ExecutorGroupRegistry`
 - Network：通过 `NettyServer` 创建 TCP、WebSocket 或自定义 Server，通过 `NettyHttpServer` 创建协议透明的 HTTP/1/HTTP/2 Server
 - RPC：`cn.managame.rpc.RpcClient`、`cn.managame.rpc.RpcServer`

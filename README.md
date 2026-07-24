@@ -2,7 +2,7 @@
 
 # mana
 
-`mana` is a collection of building blocks for game servers, organized as a Maven multi-module reactor covering networking, internal RPC, serialization, service registry, configuration management, runtime task scheduling and JPA-style persistence. Open source under the [Apache-2.0](LICENSE) license.
+`mana` is a collection of building blocks for game servers, organized as a Maven multi-module reactor covering ECS simulation, networking, internal RPC, serialization, service registry, configuration management, runtime task scheduling and JPA-style persistence. Open source under the [Apache-2.0](LICENSE) license.
 
 ## Requirements
 
@@ -21,6 +21,7 @@ mvn "-Dmaven.repo.local=.m2" test
 
 | Module | Responsibility |
 | --- | --- |
+| `game-ecs` | Dependency-free entity-component-system core with stable entity ids, indexed queries, ordered systems and deferred structural changes (see [game-ecs/README.md](game-ecs/README.md)) |
 | `game-network` | Network transport: unified TCP/WebSocket servers, protocol-transparent HTTP/1/HTTP/2 semantics, connection lifecycle, and native Netty pipeline extension; sessions and connection mapping belong to the business layer (see [game-network/README.md](game-network/README.md)) |
 | `game-rpc` | Unified entry artifact for internal RPC; implementation is layered into `game-rpc-core` and `game-rpc-netty`, with no dependency on `game-network` (see [game-rpc/README.md](game-rpc/README.md)) |
 | `game-serialization` | Serialization facade unifying JSON, Protobuf and Apache Fory (see [game-serialization/README.md](game-serialization/README.md)) |
@@ -63,6 +64,7 @@ The default registry tests cover memory behavior and the Nacos/Etcd adapters wit
 
 ## Common Entry Points
 
+- ECS: world `cn.managame.ecs.EcsWorld`, entities `cn.managame.ecs.Entity`, systems `cn.managame.ecs.EntitySystem`, client synchronization `cn.managame.ecs.change.WorldChangeSink`
 - Runtime (no unified assembly facade — use each component's singleton as needed): command registration `cn.managame.runtime.command.CommandRegistry` (dispatch bridged by the host: build `GameCommandTaskRunnable` → `ExecutorGroupRegistry.execute`), events `cn.managame.runtime.event.EventBus`, timers `cn.managame.runtime.timer.TimingWheel` / `CronTask`, executor group registration `cn.managame.runtime.executor.ExecutorGroupRegistry`
 - Network: create TCP, WebSocket, or custom servers through `NettyServer`, and protocol-transparent HTTP/1/HTTP/2 servers through `NettyHttpServer`
 - RPC: `cn.managame.rpc.RpcClient`, `cn.managame.rpc.RpcServer`
