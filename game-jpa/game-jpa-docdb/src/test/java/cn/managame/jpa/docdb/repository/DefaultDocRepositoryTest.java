@@ -44,6 +44,22 @@ public class DefaultDocRepositoryTest {
     }
 
     @Test
+    public void unshardedReadsUseTheHomeDataSourceNotTheDefaultOne() {
+        // 非默认 home 库的集合：findById 之外的读路径过去硬编码 default，会读错库。
+        // 路由策略为 null 时该实体按非分片处理，即使声明了 @ShardKey。
+        DocEntityMetadata metadata = new DocEntityMetadataResolver().resolve(PlayerDoc.class);
+        RecordingExecutor executor = new RecordingExecutor();
+        DefaultDocRepository<PlayerDoc, Long> repository = new DefaultDocRepository<>(
+                metadata, executor, new LifecycleDispatcher(), MetricsCollector.NOOP, null, "log");
+
+        repository.findById(1L);
+        repository.findAll();
+        repository.find(new DocQuerySpec().eq("name", "a"));
+
+        assertEquals(List.of("log", "log", "log"), executor.dataSources);
+    }
+
+    @Test
     public void findInfersRoutingKeyFromShardKeyFilter() {
         DocEntityMetadata metadata = new DocEntityMetadataResolver().resolve(PlayerDoc.class);
         RecordingExecutor executor = new RecordingExecutor();

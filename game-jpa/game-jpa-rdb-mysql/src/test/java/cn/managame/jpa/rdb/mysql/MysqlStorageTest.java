@@ -33,6 +33,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -61,7 +62,7 @@ class MysqlStorageTest {
     }
 
     @Test
-    void composesWithCacheExtensionAndOwnsExecutorLifecycle() {
+    void composesWithCacheExtensionButLeavesCallerProvidedDataSourcesOpen() {
         AtomicBoolean gameClosed = new AtomicBoolean();
         AtomicBoolean logClosed = new AtomicBoolean();
 
@@ -73,6 +74,25 @@ class MysqlStorageTest {
         MysqlRdbExecutor executor = assertInstanceOf(
                 MysqlRdbExecutor.class, context.get(RdbExecutor.class));
         assertEquals(Set.of("default", "log"), executor.dataSourceNames());
+
+        context.close();
+
+        // 连接池由宿主创建和持有，可能还被后台任务、运维脚本或另一个上下文共用，框架不越权关闭。
+        assertFalse(gameClosed.get());
+        assertFalse(logClosed.get());
+    }
+
+    @Test
+    void closesDataSourcesOnShutdownOnlyWhenOwnershipIsDeclared() {
+        AtomicBoolean gameClosed = new AtomicBoolean();
+        AtomicBoolean logClosed = new AtomicBoolean();
+
+        GameJpaContext context = new GameJpaBootstrap()
+                .use(MysqlStorage.using(closeableDataSource(gameClosed))
+                        .addDataSource("log", closeableDataSource(logClosed))
+                        .closeDataSourcesOnShutdown())
+                .use(RdbCacheModule.defaults())
+                .bootstrap(List.of());
 
         context.close();
 

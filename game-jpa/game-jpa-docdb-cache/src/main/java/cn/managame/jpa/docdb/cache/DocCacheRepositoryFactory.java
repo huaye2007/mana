@@ -90,6 +90,26 @@ public class DocCacheRepositoryFactory implements RepositoryFactory {
     }
 
     /** {@code @Warmup} 文档实体在上下文创建完成后自动 findAll 预热（对齐 RDB 侧行为）。 */
+    /**
+     * 启动期校验新号判定 ttl 必须短于实体缓存留存时间。
+     * <p>
+     * 放在启动期而不是 {@code createRepository}：Repository 是懒创建的，配错的实体如果一直没被
+     * 取用就永远发现不了，等到线上第一次访问才暴露成「数据凭空消失」。
+     */
+    public void verifyNewRolePolicy(ComponentRegistry registry) {
+        NewRolePolicy policy = registry.find(NewRolePolicy.class);
+        if (policy == null || !policy.enabled()) {
+            return;
+        }
+        MetadataRegistry metadataRegistry = registry.get(MetadataRegistry.class);
+        for (EntityMetadata entityMetadata : metadataRegistry.getByModel(ModelTypes.DOCDB)) {
+            // @Warmup 实体的新号判定本就是关闭的（缓存全量常驻），不参与校验。
+            if (entityMetadata instanceof DocEntityMetadata docMetadata && !isWarmup(docMetadata)) {
+                policy.verifyExpiresBefore(effectiveConfig(docMetadata), docMetadata.entityType());
+            }
+        }
+    }
+
     public void warmUpAnnotatedCaches(ComponentRegistry registry) {
         MetadataRegistry metadataRegistry = registry.get(MetadataRegistry.class);
         for (EntityMetadata entityMetadata : metadataRegistry.getByModel(ModelTypes.DOCDB)) {

@@ -106,6 +106,19 @@ public final class MysqlStorage implements GameJpaExtension {
         return this;
     }
 
+    /**
+     * 让 {@code GameJpaContext.close()} 连带关闭这里注册的 DataSource。
+     * <p>
+     * 默认<b>不</b>关闭：连接池是调用方通过 {@link #using(DataSource)} /
+     * {@link #addDataSource(String, DataSource)} 传进来的，往往还被后台任务、运维脚本或
+     * 另一个上下文共用，框架关掉它会波及不相关的代码。只有当连接池确实专供 game-jpa 使用、
+     * 希望随上下文一起回收时才调用本方法。
+     */
+    public MysqlStorage closeDataSourcesOnShutdown() {
+        this.executor.ownsDataSources(true);
+        return this;
+    }
+
     @Override
     public void configure(PersistenceConfigurer configurer) {
         Objects.requireNonNull(configurer, "configurer")

@@ -65,6 +65,8 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
     private final ConcurrentHashMap<RdbFieldMetadata, ObjectReader> jsonReaders = new ConcurrentHashMap<>();
     /** 字段超长(Data too long)时自动 ALTER MODIFY 加宽到声明长度两倍再重写。默认关闭，须显式启用。 */
     private volatile boolean columnAutoWiden = false;
+    /** close() 是否连带关闭已注册的 DataSource。默认关闭：数据源由宿主创建和持有。 */
+    private volatile boolean ownsDataSources = false;
     /** 已自动加宽的列(dataSource:table:column -&gt; 已加宽到的长度)，去重避免并发重复 ALTER。 */
     private final ConcurrentHashMap<String, Integer> widenedColumns = new ConcurrentHashMap<>();
 
@@ -903,16 +905,39 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
         return actual.dataSourceName();
     }
 
+    /**
+     * 关闭执行器时是否连带关闭已注册的 DataSource。默认 {@code false}：连接池是宿主创建并持有的，
+     * 通常还被后台任务、运维脚本或另一个 {@code GameJpaContext} 共用，框架不越权关闭。
+     * 只有当连接池确实只服务于本执行器、希望随上下文一起回收时才显式开启。
+     */
+    public MysqlRdbExecutor ownsDataSources(boolean owns) {
+        this.ownsDataSources = owns;
+        return this;
+    }
+
     @Override
     public void close() {
+        if (!ownsDataSources) {
+            return;
+        }
+        // 逐个关闭并收集失败，不让第一个异常导致后面的连接池泄漏。
+        GameJpaException failure = null;
         for (DataSource dataSource : dataSourceRegistry.values()) {
-            if (dataSource instanceof AutoCloseable closeable) {
-                try {
-                    closeable.close();
-                } catch (Exception e) {
-                    throw new GameJpaException("Failed to close DataSource", e);
+            if (!(dataSource instanceof AutoCloseable closeable)) {
+                continue;
+            }
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                if (failure == null) {
+                    failure = new GameJpaException("Failed to close DataSource", e);
+                } else {
+                    failure.addSuppressed(e);
                 }
             }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 }

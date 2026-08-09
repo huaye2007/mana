@@ -73,6 +73,7 @@ public class DocdbCacheModule implements GameJpaExtension {
 
             @Override
             public void afterContextCreated(ComponentRegistry registry) {
+                factory.verifyNewRolePolicy(registry);
                 factory.warmUpAnnotatedCaches(registry);
             }
         });

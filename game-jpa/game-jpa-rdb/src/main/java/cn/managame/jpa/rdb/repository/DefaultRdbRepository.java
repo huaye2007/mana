@@ -77,7 +77,7 @@ public class DefaultRdbRepository<T, ID> implements RdbRepository<T, ID> {
     public List<T> findAll() {
         return metrics.instrument("findAll", metadata.logicalName(), () -> {
             routing.ensureUnsharded("findAll");
-            List<T> result = executor.findAll(metadata, ExecutorContext.defaultContext());
+            List<T> result = executor.findAll(metadata, routing.home());
             result.forEach(lifecycle::fireAfterLoad);
             return result;
         });
@@ -215,7 +215,9 @@ public class DefaultRdbRepository<T, ID> implements RdbRepository<T, ID> {
      */
     private ExecutorContext resolveContextFromSpec(RdbQuerySpec spec, String operation) {
         if (!routing.isSharded()) {
-            return ExecutorContext.defaultContext();
+            // 非分片实体也可能住在非默认库（如日志库），必须落 home 数据源；
+            // 这里提前返回是因为下面的 extractRoutingKey 需要 @ShardKey 字段。
+            return routing.home();
         }
         return routing.resolveForQuery(extractRoutingKey(spec), operation);
     }

@@ -40,6 +40,25 @@ public class DefaultRdbRepositoryTest {
     }
 
     @Test
+    public void unshardedReadsAllUseTheHomeDataSourceNotTheDefaultOne() {
+        // 日志库等非默认 home 库的实体：findById 之外的读路径过去硬编码 default，会读错库。
+        RdbEntityMetadata metadata = new RdbEntityMetadataResolver().resolve(Player.class);
+        RecordingExecutor executor = new RecordingExecutor();
+        DefaultRdbRepository<Player, Long> repository = new DefaultRdbRepository<>(
+                metadata, executor, new LifecycleDispatcher(), MetricsCollector.NOOP, null, "log");
+
+        repository.findById(1L);
+        repository.findAll();
+        repository.findBySpec(new RdbQuerySpec().eq("name", "a"));
+        repository.count(new RdbQuerySpec().eq("name", "a"));
+
+        assertEquals(List.of("findById", "findAll", "query", "count"), executor.operations);
+        for (ExecutorContext context : executor.contexts) {
+            assertEquals("log", context.dataSourceName(), "非分片实体的所有读路径都落 home 数据源");
+        }
+    }
+
+    @Test
     public void explicitInsertRoutingUsesProvidedRoutingKey() {
         RdbEntityMetadata metadata = new RdbEntityMetadataResolver().resolve(Player.class);
         RecordingExecutor executor = new RecordingExecutor();

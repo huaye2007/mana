@@ -37,8 +37,14 @@ public final class ShardRoutingResolver {
         this.modelLabel = modelLabel;
     }
 
-    /** 非分片实体的目标：home 数据源、逻辑表/集合（physical=null 由执行层回退到逻辑名）。 */
-    private ExecutorContext homeContext() {
+    /**
+     * 非分片实体的目标：home 数据源、逻辑表/集合（physical=null 由执行层回退到逻辑名）。
+     * <p>
+     * 不依赖路由键的操作（如 {@code findAll}）必须走这里，<b>不能</b>直接用
+     * {@link ExecutorContext#defaultContext()}——那会把日志库等非默认 home 库的实体
+     * 读到游戏库去。
+     */
+    public ExecutorContext home() {
         return "default".equals(homeDataSource)
                 ? ExecutorContext.defaultContext()
                 : ExecutorContext.of(homeDataSource, null, null);
@@ -54,7 +60,7 @@ public final class ShardRoutingResolver {
      */
     public ExecutorContext resolveFromId(Object id) {
         if (!isSharded()) {
-            return homeContext();
+            return home();
         }
         if (metadata.shardKeyField() == metadata.idField()) {
             return resolve(id);
@@ -67,7 +73,7 @@ public final class ShardRoutingResolver {
      */
     public ExecutorContext resolveFromEntity(Object entity) {
         if (!isSharded()) {
-            return homeContext();
+            return home();
         }
         Object routingKey = metadata.shardKeyField().accessor().get(entity);
         return resolve(routingKey);
@@ -81,10 +87,10 @@ public final class ShardRoutingResolver {
             if (isSharded()) {
                 throw missingRoutingKey("routed operation");
             }
-            return homeContext();
+            return home();
         }
         if (routingStrategy == null) {
-            return homeContext();
+            return home();
         }
         String logicalName = metadata.logicalName();
         String dsName = routingStrategy.resolveDataSource(logicalName, routingKey);
@@ -97,7 +103,7 @@ public final class ShardRoutingResolver {
      */
     public ExecutorContext resolveForQuery(Object routingKey, String operation) {
         if (!isSharded()) {
-            return homeContext();
+            return home();
         }
         if (routingKey == null) {
             throw missingRoutingKey(operation);
