@@ -1,6 +1,7 @@
 package cn.managame.jpa.starter;
 
 import cn.managame.jpa.async.AsyncWriteQueue;
+import cn.managame.jpa.async.FlushOptions;
 import cn.managame.jpa.async.FlushScheduler;
 import cn.managame.jpa.async.FlushThreadMode;
 import cn.managame.jpa.core.bootstrap.BootstrapHook;
@@ -209,9 +210,12 @@ public class GameJpaBootstrap implements PersistenceConfigurer {
         }
 
         AsyncWriteQueue writeQueue = new AsyncWriteQueue(maxPendingWriteTasks, metricsCollector);
-        FlushScheduler flushScheduler = new FlushScheduler(writeQueue, flushIntervalMillis, maxRetries,
-                flushThreadMode, flushThreadCount, metricsCollector, maxFlushBatchSize,
-                FlushScheduler.DEFAULT_BATCH_TIMEOUT_MILLIS);
+        FlushScheduler flushScheduler = new FlushScheduler(writeQueue, new FlushOptions()
+                .intervalMillis(flushIntervalMillis)
+                .maxRetries(maxRetries)
+                .threadMode(flushThreadMode)
+                .threadCount(flushThreadCount)
+                .maxBatchSize(maxFlushBatchSize), metricsCollector);
         if (permanentFailureHandler != null) {
             flushScheduler.onFailure(permanentFailureHandler);
         }

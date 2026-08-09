@@ -25,6 +25,11 @@ public class FlushSchedulerTest {
         queue.register(new WriteChannel.Merge(ENTITY, WriteRouter.DEFAULT, flusher));
     }
 
+    /** 测试用：周期设得足够长，刷盘只由 flush() 手工触发。 */
+    private static FlushOptions options(int maxRetries) {
+        return new FlushOptions().intervalMillis(60_000).maxRetries(maxRetries);
+    }
+
     @Test
     public void dropsNonRetriableFailureImmediately() {
         AsyncWriteQueue queue = new AsyncWriteQueue(100);
@@ -119,8 +124,8 @@ public class FlushSchedulerTest {
     @Test
     public void platformThreadModeAlsoFlushes() {
         AsyncWriteQueue queue = new AsyncWriteQueue(100);
-        FlushScheduler scheduler = new FlushScheduler(queue, 60_000, 1,
-                FlushThreadMode.PLATFORM, 2, MetricsCollector.NOOP);
+        FlushScheduler scheduler = new FlushScheduler(queue, options(1)
+                .threadMode(FlushThreadMode.PLATFORM).threadCount(2));
         AtomicInteger writes = new AtomicInteger();
         try {
             registerMerge(queue, (op, tasks, ctx) -> writes.addAndGet(tasks.size()));
@@ -140,7 +145,7 @@ public class FlushSchedulerTest {
     public void configurationErrorIsClassifiedAndCountedSeparately() {
         AsyncWriteQueue queue = new AsyncWriteQueue(100);
         CountingMetrics metrics = new CountingMetrics();
-        FlushScheduler scheduler = new FlushScheduler(queue, 60_000, 3, FlushThreadMode.VIRTUAL, 0, metrics);
+        FlushScheduler scheduler = new FlushScheduler(queue, options(3), metrics);
         AtomicReference<WriteTask> failed = new AtomicReference<>();
         try {
             scheduler.onFailure(failed::set);
@@ -178,9 +183,8 @@ public class FlushSchedulerTest {
                     }
                     active.decrementAndGet();
                 }));
-        FlushScheduler scheduler = new FlushScheduler(queue, 60_000, 1,
-                FlushThreadMode.PLATFORM, 4, MetricsCollector.NOOP, 500,
-                FlushScheduler.DEFAULT_BATCH_TIMEOUT_MILLIS, 1);
+        FlushScheduler scheduler = new FlushScheduler(queue, options(1)
+                .threadMode(FlushThreadMode.PLATFORM).threadCount(1));
         try {
             for (long id = 1; id <= 4; id++) {
                 queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Player(id), id);

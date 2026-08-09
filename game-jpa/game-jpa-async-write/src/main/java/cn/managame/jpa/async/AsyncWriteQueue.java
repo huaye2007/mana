@@ -12,22 +12,27 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 内存异步写缓冲。提交时完成物理路由，同一通道、同一物理目标复用一个缓冲。
+ * 内存异步写缓冲。提交时完成物理路由，同一通道、同一物理目标复用一个缓冲对象。
  * <p>
- * 活跃缓冲通过 ready queue 驱动刷盘，不周期扫描空缓冲；每个缓冲最多一个在途刷盘任务。
- * {@link #size()} 统计排队和在途的全部逻辑任务，因此同时用于真实背压和优雅关闭判断。
+ * 提交路径只做三件事：查通道 → 路由到缓冲 → 放进缓冲的并发 map/队列，没有锁、没有唤醒协议。
+ * 非分片实体（绝大多数）恒定落 {@link WriteDestination#DEFAULT}，走缓存好的缓冲引用，
+ * 连一次哈希查找都省掉。
+ * <p>
+ * {@link #size()} 统计排队与在途的全部逻辑任务，因此同时用于背压和优雅关闭判断。
  */
 public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry, Closeable {
 
     private static final class ChannelState {
         final WriteChannel channel;
         final ConcurrentHashMap<WriteDestination, TableBuffer> buffers = new ConcurrentHashMap<>();
+        /** 非分片实体恒定命中的缓冲，提交热路径直接用，避免每次哈希查找。 */
+        volatile TableBuffer defaultBuffer;
 
         ChannelState(WriteChannel channel) {
             this.channel = channel;
@@ -35,7 +40,6 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
     }
 
     private final ConcurrentHashMap<String, ChannelState> channels = new ConcurrentHashMap<>();
-    private final ConcurrentLinkedQueue<TableBuffer> ready = new ConcurrentLinkedQueue<>();
     private final AtomicInteger pending = new AtomicInteger();
     private final AtomicInteger inFlightBuffers = new AtomicInteger();
     private final Object progressMonitor = new Object();
@@ -72,13 +76,10 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
                     + entityName + "' is an append channel; use append()");
         }
         WriteDestination destination = merge.router().resolve(entity, id, null);
-        MergeBuffer buffer = (MergeBuffer) state.buffers.computeIfAbsent(destination,
-                key -> new MergeBuffer(key, merge.flusher(), this));
-        MergeBuffer.AddResult result = buffer.add(new WriteTask(entityName, toInternalOp(op), entity, id));
-        if (result == MergeBuffer.AddResult.FULL) {
+        MergeBuffer buffer = (MergeBuffer) buffer(state, destination);
+        if (buffer.add(new WriteTask(entityName, toInternalOp(op), entity, id)) == MergeBuffer.AddResult.FULL) {
             reject(entityName);
         }
-        signal(buffer);
     }
 
     @Override
@@ -100,12 +101,10 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
         }
         boolean added = false;
         try {
-            WriteDestination destination = append.router().resolve(entity, null, routingKey);
-            AppendBuffer buffer = (AppendBuffer) state.buffers.computeIfAbsent(destination,
-                    key -> new AppendBuffer(key, append.flusher()));
+            // 路由可能对分片实体快速失败，失败时必须归还已占用的配额。
+            AppendBuffer buffer = (AppendBuffer) buffer(state, append.router().resolve(entity, null, routingKey));
             buffer.add(new WriteTask(entityName, WriteTask.Op.SAVE, entity, null));
             added = true;
-            signal(buffer);
         } finally {
             if (!added) {
                 releaseReservation();
@@ -113,33 +112,36 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
         }
     }
 
-    /** 仅摘取活跃且没有在途写入的物理表缓冲。 */
-    List<TableBuffer.Drain> drainReady() {
+    /**
+     * 摘取所有非空、且当前没有在途批次的物理表缓冲。
+     * <p>
+     * 直接扫描全部缓冲，不维护 ready queue：缓冲数量的上界是物理表数量，一次扫描只是若干次
+     * {@code isEmpty()}，相对一次数据库往返可以忽略，换掉的是一整套 dirty/enqueued 唤醒协议。
+     */
+    List<TableBuffer.Drain> drainAll() {
         List<TableBuffer.Drain> drains = new ArrayList<>();
-        TableBuffer buffer;
-        while ((buffer = ready.poll()) != null) {
-            if (!buffer.beginDrain()) {
-                continue;
-            }
-            inFlightBuffers.incrementAndGet();
-            TableBuffer.Drain drain = buffer.drain();
-            if (drain.isEmpty()) {
-                finish(buffer);
-            } else {
-                drains.add(drain);
+        for (ChannelState state : channels.values()) {
+            for (TableBuffer buffer : state.buffers.values()) {
+                if (!buffer.tryBeginFlush()) {
+                    continue;
+                }
+                inFlightBuffers.incrementAndGet();
+                TableBuffer.Drain drain = buffer.drain();
+                if (drain.isEmpty()) {
+                    finish(buffer);
+                } else {
+                    drains.add(drain);
+                }
             }
         }
         recordQueueGauges();
         return drains;
     }
 
-    /** 完成一个物理表快照；期间产生的新数据会把该缓冲重新放入 ready queue。 */
+    /** 释放物理表的刷盘权。与 {@link #drainAll()} 中的 in-flight 自增一一对应。 */
     void finish(TableBuffer buffer) {
-        if (buffer.finishDrain()) {
-            ready.offer(buffer);
-        }
-        int remaining = inFlightBuffers.decrementAndGet();
-        if (remaining < 0) {
+        buffer.endFlush();
+        if (inFlightBuffers.decrementAndGet() < 0) {
             throw new IllegalStateException("Async write in-flight buffer count became negative");
         }
         synchronized (progressMonitor) {
@@ -147,7 +149,7 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
         }
     }
 
-    /** 成功或永久失败后确认逻辑任务，pending 在这里而不是 drain 时扣减。 */
+    /** 成功或永久失败后确认逻辑任务。pending 在这里扣减，而不是 drain 时——在途任务仍算未完成。 */
     void complete(int count) {
         if (count <= 0) {
             return;
@@ -160,21 +162,15 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
         recordQueueGauges();
     }
 
-    /**
-     * 失败任务回灌。合并型缓冲中已经存在的新状态优先，被覆盖的旧在途任务在此确认完成。
-     */
+    /** 失败任务回灌。合并型缓冲中已存在的新状态优先，被覆盖的旧任务在此确认完成。 */
     void requeue(TableBuffer buffer, List<WriteTask> tasks) {
         if (tasks.isEmpty()) {
             return;
         }
-        int superseded = buffer.requeue(tasks);
-        if (superseded > 0) {
-            complete(superseded);
-        }
-        signal(buffer);
+        complete(buffer.requeue(tasks));
     }
 
-    /** worker 尚未启动时原样恢复快照，不消耗重试次数。 */
+    /** worker 未能启动时原样恢复快照，不消耗重试次数。 */
     void restore(TableBuffer.Drain drain) {
         List<WriteTask> all = new ArrayList<>(drain.size());
         all.addAll(drain.saves());
@@ -223,14 +219,14 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
         if (timeoutMillis <= 0 || !hasInFlight()) {
             return;
         }
-        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         synchronized (progressMonitor) {
             while (hasInFlight()) {
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0) {
                     return;
                 }
-                java.util.concurrent.TimeUnit.NANOSECONDS.timedWait(progressMonitor, remaining);
+                TimeUnit.NANOSECONDS.timedWait(progressMonitor, remaining);
             }
         }
     }
@@ -241,6 +237,7 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
         recordQueueGauges();
     }
 
+    /** 拒绝新的业务提交，但保留队列可刷盘——供优雅关闭时先断流再收尾。 */
     public void closeForSubmissions() {
         closed.set(true);
     }
@@ -249,10 +246,30 @@ public class AsyncWriteQueue implements WriteTaskSubmitter, WriteChannelRegistry
         return closed.get();
     }
 
-    private void signal(TableBuffer buffer) {
-        if (buffer.markDirty()) {
-            ready.offer(buffer);
+    /**
+     * 路由到物理表缓冲。非分片实体的 destination 恒为 {@link WriteDestination#DEFAULT} 单例，
+     * 用引用比较直接命中缓存字段，跳过哈希查找。
+     */
+    private TableBuffer buffer(ChannelState state, WriteDestination destination) {
+        if (destination == WriteDestination.DEFAULT) {
+            TableBuffer cached = state.defaultBuffer;
+            if (cached != null) {
+                return cached;
+            }
         }
+        TableBuffer buffer = state.buffers.computeIfAbsent(destination,
+                key -> newBuffer(state.channel, key));
+        if (destination == WriteDestination.DEFAULT) {
+            state.defaultBuffer = buffer;
+        }
+        return buffer;
+    }
+
+    private TableBuffer newBuffer(WriteChannel channel, WriteDestination destination) {
+        return switch (channel) {
+            case WriteChannel.Merge merge -> new MergeBuffer(destination, merge.flusher(), this);
+            case WriteChannel.Append append -> new AppendBuffer(destination, append.flusher());
+        };
     }
 
     private ChannelState channel(String entityName) {

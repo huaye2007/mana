@@ -1,6 +1,5 @@
 package cn.managame.jpa.async;
 
-import cn.managame.jpa.core.metrics.MetricsCollector;
 import cn.managame.jpa.core.write.BatchFlusher;
 import cn.managame.jpa.core.write.WriteChannel;
 import cn.managame.jpa.core.write.WriteRouter;
@@ -28,11 +27,19 @@ public class FlushSchedulerBatchSizeTest {
         queue.register(new WriteChannel.Merge(ENTITY, WriteRouter.DEFAULT, flusher));
     }
 
+    private static FlushOptions options(int maxRetries, int threadCount, int maxBatchSize) {
+        return new FlushOptions()
+                .intervalMillis(60_000)
+                .maxRetries(maxRetries)
+                .threadMode(FlushThreadMode.PLATFORM)
+                .threadCount(threadCount)
+                .maxBatchSize(maxBatchSize);
+    }
+
     @Test
     public void chunksLargeGroupIntoMaxBatchSizeBatches() {
         AsyncWriteQueue queue = new AsyncWriteQueue(20_000);
-        FlushScheduler scheduler = new FlushScheduler(queue, 60_000, 1,
-                FlushThreadMode.PLATFORM, 1, MetricsCollector.NOOP, 500);
+        FlushScheduler scheduler = new FlushScheduler(queue, options(1, 1, 500));
 
         List<Integer> chunkSizes = new CopyOnWriteArrayList<>();
         AtomicInteger totalTasks = new AtomicInteger();
@@ -61,8 +68,7 @@ public class FlushSchedulerBatchSizeTest {
     @Test
     public void chunkFailureDoesNotBlockOtherChunks() {
         AsyncWriteQueue queue = new AsyncWriteQueue(2000);
-        FlushScheduler scheduler = new FlushScheduler(queue, 60_000, 0,
-                FlushThreadMode.PLATFORM, 2, MetricsCollector.NOOP, 100);
+        FlushScheduler scheduler = new FlushScheduler(queue, options(0, 2, 100));
 
         AtomicInteger ok = new AtomicInteger();
         List<Long> failedIds = new CopyOnWriteArrayList<>();
@@ -95,8 +101,8 @@ public class FlushSchedulerBatchSizeTest {
     @Test
     public void flushReturnsWhenBatchHandlerTimesOut() throws Exception {
         AsyncWriteQueue queue = new AsyncWriteQueue(10);
-        FlushScheduler scheduler = new FlushScheduler(queue, 60_000, 1,
-                FlushThreadMode.PLATFORM, 1, MetricsCollector.NOOP, 500, 50);
+        FlushScheduler scheduler = new FlushScheduler(queue,
+                options(1, 1, 500).batchTimeoutMillis(50));
 
         CountDownLatch handlerStarted = new CountDownLatch(1);
         CountDownLatch releaseHandler = new CountDownLatch(1);

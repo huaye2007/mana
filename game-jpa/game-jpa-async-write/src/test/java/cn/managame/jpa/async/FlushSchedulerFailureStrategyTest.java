@@ -2,8 +2,9 @@ package cn.managame.jpa.async;
 
 import cn.managame.jpa.core.exception.ConnectionException;
 import cn.managame.jpa.core.exception.DataTooLargeException;
+import cn.managame.jpa.core.exception.DuplicateKeyException;
+import cn.managame.jpa.core.exception.PartialBatchException;
 import cn.managame.jpa.core.exception.RetriableWriteException;
-import cn.managame.jpa.core.metrics.MetricsCollector;
 import cn.managame.jpa.core.write.AppendFlusher;
 import cn.managame.jpa.core.write.WriteChannel;
 import cn.managame.jpa.core.write.WriteDestination;
@@ -271,10 +272,98 @@ public class FlushSchedulerFailureStrategyTest {
         }
     }
 
+    @Test
+    public void reportedFailedIndexesSplitGoodAndBadInOneExtraRoundTrip() {
+        AsyncWriteQueue queue = new AsyncWriteQueue(200);
+        AtomicInteger calls = new AtomicInteger();
+        Set<Long> written = ConcurrentHashMap.newKeySet();
+        queue.register(new WriteChannel.Merge(ENTITY, WriteRouter.DEFAULT, (op, tasks, ctx) -> {
+            calls.incrementAndGet();
+            int[] bad = badIndexes(tasks, 7L, 42L);
+            if (bad.length > 0) {
+                throw new PartialBatchException("rows rejected", bad,
+                        new DuplicateKeyException(ENTITY, "dup"));
+            }
+            tasks.forEach(task -> written.add((Long) task.id()));
+        }));
+        FlushScheduler scheduler = scheduler(queue, 2, 200, 1);
+        Set<Long> failed = ConcurrentHashMap.newKeySet();
+        scheduler.onFailure(task -> failed.add((Long) task.id()));
+        try {
+            for (long id = 0; id < 100; id++) {
+                queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Player(id, 0), id);
+            }
+
+            scheduler.flush();
+
+            assertEquals(98, written.size(), "好记录一次整批重放");
+            assertEquals(Set.of(7L, 42L), failed, "坏记录逐条进永久失败处理");
+            assertEquals(4, calls.get(), "1 次整批 + 1 次好记录重放 + 2 次坏记录，无需二分探测");
+            assertTrue(queue.isEmpty());
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
+    public void wholeBatchReportedAsFailedFallsBackToBinaryIsolation() {
+        // MySQL 开启 rewriteBatchedStatements 后整批被改写成一条语句，驱动只能把所有行标记失败，
+        // 这种「下标无法定位」的报告必须退回二分拆批，而不是把整批当坏记录丢掉。
+        AsyncWriteQueue queue = new AsyncWriteQueue(200);
+        AtomicInteger calls = new AtomicInteger();
+        Set<Long> written = ConcurrentHashMap.newKeySet();
+        queue.register(new WriteChannel.Merge(ENTITY, WriteRouter.DEFAULT, (op, tasks, ctx) -> {
+            calls.incrementAndGet();
+            if (tasks.stream().anyMatch(task -> task.id().equals(50L))) {
+                int[] all = new int[tasks.size()];
+                for (int i = 0; i < all.length; i++) {
+                    all[i] = i;
+                }
+                throw new PartialBatchException("whole batch rejected", all,
+                        new IllegalStateException("constraint violation"));
+            }
+            tasks.forEach(task -> written.add((Long) task.id()));
+        }));
+        FlushScheduler scheduler = scheduler(queue, 2, 200, 1);
+        AtomicReference<WriteTask> failed = new AtomicReference<>();
+        scheduler.onFailure(failed::set);
+        try {
+            for (long id = 0; id < 100; id++) {
+                queue.submit(ENTITY, WriteTaskSubmitter.Op.UPDATE, new Player(id, 0), id);
+            }
+
+            scheduler.flush();
+
+            assertEquals(99, written.size());
+            assertEquals(50L, failed.get().id());
+            assertTrue(calls.get() < 25, "退回二分隔离，不退化为逐条尝试");
+            assertTrue(queue.isEmpty());
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    /** 找出批内指定 id 的下标，模拟后端报告的 updateCounts。 */
+    private static int[] badIndexes(List<WriteTask> tasks, Long... badIds) {
+        Set<Long> bad = Set.of(badIds);
+        int[] indexes = new int[tasks.size()];
+        int count = 0;
+        for (int i = 0; i < tasks.size(); i++) {
+            if (bad.contains((Long) tasks.get(i).id())) {
+                indexes[count++] = i;
+            }
+        }
+        return java.util.Arrays.copyOf(indexes, count);
+    }
+
     private static FlushScheduler scheduler(AsyncWriteQueue queue, int concurrency,
             int batchSize, int maxRetries) {
-        return new FlushScheduler(queue, 60_000, maxRetries,
-                FlushThreadMode.PLATFORM, concurrency, MetricsCollector.NOOP, batchSize);
+        return new FlushScheduler(queue, new FlushOptions()
+                .intervalMillis(60_000)
+                .maxRetries(maxRetries)
+                .threadMode(FlushThreadMode.PLATFORM)
+                .threadCount(concurrency)
+                .maxBatchSize(batchSize));
     }
 
     private record Player(long id, int value) {

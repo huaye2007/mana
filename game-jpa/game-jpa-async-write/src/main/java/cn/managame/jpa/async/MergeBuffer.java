@@ -23,12 +23,16 @@ final class MergeBuffer extends TableBuffer {
         this.owner = owner;
     }
 
-    /** CAS 更新最终态；同一 key 的新业务写会替换旧重试状态并重置重试次数。 */
+    /**
+     * CAS 更新最终态。同一 key 已有任务时整对象替换（不占新的 pending 配额），
+     * 并让新任务继承旧任务的重试预算，避免持续更新的坏记录永远重试不完。
+     */
     AddResult add(WriteTask incoming) {
         Object id = incoming.id();
         while (true) {
             WriteTask current = tasks.get(id);
             if (current != null) {
+                incoming.inheritRetryCount(current);
                 if (tasks.replace(id, current, incoming)) {
                     return AddResult.MERGED;
                 }
@@ -37,8 +41,7 @@ final class MergeBuffer extends TableBuffer {
             if (!owner.tryReserve()) {
                 return AddResult.FULL;
             }
-            WriteTask raced = tasks.putIfAbsent(id, incoming);
-            if (raced == null) {
+            if (tasks.putIfAbsent(id, incoming) == null) {
                 return AddResult.ADDED;
             }
             owner.releaseReservation();
@@ -73,7 +76,11 @@ final class MergeBuffer extends TableBuffer {
     int requeue(List<WriteTask> retryTasks) {
         int superseded = 0;
         for (WriteTask task : retryTasks) {
-            if (tasks.putIfAbsent(task.id(), task) != null) {
+            WriteTask existing = tasks.putIfAbsent(task.id(), task);
+            if (existing != null) {
+                // 缓冲里已有更新的状态，旧任务丢弃；但重试预算要交接给新状态，
+                // 否则同一 key 反复失败时预算会被业务写不断清零。
+                existing.inheritRetryCount(task);
                 superseded++;
             }
         }
@@ -86,7 +93,7 @@ final class MergeBuffer extends TableBuffer {
     }
 
     @Override
-    boolean replaySafe() {
+    boolean idempotent() {
         return true;
     }
 

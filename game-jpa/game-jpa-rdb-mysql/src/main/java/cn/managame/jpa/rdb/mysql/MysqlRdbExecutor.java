@@ -6,6 +6,7 @@ import cn.managame.jpa.core.exception.DataTooLargeException;
 import cn.managame.jpa.core.exception.DuplicateKeyException;
 import cn.managame.jpa.core.exception.GameJpaException;
 import cn.managame.jpa.core.exception.OptimisticLockException;
+import cn.managame.jpa.core.exception.PartialBatchException;
 import cn.managame.jpa.core.exception.RetriableWriteException;
 import cn.managame.jpa.core.exception.WriteTimeoutException;
 import cn.managame.jpa.core.converter.TypeConverterAware;
@@ -732,6 +733,48 @@ public class MysqlRdbExecutor implements RdbExecutor, Closeable, TypeConverterAw
     }
 
     static GameJpaException translateSqlException(String operation, String tableName,
+            String dataSourceName, SQLException failure) {
+        GameJpaException translated = translateFailureKind(operation, tableName, dataSourceName, failure);
+        int[] rejected = rejectedBatchIndexes(failure);
+        if (rejected == null) {
+            return translated;
+        }
+        // 批内能精确定位坏行时上抛 PartialBatchException：异步刷盘据此一次把好/坏记录分开，
+        // 不必二分探测。整批已回滚，好记录重放安全。
+        return new PartialBatchException(translated.getMessage()
+                + " (" + rejected.length + " row(s) rejected in batch)", rejected, translated);
+    }
+
+    /**
+     * 从 JDBC {@link BatchUpdateException} 的 updateCounts 定位批内失败行下标。
+     * <p>
+     * 只在「部分成功部分失败」时返回下标：全批失败说明驱动没有逐行结果（例如 MySQL 开启
+     * {@code rewriteBatchedStatements} 后整批被改写成一条语句），此时返回 {@code null}
+     * 让调度器退回二分拆批。下标与传入执行器的 entities/ids 列表一一对应。
+     */
+    private static int[] rejectedBatchIndexes(SQLException failure) {
+        BatchUpdateException batch = findSqlException(failure, BatchUpdateException.class);
+        if (batch == null) {
+            return null;
+        }
+        int[] counts = batch.getUpdateCounts();
+        if (counts == null || counts.length == 0) {
+            return null;
+        }
+        int[] rejected = new int[counts.length];
+        int count = 0;
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i] == Statement.EXECUTE_FAILED) {
+                rejected[count++] = i;
+            }
+        }
+        if (count == 0 || count == counts.length) {
+            return null;
+        }
+        return java.util.Arrays.copyOf(rejected, count);
+    }
+
+    private static GameJpaException translateFailureKind(String operation, String tableName,
             String dataSourceName, SQLException failure) {
         String target = operation + " failed: " + tableName;
         DataTruncation truncation = findSqlException(failure, DataTruncation.class);

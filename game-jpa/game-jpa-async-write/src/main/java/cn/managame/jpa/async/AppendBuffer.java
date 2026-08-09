@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** append-only 缓冲。失败结果可能不确定，因此不声明可安全重放。 */
+/** append-only 缓冲：只追加不按 id 合并，失败结果可能不确定，因此不声明幂等。 */
 final class AppendBuffer extends TableBuffer {
 
     private final ConcurrentLinkedDeque<WriteTask> tasks = new ConcurrentLinkedDeque<>();
@@ -48,6 +48,7 @@ final class AppendBuffer extends TableBuffer {
 
     @Override
     int requeue(List<WriteTask> retryTasks) {
+        // 放回队首以尽量保持写入顺序；append 不合并，永远不会有任务被覆盖。
         for (int i = retryTasks.size() - 1; i >= 0; i--) {
             tasks.addFirst(retryTasks.get(i));
             queued.incrementAndGet();
@@ -65,7 +66,7 @@ final class AppendBuffer extends TableBuffer {
     }
 
     @Override
-    boolean replaySafe() {
+    boolean idempotent() {
         return false;
     }
 
