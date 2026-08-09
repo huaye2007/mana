@@ -1,0 +1,3 @@
+cn.managame.config.provider.MemoryConfigProvider
+cn.managame.config.provider.EnvironmentConfigProvider
+cn.managame.config.provider.SystemPropertiesConfigProvider

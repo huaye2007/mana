@@ -1,10 +1,11 @@
 package cn.managame.config.nacos;
 
 import cn.managame.config.ConfigException;
-import cn.managame.config.ConfigOptions;
+import cn.managame.config.ConfigLayer;
+import cn.managame.config.spi.ConfigFormat;
 import cn.managame.config.spi.ConfigProvider;
 import cn.managame.config.spi.ConfigSource;
-import cn.managame.config.support.PropertiesDocument;
+import cn.managame.config.support.ConfigFormats;
 import com.alibaba.nacos.api.NacosFactory;
 import com.alibaba.nacos.api.config.ConfigService;
 import com.alibaba.nacos.api.config.listener.Listener;
@@ -14,61 +15,77 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
+/**
+ * Reads config from Nacos, one {@code group:dataId} per resource.
+ *
+ * <p>Layer properties: {@code group} (default {@code DEFAULT_GROUP}) supplies the group for resources
+ * written without one, {@code timeoutMillis} (default {@code 3000}), and {@code format} pins the
+ * document format. Anything else is handed to the Nacos client, for example {@code namespace},
+ * {@code username} and {@code password}.</p>
+ *
+ * <p>Nacos hands the new document to the listener, so an update republishes from a per-resource cache
+ * without going back to the server. A change to one dataId therefore costs no extra requests, where
+ * re-reading the whole layer used to cost one request per resource per callback.</p>
+ */
 public final class NacosConfigProvider implements ConfigProvider {
     @Override public String type() { return "nacos"; }
-    @Override public ConfigSource create(ConfigOptions options) { return new NacosSource(options); }
+    @Override public ConfigSource create(ConfigLayer layer) { return new NacosSource(layer); }
 
     static final class NacosSource implements ConfigSource {
         private final List<Resource> resources;
+        private final Map<Resource, ConfigFormat> formats;
+        private final Map<Resource, Map<String, String>> parsed = new ConcurrentHashMap<>();
         private final long timeoutMillis;
         private final ConfigService service;
         private final ExecutorService executor;
         private final List<Registration> registrations = new ArrayList<>();
 
-        NacosSource(ConfigOptions options) {
-            Settings settings = Settings.parse(options);
+        NacosSource(ConfigLayer layer) {
+            this(layer, createService(layer));
+        }
+
+        NacosSource(ConfigLayer layer, ConfigService service) {
+            Settings settings = Settings.parse(layer);
             resources = settings.resources();
+            formats = settings.formats();
             timeoutMillis = settings.timeoutMillis();
-            service = createService(options);
+            this.service = service;
             executor = Executors.newSingleThreadExecutor(
                     Thread.ofPlatform().daemon().name("game-config-nacos-", 0).factory());
         }
 
-        NacosSource(ConfigOptions options, ConfigService service) {
-            Settings settings = Settings.parse(options);
-            resources = settings.resources();
-            timeoutMillis = settings.timeoutMillis();
-            this.service = service;
-            executor = Executors.newSingleThreadExecutor(Thread.ofPlatform().daemon().name("game-config-nacos-", 0).factory());
-        }
-
-        private static ConfigService createService(ConfigOptions options) {
-            if (options.endpoint().isBlank()) throw new IllegalArgumentException("nacos endpoint must not be blank");
+        private static ConfigService createService(ConfigLayer layer) {
             Properties properties = new Properties();
-            properties.putAll(options.properties());
+            properties.putAll(layer.properties());
             properties.remove("group");
             properties.remove("timeoutMillis");
-            properties.setProperty("serverAddr", options.endpoint());
+            properties.remove(ConfigFormats.FORMAT_PROPERTY);
+            properties.setProperty("serverAddr", layer.requireEndpoint());
             try { return NacosFactory.createConfigService(properties); }
             catch (Exception e) { throw new ConfigException("cannot create Nacos config service", e); }
         }
 
         @Override public Map<String, String> load() throws Exception {
-            Map<Resource, Map<String, String>> refreshed = new LinkedHashMap<>();
             for (Resource resource : resources) {
-                Map<String, String> document = PropertiesDocument.parse(
-                        service.getConfig(resource.dataId(), resource.group(), timeoutMillis));
-                refreshed.put(resource, document);
+                store(resource, service.getConfig(resource.dataId(), resource.group(), timeoutMillis));
             }
             if (!"UP".equalsIgnoreCase(service.getServerStatus())) {
                 throw new ConfigException("Nacos config server is not reachable");
             }
-            return merged(refreshed);
+            return merged();
+        }
+
+        /** The client tracks server reachability locally, so liveness needs no request. */
+        @Override public void ping() {
+            if (!"UP".equalsIgnoreCase(service.getServerStatus())) {
+                throw new ConfigException("Nacos config server is not reachable");
+            }
         }
 
         @Override public synchronized AutoCloseable watch(Consumer<Map<String, String>> onUpdate,
@@ -78,10 +95,12 @@ public final class NacosConfigProvider implements ConfigProvider {
                 for (Resource resource : resources) {
                     Listener listener = new Listener() {
                         @Override public Executor getExecutor() { return executor; }
-                        @Override public void receiveConfigInfo(String ignored) {
+                        @Override public void receiveConfigInfo(String content) {
                             try {
-                                Map<String, String> latest = load();
-                                onUpdate.accept(latest);
+                                // The callback carries the new document; re-reading every resource here
+                                // would turn one publish into one request per resource.
+                                store(resource, content);
+                                onUpdate.accept(merged());
                             } catch (Throwable e) { onError.accept(e); }
                         }
                     };
@@ -95,11 +114,14 @@ public final class NacosConfigProvider implements ConfigProvider {
             return this::stopWatching;
         }
 
-        private Map<String, String> merged(Map<Resource, Map<String, String>> source) {
+        /** A deleted or empty config is an empty document, never an error. */
+        private void store(Resource resource, String content) {
+            parsed.put(resource, formats.get(resource).parse(content));
+        }
+
+        private Map<String, String> merged() {
             Map<String, String> result = new LinkedHashMap<>();
-            resources.forEach(resource -> source.getOrDefault(resource, Map.of()).forEach((key, value) -> {
-                result.put(key, value);
-            }));
+            resources.forEach(resource -> result.putAll(parsed.getOrDefault(resource, Map.of())));
             return Map.copyOf(result);
         }
 
@@ -114,6 +136,8 @@ public final class NacosConfigProvider implements ConfigProvider {
             executor.shutdownNow();
             service.shutDown();
         }
+
+        @Override public String toString() { return "NacosSource" + resources; }
     }
 
     record Resource(String group, String dataId) {
@@ -125,15 +149,20 @@ public final class NacosConfigProvider implements ConfigProvider {
             return new Resource(group, dataId);
         }
     }
-    record Settings(List<Resource> resources, long timeoutMillis) {
-        static Settings parse(ConfigOptions options) {
-            String defaultGroup = options.property("group", "DEFAULT_GROUP");
-            List<Resource> resources = options.resources().stream()
+
+    record Settings(List<Resource> resources, Map<Resource, ConfigFormat> formats, long timeoutMillis) {
+        static Settings parse(ConfigLayer layer) {
+            String defaultGroup = layer.property("group", "DEFAULT_GROUP");
+            List<Resource> resources = layer.requireResources().stream()
                     .map(value -> Resource.parse(value, defaultGroup)).toList();
-            long timeoutMillis = Long.parseLong(options.property("timeoutMillis", "3000"));
+            Map<Resource, ConfigFormat> formats = new LinkedHashMap<>();
+            // Format follows the dataId, so app.json and app.properties can share one layer.
+            resources.forEach(resource -> formats.put(resource, ConfigFormats.of(layer, resource.dataId())));
+            long timeoutMillis = layer.longProperty("timeoutMillis", 3000);
             if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
-            return new Settings(resources, timeoutMillis);
+            return new Settings(resources, Map.copyOf(formats), timeoutMillis);
         }
     }
+
     record Registration(Resource resource, Listener listener) { }
 }

@@ -1,7 +1,9 @@
 package cn.managame.dev.bootstrap;
 
 import cn.managame.config.ConfigCenter;
+import cn.managame.config.ConfigException;
 import cn.managame.config.ConfigFactory;
+import cn.managame.config.ConfigLayer;
 import cn.managame.config.ConfigOptions;
 import cn.managame.registry.api.ServiceInstance;
 import cn.managame.registry.api.ServiceRegistry;
@@ -15,6 +17,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -59,6 +62,41 @@ class ConfigRegistryWiringTest {
         } finally {
             configManager.close();
         }
+    }
+
+    @Test
+    void systemPropertyLayerOverridesTheLocalFileLikeGameMain(@TempDir Path tempDir) throws Exception {
+        Path configFile = tempDir.resolve("application.properties");
+        Files.writeString(configFile, """
+                game.server.port=9100
+                game.db.password=from-file
+                """);
+        System.setProperty("game.server.port", "9200");
+
+        // 与 Game.createConfigCenter 同款：文件兜底，-D 覆盖，环境变量再覆盖，密码必填。
+        try (ConfigCenter configManager = ConfigFactory.open(ConfigOptions.builder()
+                .layer(ConfigLayer.builder("local").resource(configFile.toString()).build())
+                .systemProperties("game.")
+                .environment("GAME_")
+                .require("game.db.password")
+                .build())) {
+            assertEquals(9200, configManager.snapshot().getInt("game.server.port", -1));
+            assertEquals("from-file", configManager.snapshot().require("game.db.password"));
+        } finally {
+            System.clearProperty("game.server.port");
+        }
+    }
+
+    @Test
+    void missingRequiredPasswordFailsStartup(@TempDir Path tempDir) throws Exception {
+        Path configFile = tempDir.resolve("application.properties");
+        Files.writeString(configFile, "game.server.port=9100\n");
+
+        ConfigException error = assertThrows(ConfigException.class, () -> ConfigFactory.open(ConfigOptions.builder()
+                .layer(ConfigLayer.builder("local").resource(configFile.toString()).build())
+                .require("game.db.password")
+                .build()));
+        assertTrue(error.toString().contains("cannot open config center"));
     }
 
     @Test

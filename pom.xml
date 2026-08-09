@@ -75,6 +75,7 @@
         <nacos.version>3.2.1-2026.04.03</nacos.version>
         <consul.version>1.4.5</consul.version>
         <jackson.version>2.21.3</jackson.version>
+        <snakeyaml.version>2.0</snakeyaml.version>
         <protobuf.version>4.35.0</protobuf.version>
         <fory.version>1.1.0</fory.version>
         <surefire.failIfNoSpecifiedTests>false</surefire.failIfNoSpecifiedTests>
@@ -408,6 +409,11 @@
             </dependency>
 
             <!-- SLF4J -->
+            <dependency>
+                <groupId>org.yaml</groupId>
+                <artifactId>snakeyaml</artifactId>
+                <version>${snakeyaml.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>

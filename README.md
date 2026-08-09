@@ -26,7 +26,7 @@ mvn "-Dmaven.repo.local=.m2" test
 | `game-rpc` | Unified entry artifact for internal RPC; implementation is layered into `game-rpc-core` and `game-rpc-netty`, with no dependency on `game-network` (see [game-rpc/README.md](game-rpc/README.md)) |
 | `game-serialization` | Serialization facade unifying JSON, Protobuf and Apache Fory (see [game-serialization/README.md](game-serialization/README.md)) |
 | `game-registry` | Unified service registry/discovery API with memory, Nacos, and Etcd SPI providers (see [game-registry/README.md](game-registry/README.md)) |
-| `game-config` | Immutable configuration snapshots with local, Nacos, and Etcd backends, typed reads, and change listeners (see [game-config/README.md](game-config/README.md)) |
+| `game-config` | Immutable configuration snapshots with local, Nacos, and Etcd backends stacked into layers alongside system properties and environment variables, typed reads, and change listeners (see [game-config/README.md](game-config/README.md)) |
 | `game-runtime` | Unified runtime: commands/events/timers/callbacks converge into tasks, hashed by routerKey to a fixed worker in the group for serial execution (see [game-runtime/README.md](game-runtime/README.md)) |
 | `game-gateway` | TCP/WebSocket game edge gateway with admission protection, login gating, sticky routing, service discovery and bidirectional RPC tunneling (see [game-gateway/README.md](game-gateway/README.md)) |
 | `game-jpa` | Lightweight persistence framework with RDB, DocDB, caching, async batched writes, sharding, starter and demo (see [game-jpa/README.md](game-jpa/README.md)) |

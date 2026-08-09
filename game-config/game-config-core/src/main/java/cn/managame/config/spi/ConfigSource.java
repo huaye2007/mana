@@ -12,6 +12,32 @@ public interface ConfigSource extends AutoCloseable {
     }
 
     /**
+     * Cheaply confirms the backend is reachable, throwing when it is not.
+     *
+     * <p>Called on the health-check interval, which is far more often than a full reload. The default
+     * implementation falls back to {@link #loadData()}; implementations backed by a remote service
+     * should override it with a request that transfers no document content, so a large fleet does not
+     * turn liveness checks into read load.</p>
+     */
+    default void ping() throws Exception {
+        loadData();
+    }
+
+    /**
+     * Maps each key of the current merged view to the name of the layer that won it.
+     *
+     * <p>Only a source composed of several layers can answer this; a single source returns empty and
+     * the center attributes every key to it. Diagnostic, not a hot path.</p>
+     */
+    default Map<String, String> origins() { return Map.of(); }
+
+    /**
+     * Every layer that supplies {@code key}, in increasing precedence order, so the last entry is the
+     * value actually visible. Empty when the key is absent or the source has no layers.
+     */
+    default java.util.List<cn.managame.config.ConfigOrigin> explain(String key) { return java.util.List.of(); }
+
+    /**
      * Starts the single active watch for this source.
      *
      * <p>The caller must close the returned handle before starting another watch. Implementations
