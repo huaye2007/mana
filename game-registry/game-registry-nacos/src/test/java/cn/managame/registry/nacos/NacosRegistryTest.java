@@ -25,9 +25,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -80,7 +82,7 @@ class NacosRegistryTest {
     void watchEmitsInitialSnapshotAndDiffsNacosSnapshots() throws Exception {
         NamingService naming = mock(NamingService.class);
         Instance first = NacosRegistry.toNacos(service("node-1", 9001));
-        when(naming.getAllInstances("game", "games")).thenReturn(List.of(first));
+        when(naming.getAllInstances(eq("game"), eq("games"), any(), anyBoolean())).thenReturn(List.of(first));
         NacosRegistry registry = new NacosRegistry(naming, "games");
         List<ServiceInstanceEvent> events = new ArrayList<>();
 
@@ -95,6 +97,91 @@ class NacosRegistryTest {
         assertEquals(List.of(DiscoveryEventType.ADDED, DiscoveryEventType.UPDATED, DiscoveryEventType.REMOVED),
                 events.stream().map(ServiceInstanceEvent::getType).toList());
         verify(naming).unsubscribe("game", "games", listener.getValue());
+    }
+
+    @Test
+    void getInstancesQueriesWithoutCreatingASubscription() throws Exception {
+        NamingService naming = mock(NamingService.class);
+        Instance first = NacosRegistry.toNacos(service("node-1", 9001));
+        when(naming.getAllInstances(eq("game"), eq("games"), any(), anyBoolean())).thenReturn(List.of(first));
+        NacosRegistry registry = new NacosRegistry(naming, "games");
+
+        assertEquals(List.of("node-1"), registry.getInstances("game").stream()
+                .map(ServiceInstance::getId).toList());
+
+        // 两参数重载内部固定 subscribe=true，会给查过的服务留下不会清理的订阅和拉取任务。
+        verify(naming, never()).getAllInstances("game", "games");
+        verify(naming).getAllInstances(eq("game"), eq("games"), any(), eq(false));
+        verify(naming, never()).subscribe(eq("game"), eq("games"), any(EventListener.class));
+        registry.close();
+    }
+
+    @Test
+    void watchInvokesListenerOutsideTheRegistryLock() throws Exception {
+        NamingService naming = mock(NamingService.class);
+        when(naming.getAllInstances(eq("game"), eq("games"), any(), anyBoolean()))
+                .thenReturn(List.of(NacosRegistry.toNacos(service("node-1", 9001))));
+        NacosRegistry registry = new NacosRegistry(naming, "games");
+        CountDownLatch listenerEntered = new CountDownLatch(1);
+        CountDownLatch releaseListener = new CountDownLatch(1);
+        AtomicReference<Throwable> watchFailure = new AtomicReference<>();
+
+        Thread watching = Thread.startVirtualThread(() -> {
+            try {
+                registry.watchService("game", event -> {
+                    listenerEntered.countDown();
+                    try {
+                        releaseListener.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            } catch (Throwable error) {
+                watchFailure.set(error);
+            }
+        });
+
+        assertTrue(listenerEntered.await(2, TimeUnit.SECONDS));
+        // 监听器还堵在初始快照回调里，此时其他线程的注册中心操作不应该被这把锁挡住。
+        AtomicReference<Throwable> queryFailure = new AtomicReference<>();
+        CountDownLatch queried = new CountDownLatch(1);
+        Thread querying = Thread.startVirtualThread(() -> {
+            try {
+                registry.getInstances("game");
+                queried.countDown();
+            } catch (Throwable error) {
+                queryFailure.set(error);
+            }
+        });
+        assertTrue(queried.await(2, TimeUnit.SECONDS), "getInstances 被阻塞的监听器挡住了");
+
+        releaseListener.countDown();
+        watching.join();
+        querying.join();
+        assertNull(watchFailure.get());
+        assertNull(queryFailure.get());
+        registry.close();
+    }
+
+    @Test
+    void listenerFailureIsDroppedForInitialAndIncrementalEvents() throws Exception {
+        NamingService naming = mock(NamingService.class);
+        Instance first = NacosRegistry.toNacos(service("node-1", 9001));
+        when(naming.getAllInstances(eq("game"), eq("games"), any(), anyBoolean()))
+                .thenReturn(List.of(first));
+        NacosRegistry registry = new NacosRegistry(naming, "games");
+
+        AutoCloseable handle = registry.watchService("game", event -> {
+            throw new IllegalStateException("listener failed");
+        });
+        ArgumentCaptor<EventListener> listener = ArgumentCaptor.forClass(EventListener.class);
+        verify(naming).subscribe(eq("game"), eq("games"), listener.capture());
+
+        listener.getValue().onEvent(new NamingEvent("game",
+                List.of(NacosRegistry.toNacos(service("node-1", 9002)))));
+
+        handle.close();
+        registry.close();
     }
 
     @Test

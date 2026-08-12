@@ -56,6 +56,24 @@ class MemoryRegistryTest {
     }
 
     @Test
+    void listenerFailureIsDroppedAndDoesNotBreakRegistryOperations() throws Exception {
+        String namespace = UUID.randomUUID().toString();
+        try (MemoryRegistry publisher = new MemoryRegistry(namespace);
+             MemoryRegistry subscriber = new MemoryRegistry(namespace)) {
+            AutoCloseable watch = subscriber.watchService("game", event -> {
+                throw new IllegalStateException("listener failed");
+            });
+
+            publisher.register(instance("one", 9001));
+
+            assertEquals(List.of("one"), subscriber.getInstances("game").stream()
+                    .map(ServiceInstance::getId).toList());
+            publisher.deregister(instance("one", 9001));
+            watch.close();
+        }
+    }
+
+    @Test
     void closeRacingRegistrationsNeverLeavesGhostInstances() throws Exception {
         for (int round = 0; round < 25; round++) {
             String namespace = UUID.randomUUID().toString();

@@ -15,6 +15,7 @@ import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.Lease;
 import io.etcd.jetcd.Watch;
 import io.etcd.jetcd.kv.GetResponse;
+import io.etcd.jetcd.kv.TxnResponse;
 import io.etcd.jetcd.op.Cmp;
 import io.etcd.jetcd.op.CmpTarget;
 import io.etcd.jetcd.op.Op;
@@ -56,6 +57,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 public final class EtcdRegistry implements ServiceRegistry {
     private static final Logger log = LoggerFactory.getLogger(EtcdRegistry.class);
@@ -94,12 +96,20 @@ public final class EtcdRegistry implements ServiceRegistry {
             Thread.ofVirtual().name("etcd-registry-recovery-worker-", 0).factory());
 
     EtcdRegistry(RegistryConfig config) {
-        Client created = createClient(config);
-        long ttl = parseTtl(config.getProperties().get(TTL_PROPERTY));
-        long timeoutMillis = parsePositiveLong(config.getProperties().get(OPERATION_TIMEOUT_PROPERTY),
-                DEFAULT_OPERATION_TIMEOUT_MILLIS, OPERATION_TIMEOUT_PROPERTY);
+        this(config, EtcdRegistry::createClient);
+    }
+
+    EtcdRegistry(RegistryConfig config, Function<RegistryConfig, Client> clientFactory) {
+        Client created = null;
+        Lease createdLease = null;
+        long grantedLeaseId = 0;
+        long timeoutMillis = DEFAULT_OPERATION_TIMEOUT_MILLIS;
         try {
-            Lease createdLease = created.getLeaseClient();
+            long ttl = parseTtl(config.getProperties().get(TTL_PROPERTY));
+            timeoutMillis = parsePositiveLong(config.getProperties().get(OPERATION_TIMEOUT_PROPERTY),
+                    DEFAULT_OPERATION_TIMEOUT_MILLIS, OPERATION_TIMEOUT_PROPERTY);
+            created = Objects.requireNonNull(clientFactory.apply(config), "etcd client");
+            createdLease = created.getLeaseClient();
             client = created;
             kv = created.getKVClient();
             lease = createdLease;
@@ -108,24 +118,47 @@ public final class EtcdRegistry implements ServiceRegistry {
             operationTimeoutMillis = timeoutMillis;
             prefix = normalizePrefix(config.getProperties().getOrDefault(PREFIX_PROPERTY, DEFAULT_PREFIX));
             owner = UUID.randomUUID().toString();
-            long createdLeaseId = await(createdLease.grant(ttl), "grant etcd lease").getID();
-            leaseId = createdLeaseId;
-            keepAlive = createdLease.keepAlive(createdLeaseId, new KeepAliveObserver(createdLeaseId));
+            grantedLeaseId = await(createdLease.grant(ttl), "grant etcd lease").getID();
+            leaseId = grantedLeaseId;
+            keepAlive = createdLease.keepAlive(grantedLeaseId, new KeepAliveObserver(grantedLeaseId));
         } catch (RuntimeException e) {
             recoveryScheduler.shutdownNow();
             recoveryExecutor.shutdownNow();
-            created.close();
+            // 租约已经授出但构造没走完时必须主动 revoke，否则要等一整个 TTL 才自然消失。
+            if (createdLease != null && grantedLeaseId != 0) {
+                try {
+                    createdLease.revoke(grantedLeaseId).get(timeoutMillis, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    e.addSuppressed(interrupted);
+                } catch (Exception revokeFailure) {
+                    e.addSuppressed(revokeFailure);
+                }
+            }
+            if (created != null) {
+                try {
+                    created.close();
+                } catch (RuntimeException closeFailure) {
+                    e.addSuppressed(closeFailure);
+                }
+            }
             throw e;
         }
     }
 
     EtcdRegistry(Client client, long leaseId, CloseableClient keepAlive, String prefix, String owner) {
+        this(client, leaseId, keepAlive, prefix, owner,
+                DEFAULT_TTL_SECONDS, DEFAULT_OPERATION_TIMEOUT_MILLIS);
+    }
+
+    EtcdRegistry(Client client, long leaseId, CloseableClient keepAlive, String prefix, String owner,
+                 long leaseTtlSeconds, long operationTimeoutMillis) {
         this.client = Objects.requireNonNull(client, "client");
         this.kv = client.getKVClient();
         this.lease = client.getLeaseClient();
         this.watchClient = client.getWatchClient();
-        this.leaseTtlSeconds = DEFAULT_TTL_SECONDS;
-        this.operationTimeoutMillis = DEFAULT_OPERATION_TIMEOUT_MILLIS;
+        this.leaseTtlSeconds = leaseTtlSeconds;
+        this.operationTimeoutMillis = operationTimeoutMillis;
         this.leaseId = leaseId;
         this.keepAlive = Objects.requireNonNull(keepAlive, "keepAlive");
         this.prefix = normalizePrefix(prefix);
@@ -223,12 +256,39 @@ public final class EtcdRegistry implements ServiceRegistry {
         ByteSequence value = encode(owner, instance);
         Cmp ownedValue = new Cmp(key, Cmp.Op.EQUAL, CmpTarget.value(value));
         Op delete = Op.delete(key, DeleteOption.DEFAULT);
-        await(kv.txn().If(ownedValue).Then(delete).commit(), "deregister " + instance);
+        TxnResponse response = await(kv.txn().If(ownedValue).Then(delete).commit(), "deregister " + instance);
+        if (!response.isSucceeded()) {
+            // CAS 失败说明这个 key 已经不是本客户端写的那份（通常是别的客户端用同样的
+            // name+id 覆盖了）。不删别人的数据是对的，但调用方必须能看见它没被删掉。
+            // 本地注册仍然要清掉：留着的话租约恢复会把它重新写回去，反而覆盖别人的实例。
+            log.warn("etcd deregister did not remove the key because it is no longer owned by this client, "
+                    + "instance={}, owner={}", instance, owner);
+        }
     }
 
     private void putOnLease(ServiceInstance instance, long targetLeaseId) {
         PutOption option = PutOption.builder().withLeaseId(targetLeaseId).build();
         await(kv.put(key(instance), encode(owner, instance), option), "register " + instance);
+    }
+
+    private void putOnLease(ServiceInstance instance, long targetLeaseId,
+                            long startedAtNanos, long budgetNanos) {
+        long timeoutMillis = remainingRecoveryTimeoutMillis(startedAtNanos, budgetNanos);
+        PutOption option = PutOption.builder().withLeaseId(targetLeaseId).build();
+        await(kv.put(key(instance), encode(owner, instance), option),
+                "restore " + instance + " on recovered etcd lease", timeoutMillis);
+        if (System.nanoTime() - startedAtNanos >= budgetNanos) throw recoveryBudgetExceeded();
+    }
+
+    private long remainingRecoveryTimeoutMillis(long startedAtNanos, long budgetNanos) {
+        long remainingNanos = budgetNanos - (System.nanoTime() - startedAtNanos);
+        if (remainingNanos <= 0) throw recoveryBudgetExceeded();
+        long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+        return Math.min(operationTimeoutMillis, remainingMillis);
+    }
+
+    private RegistryException recoveryBudgetExceeded() {
+        return new RegistryException("etcd lease recovery exceeded the " + leaseTtlSeconds + "s lease TTL");
     }
 
     private ByteSequence key(ServiceInstance instance) {
@@ -247,9 +307,35 @@ public final class EtcdRegistry implements ServiceRegistry {
         return GetOption.builder().isPrefix(true).build();
     }
 
+    /**
+     * 逐条解码，坏值跳过。前缀下混进一条本模块读不懂的数据（人工写入、半截写入、
+     * 或将来更高版本的写入方）不能让整批查询失败——那会让 watch 重连路径永远失败，
+     * 该服务的发现能力彻底不可用。
+     */
     private static List<ServiceInstance> decodeInstances(List<KeyValue> values) {
-        return values.stream().map(value -> decode(value.getValue()).instance())
+        return values.stream().map(EtcdRegistry::decodeOrSkip).filter(Objects::nonNull)
                 .sorted(Comparator.comparing(ServiceInstance::getKey)).toList();
+    }
+
+    /**
+     * 解码单条 KV，失败返回 null 并带 key 记一条 warn，便于定位是哪条数据坏了。
+     * 这个方法本身不允许抛异常——它就是为了兜住解码失败而存在的。
+     */
+    private static ServiceInstance decodeOrSkip(KeyValue value) {
+        try {
+            return decode(value.getValue()).instance();
+        } catch (RuntimeException e) {
+            log.warn("skipping undecodable etcd registry entry, key={}", describeKey(value), e);
+            return null;
+        }
+    }
+
+    private static String describeKey(KeyValue value) {
+        try {
+            return value.getKey() == null ? "<unknown>" : value.getKey().toString(StandardCharsets.UTF_8);
+        } catch (RuntimeException e) {
+            return "<unreadable>";
+        }
     }
 
     static ByteSequence encode(String owner, ServiceInstance instance) {
@@ -360,11 +446,15 @@ public final class EtcdRegistry implements ServiceRegistry {
     }
 
     private <T> T await(CompletableFuture<T> future, String action) {
+        return await(future, action, operationTimeoutMillis);
+    }
+
+    private static <T> T await(CompletableFuture<T> future, String action, long timeoutMillis) {
         try {
-            return future.get(operationTimeoutMillis, TimeUnit.MILLISECONDS);
+            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
-            throw new RegistryException("timed out after " + operationTimeoutMillis + "ms while attempting to " + action, e);
+            throw new RegistryException("timed out after " + timeoutMillis + "ms while attempting to " + action, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RegistryException("interrupted while attempting to " + action, e);
@@ -397,18 +487,22 @@ public final class EtcdRegistry implements ServiceRegistry {
         try {
             synchronized (leaseLock) {
                 if (closed.get() || leaseId != observedLeaseId) return;
-                long newLeaseId = await(lease.grant(leaseTtlSeconds), "re-grant etcd lease").getID();
+                long budgetNanos = TimeUnit.SECONDS.toNanos(leaseTtlSeconds);
+                long startedAt = System.nanoTime();
+                long newLeaseId = await(lease.grant(leaseTtlSeconds), "re-grant etcd lease",
+                        remainingRecoveryTimeoutMillis(startedAt, budgetNanos)).getID();
                 CloseableClient newKeepAlive = null;
                 CloseableClient oldKeepAlive = keepAlive;
                 long oldLeaseId = leaseId;
                 try {
-                    for (ServiceInstance instance : List.copyOf(registrations.values())) {
-                        putOnLease(instance, newLeaseId);
-                    }
-                    // Publish the new id before starting the stream. A keepalive can fail
-                    // immediately and its callback must be associated with this lease.
+                    // 先发布新 lease id 并启动 keepalive，避免注册项较多时 lease 在恢复途中到期。
+                    // 同时仍以一个 TTL 作为整批恢复预算，防止 leaseLock 被无限占用。
+                    List<ServiceInstance> pendingRestore = List.copyOf(registrations.values());
                     leaseId = newLeaseId;
                     newKeepAlive = lease.keepAlive(newLeaseId, new KeepAliveObserver(newLeaseId));
+                    for (ServiceInstance instance : pendingRestore) {
+                        putOnLease(instance, newLeaseId, startedAt, budgetNanos);
+                    }
                 } catch (RuntimeException recoveryFailure) {
                     leaseId = oldLeaseId;
                     if (newKeepAlive != null) {
@@ -416,8 +510,7 @@ public final class EtcdRegistry implements ServiceRegistry {
                             recoveryFailure.addSuppressed(closeFailure);
                         }
                     }
-                    try { await(lease.revoke(newLeaseId), "revoke failed recovery lease"); }
-                    catch (RuntimeException revokeFailure) { recoveryFailure.addSuppressed(revokeFailure); }
+                    revokeAfterRecovery(newLeaseId, "failed recovery lease");
                     throw recoveryFailure;
                 }
 
@@ -425,8 +518,7 @@ public final class EtcdRegistry implements ServiceRegistry {
                 recovered = true;
                 try { oldKeepAlive.close(); }
                 catch (RuntimeException e) { log.debug("failed to close obsolete etcd keepalive", e); }
-                try { await(lease.revoke(oldLeaseId), "revoke obsolete etcd lease"); }
-                catch (RuntimeException e) { log.debug("failed to revoke obsolete etcd lease {}", oldLeaseId, e); }
+                revokeAfterRecovery(oldLeaseId, "obsolete lease");
                 log.info("etcd lease recovered and {} registrations restored, oldLeaseId={}, newLeaseId={}",
                         registrations.size(), oldLeaseId, newLeaseId);
             }
@@ -444,6 +536,24 @@ public final class EtcdRegistry implements ServiceRegistry {
                 scheduleLeaseRecovery(observedLeaseId,
                         new RegistryException("previous etcd lease recovery attempt failed"));
             }
+        }
+    }
+
+    /**
+     * Recovery runs while holding {@code leaseLock}; waiting for cleanup RPCs here would let a
+     * failed revoke extend that critical section beyond the recovery budget. The request is still
+     * issued immediately, but completion is observed asynchronously. An unreclaimed lease has no
+     * surviving keepalive and therefore remains bounded by its TTL.
+     */
+    private void revokeAfterRecovery(long targetLeaseId, String description) {
+        try {
+            lease.revoke(targetLeaseId).whenComplete((ignored, error) -> {
+                if (error != null) {
+                    log.debug("failed to revoke etcd {} {}", description, targetLeaseId, error);
+                }
+            });
+        } catch (RuntimeException error) {
+            log.debug("failed to start revoke for etcd {} {}", description, targetLeaseId, error);
         }
     }
 
@@ -516,18 +626,26 @@ public final class EtcdRegistry implements ServiceRegistry {
                     watchFailed(token, new RegistryException("etcd watch completed unexpectedly"));
                 }
             };
+            List<ServiceInstance> snapshot = decodeInstances(response.getKvs());
             Watch.Watcher installed = watchClient.watch(servicePrefix(serviceName), option, delegate);
-            Watch.Watcher previous;
-            synchronized (this) {
-                if (!active.get() || token != generation) {
-                    installed.close();
-                    return;
+            Watch.Watcher previous = null;
+            boolean adopted = false;
+            try {
+                synchronized (this) {
+                    if (active.get() && token == generation) {
+                        previous = watcher;
+                        watcher = installed;
+                        adopted = true;
+                        reconcile(snapshot);
+                    }
                 }
-                previous = watcher;
-                watcher = installed;
-                reconcile(decodeInstances(response.getKvs()));
+            } finally {
+                // 必须放在 finally：原先 reconcile 抛异常时 watcher 已经指向 installed，
+                // 而收尾的 previous.close() 不会执行，旧 watcher 就永久泄漏了——
+                // 配合重连退避等于每几秒漏一个 gRPC watcher。
+                if (!adopted) installed.close();
+                else if (previous != null && previous != installed) previous.close();
             }
-            if (previous != null && previous != installed) previous.close();
         }
 
         private void acceptResponse(long token, WatchResponse response) {
@@ -542,8 +660,16 @@ public final class EtcdRegistry implements ServiceRegistry {
                                 ? DiscoveryEventType.ADDED : DiscoveryEventType.UPDATED;
                         default -> null;
                     };
-                    if (type != null) accept(token,
-                            new ServiceInstanceEvent(type, decode(value.getValue()).instance()));
+                    if (type == null) continue;
+                    ServiceInstance instance = decodeOrSkip(value);
+                    if (instance == null) {
+                        // 查询可以安全跳过坏值，但实时 PUT 可能覆盖 known 中的正常实例。
+                        // 触发快照重建，reconcile 会移除已不可读的旧实例，避免永久幽灵记录。
+                        watchFailed(token, new RegistryException(
+                                "received an undecodable etcd watch event for key " + describeKey(value)));
+                        return;
+                    }
+                    accept(token, new ServiceInstanceEvent(type, instance));
                 }
             } catch (RuntimeException error) {
                 watchFailed(token, error);

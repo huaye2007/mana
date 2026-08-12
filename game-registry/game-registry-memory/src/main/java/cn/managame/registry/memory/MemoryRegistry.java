@@ -5,6 +5,8 @@ import cn.managame.registry.api.ServiceInstance;
 import cn.managame.registry.api.ServiceInstanceEvent;
 import cn.managame.registry.api.ServiceInstanceListener;
 import cn.managame.registry.api.ServiceRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -19,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Process-local registry. Clients using the same endpoint string share one namespace. */
 public final class MemoryRegistry implements ServiceRegistry {
+    private static final Logger log = LoggerFactory.getLogger(MemoryRegistry.class);
     private static final Map<String, Store> STORES = new ConcurrentHashMap<>();
 
     private final String owner = UUID.randomUUID().toString();
@@ -169,9 +172,9 @@ public final class MemoryRegistry implements ServiceRegistry {
 
         private synchronized void initialize(List<ServiceInstance> initial) {
             if (!active.get()) return;
-            initial.forEach(instance -> listener.onEvent(
+            initial.forEach(instance -> emit(
                     new ServiceInstanceEvent(DiscoveryEventType.ADDED, instance)));
-            pending.forEach(listener::onEvent);
+            pending.forEach(this::emit);
             pending.clear();
             initialized = true;
         }
@@ -182,7 +185,16 @@ public final class MemoryRegistry implements ServiceRegistry {
                 pending.add(event);
                 return;
             }
-            listener.onEvent(event);
+            emit(event);
+        }
+
+        private void emit(ServiceInstanceEvent event) {
+            try {
+                listener.onEvent(event);
+            } catch (RuntimeException error) {
+                log.warn("service instance listener failed, service={}, event={}",
+                        serviceName, event.getType(), error);
+            }
         }
 
         @Override

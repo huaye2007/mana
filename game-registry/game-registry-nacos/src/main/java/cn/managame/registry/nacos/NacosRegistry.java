@@ -15,6 +15,8 @@ import com.alibaba.nacos.api.naming.listener.Event;
 import com.alibaba.nacos.api.naming.listener.EventListener;
 import com.alibaba.nacos.api.naming.listener.NamingEvent;
 import com.alibaba.nacos.api.naming.pojo.Instance;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -28,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class NacosRegistry implements ServiceRegistry {
+    private static final Logger log = LoggerFactory.getLogger(NacosRegistry.class);
     static final String GROUP_PROPERTY = "group";
     static final String DEFAULT_GROUP = "DEFAULT_GROUP";
     static final String ID_METADATA = "mana.instance.id";
@@ -98,8 +101,10 @@ public final class NacosRegistry implements ServiceRegistry {
         synchronized (lifecycleLock) {
             requireOpen();
             try {
-                return namingService.getAllInstances(serviceName, group).stream()
-                        .map(instance -> fromNacos(serviceName, instance)).toList();
+                // subscribe=false：两参数的 getAllInstances 重载内部固定传 subscribe=true，
+                // 会给查过的每个服务名留下一个订阅和定时拉取任务，而且这里永远不会 unsubscribe。
+                // 一次性查询不该产生常驻状态，订阅只应该由 watchService 建立。
+                return queryInstances(serviceName, false);
             } catch (NacosException e) {
                 throw failure("get instances for " + serviceName, e);
             }
@@ -110,25 +115,15 @@ public final class NacosRegistry implements ServiceRegistry {
     public AutoCloseable watchService(String serviceName, ServiceInstanceListener listener) {
         requireServiceName(serviceName);
         Objects.requireNonNull(listener, "listener");
+        NacosWatch watch = new NacosWatch(serviceName, listener);
+        List<ServiceInstance> initial;
         synchronized (lifecycleLock) {
             requireOpen();
-            NacosWatch watch = new NacosWatch(serviceName, listener);
             try {
                 namingService.subscribe(serviceName, group, watch);
-                List<ServiceInstance> initial = namingService.getAllInstances(serviceName, group).stream()
-                        .map(instance -> fromNacos(serviceName, instance)).toList();
+                // 这里用 subscribe=true：订阅刚建好，直接读推送上来的本地缓存即可。
+                initial = queryInstances(serviceName, true);
                 watches.add(watch);
-                try {
-                    watch.initialize(initial);
-                    return watch;
-                } catch (RuntimeException e) {
-                    try {
-                        watch.close();
-                    } catch (RuntimeException closeFailure) {
-                        e.addSuppressed(closeFailure);
-                    }
-                    throw e;
-                }
             } catch (NacosException e) {
                 try {
                     namingService.unsubscribe(serviceName, group, watch);
@@ -137,6 +132,19 @@ public final class NacosRegistry implements ServiceRegistry {
                 }
                 throw failure("watch service " + serviceName, e);
             }
+        }
+        // 初始快照的回调必须在 lifecycleLock 之外：这把锁覆盖了本类所有公共方法，
+        // 监听器里一次慢 IO 就会把整个 registry 的注册/注销/查询全部堵死。
+        try {
+            watch.initialize(initial);
+            return watch;
+        } catch (RuntimeException e) {
+            try {
+                watch.close();
+            } catch (RuntimeException closeFailure) {
+                e.addSuppressed(closeFailure);
+            }
+            throw e;
         }
     }
 
@@ -174,6 +182,15 @@ public final class NacosRegistry implements ServiceRegistry {
             }
             if (failure != null) throw failure;
         }
+    }
+
+    /**
+     * 查询实例。{@code subscribe} 显式传入：两参数重载会硬编码 {@code true}，
+     * 一次性查询用它会留下不会被清理的订阅状态。
+     */
+    private List<ServiceInstance> queryInstances(String serviceName, boolean subscribe) throws NacosException {
+        return namingService.getAllInstances(serviceName, group, new ArrayList<>(), subscribe).stream()
+                .map(instance -> fromNacos(serviceName, instance)).toList();
     }
 
     private List<ServiceInstance> serviceRegistrations(String serviceName, String replacedKey,
@@ -295,10 +312,12 @@ public final class NacosRegistry implements ServiceRegistry {
 
         private void initialize(List<ServiceInstance> initial) {
             synchronized (this) {
+                // 初始快照现在在 lifecycleLock 之外回调，期间可能已经被 close() 关掉。
+                if (!active.get()) return;
                 List<ServiceInstance> latest = pending == null ? initial : pending;
                 pending = null;
                 snapshot = index(latest);
-                latest.forEach(instance -> listener.onEvent(
+                latest.forEach(instance -> emit(
                         new ServiceInstanceEvent(DiscoveryEventType.ADDED, instance)));
             }
         }
@@ -314,7 +333,16 @@ public final class NacosRegistry implements ServiceRegistry {
                 events = diff(snapshot, next);
                 snapshot = next;
             }
-            events.forEach(listener::onEvent);
+            events.forEach(this::emit);
+        }
+
+        private void emit(ServiceInstanceEvent event) {
+            try {
+                listener.onEvent(event);
+            } catch (RuntimeException error) {
+                log.warn("service instance listener failed, service={}, event={}",
+                        serviceName, event.getType(), error);
+            }
         }
 
         @Override

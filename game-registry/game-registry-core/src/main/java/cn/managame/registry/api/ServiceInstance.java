@@ -61,6 +61,13 @@ public final class ServiceInstance {
         return metadata;
     }
 
+    /**
+     * The identity of this instance: the {@code id} when one is set, otherwise {@code address:port}.
+     *
+     * <p>Always set a stable {@code id}. Without one, changing the address changes the identity, so
+     * the new address registers as a new instance while the record for the old address survives
+     * until the provider expires it.
+     */
     public String getKey() {
         return id == null ? address + ':' + port : id;
     }
