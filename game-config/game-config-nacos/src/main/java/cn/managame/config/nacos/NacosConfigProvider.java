@@ -1,7 +1,7 @@
 package cn.managame.config.nacos;
 
 import cn.managame.config.ConfigException;
-import cn.managame.config.ConfigLayer;
+import cn.managame.config.ConfigOptions;
 import cn.managame.config.spi.ConfigFormat;
 import cn.managame.config.spi.ConfigProvider;
 import cn.managame.config.spi.ConfigSource;
@@ -24,18 +24,18 @@ import java.util.function.Consumer;
 /**
  * Reads config from Nacos, one {@code group:dataId} per resource.
  *
- * <p>Layer properties: {@code group} (default {@code DEFAULT_GROUP}) supplies the group for resources
+ * <p>Properties: {@code group} (default {@code DEFAULT_GROUP}) supplies the group for resources
  * written without one, {@code timeoutMillis} (default {@code 3000}), and {@code format} pins the
  * document format. Anything else is handed to the Nacos client, for example {@code namespace},
  * {@code username} and {@code password}.</p>
  *
  * <p>Nacos hands the new document to the listener, so an update republishes from a per-resource cache
  * without going back to the server. A change to one dataId therefore costs no extra requests, where
- * re-reading the whole layer used to cost one request per resource per callback.</p>
+ * re-reading everything used to cost one request per resource per callback.</p>
  */
 public final class NacosConfigProvider implements ConfigProvider {
     @Override public String type() { return "nacos"; }
-    @Override public ConfigSource create(ConfigLayer layer) { return new NacosSource(layer); }
+    @Override public ConfigSource create(ConfigOptions options) { return new NacosSource(options); }
 
     static final class NacosSource implements ConfigSource {
         private final List<Resource> resources;
@@ -46,12 +46,12 @@ public final class NacosConfigProvider implements ConfigProvider {
         private final ExecutorService executor;
         private final List<Registration> registrations = new ArrayList<>();
 
-        NacosSource(ConfigLayer layer) {
-            this(layer, createService(layer));
+        NacosSource(ConfigOptions options) {
+            this(options, createService(options));
         }
 
-        NacosSource(ConfigLayer layer, ConfigService service) {
-            Settings settings = Settings.parse(layer);
+        NacosSource(ConfigOptions options, ConfigService service) {
+            Settings settings = Settings.parse(options);
             resources = settings.resources();
             formats = settings.formats();
             timeoutMillis = settings.timeoutMillis();
@@ -60,13 +60,13 @@ public final class NacosConfigProvider implements ConfigProvider {
                     Thread.ofPlatform().daemon().name("game-config-nacos-", 0).factory());
         }
 
-        private static ConfigService createService(ConfigLayer layer) {
+        private static ConfigService createService(ConfigOptions options) {
             Properties properties = new Properties();
-            properties.putAll(layer.properties());
+            properties.putAll(options.properties());
             properties.remove("group");
             properties.remove("timeoutMillis");
             properties.remove(ConfigFormats.FORMAT_PROPERTY);
-            properties.setProperty("serverAddr", layer.requireEndpoint());
+            properties.setProperty("serverAddr", options.requireEndpoint());
             try { return NacosFactory.createConfigService(properties); }
             catch (Exception e) { throw new ConfigException("cannot create Nacos config service", e); }
         }
@@ -151,14 +151,14 @@ public final class NacosConfigProvider implements ConfigProvider {
     }
 
     record Settings(List<Resource> resources, Map<Resource, ConfigFormat> formats, long timeoutMillis) {
-        static Settings parse(ConfigLayer layer) {
-            String defaultGroup = layer.property("group", "DEFAULT_GROUP");
-            List<Resource> resources = layer.requireResources().stream()
+        static Settings parse(ConfigOptions options) {
+            String defaultGroup = options.property("group", "DEFAULT_GROUP");
+            List<Resource> resources = options.requireResources().stream()
                     .map(value -> Resource.parse(value, defaultGroup)).toList();
             Map<Resource, ConfigFormat> formats = new LinkedHashMap<>();
-            // Format follows the dataId, so app.json and app.properties can share one layer.
-            resources.forEach(resource -> formats.put(resource, ConfigFormats.of(layer, resource.dataId())));
-            long timeoutMillis = layer.longProperty("timeoutMillis", 3000);
+            // Format follows the dataId, so app.json and app.properties can be mixed.
+            resources.forEach(resource -> formats.put(resource, ConfigFormats.of(options, resource.dataId())));
+            long timeoutMillis = options.longProperty("timeoutMillis", 3000);
             if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
             return new Settings(resources, Map.copyOf(formats), timeoutMillis);
         }

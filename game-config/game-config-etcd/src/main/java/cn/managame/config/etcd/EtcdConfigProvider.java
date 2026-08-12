@@ -1,6 +1,6 @@
 package cn.managame.config.etcd;
 
-import cn.managame.config.ConfigLayer;
+import cn.managame.config.ConfigOptions;
 import cn.managame.config.spi.ConfigData;
 import cn.managame.config.spi.ConfigFormat;
 import cn.managame.config.spi.ConfigProvider;
@@ -32,14 +32,14 @@ import java.util.function.LongConsumer;
  * Reads config from Etcd, one key per resource.
  *
  * <p>All keys are read inside a single transaction, so a multi-key publish is observed whole and the
- * cost of a load is one round trip regardless of how many resources the layer declares.</p>
+ * cost of a load is one round trip regardless of how many resources are declared.</p>
  *
- * <p>Layer properties: {@code timeoutMillis} (default {@code 3000}), {@code username},
+ * <p>Properties: {@code timeoutMillis} (default {@code 3000}), {@code username},
  * {@code password}, and {@code format} to pin the document format of the values.</p>
  */
 public final class EtcdConfigProvider implements ConfigProvider {
     @Override public String type() { return "etcd"; }
-    @Override public ConfigSource create(ConfigLayer layer) { return new EtcdSource(layer); }
+    @Override public ConfigSource create(ConfigOptions options) { return new EtcdSource(options); }
 
     static final class EtcdSource implements ConfigSource {
         private final List<String> resources;
@@ -51,33 +51,33 @@ public final class EtcdConfigProvider implements ConfigProvider {
         private final ExecutorService eventExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofPlatform().daemon().name("game-config-etcd-", 0).factory());
 
-        EtcdSource(ConfigLayer layer) {
-            resources = layer.requireResources();
-            formats = resolveFormats(layer, resources);
-            timeoutMillis = parseTimeout(layer);
-            String[] endpoints = java.util.Arrays.stream(layer.requireEndpoint().split(","))
+        EtcdSource(ConfigOptions options) {
+            resources = options.requireResources();
+            formats = resolveFormats(options, resources);
+            timeoutMillis = parseTimeout(options);
+            String[] endpoints = java.util.Arrays.stream(options.requireEndpoint().split(","))
                     .map(String::trim).filter(value -> !value.isEmpty()).toArray(String[]::new);
             var builder = Client.builder().endpoints(endpoints);
-            String username = layer.property("username", null);
-            String password = layer.property("password", null);
+            String username = options.property("username", null);
+            String password = options.property("password", null);
             if (username != null && !username.isBlank()) builder.user(bytes(username));
             if (password != null) builder.password(bytes(password));
             client = new JetcdAdapter(builder.build());
         }
 
-        EtcdSource(ConfigLayer layer, ClientAdapter client) {
-            resources = layer.requireResources();
-            formats = resolveFormats(layer, resources);
-            timeoutMillis = parseTimeout(layer);
+        EtcdSource(ConfigOptions options, ClientAdapter client) {
+            resources = options.requireResources();
+            formats = resolveFormats(options, resources);
+            timeoutMillis = parseTimeout(options);
             this.client = client;
         }
 
-        private static List<ConfigFormat> resolveFormats(ConfigLayer layer, List<String> resources) {
-            return resources.stream().map(resource -> ConfigFormats.of(layer, resource)).toList();
+        private static List<ConfigFormat> resolveFormats(ConfigOptions options, List<String> resources) {
+            return resources.stream().map(resource -> ConfigFormats.of(options, resource)).toList();
         }
 
-        private static long parseTimeout(ConfigLayer layer) {
-            long timeoutMillis = layer.longProperty("timeoutMillis", 3000);
+        private static long parseTimeout(ConfigOptions options) {
+            long timeoutMillis = options.longProperty("timeoutMillis", 3000);
             if (timeoutMillis <= 0) throw new IllegalArgumentException("timeoutMillis must be positive");
             return timeoutMillis;
         }

@@ -282,27 +282,6 @@ class ConfigFactoryTest {
         }
     }
 
-    @Test
-    void refCachesDerivedValueUntilTheSnapshotChanges() {
-        FakeSource source = new FakeSource(Map.of("port", "8080"));
-        ConfigCenter center = ConfigFactory.DefaultConfigCenter.open(source, ConfigValidator.none());
-        AtomicInteger parses = new AtomicInteger();
-        try {
-            ConfigRef<Integer> port = center.ref(snapshot -> {
-                parses.incrementAndGet();
-                return snapshot.getInt("port", 0);
-            });
-            for (int i = 0; i < 100; i++) assertEquals(8080, port.get());
-            assertEquals(1, parses.get(), "derived value must be computed once per snapshot");
-
-            source.emit(Map.of("port", "9090"));
-            assertEquals(9090, port.get());
-            assertEquals(2, parses.get());
-        } finally {
-            center.close();
-        }
-    }
-
     private static final class ProbeSource implements ConfigSource {
         private final AtomicInteger loads = new AtomicInteger();
         private final AtomicInteger pings = new AtomicInteger();

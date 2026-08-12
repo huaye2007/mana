@@ -7,11 +7,11 @@ import java.util.Map;
  *
  * <p>This is the extension point for document types. {@code properties} and {@code json} are built
  * in; to read anything else, implement this interface and register it with
- * {@link java.util.ServiceLoader}. Implementations are selected either by the {@code format} layer
+ * {@link java.util.ServiceLoader}. Implementations are selected either by the {@code format}
  * property or by the resource name, and apply to every backend rather than to one of them.</p>
  */
 public interface ConfigFormat {
-    /** Format id used by the {@code format} layer property, for example {@code properties} or {@code json}. */
+    /** Format id used by the {@code format} property, for example {@code properties} or {@code yaml}. */
     String name();
 
     /** Parses a complete document. A blank document is an empty map, never an error. */
@@ -20,7 +20,7 @@ public interface ConfigFormat {
     /**
      * Reports whether this format claims a resource by name, normally by file extension.
      *
-     * <p>Only consulted when the layer does not pin a format explicitly.</p>
+     * <p>Only consulted when no format is pinned explicitly.</p>
      */
     default boolean claims(String resource) {
         return resource != null && resource.toLowerCase(java.util.Locale.ROOT).endsWith("." + name());

@@ -35,97 +35,45 @@ public final class ConfigFactory {
     private ConfigFactory() { }
 
     /**
-     * Opens a center over the layers in {@code options}, merged in declaration order.
+     * Opens a center over the backend named by {@code options}.
      *
      * <p>Returns only after the first snapshot has loaded and passed validation, so a process never
      * starts on a half-initialized config.</p>
      */
     public static ConfigCenter open(ConfigOptions options) {
-        List<ConfigLayer> layers = options.layers();
-        if (layers.isEmpty()) throw new ConfigException("at least one config layer is required");
-        Map<String, ConfigProvider> providers = loadProviders();
-        List<ConfigSource> sources = new ArrayList<>(layers.size());
-        try {
-            for (ConfigLayer layer : layers) sources.add(providerFor(providers, layer).create(layer));
-        } catch (RuntimeException | Error error) {
-            closeQuietly(sources, error);
-            throw error;
+        Map<String, ConfigProvider> providers = new LinkedHashMap<>();
+        ServiceLoader.load(ConfigProvider.class)
+                .forEach(provider -> providers.putIfAbsent(provider.type().toLowerCase(Locale.ROOT), provider));
+        ConfigProvider provider = providers.get(options.type());
+        if (provider == null) {
+            throw new ConfigException("config provider is not available: " + options.type()
+                    + " (on the classpath: " + providers.keySet() + ")");
         }
-        List<String> names = layerNames(layers);
-        if (sources.size() == 1) {
-            return DefaultConfigCenter.open(sources.getFirst(), names.getFirst(), options.validator(),
-                    options.healthCheckInterval(), options.refreshInterval(), options.staleAfter());
-        }
-        return open(new CompositeConfigSource(sources, names), options);
+        return open(provider.create(options), options);
     }
 
-    /**
-     * Layer names for origin reporting, disambiguated by position when a name repeats.
-     *
-     * <p>Two {@code local} layers become {@code local#1} and {@code local#2}, so an origin always
-     * points at one layer rather than at a type that appears twice.</p>
-     */
-    private static List<String> layerNames(List<ConfigLayer> layers) {
-        Map<String, Integer> totals = new LinkedHashMap<>();
-        layers.forEach(layer -> totals.merge(layer.name(), 1, Integer::sum));
-        Map<String, Integer> seen = new LinkedHashMap<>();
-        List<String> names = new ArrayList<>(layers.size());
-        for (ConfigLayer layer : layers) {
-            String base = layer.name();
-            names.add(totals.get(base) == 1 ? base : base + "#" + seen.merge(base, 1, Integer::sum));
-        }
-        return List.copyOf(names);
-    }
-
-    /** Opens a center over a source built by the caller, with default validation and refresh policy. */
+    /** Opens a center over a source built by the caller, with the default validation and refresh policy. */
     public static ConfigCenter open(ConfigSource source) {
-        return open(source, ConfigOptions.builder().build());
+        return DefaultConfigCenter.open(Objects.requireNonNull(source, "source"), ConfigValidator.none(),
+                Duration.ofSeconds(30), Duration.ofMinutes(5), Duration.ofSeconds(90));
     }
 
     /**
      * Opens a center over a source built by the caller, taking validation and refresh policy from
-     * {@code options}. {@link ConfigOptions#layers()} is ignored.
+     * {@code options}. The backend settings in {@code options} are ignored.
      *
      * <p>This is the seam for tests and for embedding: pair it with
      * {@link cn.managame.config.source.MemoryConfigSource MemoryConfigSource} to drive config changes
      * from a test without a file, a container or an SPI registration.</p>
      */
     public static ConfigCenter open(ConfigSource source, ConfigOptions options) {
-        return DefaultConfigCenter.open(Objects.requireNonNull(source, "source"), null, options.validator(),
+        return DefaultConfigCenter.open(Objects.requireNonNull(source, "source"), options.validator(),
                 options.healthCheckInterval(), options.refreshInterval(), options.staleAfter());
-    }
-
-    private static Map<String, ConfigProvider> loadProviders() {
-        Map<String, ConfigProvider> providers = new LinkedHashMap<>();
-        ServiceLoader.load(ConfigProvider.class)
-                .forEach(provider -> providers.putIfAbsent(provider.type().toLowerCase(Locale.ROOT), provider));
-        return providers;
-    }
-
-    private static ConfigProvider providerFor(Map<String, ConfigProvider> providers, ConfigLayer layer) {
-        ConfigProvider provider = providers.get(layer.type());
-        if (provider == null) {
-            throw new ConfigException("config provider is not available: " + layer.type()
-                    + " (on the classpath: " + providers.keySet() + ")");
-        }
-        return provider;
-    }
-
-    private static void closeQuietly(List<ConfigSource> sources, Throwable collectInto) {
-        for (ConfigSource source : sources) {
-            try {
-                source.close();
-            } catch (Exception error) {
-                collectInto.addSuppressed(error);
-            }
-        }
     }
 
     static final class DefaultConfigCenter implements ConfigCenter {
         private static final Logger log = LoggerFactory.getLogger(DefaultConfigCenter.class);
         private final ConfigSource source;
-        /** Layer name when the stack has exactly one layer; null when the source reports its own. */
-        private final String sourceName;
         private final ConfigValidator validator;
         private final AtomicReference<ConfigSnapshot> snapshot = new AtomicReference<>();
         /** Sticky until an update is accepted: a rejected update or a failed watch. */
@@ -158,10 +106,9 @@ public final class ConfigFactory {
         private Map<String, String> highestSeenSourceValues = Map.of();
         private volatile AutoCloseable watch;
 
-        private DefaultConfigCenter(ConfigSource source, String sourceName, ConfigValidator validator,
+        private DefaultConfigCenter(ConfigSource source, ConfigValidator validator,
                                     Duration healthCheckInterval, Duration refreshInterval, Duration staleAfter) {
             this.source = source;
-            this.sourceName = sourceName;
             this.validator = validator;
             healthCheckIntervalMillis = healthCheckInterval.toMillis();
             refreshIntervalMillis = refreshInterval.toMillis();
@@ -169,17 +116,12 @@ public final class ConfigFactory {
         }
 
         static ConfigCenter open(ConfigSource source, ConfigValidator validator) {
-            return open(source, null, validator, Duration.ZERO, Duration.ZERO, Duration.ZERO);
+            return open(source, validator, Duration.ZERO, Duration.ZERO, Duration.ZERO);
         }
 
         static ConfigCenter open(ConfigSource source, ConfigValidator validator, Duration healthCheckInterval,
                                  Duration refreshInterval, Duration staleAfter) {
-            return open(source, null, validator, healthCheckInterval, refreshInterval, staleAfter);
-        }
-
-        static ConfigCenter open(ConfigSource source, String sourceName, ConfigValidator validator,
-                                 Duration healthCheckInterval, Duration refreshInterval, Duration staleAfter) {
-            DefaultConfigCenter center = new DefaultConfigCenter(source, sourceName, validator,
+            DefaultConfigCenter center = new DefaultConfigCenter(source, validator,
                     healthCheckInterval, refreshInterval, staleAfter);
             try {
                 // Watch first, then load once. Registering the watch up front closes the window where an
@@ -460,20 +402,6 @@ public final class ConfigFactory {
                 lastError.set(error);
                 log.warn("config periodic refresh failed", error);
             }
-        }
-
-        @Override public Map<String, String> origins() {
-            if (sourceName == null) return source.origins();
-            // A single-layer stack has nothing to arbitrate: every key came from that one layer.
-            Map<String, String> origins = new LinkedHashMap<>();
-            snapshot().values().keySet().forEach(key -> origins.put(key, sourceName));
-            return Map.copyOf(origins);
-        }
-
-        @Override public List<ConfigOrigin> explain(String key) {
-            if (sourceName == null) return source.explain(key);
-            String value = snapshot().get(key);
-            return value == null ? List.of() : List.of(new ConfigOrigin(sourceName, value));
         }
 
         @Override public boolean isHealthy() {

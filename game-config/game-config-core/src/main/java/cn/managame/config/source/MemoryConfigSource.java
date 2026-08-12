@@ -1,10 +1,8 @@
 package cn.managame.config.source;
 
-import cn.managame.config.spi.ConfigData;
 import cn.managame.config.spi.ConfigSource;
 
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -22,42 +20,19 @@ import java.util.function.Consumer;
  *     source.emit(Map.of("game.server.port", "9090"));
  * }
  * }
- *
- * <p>Instances registered with {@link #named(String)} are also reachable as a {@code memory} layer,
- * which lets a test drive one layer of a stack that otherwise looks like production.</p>
  */
 public final class MemoryConfigSource implements ConfigSource {
-    private static final ConcurrentHashMap<String, MemoryConfigSource> REGISTRY = new ConcurrentHashMap<>();
-
     private final AtomicReference<Map<String, String>> values;
     private final AtomicReference<Consumer<Map<String, String>>> updates = new AtomicReference<>();
     private final AtomicReference<Consumer<Throwable>> errors = new AtomicReference<>();
     private final AtomicReference<Throwable> loadFailure = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final String name;
 
     public MemoryConfigSource() { this(Map.of()); }
 
-    public MemoryConfigSource(Map<String, String> initial) { this(null, initial); }
-
-    private MemoryConfigSource(String name, Map<String, String> initial) {
-        this.name = name;
+    public MemoryConfigSource(Map<String, String> initial) {
         values = new AtomicReference<>(Map.copyOf(initial));
     }
-
-    /**
-     * Returns the shared source registered under {@code name}, creating an empty one on first use.
-     *
-     * <p>Registered sources outlive the centers that read them, so a test can publish values before
-     * the center opens and keep publishing after. Call {@link #unregister(String)} when done.</p>
-     */
-    public static MemoryConfigSource named(String name) {
-        return REGISTRY.computeIfAbsent(java.util.Objects.requireNonNull(name, "name"),
-                key -> new MemoryConfigSource(key, Map.of()));
-    }
-
-    /** Drops the registration created by {@link #named(String)}. */
-    public static void unregister(String name) { REGISTRY.remove(name); }
 
     /** Publishes a complete replacement snapshot to the watching center, if any. */
     public void emit(Map<String, String> next) {
@@ -85,8 +60,6 @@ public final class MemoryConfigSource implements ConfigSource {
         return values.get();
     }
 
-    @Override public ConfigData loadData() throws Exception { return ConfigData.unversioned(load()); }
-
     @Override public void ping() { }
 
     @Override public AutoCloseable watch(Consumer<Map<String, String>> onUpdate, Consumer<Throwable> onError) {
@@ -104,9 +77,6 @@ public final class MemoryConfigSource implements ConfigSource {
     }
 
     @Override public void close() {
-        if (closed.compareAndSet(false, true)) {
-            stopWatch();
-            if (name != null) REGISTRY.remove(name, this);
-        }
+        if (closed.compareAndSet(false, true)) stopWatch();
     }
 }

@@ -1,7 +1,7 @@
 package cn.managame.config.support;
 
 import cn.managame.config.ConfigException;
-import cn.managame.config.ConfigLayer;
+import cn.managame.config.ConfigOptions;
 import cn.managame.config.spi.ConfigFormat;
 
 import java.util.ArrayList;
@@ -14,8 +14,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Resolves the {@link ConfigFormat} for a resource.
  *
- * <p>Selection order: the {@code format} layer property pins one format for every resource in the
- * layer; otherwise each resource picks the first discovered format that {@linkplain
+ * <p>Selection order: the {@code format} property pins one format for every resource of a
+ * center; otherwise each resource picks the first discovered format that {@linkplain
  * ConfigFormat#claims claims} it; otherwise {@code properties}.</p>
  *
  * <p>{@code properties}, {@code yaml} and {@code json} are built in; anything else is registered by
@@ -23,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * format is a property of the document, not of the backend it is stored in.</p>
  */
 public final class ConfigFormats {
-    /** Layer property that pins one format for all resources of a layer. */
+    /** Provider property that pins one format for all resources. */
     public static final String FORMAT_PROPERTY = "format";
 
     private static final ConfigFormat PROPERTIES = new PropertiesConfigFormat();
@@ -59,9 +59,9 @@ public final class ConfigFormats {
                 + " (available: " + DISCOVERED.stream().map(ConfigFormat::name).toList() + ")");
     }
 
-    /** Resolves the format for one resource of a layer, honouring a pinned {@code format} property. */
-    public static ConfigFormat of(ConfigLayer layer, String resource) {
-        String pinned = layer.property(FORMAT_PROPERTY, null);
+    /** Resolves the format for one resource, honouring a pinned {@code format} property. */
+    public static ConfigFormat of(ConfigOptions options, String resource) {
+        String pinned = options.property(FORMAT_PROPERTY, null);
         return pinned == null || pinned.isBlank() ? forResource(resource) : byName(pinned);
     }
 
@@ -76,8 +76,8 @@ public final class ConfigFormats {
         });
     }
 
-    /** Parses {@code content} with the format resolved for {@code resource} within {@code layer}. */
-    public static Map<String, String> parse(ConfigLayer layer, String resource, String content) {
-        return of(layer, resource).parse(content);
+    /** Parses {@code content} with the format resolved for {@code resource}. */
+    public static Map<String, String> parse(ConfigOptions options, String resource, String content) {
+        return of(options, resource).parse(content);
     }
 }

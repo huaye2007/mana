@@ -10,9 +10,7 @@ import cn.managame.dev.server.GameTaskFailureReplier;
 import cn.managame.dev.server.PlayerSessionManager;
 import cn.managame.config.ConfigCenter;
 import cn.managame.config.ConfigFactory;
-import cn.managame.config.ConfigLayer;
 import cn.managame.config.ConfigOptions;
-import cn.managame.config.ConfigSnapshot;
 import cn.managame.network.server.NettyServer;
 import io.netty.channel.ChannelOption;
 import cn.managame.registry.api.ServiceInstance;
@@ -192,23 +190,13 @@ public class Game {
     }
 
     /**
-     * 打开配置中心，按优先级从低到高分三层：本地文件、-D 系统属性、GAME_ 环境变量。
-     *
-     * <p>文件相对工作目录解析，缺失时以空快照启动，创建或修改后自动更新。环境变量按
-     * {@code GAME_DB_URL -> game.db.url} 映射，因此容器里只改环境变量就能覆盖文件里的任何一项，
-     * 不需要业务代码自己做回退。需要 Nacos / Etcd 时在文件层之上再插一层即可。</p>
-     *
-     * <p>{@code game.db.password} 声明为必填：缺失时启动即失败，而不是带着弱口令跑起来。</p>
+     * 打开本地配置中心。文件相对工作目录解析，缺失时以空快照启动；文件创建或修改后自动更新。
+     * 需要 Nacos / Etcd 时，改为对应 type、endpoint 和 resource 即可。
      */
     private static ConfigCenter createConfigCenter() {
-        return ConfigFactory.open(ConfigOptions.builder()
-                .layer(ConfigLayer.builder("local")
-                        .resource("config/application.properties")
-                        .property("required", "false")
-                        .build())
-                .systemProperties("game.")
-                .environment("GAME_")
-                .require("game.db.password")
+        return ConfigFactory.open(ConfigOptions.builder("local")
+                .resource("config/application.properties")
+                .property("required", "false")
                 .build());
     }
 
@@ -218,15 +206,15 @@ public class Game {
      * 并把 endpoints 换成对应服务地址即可。
      */
     private static ServiceRegistry startRegistry(ConfigCenter config, int port) {
-        ConfigSnapshot snapshot = config.snapshot();
-        String type = snapshot.get("game.registry.type", RegistryType.MEMORY.type());
+        String type = cfg(config, "game.registry.type", "GAME_REGISTRY_TYPE", RegistryType.MEMORY.type());
+        String endpoints = cfg(config, "game.registry.endpoints", "GAME_REGISTRY_ENDPOINTS", "local");
         ServiceRegistry registry = RegistryFactory.startRegistry(RegistryConfig.builder()
                 .type(type)
-                .endpoints(snapshot.get("game.registry.endpoints", "local"))
+                .endpoints(endpoints)
                 .build());
         ServiceInstance instance = ServiceInstance.builder()
-                .name(snapshot.get("game.service.name", "game-dev"))
-                .address(snapshot.get("game.server.address", "127.0.0.1"))
+                .name(cfg(config, "game.service.name", "GAME_SERVICE_NAME", "game-dev"))
+                .address(cfg(config, "game.server.address", "GAME_SERVER_ADDRESS", "127.0.0.1"))
                 .port(port)
                 .build();
         registry.register(instance);
@@ -234,18 +222,36 @@ public class Game {
         return registry;
     }
 
-    /** 创建 MySQL 数据源：连接参数走配置中心；密码由 require 保证存在，这里不必再兜底。 */
+    /** 创建 MySQL 数据源：连接参数走配置管理器；密码无默认值，缺失即启动失败。 */
     private static DataSource createDataSource(ConfigCenter config) {
-        ConfigSnapshot snapshot = config.snapshot();
         return MysqlDataSourceFactory.builder()
-                .jdbcUrl(snapshot.get("game.db.url", "jdbc:mysql://localhost:3306/test"))
-                .username(snapshot.get("game.db.username", "root"))
-                .password(snapshot.require("game.db.password"))
+                .jdbcUrl(cfg(config, "game.db.url", "GAME_DB_URL", "jdbc:mysql://localhost:3306/test"))
+                .username(cfg(config, "game.db.username", "GAME_DB_USERNAME", "root"))
+                .password(requiredCfg(config, "game.db.password", "GAME_DB_PASSWORD"))
                 .build();
+    }
+
+    /** 读取配置：先查当前不可变快照，再查进程环境变量，最后使用调用方默认值。 */
+    private static String cfg(ConfigCenter config, String key, String envKey, String defaultValue) {
+        String value = config.snapshot().get(key);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(envKey);
+        }
+        return (value == null || value.isBlank()) ? defaultValue : value.trim();
+    }
+
+    /** 读取必填配置：密码等敏感项不给默认值，缺失时报错退出而不是带着弱口令跑起来。 */
+    private static String requiredCfg(ConfigCenter config, String key, String envKey) {
+        String value = cfg(config, key, envKey, null);
+        if (value == null) {
+            throw new IllegalStateException("missing required config: " + key
+                    + " (config/application.properties, -D" + key + " or env " + envKey + ")");
+        }
+        return value;
     }
 
     /** 监听端口：game.server.port，默认 8080。 */
     private static int resolvePort(ConfigCenter config) {
-        return config.snapshot().getInt("game.server.port", 8080);
+        return Integer.parseInt(cfg(config, "game.server.port", "GAME_SERVER_PORT", "8080"));
     }
 }

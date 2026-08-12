@@ -1,7 +1,7 @@
 package cn.managame.config.local;
 
 import cn.managame.config.ConfigException;
-import cn.managame.config.ConfigLayer;
+import cn.managame.config.ConfigOptions;
 import cn.managame.config.spi.ConfigFormat;
 import cn.managame.config.spi.ConfigProvider;
 import cn.managame.config.spi.ConfigSource;
@@ -32,14 +32,14 @@ import java.util.function.Consumer;
  * Reads config documents from the local filesystem, hot-reloading on filesystem events.
  *
  * <p>Each resource is parsed by the {@link ConfigFormat} its name selects, so properties and JSON can
- * be mixed in one layer. Layer properties: {@code required} (default {@code true}) allows a file to
+ * be mixed together. Properties: {@code required} (default {@code true}) allows a file to
  * be absent, {@code debounceMillis} (default {@code 100}) sets the quiet period that collapses the
  * burst of events a single editor save produces, and {@code format} pins one format for all
  * resources.</p>
  */
 public final class LocalConfigProvider implements ConfigProvider {
     @Override public String type() { return "local"; }
-    @Override public ConfigSource create(ConfigLayer layer) { return new LocalSource(layer); }
+    @Override public ConfigSource create(ConfigOptions options) { return new LocalSource(options); }
 
     static final class LocalSource implements ConfigSource {
         private final List<Resource> resources;
@@ -49,14 +49,14 @@ public final class LocalConfigProvider implements ConfigProvider {
         private WatchService watchService;
         private Thread watchThread;
 
-        LocalSource(ConfigLayer layer) {
-            resources = layer.requireResources().stream()
+        LocalSource(ConfigOptions options) {
+            resources = options.requireResources().stream()
                     .map(resource -> new Resource(
                             Path.of(resource).toAbsolutePath().normalize(),
-                            ConfigFormats.of(layer, resource)))
+                            ConfigFormats.of(options, resource)))
                     .toList();
-            required = layer.booleanProperty("required", true);
-            debounceMillis = layer.longProperty("debounceMillis", 100);
+            required = options.booleanProperty("required", true);
+            debounceMillis = options.longProperty("debounceMillis", 100);
             if (debounceMillis < 0) throw new IllegalArgumentException("debounceMillis must not be negative");
         }
 

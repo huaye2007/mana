@@ -1,7 +1,7 @@
 package cn.managame.config.etcd;
 
 import cn.managame.config.ConfigException;
-import cn.managame.config.ConfigLayer;
+import cn.managame.config.ConfigOptions;
 import io.etcd.jetcd.Watch;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -22,8 +22,8 @@ import static org.mockito.Mockito.*;
 class EtcdConfigProviderTest {
     private static final List<String> RESOURCES = List.of("/config/base", "/config/override");
 
-    private static ConfigLayer layer(String... properties) {
-        ConfigLayer.Builder builder = ConfigLayer.builder("etcd")
+    private static ConfigOptions options(String... properties) {
+        ConfigOptions.Builder builder = ConfigOptions.builder("etcd")
                 .endpoint("http://127.0.0.1:2379").resources(RESOURCES)
                 .property("timeoutMillis", "1000");
         for (int index = 0; index < properties.length; index += 2) {
@@ -42,7 +42,7 @@ class EtcdConfigProviderTest {
                 Map.of("/config/base", "port=7000\nname=base", "/config/override", "")));
         when(client.watch(eq("/config/base"), eq(11L), any(), any())).thenReturn(first);
         when(client.watch(eq("/config/override"), eq(11L), any(), any())).thenReturn(second);
-        var source = new EtcdConfigProvider.EtcdSource(layer(), client);
+        var source = new EtcdConfigProvider.EtcdSource(options(), client);
 
         assertEquals(Map.of("port", "7000", "name", "override"), source.load());
         AtomicReference<Map<String, String>> update = new AtomicReference<>();
@@ -63,7 +63,7 @@ class EtcdConfigProviderTest {
     @Test void watchRegisteredBeforeAnyLoadStartsFromNow() {
         EtcdConfigProvider.ClientAdapter client = mock(EtcdConfigProvider.ClientAdapter.class);
         when(client.watch(anyString(), anyLong(), any(), any())).thenReturn(mock(Watch.Watcher.class));
-        var source = new EtcdConfigProvider.EtcdSource(layer(), client);
+        var source = new EtcdConfigProvider.EtcdSource(options(), client);
 
         source.watch(values -> { }, error -> { });
         // Revision 0 means "from now". Asking for revision 1 on a long-lived cluster would either
@@ -75,7 +75,7 @@ class EtcdConfigProviderTest {
     @Test void pingReadsAHeaderRatherThanTheDocuments() throws Exception {
         EtcdConfigProvider.ClientAdapter client = mock(EtcdConfigProvider.ClientAdapter.class);
         when(client.revision(1000)).thenReturn(42L);
-        var source = new EtcdConfigProvider.EtcdSource(layer(), client);
+        var source = new EtcdConfigProvider.EtcdSource(options(), client);
 
         source.ping();
         verify(client).revision(1000);
@@ -90,7 +90,7 @@ class EtcdConfigProviderTest {
                         "/config/override", "{}")));
         // Format is a property of the document, not of the backend: the same JSON that reads from a
         // file reads from an Etcd value.
-        var source = new EtcdConfigProvider.EtcdSource(layer("format", "json"), client);
+        var source = new EtcdConfigProvider.EtcdSource(options("format", "json"), client);
 
         Map<String, String> values = source.load();
         assertEquals("9000", values.get("game.server.port"));
@@ -101,7 +101,7 @@ class EtcdConfigProviderTest {
     @Test void unknownPinnedFormatFailsFast() {
         EtcdConfigProvider.ClientAdapter client = mock(EtcdConfigProvider.ClientAdapter.class);
         ConfigException error = assertThrows(ConfigException.class,
-                () -> new EtcdConfigProvider.EtcdSource(layer("format", "toml"), client));
+                () -> new EtcdConfigProvider.EtcdSource(options("format", "toml"), client));
         assertTrue(error.getMessage().contains("toml"), error.getMessage());
     }
 }

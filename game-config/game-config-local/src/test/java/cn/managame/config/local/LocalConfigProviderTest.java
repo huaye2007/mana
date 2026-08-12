@@ -3,7 +3,6 @@ package cn.managame.config.local;
 import cn.managame.config.ConfigCenter;
 import cn.managame.config.ConfigException;
 import cn.managame.config.ConfigFactory;
-import cn.managame.config.ConfigLayer;
 import cn.managame.config.ConfigOptions;
 import cn.managame.config.support.JsonConfigFormat;
 import org.junit.jupiter.api.Test;
@@ -41,7 +40,7 @@ class LocalConfigProviderTest {
     @Test void treatsRevisionNamedPropertiesAsOrdinaryUnversionedData() throws Exception {
         Path file = directory.resolve("application.properties");
         Files.writeString(file, "_revision=application-value\nname=mana\n");
-        var source = new LocalConfigProvider.LocalSource(ConfigLayer.builder("local")
+        var source = new LocalConfigProvider.LocalSource(ConfigOptions.builder("local")
                 .resource(file.toString()).build());
 
         assertFalse(source.loadData().isVersioned());
@@ -57,7 +56,7 @@ class LocalConfigProviderTest {
 
     @Test void rejectsInvalidRequiredOption() {
         assertThrows(IllegalArgumentException.class, () -> new LocalConfigProvider.LocalSource(
-                ConfigLayer.builder("local").resource(directory.resolve("missing.properties").toString())
+                ConfigOptions.builder("local").resource(directory.resolve("missing.properties").toString())
                         .property("required", "ture").build()));
     }
 
@@ -221,7 +220,7 @@ class LocalConfigProviderTest {
 
     @Test void unknownPinnedFormatFailsWithTheAvailableOnes() {
         ConfigException error = assertThrows(ConfigException.class, () -> new LocalConfigProvider.LocalSource(
-                ConfigLayer.builder("local").resource(directory.resolve("a.properties").toString())
+                ConfigOptions.builder("local").resource(directory.resolve("a.properties").toString())
                         .property("format", "toml").build()));
         assertTrue(error.getMessage().contains("toml"), error.getMessage());
         assertTrue(error.getMessage().contains("json"), error.getMessage());
@@ -243,7 +242,7 @@ class LocalConfigProviderTest {
     @Test void pingFailsWhenARequiredFileDisappears() throws Exception {
         Path file = directory.resolve("application.properties");
         Files.writeString(file, "name=mana\n");
-        var source = new LocalConfigProvider.LocalSource(ConfigLayer.builder("local")
+        var source = new LocalConfigProvider.LocalSource(ConfigOptions.builder("local")
                 .resource(file.toString()).build());
 
         assertDoesNotThrow(source::ping);
@@ -254,7 +253,7 @@ class LocalConfigProviderTest {
     @Test void collapsesABurstOfWritesIntoFewerReloads() throws Exception {
         Path file = directory.resolve("application.properties");
         Files.writeString(file, "value=0\n");
-        var source = new LocalConfigProvider.LocalSource(ConfigLayer.builder("local")
+        var source = new LocalConfigProvider.LocalSource(ConfigOptions.builder("local")
                 .resource(file.toString()).property("debounceMillis", "300").build());
         AtomicInteger publishes = new AtomicInteger();
         AtomicReference<String> latest = new AtomicReference<>();

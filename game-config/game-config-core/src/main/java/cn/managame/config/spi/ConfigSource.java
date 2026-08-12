@@ -24,20 +24,6 @@ public interface ConfigSource extends AutoCloseable {
     }
 
     /**
-     * Maps each key of the current merged view to the name of the layer that won it.
-     *
-     * <p>Only a source composed of several layers can answer this; a single source returns empty and
-     * the center attributes every key to it. Diagnostic, not a hot path.</p>
-     */
-    default Map<String, String> origins() { return Map.of(); }
-
-    /**
-     * Every layer that supplies {@code key}, in increasing precedence order, so the last entry is the
-     * value actually visible. Empty when the key is absent or the source has no layers.
-     */
-    default java.util.List<cn.managame.config.ConfigOrigin> explain(String key) { return java.util.List.of(); }
-
-    /**
      * Starts the single active watch for this source.
      *
      * <p>The caller must close the returned handle before starting another watch. Implementations

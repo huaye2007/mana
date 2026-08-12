@@ -1,7 +1,7 @@
 package cn.managame.config.support;
 
 import cn.managame.config.ConfigException;
-import cn.managame.config.ConfigLayer;
+import cn.managame.config.ConfigOptions;
 import cn.managame.config.spi.ConfigFormat;
 import org.junit.jupiter.api.Test;
 
@@ -68,11 +68,11 @@ class ConfigFormatsTest {
         assertThrows(ConfigException.class, () -> yaml.parse("a: !!java.net.URL [http://example.com]"));
     }
 
-    @Test void layerPropertyPinsOneFormatForEveryResource() {
-        ConfigLayer pinned = ConfigLayer.builder("etcd").property("format", "json").build();
+    @Test void formatPropertyPinsOneFormatForEveryResource() {
+        ConfigOptions pinned = ConfigOptions.builder("etcd").property("format", "json").build();
         assertEquals("json", ConfigFormats.of(pinned, "/config/base").name());
 
-        ConfigLayer unpinned = ConfigLayer.builder("etcd").build();
+        ConfigOptions unpinned = ConfigOptions.builder("etcd").build();
         assertEquals("properties", ConfigFormats.of(unpinned, "/config/base").name());
     }
 

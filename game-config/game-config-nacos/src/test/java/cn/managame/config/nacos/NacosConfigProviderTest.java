@@ -1,7 +1,7 @@
 package cn.managame.config.nacos;
 
 import cn.managame.config.ConfigException;
-import cn.managame.config.ConfigLayer;
+import cn.managame.config.ConfigOptions;
 import com.alibaba.nacos.api.config.ConfigService;
 import com.alibaba.nacos.api.config.listener.Listener;
 import org.junit.jupiter.api.Test;
@@ -19,8 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
 class NacosConfigProviderTest {
-    private static ConfigLayer layer(String... properties) {
-        ConfigLayer.Builder builder = ConfigLayer.builder("nacos")
+    private static ConfigOptions options(String... properties) {
+        ConfigOptions.Builder builder = ConfigOptions.builder("nacos")
                 .endpoint("127.0.0.1:8848").resource("GAME:base").resource("GAME:override")
                 .property("timeoutMillis", "1000");
         for (int index = 0; index < properties.length; index += 2) {
@@ -34,7 +34,7 @@ class NacosConfigProviderTest {
         when(service.getConfig("base", "GAME", 1000)).thenReturn("_revision=application-value\nport=7000\nname=base");
         when(service.getConfig("override", "GAME", 1000)).thenReturn("name=override");
         when(service.getServerStatus()).thenReturn("UP");
-        var source = new NacosConfigProvider.NacosSource(layer(), service);
+        var source = new NacosConfigProvider.NacosSource(options(), service);
 
         Map<String, String> initial = Map.of(
                 "_revision", "application-value", "port", "7000", "name", "override");
@@ -53,7 +53,7 @@ class NacosConfigProviderTest {
         assertEquals(Map.of("_revision", "application-value", "port", "8000", "name", "override"), update.get());
         assertNull(watchError.get());
         // The callback carries the new document, so republishing costs no requests at all. Re-reading
-        // the layer here used to turn one publish into one request per resource.
+        // every resource here used to turn one publish into one request per resource.
         verify(service, never()).getConfig(anyString(), anyString(), anyLong());
 
         source.close();
@@ -66,7 +66,7 @@ class NacosConfigProviderTest {
         when(service.getConfig("base", "GAME", 1000)).thenReturn("port=7000\nname=base");
         when(service.getConfig("override", "GAME", 1000)).thenReturn("name=override");
         when(service.getServerStatus()).thenReturn("UP");
-        var source = new NacosConfigProvider.NacosSource(layer(), service);
+        var source = new NacosConfigProvider.NacosSource(options(), service);
         source.load();
 
         AtomicReference<Map<String, String>> update = new AtomicReference<>();
@@ -82,7 +82,7 @@ class NacosConfigProviderTest {
     @Test void pingUsesLocalServerStatusRatherThanReadingDocuments() throws Exception {
         ConfigService service = mock(ConfigService.class);
         when(service.getServerStatus()).thenReturn("UP");
-        var source = new NacosConfigProvider.NacosSource(layer(), service);
+        var source = new NacosConfigProvider.NacosSource(options(), service);
 
         assertDoesNotThrow(source::ping);
         verify(service, never()).getConfig(anyString(), anyString(), anyLong());
@@ -99,7 +99,7 @@ class NacosConfigProviderTest {
         when(service.getConfig("override", "GAME", 1000)).thenReturn("{}");
         when(service.getServerStatus()).thenReturn("UP");
         // Format is a property of the document, not of the backend: a JSON dataId needs no rewrite.
-        var source = new NacosConfigProvider.NacosSource(layer("format", "json"), service);
+        var source = new NacosConfigProvider.NacosSource(options("format", "json"), service);
 
         Map<String, String> values = source.load();
         assertEquals("9000", values.get("game.server.port"));
@@ -112,7 +112,7 @@ class NacosConfigProviderTest {
         when(service.getConfig("app.json", "GAME", 1000)).thenReturn("{\"game\":{\"name\":\"mana\"}}");
         when(service.getConfig("app.properties", "GAME", 1000)).thenReturn("game.mode=prod");
         when(service.getServerStatus()).thenReturn("UP");
-        var source = new NacosConfigProvider.NacosSource(ConfigLayer.builder("nacos")
+        var source = new NacosConfigProvider.NacosSource(ConfigOptions.builder("nacos")
                 .endpoint("127.0.0.1:8848").resource("GAME:app.json").resource("GAME:app.properties")
                 .property("timeoutMillis", "1000").build(), service);
 
@@ -125,7 +125,7 @@ class NacosConfigProviderTest {
     @Test void unknownPinnedFormatFailsFast() {
         ConfigService service = mock(ConfigService.class);
         ConfigException error = assertThrows(ConfigException.class,
-                () -> new NacosConfigProvider.NacosSource(layer("format", "toml"), service));
+                () -> new NacosConfigProvider.NacosSource(options("format", "toml"), service));
         assertTrue(error.getMessage().contains("toml"), error.getMessage());
     }
 }
