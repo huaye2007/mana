@@ -2,27 +2,142 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Java components for game server networking and RPC, built with JDK 25 and Netty 4.2.15.Final.
+**Networking and RPC components for Java game servers.**
+
+Mana provides transport components for client-facing gateways and RPC communication between game services. Applications supply their own message codecs, service discovery, routing, and game logic.
+
+The repository currently contains two projects: **game-network** and **game-rpc**.
 
 ## Projects
 
-| Project | Description | Documentation |
+| Project | Purpose | Documentation |
 |---|---|---|
-| game-network | TCP, WebSocket, secure WebSocket, and HTTP servers; TCP and WebSocket clients. | [English](game-network/README.md) · [简体中文](game-network/README.zh-CN.md) |
-| game-rpc | RPC over game-network, with peer connections, calls, notifications, explicit replies, timeouts, and metadata. | [English](game-rpc/README.md) · [简体中文](game-rpc/README.zh-CN.md) |
+| **game-network** | TCP, WebSocket, secure WebSocket, and HTTP servers; TCP and WebSocket clients, with access to native Netty pipelines. | [English](game-network/README.md) · [简体中文](game-network/README.zh-CN.md) |
+| **game-rpc** | RPC over game-network, with peer connections, calls, notifications, explicit replies, timeouts, and metadata. | [English](game-rpc/README.md) · [简体中文](game-rpc/README.zh-CN.md) |
 
-`game-network` contains the JDK-only `game-network-api` module and the `game-network-netty` implementation. `game-rpc` contains `game-rpc-core` and the `game-rpc-netty` transport integration.
+### game-network
 
-## Build
+- Separate server and client implementations for each supported protocol.
+- Multiple listening addresses per server and multiple connection targets per client.
+- Shared network resources with explicit startup and shutdown.
+- Native Netty handlers, codecs, channel options, and TLS configuration.
+- HTTP context paths and dedicated HTTP pipelines.
 
-Use JDK 25 and Maven 3.9. From the repository root:
+Use it to build a TCP/WS/WSS gateway or expose HTTP endpoints. Application protocols define their own framing and serialization.
+
+### game-rpc
+
+- Logical peers identified by NodeId, with one or more physical TCP connections.
+- Request/response calls, one-way notifications, and explicit replies.
+- Call timeouts, metadata, and application error codes with string arguments.
+- Heartbeats, per-connection-slot reconnection backoff, and optional read-idle closure.
+- Custom codecs and transports, plus a default Netty transport provider.
+
+Use it for communication between directly connected services. Service discovery, next-hop routing, and forwarding remain application responsibilities.
+
+## Requirements
+
+| Component | Version |
+|---|---|
+| JDK | 25 |
+| Maven | 3.9 |
+| Netty | 4.2.15.Final, managed by the project |
+| Project artifacts | 0.1.0-SNAPSHOT |
+
+Python and Docker with a Linux engine are used for the optional RPC benchmark and container stress-test workflows. They are not required for the standard Maven build.
+
+## Quick start
+
+Clone the repository and build all modules:
 
 ~~~sh
+git clone https://github.com/huaye2007/mana.git
+cd mana
 mvn verify
 ~~~
 
-See each project's README for usage examples, configuration, and additional validation commands.
+Run commands below from this repository root.
+
+To build and test only the network implementation and its dependencies:
+
+~~~sh
+mvn -pl game-network/game-network-netty -am verify
+~~~
+
+To build and test the RPC implementation and its dependencies:
+
+~~~sh
+mvn -pl game-rpc/game-rpc-netty -am verify
+~~~
+
+JARs are generated in each module's `target/` directory. To make all artifacts available to other local Maven projects:
+
+~~~sh
+mvn install
+~~~
+
+### Add a dependency
+
+After installing locally, add the component you need to your application's `pom.xml`.
+
+For networking:
+
+~~~xml
+<dependency>
+    <groupId>cn.managame</groupId>
+    <artifactId>game-network-netty</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+~~~
+
+For RPC, including its network implementation:
+
+~~~xml
+<dependency>
+    <groupId>cn.managame</groupId>
+    <artifactId>game-rpc-netty</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+~~~
+
+### Run an example
+
+[GatewayExample](game-network/game-network-netty/src/test/java/cn/managame/network/tests/GatewayExample.java) demonstrates a gateway with TCP, WebSocket, and HTTP listeners sharing network resources. Run its `main` method in an IDE with JDK 25; press Enter to stop. It also supports WSS when supplied with a PEM certificate chain and private key.
+
+For RPC node setup, peer connections, calls, notifications, and replies, follow the [game-rpc examples](game-rpc/README.md).
+
+## Repository layout
+
+~~~text
+mana/
+├── pom.xml                         # Build all projects together
+├── game-network/
+│   ├── game-network-api/           # JDK-only public network interfaces
+│   ├── game-network-netty/         # Netty transport implementations
+│   ├── docs/                       # Specification, design, and validation
+│   └── scripts/                    # Linux validation helpers
+└── game-rpc/
+    ├── game-rpc-core/              # RPC APIs, calls, peers, and message handling
+    ├── game-rpc-netty/             # Default Netty transport integration
+    ├── docs/                      # Wire and Java implementation specifications
+    └── benchmarks/                # Local benchmarks and Docker stress tests
+~~~
+
+## Documentation and validation
+
+| Topic | Reference |
+|---|---|
+| Network usage and configuration | [game-network README](game-network/README.md) |
+| Network protocol specification | [Game Network Specification](game-network/docs/Game%20Network%20Specification.md) |
+| Network operations and capacity testing | [Operations guide](game-network/docs/operations.md) |
+| Network implementation and validation scope | [Implementation record](game-network/docs/implementation-status.md) |
+| RPC usage, benchmarks, and Docker fault tests | [game-rpc README](game-rpc/README.md) |
+| RPC behavior and wire format | [Game RPC Specification](game-rpc/docs/OGBS%20Game%20RPC%20Specification%20v1.md) |
+| RPC implementation and memory ownership | [Java Implementation Specification](game-rpc/docs/java/Java%20Implementation%20Specification.md) |
+| RPC wire test data | [Wire vectors](game-rpc/docs/OGBS%20Game%20RPC%20v1%20wire%20vectors.json) |
+
+The standard `mvn verify` build runs the projects' regression tests. Capacity benchmarks and Docker endurance/fault tests are separate workflows described in the project documentation. Their measurements should be interpreted within the documented test environment and scope.
 
 ## Documentation languages
 
-Each project's default `README.md` is in English. The corresponding `README.zh-CN.md` provides the Simplified Chinese version. Keep both versions in sync when updating project documentation.
+The default `README.md` is English. Each project also provides a Simplified Chinese `README.zh-CN.md`, linked at the top of its README. Keep both versions in sync when updating project documentation.
