@@ -1,60 +1,62 @@
 # game-rpc
 
-基于 game-network 的 Java RPC 实现，使用 JDK 25 / Netty 4.2.15.Final。管理 NodeId → RpcPeer、TCP 连接、Call/Send、显式回复、响应匹配、超时、Metadata 和消息编解码。
+English | [简体中文](README.zh-CN.md)
 
-game-rpc 不识别 Router 服务，不查询业务路由，不自动转发或解包消息。业务服务发现、消息分发及业务对象编解码由使用方处理。
+A Java RPC implementation built on game-network, using JDK 25 and Netty 4.2.15.Final. It manages NodeId → RpcPeer mappings, TCP connections, Call/Send, explicit replies, response matching, timeouts, Metadata, and message encoding/decoding.
 
-**实现状态（2026-09-12）：** Java Binding Draft 0.14。286 项测试通过（Core 251、Netty/TCP 35）。支持错误参数、逐 Slot 重连退避和可选的接收端读空闲关闭。
+game-rpc does not recognize Router services, look up application routes, or automatically forward or unwrap messages. Applications handle service discovery, message dispatch, and application object encoding/decoding.
 
-RpcNode 负责对外 API 和组件生命周期；RpcCalls 管理调用，RpcMessages 统一处理消息，RpcConnections 管理连接及主动建连状态。RpcPeer 只保存逻辑节点身份、已发布连接、PendingCall 和生命周期，不保存地址、重连计时器或连接回调。每条物理连接的 Handler 同时维护握手身份，不再有独立 Binding；正常收发不按 connectionId 查表。RpcFuture 继续只保存单次调用状态。 通用消息规则对自定义 Codec 同样生效。握手准入与编码在连接管理锁外执行，恢复后重新检查候选是否有效。
+**Implementation status (2026-09-12):** Java Binding Draft 0.14. 286 tests passed (Core: 251; Netty/TCP: 35). Supports error arguments, per-slot reconnection backoff, and optional read-idle closure on the receiving side.
 
-自定义 RpcTransport 使用 `start(Listener)`、`connect(InetSocketAddress, ConnectCallback)` 和 `write(Connection, ByteBuf)`；同步启停前使用 `checkLifecycleThread()` 检查线程。默认 Netty Provider 已同步更新。
+RpcNode provides the public API and component lifecycle; RpcCalls manages calls, RpcMessages handles messages centrally, and RpcConnections manages connections and outbound connection state. RpcPeer stores only logical node identity, published connections, PendingCall, and lifecycle state, without addresses, reconnection timers, or connection callbacks. Each physical connection's handler also maintains handshake identity, with no separate Binding. Normal message handling does not look up connections by connectionId. RpcFuture continues to hold only the state of one call. Common message rules also apply to custom codecs. Handshake admission and encoding run outside the connection management lock; candidate validity is checked again after the lock is reacquired.
 
-## 文档
+Custom RpcTransport implementations use `start(Listener)`, `connect(InetSocketAddress, ConnectCallback)`, and `write(Connection, ByteBuf)`. Use `checkLifecycleThread()` to check the thread before synchronous startup or shutdown. The default Netty provider has been updated accordingly.
 
-- [Game RPC 标准](docs/OGBS%20Game%20RPC%20Specification%20v1.md)：语言无关的行为和默认 Wire。
-- [Java 实现文档](docs/java/Java%20Implementation%20Specification.md)：本项目 API、状态归属、并发、引用管理和验收。
-- [Wire 样例](docs/OGBS%20Game%20RPC%20v1%20wire%20vectors.json)：逐字节测试使用的共享数据。
+## Documentation
 
-## 创建和连接
+- [Game RPC specification](docs/OGBS%20Game%20RPC%20Specification%20v1.md): language-independent behavior and the default wire format.
+- [Java implementation specification](docs/java/Java%20Implementation%20Specification.md): project APIs, state ownership, concurrency, reference management, and acceptance criteria.
+- [Wire vectors](docs/OGBS%20Game%20RPC%20v1%20wire%20vectors.json): shared data for byte-by-byte tests.
 
-引入 game-rpc-netty 后自动加载默认 Provider 和 Codec。
+## Creating and connecting nodes
 
-```java
+Adding game-rpc-netty automatically loads the default provider and codec.
+
+~~~java
 var rpc = RpcNode.builder()
         .nodeId(10)
         .listen("127.0.0.1", 7000)
         .handler(handler)
         .defaultTimeout(Duration.ofSeconds(3))
         .build();
-rpc.start(); // 同步初始化 TCP 客户端并绑定监听
-rpc.connect(20, "127.0.0.1", 7001); // 后台建立直接连接
-```
+rpc.start(); // Synchronously initialize the TCP client and bind listeners.
+rpc.connect(20, "127.0.0.1", 7001); // Establish a direct connection in the background.
+~~~
 
-心跳默认启用：每条物理连接由主动连接方在握手后 5 秒发送首次 PING，收到 PONG 后再等 5 秒；等待回复最多 15 秒。接收方自动在原连接回复，不进入业务 handler、不占用 RpcFuture。超时只关闭并重连该 Slot。可在 Builder 配置 `.heartbeatInterval(Duration.ofSeconds(5))`、`.heartbeatTimeout(Duration.ofSeconds(15))`，最少 100ms。自定义 Codec 需要支持 RpcHeartbeat 的 PING/PONG，旧节点升级后再互通。
+Heartbeats are enabled by default. For each physical connection, the initiating side sends the first PING 5 seconds after the handshake, then waits another 5 seconds after receiving PONG. A reply may take at most 15 seconds. The receiving side replies automatically on the original connection, without invoking the application handler or using an RpcFuture. A timeout closes and reconnects only that slot. Configure `.heartbeatInterval(Duration.ofSeconds(5))` and `.heartbeatTimeout(Duration.ofSeconds(15))` on the builder; the minimum is 100 ms. Custom codecs must support RpcHeartbeat PING/PONG. Upgrade older nodes before interoperating with them.
 
-默认不因 idle 事件关闭连接。若需要接收端通过网络读空闲清理失活连接，可在 Builder 显式设置 `.readIdleTimeout(Duration.ofSeconds(30))`；设置为 `Duration.ZERO` 保持关闭。该功能复用 game-network 的 READ_IDLE/onIdle，只关闭失活的原物理连接，保留 Peer。超时应覆盖对端心跳间隔、心跳等待时间及调度余量。
+Idle events do not close connections by default. To clean up inactive connections on the receiving side through network read-idle detection, explicitly set `.readIdleTimeout(Duration.ofSeconds(30))` on the builder. `Duration.ZERO` keeps this feature disabled. It reuses game-network's READ_IDLE/onIdle and closes only the original inactive physical connection while retaining the peer. The timeout should cover the remote heartbeat interval, heartbeat reply timeout, and scheduling margin.
 
-首次建连立即调度。后续每 Slot 独立指数退避并加入随机偏移，握手成功后重置；默认重试等待依次为 0.5～1 秒、1～2 秒、2～4 秒，最大 15～30 秒。可通过 `.reconnectDelay(Duration.ofSeconds(1))` 和 `.maxReconnectDelay(Duration.ofSeconds(30))` 配置初始及最大上限，最大上限不能小于初始值。重复 connect 不绕过待执行的重试。
+The first connection attempt is scheduled immediately. Subsequent attempts use independent exponential backoff with jitter for each slot, reset after a successful handshake. Default retry waits are 0.5–1 second, 1–2 seconds, and 2–4 seconds, increasing to a maximum of 15–30 seconds. Configure the initial and maximum upper bounds through `.reconnectDelay(Duration.ofSeconds(1))` and `.maxReconnectDelay(Duration.ofSeconds(30))`. The maximum must not be smaller than the initial value. Repeated connect calls do not bypass a pending retry.
 
-需要指定连接数和就绪通知时，使用以下重载代替上面的 connect 调用：
+To specify the connection count and receive a readiness notification, use this overload instead of the connect call above:
 
-```java
+~~~java
 rpc.connect(20, "127.0.0.1", 7001, 2, new ConnectCallback() {
     public void onSuccess(Connection connection) {
-        // 此节点对的全部 Slot 首次就绪。
+        // All slots for this node pair have become ready for the first time.
     }
     public void onFailure(Throwable failure) {
-        // 移除、关闭或明确的方向冲突；普通网络失败会延迟重试。
+        // Removal, closure, or an explicit direction conflict; ordinary network failures retry after a delay.
     }
 });
-```
+~~~
 
-同一个不同节点对只能有一方主动连接，物理连接可双向收发；接收端不需要 acceptPeer/addPeer。peer(nodeId) 查询已登记相邻节点，未知目标不由发送接口隐式创建。rpc.removePeer(nodeId) 结束该 Peer，rpc.close() 释放节点自有资源。
+For a pair of distinct nodes, only one side may initiate connections. Physical connections carry traffic in both directions; the receiving side does not need acceptPeer/addPeer. peer(nodeId) looks up a registered adjacent node. Sending APIs do not implicitly create unknown targets. rpc.removePeer(nodeId) terminates that peer, and rpc.close() releases resources owned by the node.
 
-## Call、Send 和回复
+## Call, Send, and replies
 
-```java
+~~~java
 ByteBuf body = Unpooled.wrappedBuffer(new byte[] {1, 2, 3});
 try {
     var options = RpcOptions.builder()
@@ -65,21 +67,21 @@ try {
     rpc.call(20, 100, body, options, result -> {
         if (result.isSuccess()) {
             RpcResponse response = result.value();
-            // 在回调内使用完整响应头、Metadata 和原始 body。
+            // Use the complete response header, Metadata, and raw body within this callback.
         } else {
-            RpcError error = result.error(); // 框架和业务错误统一为非 null RpcError
+            RpcError error = result.error(); // Framework and application errors share a non-null RpcError.
             if (result.value() != null) {
                 String[] errorArgs = result.value().errorArgs();
-                // 业务层根据 error.code() 和参数生成提示。
+                // The application generates a message from error.code() and the arguments.
             }
         }
     });
 } finally {
     body.release();
 }
-```
+~~~
 
-```java
+~~~java
 ByteBuf noticeBody = Unpooled.wrappedBuffer(new byte[] {4, 5});
 try {
     boolean accepted = rpc.send(20, 101, noticeBody, RpcOptions.DEFAULT);
@@ -87,95 +89,93 @@ try {
     noticeBody.release();
 }
 
-// 在接收处理逻辑中显式回复；responseBody 由调用者编码并管理。
+// Reply explicitly in the receiving handler; the caller encodes and manages responseBody.
 rpc.reply(connection, new RpcResponse(
         request.requestId(), 0, RpcMetadata.EMPTY, responseBody));
 
-// 或按业务处理结果回复错误，参数是有序字符串数组。
+// Or reply with an application error and an ordered array of string arguments.
 rpc.reply(connection, RpcResponse.error(request.requestId(), GameErrors.NOT_ENOUGH_GOLD, "1000", "300"));
-```
+~~~
 
-错误参数由默认 Codec 编码在 body 区域，不增加消息头或 Metadata 字段；无参数默认空数组。框架保留错误码 1～1000，业务从 1001 开始。所有失败均有非 null result.error()，只有成功时为 null。带参数错误响应需要双方 Codec 支持新格式，成功和无参数错误帧不变。
+The default codec encodes error arguments in the body without adding header or Metadata fields. The default is an empty array when there are no arguments. Error codes 1–1000 are reserved for the framework; application codes start at 1001. Every failure has a non-null result.error(); it is null only on success. Error responses with arguments require both codecs to support the new format. Success frames and error frames without arguments are unchanged.
 
-业务错误使用不可变 RpcError 常量：
+Define application errors as immutable RpcError constants:
 
-```java
+~~~java
 public final class GameErrors {
-    public static final RpcError NOT_ENOUGH_GOLD = new RpcError(1001, "金币不足");
+    public static final RpcError NOT_ENOUGH_GOLD = new RpcError(1001, "Not enough gold");
     private GameErrors() {}
 }
-```
+~~~
 
-RpcError 按 code 比较，可用 `GameErrors.NOT_ENOUGH_GOLD.equals(result.error())` 判断。message 是本地说明，不上网传输；接收端未知错误码的 message 为空，code 保留。不需要向 RpcNode 注册业务错误。
+RpcError compares by code, so use `GameErrors.NOT_ENOUGH_GOLD.equals(result.error())` to check an error. message is a local description and is not transmitted. For an unknown received error code, message is empty and code is preserved. Application errors do not need registration with RpcNode.
 
-同一 Peer 最多保留 64 个等待连接就绪的回调；额外的带回调 connect 同步抛出 OVERLOADED。普通网络失败会自动重连，不必反复注册回调；不带回调的重复 connect 不增加等待者。
+Each peer retains at most 64 callbacks waiting for connection readiness. Additional connect calls with callbacks synchronously throw OVERLOADED. Ordinary network failures reconnect automatically, so repeated callback registration is unnecessary. Repeated connect calls without callbacks add no waiters.
 
-结果、连接和诊断回调都在产生事件的线程直接通知，game-rpc 不通过内部线程池切换回调线程。业务层负责投递自己的业务线程；回调应及时返回。超时通知可能来自时间轮线程，移除/关闭通知在资源清理、退出生命周期锁后由调用线程执行。节点自有时间轮与网络 EventLoop 上调用同步 start/close 会在状态修改前拒绝，业务层需自行投递关闭操作。首次取得关闭权的调用同步清理资源，并发或重入 close 幂等返回。
+Result, connection, and diagnostic callbacks run directly on the thread that produces the event. game-rpc does not switch callback threads through an internal thread pool. Applications are responsible for dispatching work to their own application threads, and callbacks should return promptly. Timeout notifications may run on the timer wheel thread. Removal/closure notifications run on the calling thread after resource cleanup and after leaving the lifecycle lock. Synchronous start/close calls on the node's own timer wheel or network EventLoop are rejected before changing state; applications must dispatch shutdown elsewhere. The first caller to acquire ownership of closure synchronously cleans up resources; concurrent or reentrant close calls return idempotently.
 
-示例中的 body/responseBody 应由调用者编码并管理自己的引用。Call 自动分配正 int requestId；Send 通知使用 0。targetNodeId 必须是登记的直接相邻节点，未知目标回调 UNAVAILABLE 或返回 false。routeKey 只选择该 Peer 内的连接 Slot，不查询下一跳。
+The caller encodes body/responseBody in the examples and manages its own references. Call automatically assigns a positive int requestId; Send notifications use 0. targetNodeId must be a registered direct neighbor. An unknown target reports UNAVAILABLE through the callback or returns false. routeKey selects only a connection slot within that peer; it does not look up a next hop.
 
-用户入口保持统一：
+The user entry point remains unified:
 
-```java
+~~~java
 public interface RpcHandler {
     void handleUserMsg(Connection connection, Object msg);
 }
-```
+~~~
 
-普通请求是完整 RpcRequest，未知 command 也会交付。响应由相邻 Peer 的 RpcFuture 匹配后通知结果。Handler 返回不自动回复，用户自行决定回复时机和前后消息顺序。
+Ordinary requests arrive as complete RpcRequest objects, including requests with unknown commands. Responses are matched by the adjacent peer's RpcFuture before reporting the result. Returning from the handler does not automatically reply; users decide when to reply and how to order surrounding messages.
 
-RpcRouteMessage 只是原始信封，仍只有 sourceNodeId、targetNodeId、ByteBuf inner。收到后原样交给 Handler，不自动解码 inner、不判断目标、不自动转发、不完成内层 Response。业务可以通过 `send(connectedNodeId, message, options)` 显式发送完整消息；此入口不登记调用，仅使用 options.routeKey 选连接，其余消息头由 message 自身提供。
+RpcRouteMessage is only a raw envelope, with sourceNodeId, targetNodeId, and ByteBuf inner. It is delivered unchanged to the handler, without decoding inner, checking the target, forwarding automatically, or completing an inner Response. Applications can explicitly send a complete message through `send(connectedNodeId, message, options)`. This entry point does not register a call. It uses only options.routeKey to select a connection; the message supplies all other headers.
 
-## 内存与配置
+## Memory and configuration
 
-发送使用连接的 active/writable 状态，不维护额外的待发送字节预算。`RpcLimits` 为四个参数：帧、Metadata、body 和 Pending 上限；旧配置移除最后的 `maxOutboundBytes` 参数。
+Sending uses the connection's active/writable state without maintaining an additional pending outbound byte budget. `RpcLimits` has four parameters: frame, Metadata, body, and Pending limits. The previous final `maxOutboundBytes` parameter has been removed.
 
-- RpcRequest.body、成功 RpcResponse.body、RpcRouteMessage.inner 在同步 Handler/结果回调内借用。异步持有必须 copy 或 retain，并最终 release。
-- encode/send/reply 不消费调用者输入引用或改变输入索引。信封输出可能引用 inner，发送完成前不能改写底层字节。
-- RpcMetadata 使用独立 GC 管理的堆存储，用户无需释放；提供 putInt/putLong/putString/putBoolean 及 get，内部实现位于 RpcMetadataUtil。
-- Metadata 单值长度为 0～127 字节；入站校验不使用 ThreadLocal。前 8 个 Key 用局部变量查重，更多字段按需分配本次校验专用位图。
-- 请求编号在同一 RpcNode 内连续推进，Peer 重建不重置；完整回绕或跨运行实例的旧消息隔离仍需外部保证。
-- maxPendingHandshakes 默认 1024，限制同时进行的入站/出站握手；maxPeers 默认 4096。本地 start 完成前拒绝提前到达的握手，发起方重试；首次入站握手全部失败时自动回收临时 Peer 名额；曾有任意 Slot 建立成功的 Peer 在断线后仍保留，离开集群时由业务调用 removePeer。
-- 默认每次即时刷新。消息量较大时可配置 `consolidateFlush(true)` 合并刷新，不启用时保持即时发送行为。
+- RpcRequest.body, successful RpcResponse.body, and RpcRouteMessage.inner are borrowed within synchronous handlers/result callbacks. To hold them asynchronously, copy or retain them and eventually release them.
+- encode/send/reply neither consume the caller's input reference nor change input indices. Envelope output may reference inner, so do not modify the underlying bytes before sending completes.
+- RpcMetadata uses separate GC-managed heap storage and requires no explicit release. It provides putInt/putLong/putString/putBoolean and getters, with the internal implementation in RpcMetadataUtil.
+- Each Metadata value is 0–127 bytes long. Inbound validation does not use ThreadLocal. The first 8 keys are checked for duplicates with local variables; additional fields allocate a bitmap for that validation as needed.
+- Request IDs advance continuously within an RpcNode and are not reset when a peer is recreated. Isolation from old messages after a full wraparound or across runtime instances still requires external guarantees.
+- maxPendingHandshakes defaults to 1024 and limits concurrent inbound/outbound handshakes; maxPeers defaults to 4096. Handshakes arriving before local start completes are rejected and retried by the initiator. If all initial inbound handshakes fail, the temporary peer slot is automatically reclaimed. A peer with any previously successful slot remains after disconnection; the application must call removePeer when it leaves the cluster.
+- Each write flushes immediately by default. For higher message volumes, enable `consolidateFlush(true)` to consolidate flushes. Leaving it disabled retains immediate sending behavior.
 
-## 构建
+## Build
 
-在工作区根目录执行：
+From the workspace root:
 
-```text
+~~~text
 mvn -pl game-rpc/game-rpc-netty -am verify
-```
+~~~
 
-只执行 RPC 用例及依赖构建：
+To run only RPC tests while building dependencies:
 
-```text
+~~~text
 mvn -pl game-rpc/game-rpc-netty -am verify "-Dtest=Rpc*Test" "-Dsurefire.failIfNoSpecifiedTests=false"
-```
+~~~
 
-独立构建前，需要安装或发布同版本 game-network 依赖。当前验证覆盖功能、并发和 ByteBuf 引用管理，尚无生产吞吐/延迟压测结论。
+Before building independently, install or publish game-network dependencies with the same version. Current validation covers functionality, concurrency, and ByteBuf reference management; there are no production throughput or latency stress-test conclusions yet.
 
+## Performance baseline
 
-## 性能基线
+After completing RPC verify above, run:
 
-完成上面的 RPC verify 后运行：
-
-```text
+~~~text
 python game-rpc/benchmarks/run.py --requests 200000 --warmup 50000 --repeats 3
-```
+~~~
 
-覆盖小包/大包、单连接/多连接、合并刷新和诊断开关，输出吞吐、延迟分位数、进程分配量及 GC 数据到 `game-rpc/target/benchmark-时间戳.json`。客户端、服务器及测量代码在同一 JVM；这是有界并发的本机 TCP 基线，指标定义和限制见 Java 实现文档。
+The benchmark covers small/large packets, single/multiple connections, flush consolidation, and diagnostics enabled/disabled. It writes throughput, latency percentiles, process allocation, and GC data to `game-rpc/target/benchmark-<timestamp>.json`. Client, server, and measurement code run in the same JVM. This is a local TCP baseline with bounded concurrency; see the Java implementation specification for metric definitions and limitations.
 
+## Linux Docker endurance and fault tests
 
-## Linux Docker 持续与故障测试
+Switch local Docker to its Linux engine and prepare a JDK 25 Maven image and the workspace's `game-network/.m2` dependency cache. Then run from the workspace root:
 
-本地 Docker 切换为 Linux 引擎，准备 JDK 25 Maven 镜像及工作区 `game-network/.m2` 依赖缓存后，在工作区根目录运行：
-
-```text
+~~~text
 python game-rpc/benchmarks/docker_stress.py --prepare --work game-rpc/target/docker-run/work --output game-rpc/target/docker-run/results
-```
+~~~
 
-`--prepare` 要求 work 目录尚不存在。运行器复制源码和缓存，在容器内执行 RPC verify；客户端与服务端使用两个独立 Linux 容器，通过私有 Docker 网络通信。只向本机回环地址发布测试控制端口，结束时清理本次创建的容器和网络。已有 Linux 构建可省略 `--prepare`。
+`--prepare` requires the work directory not to exist yet. The runner copies source code and the cache and runs RPC verify inside a container. The client and server run in two separate Linux containers communicating through a private Docker network. Test control ports are published only on the local loopback address. The containers and network created by the run are cleaned up afterward. Omit `--prepare` when using an existing Linux build.
 
-默认约 25 分钟，覆盖即时/合并刷新小包、大包两档在途量、业务错误字符串数组、批量断连、暂停读取、进程暂停和强制重启，以及 paranoid 泄漏检测。`--seconds` 控制主要场景时长，`--business-seconds` 控制低并发大包和业务错误时长，`--leak-seconds` 控制泄漏检测时长；`--only` 可选择场景。故障场景建议不少于 120 秒，留出恢复观察时间。
+The default run takes approximately 25 minutes. It covers small packets with immediate/consolidated flushes, large packets at two in-flight limits, application error string arrays, bulk disconnects, paused reads, process pauses and forced restarts, and paranoid leak detection. `--seconds` controls the main scenario duration, `--business-seconds` controls the low-concurrency large-packet and application-error duration, and `--leak-seconds` controls the leak-detection duration. Use `--only` to select scenarios. Fault scenarios should run for at least 120 seconds to allow time to observe recovery.
 
-结果目录包含 `summary.json`、各场景双端日志和 Docker 资源采样。正常场景出现框架错误、内容错误、重复回调、未清理 Pending、未恢复连接或泄漏报告均判失败；故障场景允许 UNAVAILABLE/OVERLOADED/TIMEOUT，但必须恢复并清空 Pending。进程退出码反映总体判定，失败场景仍保留证据。指标与生产容量的区别见 Java 实现文档。
+The results directory contains `summary.json`, logs from both ends of each scenario, and Docker resource samples. In normal scenarios, framework errors, content errors, duplicate callbacks, uncleared Pending entries, connections that fail to recover, or leak reports cause failure. Fault scenarios allow UNAVAILABLE/OVERLOADED/TIMEOUT, but must recover and clear Pending entries. The process exit code reflects the overall result, and failed scenarios retain their evidence. See the Java implementation specification for the distinction between these metrics and production capacity.

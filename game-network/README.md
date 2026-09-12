@@ -1,22 +1,24 @@
 # game-network
 
-Java 25 + Netty 4.2.15.Final 的游戏服务器网络组件，版本 0.1.0-SNAPSHOT。
+English | [简体中文](README.zh-CN.md)
 
-## 接口与实现
+A game server networking component built with Java 25 and Netty 4.2.15.Final. Current version: 0.1.0-SNAPSHOT.
 
-| 公共接口 | 具体类 | 协议入口 |
+## Interfaces and implementations
+
+| Public interface | Concrete class | Protocol entry point |
 |---|---|---|
-| NetworkServer：start / stop | TcpNetworkServer | listen(host, port) |
-| NetworkServer：start / stop | WsNetworkServer | listen(host, port)，配置 sslContext 后为 WSS |
-| NetworkServer：start / stop | HttpNetworkServer | listen(host, port)，原生 HTTP Handler |
-| NetworkClient：init / destroy | TcpNetworkClient | connect(host, port, callback) |
-| NetworkClient：init / destroy | WsNetworkClient | connect(uri, callback)，URI 选择 WS / WSS |
+| NetworkServer: start / stop | TcpNetworkServer | listen(host, port) |
+| NetworkServer: start / stop | WsNetworkServer | listen(host, port); uses WSS when sslContext is configured |
+| NetworkServer: start / stop | HttpNetworkServer | listen(host, port), with native HTTP handlers |
+| NetworkClient: init / destroy | TcpNetworkClient | connect(host, port, callback) |
+| NetworkClient: init / destroy | WsNetworkClient | connect(uri, callback); the URI selects WS or WSS |
 
-Connection 和 NetworkHandler 公共接口保留。协议专属建连方法位于具体 Client，公共 NetworkClient 只定义共同生命周期，不包含不适用的 connect 重载。
+Connection and NetworkHandler remain public interfaces. Protocol-specific connection methods belong to the concrete clients. The shared NetworkClient interface defines only the common lifecycle, without connect overloads that do not apply to every client.
 
-game-network-api 仅依赖 JDK；game-network-netty 提供以上具体实现和原生扩展。当前不提供 HTTP Client。
+game-network-api depends only on the JDK. game-network-netty provides the concrete implementations above and native extensions. An HTTP client is not currently provided.
 
-## 多协议网关
+## Multi-protocol gateway
 
 ~~~java
 NetworkResources resources = NetworkResources.builder()
@@ -44,19 +46,19 @@ HttpNetworkServer http = HttpNetworkServer.builder()
     .build();
 ~~~
 
-应用统一管理 List<NetworkServer> 的启动和停止，退出时先 stop 所有 Server、destroy 所有 Client，再关闭 resources。可运行的完整初始化与异常清理示例见 [GatewayExample](game-network-netty/src/test/java/cn/managame/network/tests/GatewayExample.java)，在 IDE 中以 JDK 25 运行 main，输入回车停止。提供 PEM 证书链与私钥两个参数时另启动 WSS Server。
+The application manages startup and shutdown through a List<NetworkServer>. On exit, stop all servers and destroy all clients before closing resources. See [GatewayExample](game-network-netty/src/test/java/cn/managame/network/tests/GatewayExample.java) for a runnable example with complete initialization and failure cleanup. Run its main method in an IDE with JDK 25 and press Enter to stop. Passing a PEM certificate chain and private key as two arguments also starts a WSS server.
 
-每个 Server 只负责自己的协议，可通过多个 listen 监听该协议的多个地址。命名监听用 listen(name, address)，端口 0 的实际绑定地址通过 boundAddresses() 查询。多个协议用多个 Server 组合；TCP 与 WS/WSS 共用实时 IO，HTTP 使用 NetworkResources 中独立的 HTTP IO group，HTTP 消息不进入 NetworkHandler。
+Each server handles its own protocol and can listen on multiple addresses through repeated listen calls. Use listen(name, address) for named listeners and boundAddresses() to look up the actual address bound when using port 0. Combine multiple servers for multiple protocols. TCP and WS/WSS share the real-time IO group; HTTP uses a separate HTTP IO group in NetworkResources, and HTTP messages do not pass through NetworkHandler.
 
-HTTP 的 `contextPath("/game")` 为该 Server 的所有监听地址设置统一项目路径：外部请求 `/game/health?detail=1`，业务 HTTP Handler 收到的 `request.uri()` 为 `/health?detail=1`；`/game` 和 `/game/` 均映射为 `/`。按原始路径和完整路径段匹配，区分大小写；`/game2/health` 等不匹配路径返回 404，不进入业务 Handler。查询参数和剩余路径不做 URL 解码。
+HTTP `contextPath("/game")` sets a common application path for all listeners on that server. For an external request to `/game/health?detail=1`, the application HTTP handler receives `request.uri()` as `/health?detail=1`. Both `/game` and `/game/` map to `/`. Matching uses the original path and complete path segments and is case-sensitive. Unmatched paths such as `/game2/health` return 404 without reaching application handlers. Query parameters and the remaining path are not URL-decoded.
 
-默认 contextPath 为 `""`，与 `"/"` 一样表示根路径，不修改 URI；配置末尾的 `/` 会移除。非根配置必须以 `/` 开头，路径段支持英文字母、数字、`-._~`，支持 `/my-game/api` 这样的多级路径；拒绝空段、`.` / `..` 段、百分号编码、查询参数和片段。
+The default contextPath is `""`; like `"/"`, it represents the root path and leaves the URI unchanged. A trailing `/` in the configuration is removed. Non-root paths must start with `/`. Segments support English letters, digits, and `-._~`, including multi-level paths such as `/my-game/api`. Empty segments, `.` / `..` segments, percent encoding, query parameters, and fragments are rejected.
 
-网关或 Nginx 若保留 `/game` 前缀转发，后端配置 `/game`；若代理已移除前缀，后端使用根路径配置。组件只处理入站路径，不自动修改响应的 `Location`、Cookie Path 或页面中的链接，也不从转发请求头推断前缀。
+If a gateway or Nginx preserves the `/game` prefix when forwarding, configure `/game` on the backend. If the proxy removes the prefix, use the root path. The component handles inbound paths only: it does not rewrite response `Location`, Cookie Path, or page links, and does not infer a prefix from forwarding headers.
 
-WsNetworkServer 配置服务端 sslContext 后，其监听使用 WSS。需要同时监听 WS、WSS 时创建两个 WsNetworkServer 并共享资源。省略 resources 时组件自有资源随 stop 关闭，显式提供时借用。
+Configuring a server sslContext on WsNetworkServer makes its listeners use WSS. To serve both WS and WSS, create two WsNetworkServer instances and share resources. When resources is omitted, the component owns its resources and closes them on stop; explicitly supplied resources are borrowed.
 
-## 多目标客户端
+## Clients with multiple targets
 
 ~~~java
 TcpNetworkClient tcpClient = TcpNetworkClient.builder()
@@ -79,25 +81,25 @@ wsClient.connect(URI.create("ws://127.0.0.1:7001/game"), wsCallback);
 wsClient.connect(URI.create("wss://gateway.example/game"), secureCallback);
 ~~~
 
-客户端生命周期为 build → init → 多次 connect → destroy。init 初始化所需的 IO 资源、解析器和 Bootstrap，不建立远端连接；重复 init 不重新创建 Bootstrap。未初始化时 connect 同步报错；destroy 后不能重新初始化，需要新建客户端。Connection.close 只关闭该连接，客户端仍可继续连接其他目标。
+The client lifecycle is build → init → repeated connect calls → destroy. init initializes the required IO resources, resolver, and Bootstrap without opening a remote connection. Repeated init calls do not recreate the Bootstrap. Calling connect before initialization throws synchronously. A destroyed client cannot be initialized again; create a new client instead. Connection.close closes only that connection, and the client can continue connecting to other targets.
 
-TcpNetworkClient 在 init 中创建一个 Bootstrap，并配置整个 EventLoopGroup；所有 connect 共享该实例，由 Netty 分配 EventLoop。每次目标作为 connect 参数传入，共享 Bootstrap 不保存本次地址、回调或临时属性，也不按连接 new / clone。ChannelInitializer 在对应 Channel 上创建独立结果 Promise，由原生建连 Future 的监听器接续用户初始化结果。
+TcpNetworkClient creates one Bootstrap during init and configures it with the entire EventLoopGroup. All connect calls share that instance, and Netty assigns the EventLoop. Each target is supplied to connect. The shared Bootstrap does not store a call's address, callback, or temporary attributes, and is neither created nor cloned per connection. The ChannelInitializer creates a separate result Promise on each Channel, and a listener on the native connection Future continues processing the user initialization result.
 
-WsNetworkClient 同样在 init 中创建一个共享 Bootstrap，配置整个 EventLoopGroup。每次 connect 先调用 Bootstrap.register，由 Netty 分配 Channel 和 EventLoop；注册成功后，在该 EventLoop 上按本次 URI 配置管线，再调用 Channel.connect。地址解析复用 Netty 原生 ResolveAddressHandler，WS / WSS 握手由原生 channelActive 触发；URI 和回调只属于本次调用，不存入共享 Bootstrap。默认 SslContext 在 init 中创建并复用；用户提供的 SslContext 在构建时保存引用。
+WsNetworkClient also creates one shared Bootstrap during init, configured with the entire EventLoopGroup. Each connect first calls Bootstrap.register so Netty assigns the Channel and EventLoop. After registration succeeds, the pipeline is configured for that call's URI on its EventLoop, followed by Channel.connect. Address resolution reuses Netty's native ResolveAddressHandler, and native channelActive triggers the WS/WSS handshake. The URI and callback belong only to that call and are not stored in the shared Bootstrap. The default SslContext is created during init and reused; a user-supplied SslContext reference is saved at build time.
 
-Client 不保存唯一目标地址。正常提交的 connect 通过 Netty Promise 向 ConnectCallback 通知一次结果；参数错误、未初始化或销毁后调用或 EventLoop 拒绝提交时同步抛异常。不增加连接数量限制或整体建连计时器，TCP 超时通过 ChannelOption.CONNECT_TIMEOUT_MILLIS 配置，DNS、TLS、WS 超时通过对应 Netty 原生入口配置。WS/WSS 成功结果等待原生握手。WSS 默认校验证书和主机名，自定义信任链通过 WsNetworkClient.Builder.sslContext 配置。
+A client does not store a single target address. A normally submitted connect reports exactly one result to ConnectCallback through a Netty Promise. Invalid arguments, calls before initialization or after destruction, and EventLoop submission rejection throw synchronously. The component adds neither a connection count limit nor an overall connection timer. Configure TCP timeouts through ChannelOption.CONNECT_TIMEOUT_MILLIS, and DNS, TLS, and WS timeouts through the corresponding native Netty APIs. WS/WSS success waits for the native handshake. WSS verifies certificates and hostnames by default; configure a custom trust chain through WsNetworkClient.Builder.sslContext.
 
-成功结果还要求 NetworkHandler.onConnected 正常返回。该回调抛异常时，客户端通过 ConnectCallback.onFailure 返回原始异常并关闭连接；服务端记录初始化失败并关闭连接。初始化失败不交付业务消息，也不调用业务 onDisconnected；原生 channelInactive 仍沿 Pipeline 传播。
+Success also requires NetworkHandler.onConnected to return normally. If it throws, the client reports the original exception through ConnectCallback.onFailure and closes the connection; the server logs the initialization failure and closes the connection. Failed initialization delivers no application messages and does not call the application's onDisconnected. Native channelInactive still propagates through the Pipeline.
 
-正常注册的连接回调运行在网络 EventLoop；TCP 在 Channel 创建等注册前阶段失败时，失败通知沿用 Netty 原生 Future 的执行器。回调应避免阻塞，不能在所属网络线程调用 Server.start、Client.init、Server.stop、Client.destroy 或 resources.close。
+Callbacks for normally registered connections run on the network EventLoop. For TCP failures before registration, such as Channel creation failures, the failure notification uses the executor of Netty's native Future. Callbacks should avoid blocking. Do not call Server.start, Client.init, Server.stop, Client.destroy, or resources.close from their owning network threads.
 
-## Connection 与原生 Pipeline
+## Connection and the native Pipeline
 
-Connection.type() 返回 ConnectionType.TCP、WS 或 WSS，类型在创建时确定且不随握手状态变化；HTTP 使用原生 Handler，不创建 Connection。NettyConnection 持有 Channel 和不可变的 ConnectionType。id() 直接返回 String，取自 channel.id().asLongText()。状态、远端地址、属性、close 都调用原生方法；write 直接调用 writeAndFlush，不维护连接状态机、写计数、锁或消息队列。
+Connection.type() returns ConnectionType.TCP, WS, or WSS. The type is fixed at creation and does not change with handshake state. HTTP uses native handlers and does not create a Connection. NettyConnection holds a Channel and an immutable ConnectionType. id() directly returns a String from channel.id().asLongText(). State, remote address, attributes, and close delegate to native methods. write directly calls writeAndFlush without maintaining a connection state machine, write counters, locks, or message queues.
 
-write 返回 false 表示调用前 Channel 已不活跃且未接管消息；true 表示已交给原生写路径，不代表对端收到，也不额外保证与并发 close 之间的原子准入。需要原生写结果时通过 NettyAccess.channel(connection).writeAndFlush(message) 获取 ChannelFuture。两条写路径只选择一条，避免重复转交消息引用。
+A false return from write means the Channel was already inactive before the call and the message was not taken over. A true return means the message was passed to the native write path; it does not mean the peer received it, nor does it guarantee atomic admission against a concurrent close. To obtain the native write result, use NettyAccess.channel(connection).writeAndFlush(message), which returns a ChannelFuture. Choose only one write path to avoid transferring the same message reference twice.
 
-NetworkHandlerBridge 是 Pipeline 中的普通 SimpleChannelInboundHandler，直接调用用户 NetworkHandler，沿用原生串行事件传播。onMessage 的引用计数参数是借用引用；回调返回由原生自动释放机制释放。回写示例：
+NetworkHandlerBridge is an ordinary SimpleChannelInboundHandler in the Pipeline. It invokes the user's NetworkHandler directly and follows native serial event propagation. Reference-counted arguments to onMessage are borrowed references, released by native automatic release after the callback returns. Echo example:
 
 ~~~java
 public void onMessage(Connection connection, Object message) {
@@ -106,16 +108,16 @@ public void onMessage(Connection connection, Object message) {
 }
 ~~~
 
-业务协议由用户提供 Decoder / Encoder，组件不自动编码 String、byte[] 或业务对象，也不为 TCP 假定消息边界。未安装业务 Decoder 时，TCP 交付 ByteBuf 数据块，WS/WSS 交付原生帧。
+Users supply application protocol decoders and encoders. The component does not automatically encode String, byte[], or application objects, and assumes no TCP message boundaries. Without an application decoder, TCP delivers ByteBuf chunks and WS/WSS delivers native frames.
 
-入站顺序如下；出站按 Pipeline 的反方向经过 Encoder：
+Inbound order is shown below; outbound messages traverse encoders in the reverse Pipeline direction:
 
 ~~~
-TCP：用户 Decoder / Encoder → NetworkHandlerBridge → NetworkHandler
-WS/WSS：TLS（WSS）→ HTTP / WebSocket 原生处理器 → 用户 Decoder / Encoder → 桥接层
+TCP: user Decoder / Encoder → NetworkHandlerBridge → NetworkHandler
+WS/WSS: TLS (WSS) → native HTTP / WebSocket handlers → user Decoder / Encoder → bridge
 ~~~
 
-例如，使用长度字段的 TCP 业务管线：
+For example, a TCP application pipeline with a length field:
 
 ~~~java
 .pipeline((connection, pipeline) -> pipeline
@@ -125,58 +127,58 @@ WS/WSS：TLS（WSS）→ HTTP / WebSocket 原生处理器 → 用户 Decoder / E
     .addLast("messageEncoder", new GameMessageEncoder()))
 ~~~
 
-GameMessageDecoder / GameMessageEncoder 是应用自行实现的原生 Netty Handler。这样 NetworkHandler.onMessage 收到业务对象，connection.write(业务对象) 先经过 GameMessageEncoder 转为 ByteBuf，再由 LengthFieldPrepender 写入长度。WS 的业务 Encoder 应输出 WebSocketFrame，Decoder 从帧中解析业务对象。WS 帧聚合默认关闭，需聚合分片时显式设置 WS_AGGREGATION 或安装自己的聚合器。
+GameMessageDecoder and GameMessageEncoder are native Netty handlers implemented by the application. NetworkHandler.onMessage then receives application objects. Writing an application object with connection.write first passes it through GameMessageEncoder to produce a ByteBuf, then through LengthFieldPrepender to add the length. A WS application encoder should produce WebSocketFrame objects, and its decoder should parse application objects from frames. WS frame aggregation is disabled by default; explicitly set WS_AGGREGATION or install an aggregator when fragmented frames need aggregation.
 
-pipeline 配置直接添加原生 Handler；组件最后添加 network.handler 桥接层。运行时可通过原生 ChannelPipeline 修改，NettyAccess.editPipeline 仅是 EventLoop.submit 的便捷入口，不保护节点或补发被用户 Handler 消费的事件。
+The pipeline configuration adds native handlers directly, and the component appends the network.handler bridge. Modify the pipeline at runtime through the native ChannelPipeline. NettyAccess.editPipeline is only a convenience wrapper around EventLoop.submit; it does not protect pipeline nodes or replay events consumed by user handlers.
 
-五个具体 Server / Client 直接实现公共接口，各自调用 Bootstrap 和 ChannelGroup；没有 ComponentSupport、通用生命周期父类、后台停止任务、连接计数或独立终止 Future。
+The five concrete server/client classes implement the public interfaces directly and each use Bootstrap and ChannelGroup. There is no ComponentSupport, common lifecycle superclass, background shutdown task, connection counter, or separate termination Future.
 
-各具体类通过自己的私有 initPipeline 方法初始化原生管线，已移除 ProtocolSupport 和 install 入口。TCP 配置用户 Handler 与桥接层；WS/WSS 在对应类中直接配置协议 Handler；HTTP 同样在 HttpNetworkServer 中配置。用户仍可通过原生 addBefore / addAfter 在编解码前后插入 Handler。
+Each concrete class initializes its native pipeline through its own private initPipeline method; ProtocolSupport and install entry points have been removed. TCP configures user handlers and the bridge. WS/WSS configures protocol handlers directly in the corresponding class, and HttpNetworkServer handles HTTP configuration similarly. Users can still insert handlers before or after codecs with native addBefore / addAfter.
 
-Connection.close 直接走原生 Channel.close，包括 TLS/WS 的原生处理。Server.stop 和 Client.destroy 直接等待 ChannelGroup 关闭结果，再释放自有资源；对应的等待选项为 STOP_TIMEOUT、DESTROY_TIMEOUT，超时后可再次调用以等待关闭。它们不额外等待业务回调返回；尚在 EventLoop 排队的建连任务会报告客户端已销毁，使用共享资源时回调可能晚于 destroy 返回。Channel 属性不在关闭后自动清空，boundAddresses 保留已成功绑定过的地址供查询。
+Connection.close delegates directly to native Channel.close, including native TLS/WS handling. Server.stop and Client.destroy wait directly for ChannelGroup closure before releasing owned resources. STOP_TIMEOUT and DESTROY_TIMEOUT control these waits; after a timeout, call again to continue waiting for closure. They do not additionally wait for application callbacks to return. Connection tasks still queued on an EventLoop report that the client has been destroyed; with shared resources, callbacks may occur after destroy returns. Channel attributes are not automatically cleared after closure, and boundAddresses retains successfully bound addresses for lookup.
 
-## 配置
+## Configuration
 
-Server 的 option(ChannelOption, value) 配置监听 Channel，childOption 配置接入 Channel；Client 的 option 配置连接。未指定时保留 Netty 原生默认，不增加组件收发积压限额或大小计算接口。
+On servers, option(ChannelOption, value) configures listening Channels and childOption configures accepted Channels. On clients, option configures connections. Unspecified options retain native Netty defaults. The component adds no inbound/outbound backlog limits or size calculation interfaces.
 
-组件行为通过 option(NetworkOptions.KEY, value) 选择；默认值见 [实现记录](docs/implementation-status.md)。WS Builder 提供 webSocketServer / webSocketClient、sslContext / tlsHandler。HTTP Builder 提供 contextPath、httpPipeline、httpDecoder、httpAggregation（0 为流式模式）。同一配置入口重复设置时后值覆盖前值，build 后配置快照固定。
+Select component behavior through option(NetworkOptions.KEY, value); see the [implementation record](docs/implementation-status.md) for defaults. WS builders provide webSocketServer / webSocketClient and sslContext / tlsHandler. The HTTP builder provides contextPath, httpPipeline, httpDecoder, and httpAggregation (0 enables streaming). Setting the same configuration entry again replaces its previous value. The configuration snapshot is fixed after build.
 
-内部 Settings 只保存 ChannelOption / NetworkOption 的只读快照并读取默认值。用户 Handler 与 Pipeline 配置由 TCP / WS 具体类持有；TLS 和 WS 协议定制器只属于对应的 WS 类及 Builder；HTTP 保留自己的配置。公共 Builder 基类各自单独成文件，仅复用共同配置，不把协议专属字段放进公共选项层。
+Internal Settings stores only read-only ChannelOption / NetworkOption snapshots and reads defaults. The concrete TCP/WS classes own user handlers and pipeline configuration. TLS and WS protocol customizers belong only to their corresponding WS classes and builders, while HTTP retains its own configuration. Each common builder superclass has a separate file and shares only common configuration, keeping protocol-specific fields out of the common options layer.
 
-组件选项在 build 时检查适用范围；例如 TCP 配置 WS_AGGREGATION、Client 配置 START_TIMEOUT 会立即报错。原生 ChannelOption 保持 Netty 的处理方式。
+Component options are checked for applicability at build time. For example, setting WS_AGGREGATION on TCP or START_TIMEOUT on a client fails immediately. Native ChannelOption behavior is left to Netty.
 
-| 组件 | 支持的 NetworkOptions |
+| Component | Supported NetworkOptions |
 |---|---|
-| TCP Server | READ_IDLE / WRITE_IDLE / ALL_IDLE、START_TIMEOUT、STOP_TIMEOUT |
-| WS Server | TCP Server 的选项，加 WS_AGGREGATION / WS_UPGRADE_AGGREGATION |
-| HTTP Server | START_TIMEOUT、STOP_TIMEOUT |
-| TCP Client | READ_IDLE / WRITE_IDLE / ALL_IDLE、DESTROY_TIMEOUT |
-| WS Client | TCP Client 的选项，加 WS_AGGREGATION / WS_UPGRADE_AGGREGATION |
+| TCP Server | READ_IDLE / WRITE_IDLE / ALL_IDLE, START_TIMEOUT, STOP_TIMEOUT |
+| WS Server | TCP Server options, plus WS_AGGREGATION / WS_UPGRADE_AGGREGATION |
+| HTTP Server | START_TIMEOUT, STOP_TIMEOUT |
+| TCP Client | READ_IDLE / WRITE_IDLE / ALL_IDLE, DESTROY_TIMEOUT |
+| WS Client | TCP Client options, plus WS_AGGREGATION / WS_UPGRADE_AGGREGATION |
 
-STOP_TIMEOUT / DESTROY_TIMEOUT 控制各组件 ChannelGroup 的关闭等待；NetworkResources.Builder.shutdownTimeout 控制随后自有 EventLoopGroup 的终止等待，默认 5 秒，分别计时。resources.close(Duration) 可覆盖某次资源关闭的等待期限；超时后仍可再次 close。借用的 EventLoopGroup 不由 NetworkResources 关闭。
+STOP_TIMEOUT / DESTROY_TIMEOUT control the wait for each component's ChannelGroup to close. NetworkResources.Builder.shutdownTimeout controls the subsequent wait for owned EventLoopGroup termination, with a default of 5 seconds. These waits are timed separately. resources.close(Duration) overrides the timeout for a particular resource closure; close can be called again after a timeout. NetworkResources does not close borrowed EventLoopGroup instances.
 
-## 构建与验证
+## Build and validation
 
-使用 JDK 25、Maven 3.9，在项目根目录运行：
+Use JDK 25 and Maven 3.9. From the game-network project directory:
 
 ~~~sh
 mvn verify
 ~~~
 
-如本机镜像不可用，可使用项目提供的 Central 设置与项目本地缓存：
+If your local mirror is unavailable, use the project's Maven Central settings and local cache:
 
 ~~~sh
 mvn -s .mvn/settings.xml -gs .mvn/settings.xml "-Dmaven.repo.local=.m2" verify
 ~~~
 
-两个模块 target 下分别生成 JAR。测试源包含原生委托、协议集成、Bootstrap 复用及并发多目标隔离测试；默认 verify 是功能回归；独立容量测试与 Docker Linux 入口见 [运行验证](docs/operations.md)，实际环境和测量结果见 [实现记录](docs/implementation-status.md)。
+JARs are generated under each module's target directory. Test sources cover native delegation, protocol integration, Bootstrap reuse, and isolation between concurrent connections to multiple targets. The default verify runs functional regression tests. See [operations and validation](docs/operations.md) for standalone capacity tests and the Docker Linux entry point, and the [implementation record](docs/implementation-status.md) for environments and measurements.
 
-Windows 测试进程使用模块 target 作为 JDK 本地套接字临时目录，不修改组件运行时全局属性。相关属性见 [JDK 网络属性](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/doc-files/net-properties.html)。
+Windows test processes use the module target directory for JDK local socket temporary files, without changing global properties in the component runtime. See [JDK networking properties](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/doc-files/net-properties.html) for the relevant properties.
 
-- [Game Network Specification](docs/Game%20Network%20Specification.md)：Draft 0.7 合并版，当前唯一的语言无关通用规范。
-- [Java / Netty 实现设计](docs/java-netty/implementation-design.md)：具体类与原生适配设计。
-- [实现及验证记录](docs/implementation-status.md)：默认值和验证范围。
-- [接入与运行验证](docs/operations.md)：原生监控 Handler、DNS TCP 回退、Windows / Linux CI、Docker 与容量测试命令。
-- [Linux 验证报告](docs/linux-validation-2026-09-06.md)：双平台 37 项功能测试与 TCP 1 万、WS 2000、WSS 1000 连接的短时容量结果。
+- [Game Network Specification](docs/Game%20Network%20Specification.md): merged Draft 0.7, currently the sole language-independent general specification.
+- [Java / Netty implementation design](docs/java-netty/implementation-design.md): concrete classes and native adaptation design.
+- [Implementation and validation record](docs/implementation-status.md): defaults and validation scope.
+- [Integration and operations](docs/operations.md): native monitoring handlers, DNS TCP fallback, Windows / Linux CI, Docker, and capacity test commands.
+- [Linux validation report](docs/linux-validation-2026-09-06.md): 37 functional tests across two platforms and short capacity runs with 10,000 TCP, 2,000 WS, and 1,000 WSS connections.
 
-当前未提供自动重连、RPC、玩家会话、异步 NetworkHandler、组件自定义排空模式、UDP/KCP/QUIC/HTTP2，也不提供 HTTP 与 WS 共端口路由。
+The component currently does not provide automatic reconnection, RPC, player sessions, asynchronous NetworkHandler, custom drain modes, UDP/KCP/QUIC/HTTP2, or HTTP and WS routing on a shared port.
