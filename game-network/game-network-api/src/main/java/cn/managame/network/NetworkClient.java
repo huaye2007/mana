@@ -1,5 +1,6 @@
 package cn.managame.network;
 
+
 /** Common client lifecycle. Protocol-specific implementations expose their connect parameters. */
 public interface NetworkClient {
     /** Initialize the client before connecting. Repeated calls while initialized have no effect. */

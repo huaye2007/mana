@@ -1,5 +1,7 @@
 # game-network
 
+[Package layout, responsibilities and import migration (Chinese)](../docs/package-layout.md)
+
 English | [简体中文](README.zh-CN.md)
 
 A game server networking component built with Java 25 and Netty 4.2.15.Final. Current version: 0.1.0-SNAPSHOT.
@@ -97,7 +99,7 @@ Callbacks for normally registered connections run on the network EventLoop. For 
 
 Connection.type() returns ConnectionType.TCP, WS, or WSS. The type is fixed at creation and does not change with handshake state. HTTP uses native handlers and does not create a Connection. NettyConnection holds a Channel and an immutable ConnectionType. id() directly returns a String from channel.id().asLongText(). State, remote address, attributes, and close delegate to native methods. write directly calls writeAndFlush without maintaining a connection state machine, write counters, locks, or message queues.
 
-A false return from write means the Channel was already inactive before the call and the message was not taken over. A true return means the message was passed to the native write path; it does not mean the peer received it, nor does it guarantee atomic admission against a concurrent close. To obtain the native write result, use NettyAccess.channel(connection).writeAndFlush(message), which returns a ChannelFuture. Choose only one write path to avoid transferring the same message reference twice.
+A false return from write means the Channel was already inactive before the call and the message was not taken over. A true return means the message was passed to the native write path; it does not mean the peer received it, nor does it guarantee atomic admission against a concurrent close. For portable completion notification, use `connection.write(message, failure -> { ... })`: null means local write success; otherwise the original failure is supplied. Netty implements this optional overload. A true return transfers ownership even on later failure; false retains caller ownership and invokes no callback. Notification may run before return or on the transport thread and must return promptly. A Connection without this optional capability throws UnsupportedOperationException before taking ownership. For direct access to a ChannelFuture, use NettyAccess.channel(connection).writeAndFlush(message). Choose only one write path to avoid transferring the same message reference twice.
 
 NetworkHandlerBridge is an ordinary SimpleChannelInboundHandler in the Pipeline. It invokes the user's NetworkHandler directly and follows native serial event propagation. Reference-counted arguments to onMessage are borrowed references, released by native automatic release after the callback returns. Echo example:
 

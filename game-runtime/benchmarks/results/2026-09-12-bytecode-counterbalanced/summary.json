@@ -1,0 +1,914 @@
+[
+  {
+    "kind": "load",
+    "flavor": "bound",
+    "arity": 2,
+    "protocols": 1,
+    "opsPerSecond": 2814202.945,
+    "opsPerSecondMinFork": 2741623.381,
+    "opsPerSecondMaxFork": 2851667.655,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 2814202.945
+      },
+      {
+        "fork": 2,
+        "value": 2851667.655
+      },
+      {
+        "fork": 3,
+        "value": 2741623.381
+      }
+    ],
+    "p50Micros": 25.1,
+    "p50MicrosMinFork": 24.8,
+    "p50MicrosMaxFork": 25.1,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 25.1
+      },
+      {
+        "fork": 2,
+        "value": 24.8
+      },
+      {
+        "fork": 3,
+        "value": 25.1
+      }
+    ],
+    "p99Micros": 73.9,
+    "p99MicrosMinFork": 71.7,
+    "p99MicrosMaxFork": 76.7,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 73.9
+      },
+      {
+        "fork": 2,
+        "value": 71.7
+      },
+      {
+        "fork": 3,
+        "value": 76.7
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "load",
+    "flavor": "bound",
+    "arity": 2,
+    "protocols": 32,
+    "opsPerSecond": 3028784.967,
+    "opsPerSecondMinFork": 2927602.727,
+    "opsPerSecondMaxFork": 3071770.064,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 3071770.064
+      },
+      {
+        "fork": 2,
+        "value": 3028784.967
+      },
+      {
+        "fork": 3,
+        "value": 2927602.727
+      }
+    ],
+    "p50Micros": 27.2,
+    "p50MicrosMinFork": 25.2,
+    "p50MicrosMaxFork": 28.4,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 28.4
+      },
+      {
+        "fork": 2,
+        "value": 25.2
+      },
+      {
+        "fork": 3,
+        "value": 27.2
+      }
+    ],
+    "p99Micros": 75.0,
+    "p99MicrosMinFork": 74.0,
+    "p99MicrosMaxFork": 77.9,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 75.0
+      },
+      {
+        "fork": 2,
+        "value": 74.0
+      },
+      {
+        "fork": 3,
+        "value": 77.9
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "load",
+    "flavor": "bound",
+    "arity": 4,
+    "protocols": 1,
+    "opsPerSecond": 3026181.921,
+    "opsPerSecondMinFork": 2905463.201,
+    "opsPerSecondMaxFork": 3043095.096,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 3026181.921
+      },
+      {
+        "fork": 2,
+        "value": 2905463.201
+      },
+      {
+        "fork": 3,
+        "value": 3043095.096
+      }
+    ],
+    "p50Micros": 26.2,
+    "p50MicrosMinFork": 25.7,
+    "p50MicrosMaxFork": 26.4,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 26.2
+      },
+      {
+        "fork": 2,
+        "value": 25.7
+      },
+      {
+        "fork": 3,
+        "value": 26.4
+      }
+    ],
+    "p99Micros": 70.2,
+    "p99MicrosMinFork": 68.7,
+    "p99MicrosMaxFork": 70.9,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 70.9
+      },
+      {
+        "fork": 2,
+        "value": 68.7
+      },
+      {
+        "fork": 3,
+        "value": 70.2
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "load",
+    "flavor": "bound",
+    "arity": 4,
+    "protocols": 32,
+    "opsPerSecond": 2831266.697,
+    "opsPerSecondMinFork": 2694798.93,
+    "opsPerSecondMaxFork": 3105320.034,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 3105320.034
+      },
+      {
+        "fork": 2,
+        "value": 2694798.93
+      },
+      {
+        "fork": 3,
+        "value": 2831266.697
+      }
+    ],
+    "p50Micros": 26.3,
+    "p50MicrosMinFork": 24.3,
+    "p50MicrosMaxFork": 26.8,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 26.3
+      },
+      {
+        "fork": 2,
+        "value": 24.3
+      },
+      {
+        "fork": 3,
+        "value": 26.8
+      }
+    ],
+    "p99Micros": 74.4,
+    "p99MicrosMinFork": 73.7,
+    "p99MicrosMaxFork": 75.3,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 75.3
+      },
+      {
+        "fork": 2,
+        "value": 73.7
+      },
+      {
+        "fork": 3,
+        "value": 74.4
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "load",
+    "flavor": "bytecode",
+    "arity": 2,
+    "protocols": 1,
+    "opsPerSecond": 2941122.838,
+    "opsPerSecondMinFork": 2452118.704,
+    "opsPerSecondMaxFork": 2957339.199,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 2452118.704
+      },
+      {
+        "fork": 2,
+        "value": 2941122.838
+      },
+      {
+        "fork": 3,
+        "value": 2957339.199
+      }
+    ],
+    "p50Micros": 25.8,
+    "p50MicrosMinFork": 23.3,
+    "p50MicrosMaxFork": 27.1,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 27.1
+      },
+      {
+        "fork": 2,
+        "value": 23.3
+      },
+      {
+        "fork": 3,
+        "value": 25.8
+      }
+    ],
+    "p99Micros": 71.8,
+    "p99MicrosMinFork": 64.7,
+    "p99MicrosMaxFork": 88.4,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 88.4
+      },
+      {
+        "fork": 2,
+        "value": 64.7
+      },
+      {
+        "fork": 3,
+        "value": 71.8
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "load",
+    "flavor": "bytecode",
+    "arity": 2,
+    "protocols": 32,
+    "opsPerSecond": 2956496.339,
+    "opsPerSecondMinFork": 2696015.128,
+    "opsPerSecondMaxFork": 3063789.319,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 2956496.339
+      },
+      {
+        "fork": 2,
+        "value": 2696015.128
+      },
+      {
+        "fork": 3,
+        "value": 3063789.319
+      }
+    ],
+    "p50Micros": 25.7,
+    "p50MicrosMinFork": 25.2,
+    "p50MicrosMaxFork": 26.1,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 26.1
+      },
+      {
+        "fork": 2,
+        "value": 25.2
+      },
+      {
+        "fork": 3,
+        "value": 25.7
+      }
+    ],
+    "p99Micros": 71.9,
+    "p99MicrosMinFork": 71.0,
+    "p99MicrosMaxFork": 72.5,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 71.9
+      },
+      {
+        "fork": 2,
+        "value": 72.5
+      },
+      {
+        "fork": 3,
+        "value": 71.0
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "load",
+    "flavor": "bytecode",
+    "arity": 4,
+    "protocols": 1,
+    "opsPerSecond": 2808605.342,
+    "opsPerSecondMinFork": 2680130.211,
+    "opsPerSecondMaxFork": 2843080.17,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 2808605.342
+      },
+      {
+        "fork": 2,
+        "value": 2843080.17
+      },
+      {
+        "fork": 3,
+        "value": 2680130.211
+      }
+    ],
+    "p50Micros": 24.9,
+    "p50MicrosMinFork": 22.8,
+    "p50MicrosMaxFork": 25.1,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 25.1
+      },
+      {
+        "fork": 2,
+        "value": 22.8
+      },
+      {
+        "fork": 3,
+        "value": 24.9
+      }
+    ],
+    "p99Micros": 69.1,
+    "p99MicrosMinFork": 67.6,
+    "p99MicrosMaxFork": 70.6,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 70.6
+      },
+      {
+        "fork": 2,
+        "value": 67.6
+      },
+      {
+        "fork": 3,
+        "value": 69.1
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "load",
+    "flavor": "bytecode",
+    "arity": 4,
+    "protocols": 32,
+    "opsPerSecond": 2962132.688,
+    "opsPerSecondMinFork": 2905334.892,
+    "opsPerSecondMaxFork": 2974441.221,
+    "opsPerSecondForks": [
+      {
+        "fork": 1,
+        "value": 2905334.892
+      },
+      {
+        "fork": 2,
+        "value": 2974441.221
+      },
+      {
+        "fork": 3,
+        "value": 2962132.688
+      }
+    ],
+    "p50Micros": 26.0,
+    "p50MicrosMinFork": 25.0,
+    "p50MicrosMaxFork": 27.1,
+    "p50MicrosForks": [
+      {
+        "fork": 1,
+        "value": 26.0
+      },
+      {
+        "fork": 2,
+        "value": 27.1
+      },
+      {
+        "fork": 3,
+        "value": 25.0
+      }
+    ],
+    "p99Micros": 69.8,
+    "p99MicrosMinFork": 69.7,
+    "p99MicrosMaxFork": 71.4,
+    "p99MicrosForks": [
+      {
+        "fork": 1,
+        "value": 69.7
+      },
+      {
+        "fork": 2,
+        "value": 71.4
+      },
+      {
+        "fork": 3,
+        "value": 69.8
+      }
+    ],
+    "gcCount": 2,
+    "gcCountMinFork": 2.0,
+    "gcCountMaxFork": 2.0,
+    "gcCountForks": [
+      {
+        "fork": 1,
+        "value": 2
+      },
+      {
+        "fork": 2,
+        "value": 2
+      },
+      {
+        "fork": 3,
+        "value": 2
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bound",
+    "arity": 2,
+    "protocols": 1,
+    "nsPerOp": 4.632,
+    "nsPerOpMinFork": 4.546,
+    "nsPerOpMaxFork": 5.292,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 4.546
+      },
+      {
+        "fork": 2,
+        "value": 5.292
+      },
+      {
+        "fork": 3,
+        "value": 4.632
+      }
+    ],
+    "bytesPerOp": 0.0,
+    "bytesPerOpMinFork": 0.0,
+    "bytesPerOpMaxFork": 0.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 0.0
+      },
+      {
+        "fork": 2,
+        "value": 0.0
+      },
+      {
+        "fork": 3,
+        "value": 0.0
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bound",
+    "arity": 2,
+    "protocols": 32,
+    "nsPerOp": 6.81,
+    "nsPerOpMinFork": 6.678,
+    "nsPerOpMaxFork": 7.481,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 6.81
+      },
+      {
+        "fork": 2,
+        "value": 7.481
+      },
+      {
+        "fork": 3,
+        "value": 6.678
+      }
+    ],
+    "bytesPerOp": 0.0,
+    "bytesPerOpMinFork": 0.0,
+    "bytesPerOpMaxFork": 0.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 0.0
+      },
+      {
+        "fork": 2,
+        "value": 0.0
+      },
+      {
+        "fork": 3,
+        "value": 0.0
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bound",
+    "arity": 4,
+    "protocols": 1,
+    "nsPerOp": 14.146,
+    "nsPerOpMinFork": 13.201,
+    "nsPerOpMaxFork": 14.148,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 13.201
+      },
+      {
+        "fork": 2,
+        "value": 14.148
+      },
+      {
+        "fork": 3,
+        "value": 14.146
+      }
+    ],
+    "bytesPerOp": 32.0,
+    "bytesPerOpMinFork": 32.0,
+    "bytesPerOpMaxFork": 32.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 32.0
+      },
+      {
+        "fork": 2,
+        "value": 32.0
+      },
+      {
+        "fork": 3,
+        "value": 32.0
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bound",
+    "arity": 4,
+    "protocols": 32,
+    "nsPerOp": 14.353,
+    "nsPerOpMinFork": 14.186,
+    "nsPerOpMaxFork": 15.759,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 14.186
+      },
+      {
+        "fork": 2,
+        "value": 14.353
+      },
+      {
+        "fork": 3,
+        "value": 15.759
+      }
+    ],
+    "bytesPerOp": 32.0,
+    "bytesPerOpMinFork": 32.0,
+    "bytesPerOpMaxFork": 32.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 32.0
+      },
+      {
+        "fork": 2,
+        "value": 32.0
+      },
+      {
+        "fork": 3,
+        "value": 32.0
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bytecode",
+    "arity": 2,
+    "protocols": 1,
+    "nsPerOp": 2.101,
+    "nsPerOpMinFork": 2.092,
+    "nsPerOpMaxFork": 2.111,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 2.101
+      },
+      {
+        "fork": 2,
+        "value": 2.111
+      },
+      {
+        "fork": 3,
+        "value": 2.092
+      }
+    ],
+    "bytesPerOp": 0.0,
+    "bytesPerOpMinFork": 0.0,
+    "bytesPerOpMaxFork": 0.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 0.0
+      },
+      {
+        "fork": 2,
+        "value": 0.0
+      },
+      {
+        "fork": 3,
+        "value": 0.0
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bytecode",
+    "arity": 2,
+    "protocols": 32,
+    "nsPerOp": 5.453,
+    "nsPerOpMinFork": 5.356,
+    "nsPerOpMaxFork": 5.607,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 5.356
+      },
+      {
+        "fork": 2,
+        "value": 5.453
+      },
+      {
+        "fork": 3,
+        "value": 5.607
+      }
+    ],
+    "bytesPerOp": 0.0,
+    "bytesPerOpMinFork": 0.0,
+    "bytesPerOpMaxFork": 0.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 0.0
+      },
+      {
+        "fork": 2,
+        "value": 0.0
+      },
+      {
+        "fork": 3,
+        "value": 0.0
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bytecode",
+    "arity": 4,
+    "protocols": 1,
+    "nsPerOp": 4.088,
+    "nsPerOpMinFork": 4.083,
+    "nsPerOpMaxFork": 4.233,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 4.083
+      },
+      {
+        "fork": 2,
+        "value": 4.088
+      },
+      {
+        "fork": 3,
+        "value": 4.233
+      }
+    ],
+    "bytesPerOp": 0.0,
+    "bytesPerOpMinFork": 0.0,
+    "bytesPerOpMaxFork": 0.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 0.0
+      },
+      {
+        "fork": 2,
+        "value": 0.0
+      },
+      {
+        "fork": 3,
+        "value": 0.0
+      }
+    ]
+  },
+  {
+    "kind": "micro",
+    "flavor": "bytecode",
+    "arity": 4,
+    "protocols": 32,
+    "nsPerOp": 7.576,
+    "nsPerOpMinFork": 7.562,
+    "nsPerOpMaxFork": 9.5,
+    "nsPerOpForks": [
+      {
+        "fork": 1,
+        "value": 9.5
+      },
+      {
+        "fork": 2,
+        "value": 7.576
+      },
+      {
+        "fork": 3,
+        "value": 7.562
+      }
+    ],
+    "bytesPerOp": 0.0,
+    "bytesPerOpMinFork": 0.0,
+    "bytesPerOpMaxFork": 0.0,
+    "bytesPerOpForks": [
+      {
+        "fork": 1,
+        "value": 0.0
+      },
+      {
+        "fork": 2,
+        "value": 0.0
+      },
+      {
+        "fork": 3,
+        "value": 0.0
+      }
+    ]
+  }
+]

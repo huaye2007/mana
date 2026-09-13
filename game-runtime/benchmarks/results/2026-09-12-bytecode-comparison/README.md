@@ -1,0 +1,1 @@
+本目录是首轮方法验证数据。同一场景的实现先后顺序未在 fork 间交替，因此最终结论不使用这批数据。旧脚本保存在 initial-runner.ps1.txt。最终数据见 ../2026-09-12-bytecode-counterbalanced/。

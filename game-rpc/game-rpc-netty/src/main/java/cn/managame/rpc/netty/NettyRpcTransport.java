@@ -1,8 +1,16 @@
 package cn.managame.rpc.netty;
 
+import cn.managame.network.netty.connection.NettyAccess;
+import cn.managame.network.netty.transport.NetworkOptions;
+import cn.managame.network.netty.transport.NetworkResources;
+import cn.managame.network.netty.transport.TcpNetworkClient;
+import cn.managame.network.netty.transport.TcpNetworkServer;
+import cn.managame.rpc.transport.RpcNetworkConfig;
+import cn.managame.rpc.transport.RpcTransport;
+
 import cn.managame.network.*;
-import cn.managame.network.netty.*;
-import cn.managame.rpc.*;
+import cn.managame.network.netty.transport.*;
+import cn.managame.rpc.core.*;
 
 import io.netty.buffer.*;
 import io.netty.channel.*;

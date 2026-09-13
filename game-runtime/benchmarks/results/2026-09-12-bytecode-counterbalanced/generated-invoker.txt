@@ -1,0 +1,53 @@
+public final class cn.managame.runtime.GeneratedCommand1 implements cn.managame.runtime.HandlerInvokers$CommandInvoker {
+  private final cn.managame.runtime.BytecodeInvokerChecks$Target bean;
+
+  private final java.util.function.Function resolver1;
+
+  private final java.util.function.Function resolver2;
+
+  public cn.managame.runtime.GeneratedCommand1(java.lang.Object, java.util.function.Function[]);
+    Code:
+         0: aload_0
+         1: invokespecial #14                 // Method java/lang/Object."<init>":()V
+         4: aload_0
+         5: aload_1
+         6: checkcast     #16                 // class cn/managame/runtime/BytecodeInvokerChecks$Target
+         9: putfield      #18                 // Field bean:Lcn/managame/runtime/BytecodeInvokerChecks$Target;
+        12: aload_0
+        13: aload_2
+        14: iconst_1
+        15: aaload
+        16: putfield      #20                 // Field resolver1:Ljava/util/function/Function;
+        19: aload_0
+        20: aload_2
+        21: iconst_2
+        22: aaload
+        23: putfield      #22                 // Field resolver2:Ljava/util/function/Function;
+        26: return
+
+  public void invoke(cn.managame.runtime.CommandHandlerInvocation, java.lang.Object);
+    Code:
+         0: aload_0
+         1: getfield      #20                 // Field resolver1:Ljava/util/function/Function;
+         4: aload_1
+         5: invokeinterface #30,  2           // InterfaceMethod java/util/function/Function.apply:(Ljava/lang/Object;)Ljava/lang/Object;
+        10: astore_3
+        11: aload_0
+        12: getfield      #22                 // Field resolver2:Ljava/util/function/Function;
+        15: aload_1
+        16: invokeinterface #30,  2           // InterfaceMethod java/util/function/Function.apply:(Ljava/lang/Object;)Ljava/lang/Object;
+        21: astore        4
+        23: aload_0
+        24: getfield      #18                 // Field bean:Lcn/managame/runtime/BytecodeInvokerChecks$Target;
+        27: aload_2
+        28: checkcast     #4                  // class java/lang/Object
+        31: aload_3
+        32: checkcast     #32                 // class java/lang/String
+        35: aload_3
+        36: checkcast     #32                 // class java/lang/String
+        39: aload         4
+        41: checkcast     #34                 // class java/lang/Integer
+        44: invokevirtual #38                 // Method java/lang/Integer.intValue:()I
+        47: invokevirtual #42                 // Method cn/managame/runtime/BytecodeInvokerChecks$Target.duplicate:(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;I)V
+        50: return
+}

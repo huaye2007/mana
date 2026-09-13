@@ -1,9 +1,12 @@
 package cn.managame.rpc.netty;
 
+import cn.managame.rpc.transport.RpcNetworkConfig;
+import cn.managame.rpc.transport.RpcTransport;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import cn.managame.network.*;
-import cn.managame.rpc.*;
+import cn.managame.rpc.core.*;
 
 import io.netty.buffer.*;
 

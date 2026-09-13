@@ -1,7 +1,11 @@
 package cn.managame.rpc.netty;
 
-import cn.managame.network.netty.NetworkResources;
-import cn.managame.rpc.*;
+import cn.managame.rpc.transport.RpcNetworkConfig;
+import cn.managame.rpc.transport.RpcNetworkProvider;
+import cn.managame.rpc.transport.RpcTransport;
+
+import cn.managame.network.netty.transport.NetworkResources;
+import cn.managame.rpc.core.*;
 
 /** Default service provider. An explicitly supplied NetworkResources remains externally owned. */
 public final class NettyRpcNetworkProvider implements RpcNetworkProvider {

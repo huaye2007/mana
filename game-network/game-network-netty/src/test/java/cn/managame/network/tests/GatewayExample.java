@@ -1,7 +1,12 @@
 package cn.managame.network.tests;
 
+import cn.managame.network.netty.transport.HttpNetworkServer;
+import cn.managame.network.netty.transport.NetworkResources;
+import cn.managame.network.netty.transport.TcpNetworkServer;
+import cn.managame.network.netty.transport.WsNetworkServer;
+
 import cn.managame.network.*;
-import cn.managame.network.netty.*;
+import cn.managame.network.netty.transport.*;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;

@@ -1,5 +1,7 @@
 # game-rpc
 
+[Package layout, responsibilities and import migration (Chinese)](../docs/package-layout.md)
+
 English | [简体中文](README.zh-CN.md)
 
 A Java RPC implementation built on game-network, using JDK 25 and Netty 4.2.15.Final. It manages NodeId → RpcPeer mappings, TCP connections, Call/Send, explicit replies, response matching, timeouts, Metadata, and message encoding/decoding.
@@ -70,10 +72,8 @@ try {
             // Use the complete response header, Metadata, and raw body within this callback.
         } else {
             RpcError error = result.error(); // Framework and application errors share a non-null RpcError.
-            if (result.value() != null) {
-                String[] errorArgs = result.value().errorArgs();
-                // The application generates a message from error.code() and the arguments.
-            }
+            var errorArgs = result.errorArgs(); // Immutable, empty for local failures.
+            Throwable cause = result.cause(); // Optional local cause; never sent on the wire.
         }
     });
 } finally {
@@ -128,6 +128,14 @@ Ordinary requests arrive as complete RpcRequest objects, including requests with
 
 RpcRouteMessage is only a raw envelope, with sourceNodeId, targetNodeId, and ByteBuf inner. It is delivered unchanged to the handler, without decoding inner, checking the target, forwarding automatically, or completing an inner Response. Applications can explicitly send a complete message through `send(connectedNodeId, message, options)`. This entry point does not register a call. It uses only options.routeKey to select a connection; the message supplies all other headers.
 
+## Stopping calls before closing transports
+
+`rpc.stopCalls()` irreversibly stops new outbound calls and notifications, claims pending calls and completes them with `UNAVAILABLE`. It preserves connections and permits `reply(...)` for accepted inbound requests. The operation is idempotent; callbacks run on its caller outside internal locks. A response/timeout that already claimed a result may still be delivering its callback; stopCalls does not wait for it. It does not cancel remote business operations or stop inbound request dispatch.
+
+For a game server: stop application admission, call stopCalls, drain the application runtime, then close RPC and client transports. Keep one adapter per node: stopping calls affects all outbound calls owned by that node. Full close remains available for immediate shutdown.
+
+`RpcResult.errorArgs()` provides immutable remote arguments without checking value for null. It returns an empty list for local failures and success. `cause()` preserves local submission/scheduling exceptions when available; it is never encoded or attached to a remote response. The two-argument RpcResult constructor remains as a source-compatible convenience; recompile consumers after the record change.
+
 ## Memory and configuration
 
 Sending uses the connection's active/writable state without maintaining an additional pending outbound byte budget. `RpcLimits` has four parameters: frame, Metadata, body, and Pending limits. The previous final `maxOutboundBytes` parameter has been removed.
@@ -179,3 +187,5 @@ python game-rpc/benchmarks/docker_stress.py --prepare --work game-rpc/target/doc
 The default run takes approximately 25 minutes. It covers small packets with immediate/consolidated flushes, large packets at two in-flight limits, application error string arrays, bulk disconnects, paused reads, process pauses and forced restarts, and paranoid leak detection. `--seconds` controls the main scenario duration, `--business-seconds` controls the low-concurrency large-packet and application-error duration, and `--leak-seconds` controls the leak-detection duration. Use `--only` to select scenarios. Fault scenarios should run for at least 120 seconds to allow time to observe recovery.
 
 The results directory contains `summary.json`, logs from both ends of each scenario, and Docker resource samples. In normal scenarios, framework errors, content errors, duplicate callbacks, uncleared Pending entries, connections that fail to recover, or leak reports cause failure. Fault scenarios allow UNAVAILABLE/OVERLOADED/TIMEOUT, but must recover and clear Pending entries. The process exit code reflects the overall result, and failed scenarios retain their evidence. See the Java implementation specification for the distinction between these metrics and production capacity.
+
+Command IDs are nonzero signed int32 values, including negative internal protocol IDs. Zero is invalid. Request IDs remain positive for calls and zero for one-way sends. Peers running older positive-only command validation must be upgraded before using negative commands.

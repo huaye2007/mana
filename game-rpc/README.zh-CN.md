@@ -1,5 +1,7 @@
 # game-rpc
 
+[包结构、职责与 import 迁移](../docs/package-layout.md)
+
 [English](README.md) | 简体中文
 
 基于 game-network 的 Java RPC 实现，使用 JDK 25 / Netty 4.2.15.Final。管理 NodeId → RpcPeer、TCP 连接、Call/Send、显式回复、响应匹配、超时、Metadata 和消息编解码。
@@ -70,10 +72,8 @@ try {
             // 在回调内使用完整响应头、Metadata 和原始 body。
         } else {
             RpcError error = result.error(); // 框架和业务错误统一为非 null RpcError
-            if (result.value() != null) {
-                String[] errorArgs = result.value().errorArgs();
-                // 业务层根据 error.code() 和参数生成提示。
-            }
+            var errorArgs = result.errorArgs(); // Immutable, empty for local failures.
+            Throwable cause = result.cause(); // Optional local cause; never sent on the wire.
         }
     });
 } finally {
@@ -124,9 +124,17 @@ public interface RpcHandler {
 }
 ```
 
-普通请求是完整 RpcRequest，未知 command 也会交付。响应由相邻 Peer 的 RpcFuture 匹配后通知结果。Handler 返回不自动回复，用户自行决定回复时机和前后消息顺序。
+普通请求是完整 RpcRequest，未知 command 也会交付。command 为非零有符号 int32，支持负数协议号；0 非法，requestId 仍为调用正数、单向消息 0。响应由相邻 Peer 的 RpcFuture 匹配后通知结果。Handler 返回不自动回复，用户自行决定回复时机和前后消息顺序。
 
 RpcRouteMessage 只是原始信封，仍只有 sourceNodeId、targetNodeId、ByteBuf inner。收到后原样交给 Handler，不自动解码 inner、不判断目标、不自动转发、不完成内层 Response。业务可以通过 `send(connectedNodeId, message, options)` 显式发送完整消息；此入口不登记调用，仅使用 options.routeKey 选连接，其余消息头由 message 自身提供。
+
+## 分阶段停止调用
+
+rpc.stopCalls() 不可恢复地停止新出站 Call 和 Send 通知，认领 pending 并以 UNAVAILABLE 通知调用方，保留连接和对已接受入站请求的 reply 能力。可以重复调用，回调在调用线程、内部锁外执行。并发响应或超时可能已认领某个结果；stopCalls 不等待该回调返回，不取消远端业务，也不停止入站请求分发。
+
+游戏服的关闭顺序为：停止应用准入、stopCalls、排空业务 Runtime、最后关闭 RPC 和客户端传输。一个节点由一个适配器协调；停止会影响该节点的全部出站调用。直接 close 仍可用于立即关闭。
+
+RpcResult.errorArgs() 返回不可修改的远端错误参数列表，本地失败和成功结果返回空列表，无需检查 value 是否为空。cause() 保留可获得的本地提交/调度异常，不编码到网络，也不能附加到远端响应。两参数 RpcResult 构造器保留源码兼容；record 结构变更后需要重新编译调用方。
 
 ## 内存与配置
 

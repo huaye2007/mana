@@ -1,0 +1,122 @@
+[
+  {
+    "kind": "micro",
+    "case": "bound-command2",
+    "nsPerOp": 5.13,
+    "minForkNs": 5.11,
+    "maxForkNs": 5.138,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "bound-command3",
+    "nsPerOp": 6.344,
+    "minForkNs": 6.32,
+    "maxForkNs": 6.374,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "bound-command4",
+    "nsPerOp": 13.801,
+    "minForkNs": 13.23,
+    "maxForkNs": 14.038,
+    "bytesPerOp": 32.0
+  },
+  {
+    "kind": "micro",
+    "case": "bound-cron",
+    "nsPerOp": 3.211,
+    "minForkNs": 3.204,
+    "maxForkNs": 3.222,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "bound-event",
+    "nsPerOp": 4.144,
+    "minForkNs": 4.115,
+    "maxForkNs": 4.158,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "direct-command2",
+    "nsPerOp": 1.387,
+    "minForkNs": 1.385,
+    "maxForkNs": 1.398,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "direct-command3",
+    "nsPerOp": 1.752,
+    "minForkNs": 1.747,
+    "maxForkNs": 1.762,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "direct-command4",
+    "nsPerOp": 1.769,
+    "minForkNs": 1.766,
+    "maxForkNs": 1.786,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "direct-cron",
+    "nsPerOp": 0.743,
+    "minForkNs": 0.737,
+    "maxForkNs": 0.76,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "direct-event",
+    "nsPerOp": 1.405,
+    "minForkNs": 1.397,
+    "maxForkNs": 1.408,
+    "bytesPerOp": 0.0
+  },
+  {
+    "kind": "micro",
+    "case": "legacy-command2",
+    "nsPerOp": 13.194,
+    "minForkNs": 13.083,
+    "maxForkNs": 13.295,
+    "bytesPerOp": 48.0
+  },
+  {
+    "kind": "micro",
+    "case": "legacy-command3",
+    "nsPerOp": 15.304,
+    "minForkNs": 15.242,
+    "maxForkNs": 15.673,
+    "bytesPerOp": 64.0
+  },
+  {
+    "kind": "micro",
+    "case": "legacy-command4",
+    "nsPerOp": 16.991,
+    "minForkNs": 16.962,
+    "maxForkNs": 17.026,
+    "bytesPerOp": 64.0
+  },
+  {
+    "kind": "micro",
+    "case": "legacy-cron",
+    "nsPerOp": 4.167,
+    "minForkNs": 4.124,
+    "maxForkNs": 4.331,
+    "bytesPerOp": 16.0
+  },
+  {
+    "kind": "micro",
+    "case": "legacy-event",
+    "nsPerOp": 4.597,
+    "minForkNs": 4.581,
+    "maxForkNs": 4.98,
+    "bytesPerOp": 24.0
+  }
+]

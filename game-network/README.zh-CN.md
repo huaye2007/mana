@@ -1,5 +1,7 @@
 # game-network
 
+[包结构、职责与 import 迁移](../docs/package-layout.md)
+
 [English](README.md) | 简体中文
 
 Java 25 + Netty 4.2.15.Final 的游戏服务器网络组件，版本 0.1.0-SNAPSHOT。
@@ -97,7 +99,7 @@ Client 不保存唯一目标地址。正常提交的 connect 通过 Netty Promis
 
 Connection.type() 返回 ConnectionType.TCP、WS 或 WSS，类型在创建时确定且不随握手状态变化；HTTP 使用原生 Handler，不创建 Connection。NettyConnection 持有 Channel 和不可变的 ConnectionType。id() 直接返回 String，取自 channel.id().asLongText()。状态、远端地址、属性、close 都调用原生方法；write 直接调用 writeAndFlush，不维护连接状态机、写计数、锁或消息队列。
 
-write 返回 false 表示调用前 Channel 已不活跃且未接管消息；true 表示已交给原生写路径，不代表对端收到，也不额外保证与并发 close 之间的原子准入。需要原生写结果时通过 NettyAccess.channel(connection).writeAndFlush(message) 获取 ChannelFuture。两条写路径只选择一条，避免重复转交消息引用。
+write 返回 false 表示调用前 Channel 已不活跃且未接管消息；true 表示已交给原生写路径，不代表对端收到，也不额外保证与并发 close 之间的原子准入。需要写完成通知时，使用 connection.write(message, failure -> { ... })：null 表示本地写成功，否则为原始失败原因。Netty 已实现此可选入口。返回 true 后即使稍后失败，引用仍由传输负责；false 不触发回调，引用由调用方释放。回调可能在返回前或传输线程执行，不能阻塞。未支持此能力的 Connection 在取得引用前抛出 UnsupportedOperationException。需要直接访问 ChannelFuture 时仍可使用 NettyAccess.channel(connection).writeAndFlush(message)。两条写路径只选择一条，避免重复转交消息引用。
 
 NetworkHandlerBridge 是 Pipeline 中的普通 SimpleChannelInboundHandler，直接调用用户 NetworkHandler，沿用原生串行事件传播。onMessage 的引用计数参数是借用引用；回调返回由原生自动释放机制释放。回写示例：
 

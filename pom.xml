@@ -7,5 +7,7 @@
   <modules>
     <module>game-network</module>
     <module>game-rpc</module>
+    <module>game-runtime</module>
+    <module>game-demo</module>
   </modules>
 </project>

@@ -123,7 +123,7 @@ Peer 移除/重建、物理重连均不重置节点计数器；PendingCall 仍�
 | 字段 | 宽度及约束 |
 | --- | --- |
 | nodeId、sourceNodeId、targetNodeId | int32，允许完整有符号范围 |
-| command | int32，必须 >0 |
+| command | 有符号 int32，必须非零；正负均可，业务可约定负数用于服间协议 |
 | requestId | int32，Request ≥0，Response >0 |
 | errorCode | int32，0 成功，正数错误，负数非法 |
 | routeKey、businessId | int64，允许负数 |

@@ -164,6 +164,22 @@
       "tcpHex": "000000210100000001000000010000000000000002000000000000000301000000037fff00"
     },
     {
+      "name": "command_negative",
+      "note": "负协议号的 Call，command=-1001",
+      "bytes": 30,
+      "hex": "01fffffc1700000001000000000000000200000000000000030100000000",
+      "expected": { "msgType": 1, "command": -1001, "requestId": 1, "bodyBytes": 0 },
+      "tcpHex": "0000001e01fffffc1700000001000000000000000200000000000000030100000000"
+    },
+    {
+      "name": "command_min",
+      "note": "最小 int 协议号的通知，requestId=0",
+      "bytes": 30,
+      "hex": "018000000000000000000000000000000200000000000000030100000000",
+      "expected": { "msgType": 1, "command": -2147483648, "requestId": 0, "bodyBytes": 0 },
+      "tcpHex": "0000001e018000000000000000000000000000000200000000000000030100000000"
+    },
+    {
       "name": "command_max",
       "note": "command=2147483647，为最大正 int 协议号",
       "bytes": 30,
@@ -427,9 +443,9 @@
       "reason": "Response requestId 为负；Drop，不匹配任何调用"
     },
     {
-      "name": "negative_command",
-      "hex": "01ffffffff00000001000000000000000200000000000000030100000000",
-      "reason": "command 为负；可信且正 requestId 的 Call 返回 PROTOCOL_ERROR"
+      "name": "zero_command",
+      "hex": "010000000000000001000000000000000200000000000000030100000000",
+      "reason": "command 为零；可信且正 requestId 的 Call 返回 PROTOCOL_ERROR"
     },
     {
       "name": "negative_error_code",

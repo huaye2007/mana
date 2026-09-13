@@ -1,0 +1,289 @@
+{"warmups":3,"samples":5,"millis":500,"boundProtocols":32,"messages":500000,"jvmFlags":"-Xms256m -Xmx256m -XX:+UseG1GC","activeProtocols":[1,32],"invokersSha256":"5E7693B0A171821D8B37BCB9FA1DF63158FE7BD0EB65D366FC284AC130706F9C","forks":3,"mode":"all","routes":64,"producers":4,"arities":[2,4],"window":64,"scheduling":"PLATFORM/BALANCED","timestamp":"2026-09-12T23:36:23.0489230+08:00","workers":4,"tasksPerTurn":32,"kind":"configuration","cpu":"Intel(R) Core(TM) Ultra 5 125H"}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":0,"operations":104935424,"nsPerOp":4.765,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":1,"operations":89145344,"nsPerOp":5.61,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":2,"operations":103231488,"nsPerOp":4.843,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":3,"operations":102096896,"nsPerOp":4.897,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":4,"operations":106328064,"nsPerOp":4.702,"bytesPerOp":0.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":0,"operations":220692480,"nsPerOp":2.266,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":1,"operations":258232320,"nsPerOp":1.936,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":2,"operations":233472000,"nsPerOp":2.142,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":3,"operations":235278336,"nsPerOp":2.125,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":4,"operations":236556288,"nsPerOp":2.114,"bytesPerOp":0.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":0,"operations":93351936,"nsPerOp":5.356,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":1,"operations":94560256,"nsPerOp":5.288,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":2,"operations":87851008,"nsPerOp":5.691,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":3,"operations":89919488,"nsPerOp":5.561,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":4,"operations":89333760,"nsPerOp":5.597,"bytesPerOp":0.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":0,"operations":71041024,"nsPerOp":7.038,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":1,"operations":72015872,"nsPerOp":6.944,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":2,"operations":74608640,"nsPerOp":6.702,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":3,"operations":73510912,"nsPerOp":6.802,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":4,"operations":76382208,"nsPerOp":6.546,"bytesPerOp":0.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":0,"operations":37490688,"nsPerOp":13.338,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":1,"operations":36745216,"nsPerOp":13.61,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":2,"operations":37720064,"nsPerOp":13.256,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":3,"operations":38297600,"nsPerOp":13.056,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":4,"operations":38256640,"nsPerOp":13.07,"bytesPerOp":32.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":0,"operations":122912768,"nsPerOp":4.068,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":1,"operations":119324672,"nsPerOp":4.19,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":2,"operations":120889344,"nsPerOp":4.136,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":3,"operations":123322368,"nsPerOp":4.054,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":4,"operations":123248640,"nsPerOp":4.057,"bytesPerOp":0.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":0,"operations":67534848,"nsPerOp":7.404,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":1,"operations":68169728,"nsPerOp":7.336,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":2,"operations":67100672,"nsPerOp":7.452,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":3,"operations":68104192,"nsPerOp":7.342,"bytesPerOp":0.0,"fork":1}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":4,"operations":67985408,"nsPerOp":7.355,"bytesPerOp":0.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":0,"operations":34799616,"nsPerOp":14.369,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":1,"operations":32387072,"nsPerOp":15.442,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":2,"operations":34668544,"nsPerOp":14.422,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":3,"operations":35123200,"nsPerOp":14.237,"bytesPerOp":32.0,"fork":1}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":4,"operations":35172352,"nsPerOp":14.216,"bytesPerOp":32.0,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2986360.099,"p50Micros":24.6,"p99Micros":67.3,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2819894.468,"p50Micros":24.6,"p99Micros":67.2,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":3151400.861,"p50Micros":26.3,"p99Micros":68.8,"gcCount":1,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2769306.776,"p50Micros":21.8,"p99Micros":63.1,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":3105389.466,"p50Micros":23.5,"p99Micros":63.8,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2682859.692,"p50Micros":24.5,"p99Micros":67.9,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2890250.261,"p50Micros":26.6,"p99Micros":67.2,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2918205.047,"p50Micros":22.5,"p99Micros":62.2,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2347851.035,"p50Micros":17.7,"p99Micros":58.7,"gcCount":1,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":2855475.26,"p50Micros":22.1,"p99Micros":64.9,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2904177.252,"p50Micros":26.2,"p99Micros":72.4,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":2991799.478,"p50Micros":26.9,"p99Micros":73.3,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2459814.018,"p50Micros":22.8,"p99Micros":70.9,"gcCount":1,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2533827.869,"p50Micros":23.7,"p99Micros":70.0,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":2632354.799,"p50Micros":24.2,"p99Micros":68.7,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2897756.152,"p50Micros":25.0,"p99Micros":67.6,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":2977436.392,"p50Micros":25.6,"p99Micros":69.4,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2873320.472,"p50Micros":26.3,"p99Micros":71.2,"gcCount":1,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2794748.109,"p50Micros":26.1,"p99Micros":73.1,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":2480394.958,"p50Micros":22.3,"p99Micros":68.6,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":3146543.993,"p50Micros":25.3,"p99Micros":70.9,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":3146171.77,"p50Micros":29.8,"p99Micros":76.0,"gcCount":1,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2860842.335,"p50Micros":25.0,"p99Micros":70.4,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2690399.578,"p50Micros":22.4,"p99Micros":67.1,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":3149566.62,"p50Micros":26.7,"p99Micros":71.0,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2719386.506,"p50Micros":23.3,"p99Micros":66.6,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":3132164.827,"p50Micros":23.6,"p99Micros":64.2,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":3007987.41,"p50Micros":27.1,"p99Micros":69.0,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":3058021.68,"p50Micros":28.1,"p99Micros":70.9,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":2798500.675,"p50Micros":24.4,"p99Micros":66.8,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2821668.837,"p50Micros":24.5,"p99Micros":69.2,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":3265875.585,"p50Micros":30.3,"p99Micros":75.5,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":3101617.68,"p50Micros":27.9,"p99Micros":72.5,"gcCount":1,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2646241.913,"p50Micros":24.3,"p99Micros":69.3,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":2816877.604,"p50Micros":23.6,"p99Micros":67.0,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2605440.89,"p50Micros":22.0,"p99Micros":67.2,"gcCount":3,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":3254045.266,"p50Micros":29.2,"p99Micros":75.4,"gcCount":1,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2954393.035,"p50Micros":27.1,"p99Micros":73.6,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":3272703.233,"p50Micros":28.3,"p99Micros":73.3,"gcCount":2,"fork":1}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":3021297.732,"p50Micros":26.8,"p99Micros":72.8,"gcCount":2,"fork":1}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":0,"operations":93499392,"nsPerOp":5.348,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":1,"operations":94846976,"nsPerOp":5.272,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":2,"operations":86614016,"nsPerOp":5.773,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":3,"operations":88522752,"nsPerOp":5.648,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":4,"operations":88150016,"nsPerOp":5.672,"bytesPerOp":0.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":0,"operations":74080256,"nsPerOp":6.75,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":1,"operations":72323072,"nsPerOp":6.914,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":2,"operations":71475200,"nsPerOp":6.996,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":3,"operations":75972608,"nsPerOp":6.582,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":4,"operations":75354112,"nsPerOp":6.636,"bytesPerOp":0.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":0,"operations":37003264,"nsPerOp":13.513,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":1,"operations":36823040,"nsPerOp":13.58,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":2,"operations":37814272,"nsPerOp":13.223,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":3,"operations":38027264,"nsPerOp":13.149,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":4,"operations":38105088,"nsPerOp":13.123,"bytesPerOp":32.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":0,"operations":122724352,"nsPerOp":4.074,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":1,"operations":124805120,"nsPerOp":4.007,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":2,"operations":120102912,"nsPerOp":4.163,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":3,"operations":125341696,"nsPerOp":3.989,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":4,"operations":124649472,"nsPerOp":4.011,"bytesPerOp":0.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":0,"operations":67682304,"nsPerOp":7.388,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":1,"operations":68685824,"nsPerOp":7.281,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":2,"operations":68812800,"nsPerOp":7.266,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":3,"operations":68415488,"nsPerOp":7.309,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":4,"operations":68669440,"nsPerOp":7.282,"bytesPerOp":0.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":0,"operations":32669696,"nsPerOp":15.305,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":1,"operations":33198080,"nsPerOp":15.064,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":2,"operations":34471936,"nsPerOp":14.506,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":3,"operations":34811904,"nsPerOp":14.364,"bytesPerOp":32.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":4,"operations":34709504,"nsPerOp":14.405,"bytesPerOp":32.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2863941.035,"p50Micros":25.1,"p99Micros":70.7,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2740304.119,"p50Micros":25.4,"p99Micros":72.2,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":3329495.535,"p50Micros":25.1,"p99Micros":66.7,"gcCount":1,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2716323.966,"p50Micros":23.0,"p99Micros":69.0,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":3049239.733,"p50Micros":25.9,"p99Micros":68.7,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2862806.306,"p50Micros":26.2,"p99Micros":70.5,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":3135047.828,"p50Micros":26.2,"p99Micros":69.4,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2754488.577,"p50Micros":23.5,"p99Micros":67.6,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2911804.923,"p50Micros":25.2,"p99Micros":68.0,"gcCount":1,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":2882241.415,"p50Micros":26.1,"p99Micros":69.3,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2983106.667,"p50Micros":26.8,"p99Micros":71.8,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":3136007.386,"p50Micros":26.7,"p99Micros":70.3,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2728923.974,"p50Micros":23.6,"p99Micros":76.7,"gcCount":1,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2878681.978,"p50Micros":25.6,"p99Micros":74.7,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":2949638.463,"p50Micros":25.6,"p99Micros":72.6,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2665833.505,"p50Micros":23.6,"p99Micros":72.1,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":2941730.208,"p50Micros":26.3,"p99Micros":68.8,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2782861.137,"p50Micros":24.9,"p99Micros":68.6,"gcCount":1,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2929961.612,"p50Micros":23.8,"p99Micros":67.5,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":2911542.11,"p50Micros":25.9,"p99Micros":69.3,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2846192.335,"p50Micros":23.3,"p99Micros":69.7,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2917183.494,"p50Micros":26.4,"p99Micros":75.1,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2762496.568,"p50Micros":23.2,"p99Micros":70.4,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2733529.528,"p50Micros":23.9,"p99Micros":67.7,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":2712073.282,"p50Micros":21.8,"p99Micros":67.0,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2864969.955,"p50Micros":23.7,"p99Micros":69.1,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":3151990.892,"p50Micros":23.6,"p99Micros":65.3,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2626207.662,"p50Micros":23.4,"p99Micros":66.0,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2860695.023,"p50Micros":23.4,"p99Micros":65.9,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":3066974.755,"p50Micros":25.7,"p99Micros":70.0,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2800351.724,"p50Micros":23.8,"p99Micros":74.5,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":2906022.15,"p50Micros":24.1,"p99Micros":68.7,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2943449.853,"p50Micros":26.5,"p99Micros":70.8,"gcCount":1,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2822803.055,"p50Micros":25.9,"p99Micros":72.8,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":3270427.746,"p50Micros":26.9,"p99Micros":70.0,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":3257413.874,"p50Micros":27.1,"p99Micros":72.3,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":2981452.385,"p50Micros":26.5,"p99Micros":71.6,"gcCount":1,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":3161951.354,"p50Micros":28.2,"p99Micros":72.7,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":3238434.256,"p50Micros":27.0,"p99Micros":72.5,"gcCount":2,"fork":2}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":3187226.616,"p50Micros":27.2,"p99Micros":73.7,"gcCount":2,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":0,"operations":106618880,"nsPerOp":4.69,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":1,"operations":108773376,"nsPerOp":4.597,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":2,"operations":75329536,"nsPerOp":6.638,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":3,"operations":106758144,"nsPerOp":4.684,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":4,"operations":113790976,"nsPerOp":4.394,"bytesPerOp":0.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":0,"operations":246505472,"nsPerOp":2.028,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":1,"operations":235941888,"nsPerOp":2.119,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":2,"operations":240656384,"nsPerOp":2.078,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":3,"operations":240914432,"nsPerOp":2.075,"bytesPerOp":0.0,"fork":2}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":4,"operations":242262016,"nsPerOp":2.064,"bytesPerOp":0.0,"fork":2}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":0,"operations":35381248,"nsPerOp":14.132,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":1,"operations":36356096,"nsPerOp":13.756,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":2,"operations":37003264,"nsPerOp":13.513,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":3,"operations":37502976,"nsPerOp":13.334,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":1,"sample":4,"operations":38252544,"nsPerOp":13.072,"bytesPerOp":32.0,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":0,"operations":123772928,"nsPerOp":4.04,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":1,"operations":124522496,"nsPerOp":4.016,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":2,"operations":117956608,"nsPerOp":4.239,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":3,"operations":123011072,"nsPerOp":4.065,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":1,"sample":4,"operations":122626048,"nsPerOp":4.078,"bytesPerOp":0.0,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":0,"operations":70336512,"nsPerOp":7.109,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":1,"operations":68816896,"nsPerOp":7.266,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":2,"operations":68722688,"nsPerOp":7.276,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":3,"operations":66011136,"nsPerOp":7.575,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":4,"protocols":32,"sample":4,"operations":67629056,"nsPerOp":7.393,"bytesPerOp":0.0,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":0,"operations":32198656,"nsPerOp":15.529,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":1,"operations":30806016,"nsPerOp":16.232,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":2,"operations":30814208,"nsPerOp":16.227,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":3,"operations":33820672,"nsPerOp":14.784,"bytesPerOp":32.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":4,"protocols":32,"sample":4,"operations":33284096,"nsPerOp":15.023,"bytesPerOp":32.0,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2282268.191,"p50Micros":19.6,"p99Micros":70.3,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2806730.765,"p50Micros":25.0,"p99Micros":71.0,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2454108.177,"p50Micros":19.7,"p99Micros":63.5,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2587742.588,"p50Micros":24.2,"p99Micros":71.9,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":2810439.772,"p50Micros":24.1,"p99Micros":68.1,"gcCount":1,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2910406.625,"p50Micros":25.4,"p99Micros":71.4,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2718873.386,"p50Micros":25.2,"p99Micros":73.4,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2821465.029,"p50Micros":25.5,"p99Micros":71.3,"gcCount":1,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2702176.874,"p50Micros":26.9,"p99Micros":74.6,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":3160710.098,"p50Micros":24.4,"p99Micros":67.3,"gcCount":2,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":3093846.895,"p50Micros":26.1,"p99Micros":71.5,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":3007310.772,"p50Micros":28.0,"p99Micros":72.2,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":3130676.307,"p50Micros":28.7,"p99Micros":74.5,"gcCount":1,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":3258388.232,"p50Micros":28.1,"p99Micros":73.2,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":2,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":3255852.721,"p50Micros":27.0,"p99Micros":71.1,"gcCount":2,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2957347.945,"p50Micros":25.7,"p99Micros":71.1,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":2709492.545,"p50Micros":25.4,"p99Micros":71.6,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":3210066.769,"p50Micros":28.7,"p99Micros":74.5,"gcCount":1,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2888744.067,"p50Micros":26.1,"p99Micros":71.4,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":2,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":2490682.357,"p50Micros":22.2,"p99Micros":66.9,"gcCount":2,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2671302.623,"p50Micros":28.4,"p99Micros":80.3,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2765818.685,"p50Micros":26.0,"p99Micros":72.2,"gcCount":1,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":2889949.565,"p50Micros":27.5,"p99Micros":74.1,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":2678411.68,"p50Micros":22.7,"p99Micros":68.0,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":2895566.193,"p50Micros":24.2,"p99Micros":66.4,"gcCount":2,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":0,"messages":500000,"opsPerSecond":2999380.328,"p50Micros":28.9,"p99Micros":76.3,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":1,"messages":500000,"opsPerSecond":2399574.22,"p50Micros":21.5,"p99Micros":66.9,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":2,"messages":500000,"opsPerSecond":3008275.163,"p50Micros":25.1,"p99Micros":68.4,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":3,"messages":500000,"opsPerSecond":3064989.423,"p50Micros":26.8,"p99Micros":69.2,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":1,"sample":4,"messages":500000,"opsPerSecond":3170683.606,"p50Micros":25.8,"p99Micros":66.5,"gcCount":2,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":3046807.494,"p50Micros":30.0,"p99Micros":79.9,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":2883912.154,"p50Micros":27.1,"p99Micros":75.3,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2944821.12,"p50Micros":24.7,"p99Micros":72.3,"gcCount":1,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2655385.174,"p50Micros":25.5,"p99Micros":74.2,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bytecode","arity":4,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":3098841.901,"p50Micros":26.7,"p99Micros":70.7,"gcCount":2,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":0,"messages":500000,"opsPerSecond":2925432.481,"p50Micros":25.0,"p99Micros":68.1,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":1,"messages":500000,"opsPerSecond":3102911.151,"p50Micros":26.5,"p99Micros":70.2,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":2,"messages":500000,"opsPerSecond":2568215.66,"p50Micros":21.8,"p99Micros":65.4,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":3,"messages":500000,"opsPerSecond":2621959.117,"p50Micros":22.5,"p99Micros":65.9,"gcCount":2,"fork":3}
+{"kind":"load","flavor":"bound","arity":4,"protocols":32,"sample":4,"messages":500000,"opsPerSecond":2831930.584,"p50Micros":26.4,"p99Micros":69.2,"gcCount":2,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":0,"operations":108044288,"nsPerOp":4.628,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":1,"operations":111202304,"nsPerOp":4.496,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":2,"operations":111521792,"nsPerOp":4.484,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":3,"operations":108376064,"nsPerOp":4.614,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":1,"sample":4,"operations":111181824,"nsPerOp":4.497,"bytesPerOp":0.0,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":0,"operations":238649344,"nsPerOp":2.095,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":1,"operations":266854400,"nsPerOp":1.874,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":2,"operations":232996864,"nsPerOp":2.146,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":3,"operations":236101632,"nsPerOp":2.118,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":1,"sample":4,"operations":234844160,"nsPerOp":2.129,"bytesPerOp":0.0,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":0,"operations":94461952,"nsPerOp":5.293,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":1,"operations":91873280,"nsPerOp":5.443,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":2,"operations":89477120,"nsPerOp":5.588,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":3,"operations":88522752,"nsPerOp":5.648,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bytecode","arity":2,"protocols":32,"sample":4,"operations":89911296,"nsPerOp":5.561,"bytesPerOp":0.0,"fork":3}
+{"kind":"environment","java":"25.0.3","vm":"Java HotSpot(TM) 64-Bit Server VM","processors":18,"os":"Windows 11","fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":0,"operations":70471680,"nsPerOp":7.095,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":1,"operations":73969664,"nsPerOp":6.76,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":2,"operations":69263360,"nsPerOp":7.219,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":3,"operations":69365760,"nsPerOp":7.208,"bytesPerOp":0.0,"fork":3}
+{"kind":"micro","flavor":"bound","arity":2,"protocols":32,"sample":4,"operations":69386240,"nsPerOp":7.206,"bytesPerOp":0.0,"fork":3}

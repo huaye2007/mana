@@ -1,9 +1,14 @@
 package cn.managame.network.tests;
 
+import cn.managame.network.netty.connection.NettyAccess;
+import cn.managame.network.netty.transport.NetworkResources;
+import cn.managame.network.netty.transport.TcpNetworkClient;
+import cn.managame.network.netty.transport.TcpNetworkServer;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import cn.managame.network.*;
-import cn.managame.network.netty.*;
+import cn.managame.network.netty.transport.*;
 
 import io.netty.buffer.*;
 import io.netty.channel.*;

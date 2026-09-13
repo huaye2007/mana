@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import cn.managame.network.AttributeKey;
 import cn.managame.network.ConnectionType;
-import cn.managame.network.netty.NettyConnection;
+import cn.managame.network.netty.connection.NettyConnection;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
