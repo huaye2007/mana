@@ -1,6 +1,9 @@
 package cn.managame.network.tests;
 
+import cn.managame.network.testsupport.TestSignal;
+
 import cn.managame.network.netty.connection.NettyAccess;
+import cn.managame.network.netty.connection.OutboundWriteLimits;
 import cn.managame.network.netty.transport.NetworkResources;
 import cn.managame.network.netty.transport.TcpNetworkClient;
 import cn.managame.network.netty.transport.TcpNetworkServer;
@@ -22,14 +25,15 @@ import java.util.concurrent.*;
 @Timeout(20)
 class SlowPeerTest {
     @Test
-    void nativeWatermarksReportSlowReaderAndCloseReleasesPendingWrites() throws Exception {
+    void slowReaderHitsBoundedBudgetAndCloseReleasesPendingWrites() throws Exception {
         try (var resources = NetworkResources.builder().ioThreads(2).build()) {
-            var accepted = new CompletableFuture<Connection>();
+            var accepted = new TestSignal<Connection>();
             var nonWritable = new CountDownLatch(1);
             var server =
                     TcpNetworkServer.builder()
                             .resources(resources)
                             .listen("127.0.0.1", 0)
+                            .outboundWriteLimits(new OutboundWriteLimits(16, 16L * 65536))
                             .childOption(ChannelOption.SO_SNDBUF, 1024)
                             .childOption(
                                     ChannelOption.WRITE_BUFFER_WATER_MARK,
@@ -64,10 +68,11 @@ class SlowPeerTest {
                             .handlerFactory(() -> (c, m) -> {})
                             .build();
             var messages = new ArrayList<ByteBuf>();
+            var rejected = new java.util.concurrent.atomic.AtomicInteger();
             try {
                 server.start();
                 client.init();
-                var connected = new CompletableFuture<Connection>();
+                var connected = new TestSignal<Connection>();
                 client.connect(
                         "127.0.0.1",
                         server.boundAddresses().values().iterator().next().getPort(),
@@ -91,12 +96,14 @@ class SlowPeerTest {
                                                 Unpooled.directBuffer(65536).writeZero(65536);
                                         messages.add(message);
                                         if (!connection.write(message)) {
+                                            assertEquals(1, message.refCnt(), "Rejected writes retain caller ownership");
                                             message.release();
-                                            fail("Write unexpectedly rejected");
+                                            rejected.incrementAndGet();
                                         }
                                     }
                                 })
                         .sync();
+                assertTrue(rejected.get() > 0, "Slow readers must hit bounded write admission");
                 assertTrue(nonWritable.await(5, TimeUnit.SECONDS));
                 assertTrue(messages.stream().anyMatch(b -> b.refCnt() > 0));
                 connection.close();

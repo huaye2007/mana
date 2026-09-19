@@ -121,7 +121,7 @@ public final class RpcLoadBenchmark {
             serverRef.set(server);
             server.start();
             client.start();
-            var connected = new CompletableFuture<Connection>();
+            var connected = new TestSignal<Connection>();
             client.connect(
                     20,
                     "127.0.0.1",

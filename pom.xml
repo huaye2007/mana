@@ -8,6 +8,6 @@
     <module>game-network</module>
     <module>game-rpc</module>
     <module>game-runtime</module>
-    <module>game-demo</module>
+    <module>game-data</module>
   </modules>
 </project>

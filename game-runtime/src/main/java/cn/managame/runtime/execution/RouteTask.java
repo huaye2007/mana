@@ -4,6 +4,8 @@ import cn.managame.runtime.context.HandlerContext;
 import cn.managame.runtime.diagnostics.HandlerException;
 import cn.managame.runtime.route.Route;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
@@ -13,14 +15,31 @@ public final class RouteTask implements Future<Void> {
     private final GameRuntime owner;
     private final Route route;
     private final Object domain;
-    private final CompletableFuture<Void> completion = new CompletableFuture<>();
+    private final Object completionLock = new Object();
+    private final CountDownLatch completed = new CountDownLatch(1);
+    private volatile boolean done;
+    private Throwable failure;
+    private List<Consumer<Throwable>> observers;
 
     RouteTask(GameRuntime owner, Route route, Object domain) {
         this.owner = owner; this.route = route; this.domain = domain;
     }
 
-    void succeed() { completion.complete(null); }
-    void fail(Throwable error) { completion.completeExceptionally(error); }
+    void succeed() { finish(null); }
+    void fail(Throwable error) { finish(Objects.requireNonNull(error)); }
+
+    private void finish(Throwable error) {
+        List<Consumer<Throwable>> ready;
+        synchronized (completionLock) {
+            if (done) return;
+            failure = error;
+            ready = observers;
+            observers = null;
+            done = true;
+            completed.countDown();
+        }
+        if (ready != null) for (var observer : ready) notifyObserver(observer, error);
+    }
 
     /**
      * Notify the current caller's Route after this task finishes, using callback admission.
@@ -39,7 +58,7 @@ public final class RouteTask implements Future<Void> {
         Objects.requireNonNull(listener);
         HandlerContext context = owner.callbackContext(Objects.requireNonNull(target));
         RouteTask notification = owner.task(target);
-        completion.whenComplete((ignored, failure) -> CompletionNotifications.deliver(() -> {
+        observeCompletion(failure -> CompletionNotifications.deliver(() -> {
             try {
                 owner.dispatchCallback(context, () -> listener.accept(failure), notification);
             } catch (RuntimeException | Error error) {
@@ -52,12 +71,31 @@ public final class RouteTask implements Future<Void> {
     }
 
     /**
-     * Read-only completion observation for infrastructure bridges, including backend failure.
-     * Listeners follow CompletionStage threading rules; they have no route/context guarantee and
-     * must not execute routed business logic. Use onComplete for business notifications.
-     * Completing a future obtained from this stage cannot complete or cancel the route task.
+     * Observe terminal success (null) or failure for infrastructure cleanup and failure notification.
+     * Pending observers run on the completing thread; late observers run on the registering thread.
+     * Observers run outside the state lock, must return promptly, and have no Route/context guarantee.
+     * Observer exceptions are isolated from the task and other observers. Use onComplete for business.
      */
-    public CompletionStage<Void> completionStage() { return completion.minimalCompletionStage(); }
+    public void observeCompletion(Consumer<Throwable> observer) {
+        Objects.requireNonNull(observer);
+        Throwable result;
+        synchronized (completionLock) {
+            if (!done) {
+                if (observers == null) observers = new ArrayList<>();
+                observers.add(observer);
+                return;
+            }
+            result = failure;
+        }
+        notifyObserver(observer, result);
+    }
+
+    private static void notifyObserver(Consumer<Throwable> observer, Throwable failure) {
+        try { observer.accept(failure); }
+        catch (Throwable ignored) {
+            // Observation cannot alter completion, strand other observers, or interrupt route cleanup.
+        }
+    }
 
     private void checkWait() {
         if (isDone()) return;
@@ -69,13 +107,48 @@ public final class RouteTask implements Future<Void> {
             throw new IllegalStateException("Cannot wait for unfinished work in the current route execution domain: " + route);
     }
 
-    public void join() { checkWait(); completion.join(); }
-    public Void get() throws InterruptedException, ExecutionException { checkWait(); return completion.get(); }
-    public Void get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
-        checkWait(); return completion.get(timeout, unit);
+    /** Wait without consuming interruption; failures are reported as unchecked completion errors. */
+    public void join() {
+        checkWait();
+        boolean interrupted = false;
+        try {
+            while (!done) {
+                try { completed.await(); }
+                catch (InterruptedException error) { interrupted = true; }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+        if (failure instanceof CancellationException cancelled) throw cancelled;
+        if (failure instanceof CompletionException completion) throw completion;
+        if (failure != null) throw new CompletionException(failure);
     }
+
+    public Void get() throws InterruptedException, ExecutionException {
+        checkWait();
+        if (!done) completed.await();
+        return result();
+    }
+
+    public Void get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
+        Objects.requireNonNull(unit);
+        checkWait();
+        if (!done && !completed.await(timeout, unit)) throw new TimeoutException("Route task has not completed");
+        return result();
+    }
+
+    private Void result() throws ExecutionException {
+        if (failure instanceof CancellationException cancelled) throw cancelled;
+        if (failure != null) {
+            Throwable cause = failure instanceof CompletionException && failure.getCause() != null
+                    ? failure.getCause() : failure;
+            throw new ExecutionException(cause);
+        }
+        return null;
+    }
+
     /** Accepted route tasks are not cancellable through this handle; timers may cancel before dispatch. */
     public boolean cancel(boolean interrupt) { return false; }
-    public boolean isCancelled() { return completion.isCancelled(); }
-    public boolean isDone() { return completion.isDone(); }
+    public boolean isCancelled() { return done && failure instanceof CancellationException; }
+    public boolean isDone() { return done; }
 }

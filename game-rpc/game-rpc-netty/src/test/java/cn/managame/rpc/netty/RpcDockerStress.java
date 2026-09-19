@@ -296,7 +296,7 @@ public final class RpcDockerStress {
             var node = builder(10 + i, "0.0.0.0", 0, flush, (c, m) -> {}).build();
             nodes.add(node);
             node.start();
-            var connected = new CompletableFuture<Connection>();
+            var connected = new TestSignal<Connection>();
             node.connect(
                     20,
                     host,

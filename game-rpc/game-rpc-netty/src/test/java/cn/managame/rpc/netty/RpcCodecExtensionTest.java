@@ -65,7 +65,7 @@ class RpcCodecExtensionTest {
         assertEquals(2, outgoing.handshakes.get());
         assertEquals(2, incoming.handshakes.get());
         int decoded = incoming.decodes.get();
-        var unknown = new CompletableFuture<RpcResult>();
+        var unknown = new TestSignal<RpcResult>();
         a.call(
                 20,
                 999,
@@ -81,7 +81,7 @@ class RpcCodecExtensionTest {
     void customEnvelopeReachesHandlerWithoutInterpretingAddressOrInner() throws Exception {
         var outgoing = new TaggedCodec(false);
         var incoming = new TaggedCodec(false);
-        var received = new CompletableFuture<RpcRouteMessage>();
+        var received = new TestSignal<RpcRouteMessage>();
         var a = builder(10, outgoing, (c, m) -> {}).build();
         var b =
                 builder(

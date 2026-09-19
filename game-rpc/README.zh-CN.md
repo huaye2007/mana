@@ -10,7 +10,7 @@ game-rpc 不识别 Router 服务，不查询业务路由，不自动转发或解
 
 **实现状态（2026-09-12）：** Java Binding Draft 0.14。286 项测试通过（Core 251、Netty/TCP 35）。支持错误参数、逐 Slot 重连退避和可选的接收端读空闲关闭。
 
-RpcNode 负责对外 API 和组件生命周期；RpcCalls 管理调用，RpcMessages 统一处理消息，RpcConnections 管理连接及主动建连状态。RpcPeer 只保存逻辑节点身份、已发布连接、PendingCall 和生命周期，不保存地址、重连计时器或连接回调。每条物理连接的 Handler 同时维护握手身份，不再有独立 Binding；正常收发不按 connectionId 查表。RpcFuture 继续只保存单次调用状态。 通用消息规则对自定义 Codec 同样生效。握手准入与编码在连接管理锁外执行，恢复后重新检查候选是否有效。
+RpcNode 负责对外 API 和组件生命周期；RpcCalls 管理调用，RpcMessages 统一处理消息，RpcConnections 管理连接及主动建连状态。RpcPeer 只保存逻辑节点身份、已发布连接、PendingCall 和生命周期，不保存地址、重连计时器或连接回调。每条物理连接的 Handler 同时维护握手身份，不再有独立 Binding；正常收发不按 connectionId 查表。RpcFuture 仅保存单次调用的关联号、截止时间、完成状态、超时句柄和回调，不保存响应值。 通用消息规则对自定义 Codec 同样生效。握手准入与编码在连接管理锁外执行，恢复后重新检查候选是否有效。
 
 自定义 RpcTransport 使用 `start(Listener)`、`connect(InetSocketAddress, ConnectCallback)` 和 `write(Connection, ByteBuf)`；同步启停前使用 `checkLifecycleThread()` 检查线程。默认 Netty Provider 已同步更新。
 
@@ -112,7 +112,7 @@ RpcError 按 code 比较，可用 `GameErrors.NOT_ENOUGH_GOLD.equals(result.erro
 
 同一 Peer 最多保留 64 个等待连接就绪的回调；额外的带回调 connect 同步抛出 OVERLOADED。普通网络失败会自动重连，不必反复注册回调；不带回调的重复 connect 不增加等待者。
 
-结果、连接和诊断回调都在产生事件的线程直接通知，game-rpc 不通过内部线程池切换回调线程。业务层负责投递自己的业务线程；回调应及时返回。超时通知可能来自时间轮线程，移除/关闭通知在资源清理、退出生命周期锁后由调用线程执行。节点自有时间轮与网络 EventLoop 上调用同步 start/close 会在状态修改前拒绝，业务层需自行投递关闭操作。首次取得关闭权的调用同步清理资源，并发或重入 close 幂等返回。
+通知 RpcCallback 前先移除该调用的 pending 条目并取消已安装的超时句柄。结果、连接和诊断回调都在产生事件的线程直接通知，game-rpc 不通过内部线程池切换回调线程。业务层负责投递自己的业务线程；回调应及时返回。超时通知可能来自时间轮线程，移除/关闭通知在资源清理、退出生命周期锁后由调用线程执行。节点自有时间轮与网络 EventLoop 上调用同步 start/close 会在状态修改前拒绝，业务层需自行投递关闭操作。首次取得关闭权的调用同步清理资源，并发或重入 close 幂等返回。
 
 示例中的 body/responseBody 应由调用者编码并管理自己的引用。Call 自动分配正 int requestId；Send 通知使用 0。targetNodeId 必须是登记的直接相邻节点，未知目标回调 UNAVAILABLE 或返回 false。routeKey 只选择该 Peer 内的连接 Slot，不查询下一跳。
 

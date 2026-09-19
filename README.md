@@ -4,11 +4,11 @@
 
 English | [简体中文](README.zh-CN.md)
 
-**Networking, RPC, and business execution components for Java game servers.**
+**Networking, RPC, business execution, and data persistence components for Java game servers.**
 
 Mana provides transport components for client-facing gateways, RPC communication between game services, and ordered business execution through game-runtime. Applications supply their own message codecs, service discovery, business route resolvers, and game logic.
 
-The repository contains four projects: **game-network**, **game-rpc**, **game-runtime**, and **game-demo**.
+The repository contains four projects: **game-network**, **game-rpc**, **game-runtime**, and **game-data**.
 
 ## Projects
 
@@ -17,7 +17,7 @@ The repository contains four projects: **game-network**, **game-rpc**, **game-ru
 | **game-network** | TCP, WebSocket, secure WebSocket, and HTTP servers; TCP and WebSocket clients, with access to native Netty pipelines. | [English](game-network/README.md) · [简体中文](game-network/README.zh-CN.md) |
 | **game-rpc** | RPC over game-network, with peer connections, calls, notifications, explicit replies, timeouts, and metadata. | [English](game-rpc/README.md) · [简体中文](game-rpc/README.zh-CN.md) |
 | **game-runtime** | JDK-only OGBS business runtime with ordered routes, commands, events, cron, timers, callbacks, metadata, and a replaceable clock. | [English](game-runtime/README.md) · [简体中文](game-runtime/README.zh-CN.md) |
-| **game-demo** | Direct game-network clients, internal game-rpc server calls, and ordered game-runtime player commands. | [English](game-demo/README.md) · [简体中文](game-demo/README.zh-CN.md) |
+| **game-data** | Caffeine-backed entity repositories, asynchronous MySQL/MongoDB persistence, and independent partitioned logs. | [English](game-data/README.md) · [简体中文](game-data/README.zh-CN.md) |
 
 ### game-network
 
@@ -115,13 +115,6 @@ For RPC, including its network implementation:
 
 ### Run an example
 
-Build and run the integrated game demo (see the [demo guide](game-demo/README.md) for Windows JVM options and separate server/client processes):
-
-~~~sh
-mvn -pl game-demo -am verify
-java -jar game-demo/target/game-demo-0.1.0-SNAPSHOT.jar
-~~~
-
 [GatewayExample](game-network/game-network-netty/src/test/java/cn/managame/network/tests/GatewayExample.java) demonstrates a gateway with TCP, WebSocket, and HTTP listeners sharing network resources. Run its `main` method in an IDE with JDK 25; press Enter to stop. It also supports WSS when supplied with a PEM certificate chain and private key.
 
 For RPC node setup, peer connections, calls, notifications, and replies, follow the [game-rpc examples](game-rpc/README.md).
@@ -142,7 +135,7 @@ mana/
 │   ├── docs/                      # Wire and Java implementation specifications
 │   └── benchmarks/                # Local benchmarks and Docker stress tests
 ├── game-runtime/                  # JDK-only ordered business runtime, tests, and specification
-└── game-demo/                     # Runnable game-network + game-rpc + game-runtime example
+└── game-data/                     # Entity repositories and asynchronous persistence
 ~~~
 
 ## Documentation and validation

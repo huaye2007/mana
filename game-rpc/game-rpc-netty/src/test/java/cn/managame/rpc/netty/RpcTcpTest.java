@@ -82,14 +82,14 @@ class RpcTcpTest {
     final List<RpcNode> nodes = new ArrayList<>();
     final List<RpcDiagnostic> diagnostics = new CopyOnWriteArrayList<>();
 
-    static CompletableFuture<cn.managame.network.Connection> connectResult(
+    static TestSignal<cn.managame.network.Connection> connectResult(
             RpcNode node, int target, String host, int port) {
         return connectResult(node, target, host, port, 1);
     }
 
-    static CompletableFuture<cn.managame.network.Connection> connectResult(
+    static TestSignal<cn.managame.network.Connection> connectResult(
             RpcNode node, int target, String host, int port, int count) {
-        var result = new CompletableFuture<cn.managame.network.Connection>();
+        var result = new TestSignal<cn.managame.network.Connection>();
         node.connect(
                 target,
                 host,
@@ -182,8 +182,8 @@ class RpcTcpTest {
                                 && b.peer(a.nodeId()).isReady());
     }
 
-    CompletableFuture<RpcResult> call(RpcNode node, int target) {
-        var result = new CompletableFuture<RpcResult>();
+    TestSignal<RpcResult> call(RpcNode node, int target) {
+        var result = new TestSignal<RpcResult>();
         node.call(
                 target,
                 1,
@@ -201,7 +201,7 @@ class RpcTcpTest {
     @Test
     void businessErrorArgumentsSurviveTcpAndCallbackReturn() throws Exception {
         var error = new RpcError(10001, "金币不足");
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         var a = node(10, (c, m) -> {});
         var b =
                 node(
@@ -229,7 +229,7 @@ class RpcTcpTest {
     @Test
     void defaultNodeWorksOverTcpWithoutAnyCodecConfiguration() throws Exception {
 
-        var received = new CompletableFuture<RpcRequest>();
+        var received = new TestSignal<RpcRequest>();
         var a =
                 RpcNode.builder()
                         .nodeId(10)
@@ -265,7 +265,7 @@ class RpcTcpTest {
         var body = Unpooled.buffer().writeByte(9).writeInt(123);
         body.readerIndex(1);
         try {
-            var result = new CompletableFuture<RpcResult>();
+            var result = new TestSignal<RpcResult>();
             a.call(
                     20,
                     1,
@@ -285,8 +285,8 @@ class RpcTcpTest {
     @Test
     void defaultNodeSupportsBinaryNotifyWithoutCodecConfiguration() throws Exception {
 
-        var receivedBuffer = new CompletableFuture<RpcRequest>();
-        var receivedArray = new CompletableFuture<RpcRequest>();
+        var receivedBuffer = new TestSignal<RpcRequest>();
+        var receivedArray = new TestSignal<RpcRequest>();
         var a =
                 RpcNode.builder()
                         .nodeId(10)
@@ -627,7 +627,7 @@ class RpcTcpTest {
 
     @Test
     void ackAndMessageInOneWriteUseReadyState() throws Exception {
-        var received = new CompletableFuture<RpcRequest>();
+        var received = new TestSignal<RpcRequest>();
         var a = node(10, (c, m) -> received.complete((RpcRequest) m));
         a.start();
         try (var server = new ServerSocket(0);
@@ -740,7 +740,7 @@ class RpcTcpTest {
                                                     }
                                                 }))
                 .sync();
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         a.call(
                 20,
                 1,
@@ -787,7 +787,7 @@ class RpcTcpTest {
                         });
         owner.set(b);
         connect(a, b, 1);
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         a.call(
                 20,
                 9876,
@@ -842,7 +842,7 @@ class RpcTcpTest {
 
     @Test
     void forwardingHappensOnlyWhenTheUserHandlerExplicitlySends() throws Exception {
-        var targetMessage = new CompletableFuture<RpcRouteMessage>();
+        var targetMessage = new TestSignal<RpcRouteMessage>();
         var relay = new AtomicReference<RpcNode>();
         var a = builder(10, (c, m) -> {}).build();
         nodes.add(a);

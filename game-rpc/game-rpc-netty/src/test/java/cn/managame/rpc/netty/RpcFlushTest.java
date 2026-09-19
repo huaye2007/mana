@@ -100,7 +100,7 @@ class RpcFlushTest {
         fixture.nodes.add(a);
         try {
             fixture.connect(a, b, 1);
-            var result = new CompletableFuture<RpcResult>();
+            var result = new TestSignal<RpcResult>();
             a.call(
                     20,
                     1,

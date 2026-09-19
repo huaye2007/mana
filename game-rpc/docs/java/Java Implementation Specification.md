@@ -195,7 +195,7 @@ RpcPeer.tryRegister 将本 Peer 的准入、冲突检查和登记作为一个原
 
 RpcCalls 统一处理响应、失败、超时和退役调用。正常完成经过 complete，生命周期收尾经过 settlePeer；两者复用 claimCall，以 Future.tryComplete 争取唯一完成权并取消计时句柄，再通过 Peer 按 Future 实例删除 Pending。截止时间判断、错误转换和结果通知均属于 RpcCalls。生命周期结束先确定结果，清理资源后再通知；普通完成在完成锁外通知。 Transport.write 在完成锁外执行，因此同步回入的请求、响应和诊断也不会继承发送锁；结果直接通知，保持“通知、响应、通知”的原消息顺序。Future 不暂存结果，不增加回调线程池、全局队列或响应 retain。发送准入是线性化边界：超时/移除先发生则拒绝提交，通过准入后视为在途，后续超时或移除可以完成调用，但不保证撤回已获准的网络写入。Transport 必须继续检查连接状态；同步响应已赢得结果后，发送再抛错或返回拒绝不能重复通知。
 
-超时任务由 RpcCalls 创建，显式携带原 Peer 和 Future，先清理 Pending，再由检测到超时的当前线程直接通知。时间轮触发的超时在时间轮线程通知，收发路径发现过期则在对应线程通知；Future 不引用调度组件，不创建无用 CompletableFuture。RPC 不使用 commonPool 或另建回调线程池，业务回调负责投递业务线程，不应在时间轮上执行耗时工作。
+超时任务由 RpcCalls 创建，显式携带原 Peer 和 Future，先清理 Pending，再由检测到超时的当前线程直接通知。时间轮触发的超时在时间轮线程通知，收发路径发现过期则在对应线程通知；RpcFuture 只保存调用完成状态，不持有响应结果；超时调度和同步回调通知由 RpcCalls 负责。RPC 不使用 commonPool 或另建回调线程池，业务回调负责投递业务线程，不应在时间轮上执行耗时工作。
 
 所有结果回调都直接通知，不隐式切换线程。普通成功/失败通常运行于调用线程或网络线程；移除/关闭在调用线程完成资源清理并退出生命周期锁后通知。不同调用可并发完成，用户负责把后续处理交给自己的运行环境。成功结果中的 ByteBuf 在同步回调中借用，异步使用必须保留引用。
 
@@ -319,7 +319,7 @@ close 先发布 CLOSED，收集并确定所有 Pending 的结束结果，取消�
 
 build 中 Provider 已返回 Transport 后，allocator 等后续装配步骤失败时，Node 先关闭该 Transport，再停止自有 Timer；清理异常加入原始异常的 suppressed，不覆盖原始失败，也不跳过后续清理。外部 Timer 仍由调用者所有，不能在构造回滚时停止。Provider 在返回 Transport 之前自身创建失败的资源由 Provider 清理。
 
-默认资源由 Node 所有；NettyRpcNetworkProvider(sharedResources) 和 Builder.timer(timer) 注入的资源为借用，Node 不关闭外部资源。同步 start/close 禁止在该节点网络 EventLoop 中执行，避免等待自己。连接建立使用 ConnectCallback，不暴露 CompletionStage。
+默认资源由 Node 所有；NettyRpcNetworkProvider(sharedResources) 和 Builder.timer(timer) 注入的资源为借用，Node 不关闭外部资源。同步 start/close 禁止在该节点网络 EventLoop 中执行，避免等待自己。连接建立使用 ConnectCallback，业务负责派发后续处理。
 
 ## 12. 配置默认值
 

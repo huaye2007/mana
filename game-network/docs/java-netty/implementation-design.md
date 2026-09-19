@@ -17,14 +17,14 @@
 | type | 构造时显式传入的 ConnectionType，不通过 Channel 状态或管线推断 |
 | isActive | channel.isActive() |
 | isWritable | channel.isWritable() |
-| write | channel.writeAndFlush(message) |
+| write | 调用线程先预留出站预算，再调用 channel.writeAndFlush(message, promise) |
 | close | channel.close() |
 | remoteAddress | channel.remoteAddress() |
 | get / set / remove / compareAndSet | channel.attr(key) 的对应方法 |
 
-不保存 NetworkHandler、连接就绪／终止状态、远端地址副本、写计数、关闭锁、暂存消息或回调队列。属性不由组件在关闭时清空，沿用 Channel 的属性生命周期。标识采用 Netty ChannelId，不再另建资源域和连接序列号。
+不保存 NetworkHandler、连接就绪／终止状态、远端地址副本、关闭锁、暂存消息或回调队列。仅以每连接短临界区维护待完成写条数和估算字节。属性不由组件在关闭时清空，沿用 Channel 的属性生命周期。标识采用 Netty ChannelId，不再另建资源域和连接序列号。
 
-现有 write 返回 boolean：调用前 Channel 已不活跃时返回 false，不接管消息；调用原生 writeAndFlush 后返回 true。它不是写入结果，也不承诺在并发 close 期间另建原子准入边界。需要原生写入成功／失败通知时，使用 NettyAccess.channel(connection).writeAndFlush(message) 返回的 ChannelFuture。引用计数消息只向其中一条写路径转交一次引用。
+现有 write 返回 boolean：调用前 Channel 已不活跃或出站预算不足时返回 false，不接管消息、不触发完成通知；调用原生 writeAndFlush 后返回 true。它不是写入结果，也不承诺在并发 close 期间另建原子准入边界。通过 connection.write(message, completion) 获取本地成功／失败通知；默认 1024 条 / 8 MiB 估算预算覆盖 EventLoop 排队和原生待写。原生 Promise 采用 ImmediateEventExecutor，确保 EventLoop 拒绝任务时仍归还预算并通知一次；不额外切换业务路由。直接 NettyAccess.channel(connection).writeAndFlush(message) 会绕过预算。引用计数消息只向其中一条写路径转交一次引用。
 
 ### NetworkHandlerBridge
 
@@ -101,7 +101,7 @@ HttpNetworkServer.Builder.contextPath 设置该实例所有监听地址的统一
 
 反向代理保留项目前缀时，后端配置同一 contextPath；代理移除前缀时，后端使用根路径。此功能不提供 Servlet 容器，不重写响应 Location、Cookie Path 或页面链接，不从代理头推断前缀。
 
-直接开放 ChannelOption、WebSocketServerProtocolConfig / WebSocketClientProtocolConfig 定制器、SslContext / SslHandler、HTTP decoder / aggregation。Netty 原生选项未配置时保留底层默认；无额外收发条数、字节积压预算、消息大小注册或写调度层。
+直接开放 ChannelOption、WebSocketServerProtocolConfig / WebSocketClientProtocolConfig 定制器、SslContext / SslHandler、HTTP decoder / aggregation。Netty 原生选项未配置时保留底层默认；TCP / WS builder 提供 OutboundWriteLimits，写条数与估算字节有界，无额外写调度层。ByteBuf / Holder 使用可读字节、FileRegion 使用剩余字节，业务对象采用原生 MESSAGE_SIZE_ESTIMATOR；任意编码膨胀后的实际内存不由估算器保证。
 
 Settings 仅持有 ChannelOption 与 NetworkOption 的不可变 Map 快照，并负责读取组件选项默认值。它不再持有 NetworkHandler 工厂、Pipeline 回调、TLS 或 WebSocket 配置。具体类在构建时保存自身所需的 final 配置引用；之后修改 Builder 的选项或替换回调，不影响已构建实例。回调闭包中的外部可变状态仍由调用方管理。
 

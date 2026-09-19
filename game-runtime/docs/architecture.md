@@ -47,7 +47,7 @@ RuntimeCallback.onFail(Throwable) 保留原始异常。abort(Throwable) 可结�
 
 响应编解码和请求响应关系由游戏服消息绑定维护。Runtime 只需要执行的命令登记；ProtocolRegistry 的旧响应关系 API 保留为已弃用兼容入口。
 
-RouteTask 使用 CompletableFuture 保存状态，但不暴露它供业务附加任意线程上的回调。onComplete 捕获目标 Route 和 Metadata，再提交业务监听器。
+RouteTask 通过完成锁保护单次终态和观察器列表，用 CountDownLatch 唤醒等待线程。终态发布后在锁外通知观察器，观察器异常不会替换结果或阻断其他观察器。onComplete 捕获目标 Route 和 Metadata，再提交业务监听器；observeCompletion 仅供基础设施清理和失败通知，不保证路由，也不提供业务续接链。显式 callback(Route, Metadata, ...) 和 dispatch(type, key, Metadata, action) 原样使用传入的 Metadata，原有重载继续按当前 Context 传播。
 
 内部完成投递由 CompletionNotifications 在当前完成线程上按队列迭代处理。投递拒绝会让通知任务失败，再迭代处理后继通知；不会因完成链长度增加 Java 调用栈深度。其线程局部队列在传播结束后移除，不引入新执行池，也不会绕过业务准入额度。外部异常观察器仍必须及时返回。
 

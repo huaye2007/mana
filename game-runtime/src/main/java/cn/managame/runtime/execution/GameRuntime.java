@@ -80,6 +80,11 @@ public final class GameRuntime implements AutoCloseable {
     public RouteTask dispatch(Class<? extends RouteType> routeType, long key, Runnable action) {
         return dispatch(new HandlerContext(new Route(routeType, key), childMetadata()), "dispatch", action);
     }
+    /** Dispatch with caller-supplied metadata, without inheriting or propagating the current context. */
+    public RouteTask dispatch(Class<? extends RouteType> routeType, long key, Metadata metadata, Runnable action) {
+        Objects.requireNonNull(routeType); Objects.requireNonNull(metadata); Objects.requireNonNull(action);
+        return dispatch(new HandlerContext(new Route(routeType, key), metadata), "dispatch", action);
+    }
     RouteTask dispatch(HandlerContext context, String source, Runnable action) {
         return routes.submit(context, source, action, false, null);
     }
@@ -169,6 +174,17 @@ public final class GameRuntime implements AutoCloseable {
         Objects.requireNonNull(definition);
         return new RuntimeCallback<>(this, callbackContext(definition.route()),
                 definition.onSuccess(), definition.onFail());
+    }
+    /**
+     * Create a callback with an explicit route and metadata, also usable from transport threads.
+     * Metadata is used as supplied; no current context is read and no propagation is performed.
+     * Delivery retains the normal callback admission reserve.
+     */
+    public <T> RuntimeCallback<T> callback(Route target, Metadata metadata,
+            Consumer<? super T> success, Consumer<? super Throwable> failure) {
+        Objects.requireNonNull(target); Objects.requireNonNull(metadata); Objects.requireNonNull(success);
+        routes.requireType(target.type());
+        return new RuntimeCallback<>(this, new HandlerContext(target, metadata), success, failure);
     }
     private Metadata childMetadata() {
         HandlerContext parent = HandlerContexts.currentOrNull();

@@ -36,11 +36,11 @@ class RpcCallbackThreadTest {
         var node = fixture.node(10, (c, m) -> {});
         var remote = fixture.node(20, (c, m) -> {});
         fixture.connect(node, remote, 1);
-        var timerThread = new CompletableFuture<Thread>();
+        var timerThread = new TestSignal<Thread>();
         node.timer.newTimeout(
                 t -> timerThread.complete(Thread.currentThread()), 0, TimeUnit.MILLISECONDS);
         var expected = timerThread.get(2, TimeUnit.SECONDS);
-        var actual = new CompletableFuture<Thread>();
+        var actual = new TestSignal<Thread>();
         var pendingCount = new AtomicInteger(-1);
         var calls = new AtomicInteger();
         var error = new AtomicReference<RpcError>();
@@ -81,17 +81,17 @@ class RpcCallbackThreadTest {
         var node = fixture.node(10, (c, m) -> {});
         remote.start();
         node.start();
-        var connectedOn = new CompletableFuture<Thread>();
+        var connectedOn = new TestSignal<Thread>();
         node.connect(20, "127.0.0.1", remote.localAddress().getPort(), callback(connectedOn));
         var completedOn = connectedOn.get(2, TimeUnit.SECONDS);
         assertSame(ackThread.get(), completedOn);
-        var alreadyReady = new CompletableFuture<Thread>();
+        var alreadyReady = new TestSignal<Thread>();
         var caller = Thread.currentThread();
         node.connect(20, "127.0.0.1", remote.localAddress().getPort(), callback(alreadyReady));
-        assertSame(caller, alreadyReady.getNow(null));
+        assertSame(caller, alreadyReady.get(0, TimeUnit.NANOSECONDS));
     }
 
-    private static ConnectCallback callback(CompletableFuture<Thread> thread) {
+    private static ConnectCallback callback(TestSignal<Thread> thread) {
         return new ConnectCallback() {
             public void onSuccess(Connection c) {
                 thread.complete(Thread.currentThread());
@@ -119,7 +119,7 @@ class RpcCallbackThreadTest {
         Object startup = startupField.get(node);
         record Notification(
                 Thread thread, boolean locked, boolean transportClosed, boolean peerRemoved) {}
-        var actual = new CompletableFuture<Notification>();
+        var actual = new TestSignal<Notification>();
         var calls = new AtomicInteger();
         node.connect(
                 20,
@@ -143,7 +143,7 @@ class RpcCallbackThreadTest {
         var caller = Thread.currentThread();
         if (close) node.close();
         else node.removePeer(20);
-        var result = actual.getNow(null);
+        var result = actual.get(0, TimeUnit.NANOSECONDS);
         assertNotNull(result);
         assertSame(caller, result.thread());
         assertFalse(result.locked());

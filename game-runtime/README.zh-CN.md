@@ -262,4 +262,6 @@ var players = ExecutionDomain.platform("players").threads(4)
 
 ### 基础设施完成状态观察
 
-`RouteTask.completionStage()` 返回只读 CompletionStage，用于 RPC 等适配器观察包括后端失败在内的最终状态。观察者遵循 JDK CompletionStage 线程规则，不保证 Route 或 HandlerContext，不应用来执行路由业务；业务完成通知继续使用 `onComplete`。观察者抛出的异常或对返回 stage 派生 Future 的完成/取消都不会改变原 RouteTask。
+`RouteTask.observeCompletion(observer)` 向基础设施清理或失败通知代码报告终态：成功参数为 `null`，失败参数为原始异常，也能观察后端故障。提前登记的观察器在完成线程执行，终态后登记的观察器在登记线程执行；均在完成状态锁外调用，必须及时返回，不保证 Route 或 HandlerContext。观察器异常与任务和其他观察器隔离。路由业务通知继续使用 `onComplete`。RouteTask 使用显式终态和 CountDownLatch 等待，不提供任意线程上的续接链。
+
+适配器已持有路由和 Metadata 时，可调用 `runtime.callback(targetRoute, metadata, onSuccess, onFailure)`，仍使用 Callback 准入预留。`runtime.dispatch(routeType, key, metadata, action)` 通过普通任务准入接收显式上下文数据。这两个重载原样使用传入 Metadata，不读取当前 Context，也不执行 MetadataPropagator；原有重载继续保留上下文传播行为。

@@ -71,14 +71,14 @@ final class RpcTestSupport {
 
     static final RpcLimits LIMITS = new RpcLimits(4096, 1024, 4000, 1024);
 
-    static CompletableFuture<cn.managame.network.Connection> connectResult(
+    static TestSignal<cn.managame.network.Connection> connectResult(
             RpcNode node, int target, String host, int port) {
         return connectResult(node, target, host, port, 1);
     }
 
-    static CompletableFuture<cn.managame.network.Connection> connectResult(
+    static TestSignal<cn.managame.network.Connection> connectResult(
             RpcNode node, int target, String host, int port, int count) {
-        var result = new CompletableFuture<cn.managame.network.Connection>();
+        var result = new TestSignal<cn.managame.network.Connection>();
         node.connect(
                 target,
                 host,

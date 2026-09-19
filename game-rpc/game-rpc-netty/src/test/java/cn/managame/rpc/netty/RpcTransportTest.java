@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 class RpcTransportTest {
     static class Events implements RpcTransport.Listener {
         final AtomicInteger inbound = new AtomicInteger(), outbound = new AtomicInteger();
-        final CompletableFuture<byte[]> received = new CompletableFuture<>();
+        final TestSignal<byte[]> received = new TestSignal<>();
 
         public NetworkHandler newInboundHandler() {
             inbound.incrementAndGet();
@@ -42,8 +42,8 @@ class RpcTransportTest {
                 null);
     }
 
-    CompletableFuture<Connection> connect(RpcTransport transport, InetSocketAddress address) {
-        var result = new CompletableFuture<Connection>();
+    TestSignal<Connection> connect(RpcTransport transport, InetSocketAddress address) {
+        var result = new TestSignal<Connection>();
         transport.connect(
                 address,
                 new ConnectCallback() {
@@ -92,10 +92,10 @@ class RpcTransportTest {
     void connectBeforeStartAndAfterCloseFailsThroughCallback() {
         var transport = transport();
         var address = InetSocketAddress.createUnresolved("127.0.0.1", 12345);
-        assertTrue(connect(transport, address).isCompletedExceptionally());
+        assertThrows(ExecutionException.class, () -> connect(transport, address).get(0, TimeUnit.NANOSECONDS));
         transport.close();
         transport.close();
-        assertTrue(connect(transport, address).isCompletedExceptionally());
+        assertThrows(ExecutionException.class, () -> connect(transport, address).get(0, TimeUnit.NANOSECONDS));
         assertThrows(IllegalStateException.class, () -> transport.start(new Events()));
     }
 }

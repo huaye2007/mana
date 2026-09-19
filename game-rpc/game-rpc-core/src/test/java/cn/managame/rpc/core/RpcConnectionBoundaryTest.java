@@ -84,7 +84,7 @@ class RpcConnectionBoundaryTest {
     void offlineConnectWaitersAreBoundedAndRemovalNotifiesEveryAcceptedWaiter() throws Exception {
         var node = fixture.node(10, (c, m) -> {});
         node.start();
-        var results = new ArrayList<CompletableFuture<Connection>>();
+        var results = new ArrayList<TestSignal<Connection>>();
         for (int i = 0; i < 64; i++) results.add(connectResult(node, 20, "127.0.0.1", 25000));
         for (int i = 0; i < 1000; i++) {
             var error =
@@ -120,7 +120,7 @@ class RpcConnectionBoundaryTest {
     void successfulConnectReleasesWaiterCapacity() throws Exception {
         var node = fixture.node(10, (c, m) -> {});
         node.start();
-        var results = new ArrayList<CompletableFuture<Connection>>();
+        var results = new ArrayList<TestSignal<Connection>>();
         for (int i = 0; i < 64; i++) results.add(connectResult(node, 20, "127.0.0.1", 25000));
         var remote = fixture.builder(20, (c, m) -> {}).listen("127.0.0.1", 25000).build();
         fixture.nodes.add(remote);

@@ -122,8 +122,8 @@ class RpcNodeTest {
         }
     }
 
-    CompletableFuture<RpcResult> call(RpcNode a, int target, RpcOptions options) {
-        var result = new CompletableFuture<RpcResult>();
+    TestSignal<RpcResult> call(RpcNode a, int target, RpcOptions options) {
+        var result = new TestSignal<RpcResult>();
         a.call(
                 target,
                 1,
@@ -140,7 +140,7 @@ class RpcNodeTest {
 
     @Test
     void arbitraryCommandsAreDeliveredWithoutRegistration() throws Exception {
-        var received = new CompletableFuture<RpcRequest>();
+        var received = new TestSignal<RpcRequest>();
         var a = node(10, (c, m) -> {});
         var b =
                 node(
@@ -153,7 +153,7 @@ class RpcNodeTest {
                             } else received.complete(request);
                         });
         connect(a, b, 1);
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         a.call(
                 20,
                 Integer.MAX_VALUE,
@@ -171,7 +171,7 @@ class RpcNodeTest {
 
     @Test
     void negativeCommandsSupportCallsAndOneWaySends() throws Exception {
-        var notice = new CompletableFuture<Integer>();
+        var notice = new TestSignal<Integer>();
         var a = node(10, (c, m) -> {});
         var b = node(20, (c, m) -> {
             var request = (RpcRequest) m;
@@ -182,7 +182,7 @@ class RpcNodeTest {
             }
         });
         connect(a, b, 1);
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         a.call(20, -1001, body("grant"), RpcOptions.route(7),
                 value -> result.complete(snapshot(value)));
         assertEquals(body("reward"), result.get(3, TimeUnit.SECONDS).value().body());
@@ -217,7 +217,7 @@ class RpcNodeTest {
             assertEquals(RpcError.UNAVAILABLE, call(a, 20, RpcOptions.DEFAULT).get().error());
             a.start();
             a.close();
-            var stillRunning = new CompletableFuture<Boolean>();
+            var stillRunning = new TestSignal<Boolean>();
             timer.newTimeout(ignored -> stillRunning.complete(true), 0, TimeUnit.MILLISECONDS);
             assertTrue(stillRunning.get(2, TimeUnit.SECONDS));
             assertEquals(RpcError.UNAVAILABLE, call(a, 20, RpcOptions.DEFAULT).get().error());
@@ -874,7 +874,7 @@ class RpcNodeTest {
         var a = builder(10, (c, m) -> {}).codec(slow).build();
         nodes.add(a);
         connect(a, b, 1);
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         try (var executor = Executors.newSingleThreadExecutor()) {
             var sent =
                     executor.submit(

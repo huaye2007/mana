@@ -44,7 +44,7 @@ class RpcCloseReplyTest {
         var a = f.node(10, (c, m) -> {});
         var b = f.node(20, (c, m) -> {});
         f.connect(a, b, 1);
-        var finished = new CompletableFuture<Thread>();
+        var finished = new TestSignal<Thread>();
         a.call(
                 20,
                 1,
@@ -78,8 +78,8 @@ class RpcCloseReplyTest {
         Object lock = lifecycleLock(a);
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var callback = new CompletableFuture<Void>();
-        var closed = new CompletableFuture<Void>();
+        var callback = new TestSignal<Void>();
+        var closed = new TestSignal<Void>();
         a.call(
                 20,
                 1,
@@ -214,7 +214,7 @@ class RpcCloseReplyTest {
             f.nodes.add(a);
             var b = f.node(20, (c, m) -> {});
             f.connect(a, b, 1);
-            var closed = new CompletableFuture<Void>();
+            var closed = new TestSignal<Void>();
             a.call(
                     20,
                     1,
@@ -230,7 +230,7 @@ class RpcCloseReplyTest {
                     });
             closed.get(3, TimeUnit.SECONDS);
             assertTrue(a.isClosed());
-            var tick = new CompletableFuture<Void>();
+            var tick = new TestSignal<Void>();
             shared.newTimeout(t -> tick.complete(null), 1, TimeUnit.MILLISECONDS);
             tick.get(3, TimeUnit.SECONDS);
         } finally {
@@ -274,7 +274,7 @@ class RpcCloseReplyTest {
                     if (frame[0] == 2) written.set(c);
                     return false;
                 };
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         a.call(20, 1, body("bad wire"), RpcOptions.DEFAULT, result::complete);
         assertEquals(RpcError.PROTOCOL_ERROR, result.get(3, TimeUnit.SECONDS).error());
         assertSame(b.peer(10).connection(1), written.get());

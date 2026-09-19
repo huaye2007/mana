@@ -97,9 +97,13 @@ Client 不保存唯一目标地址。正常提交的 connect 通过 Netty Promis
 
 ## Connection 与原生 Pipeline
 
-Connection.type() 返回 ConnectionType.TCP、WS 或 WSS，类型在创建时确定且不随握手状态变化；HTTP 使用原生 Handler，不创建 Connection。NettyConnection 持有 Channel 和不可变的 ConnectionType。id() 直接返回 String，取自 channel.id().asLongText()。状态、远端地址、属性、close 都调用原生方法；write 直接调用 writeAndFlush，不维护连接状态机、写计数、锁或消息队列。
+Connection.type() 返回 ConnectionType.TCP、WS 或 WSS，类型在创建时确定且不随握手状态变化；HTTP 使用原生 Handler，不创建 Connection。NettyConnection 持有 Channel 和不可变的 ConnectionType。id() 直接返回 String，取自 channel.id().asLongText()。状态、远端地址、属性、close 都调用原生方法；write 先预留每连接出站容量，再调用 writeAndFlush，不另建消息队列。
 
-write 返回 false 表示调用前 Channel 已不活跃且未接管消息；true 表示已交给原生写路径，不代表对端收到，也不额外保证与并发 close 之间的原子准入。需要写完成通知时，使用 connection.write(message, failure -> { ... })：null 表示本地写成功，否则为原始失败原因。Netty 已实现此可选入口。返回 true 后即使稍后失败，引用仍由传输负责；false 不触发回调，引用由调用方释放。回调可能在返回前或传输线程执行，不能阻塞。未支持此能力的 Connection 在取得引用前抛出 UnsupportedOperationException。需要直接访问 ChannelFuture 时仍可使用 NettyAccess.channel(connection).writeAndFlush(message)。两条写路径只选择一条，避免重复转交消息引用。
+write 返回 false 表示 Channel 已不活跃或出站预算不足，均未接管消息；true 表示已交给原生写路径，不代表对端收到，也不额外保证与并发 close 之间的原子准入。需要写完成通知时，使用 connection.write(message, failure -> { ... })：null 表示本地写成功，否则为原始失败原因。Netty 已实现此可选入口。返回 true 后即使稍后失败，引用仍由传输负责；false 不触发回调，引用由调用方释放。回调可能在返回前或传输线程执行，不能阻塞。未支持此能力的 Connection 在取得引用前抛出 UnsupportedOperationException。需要直接访问 ChannelFuture 时仍可使用 NettyAccess.channel(connection).writeAndFlush(message)。直接 Channel 写绕过连接的出站预算。两条写路径只选择一条，避免重复转交消息引用。
+
+TCP / WS 的 builder 均可设置 `.outboundWriteLimits(new OutboundWriteLimits(1024, 8L * 1024 * 1024))`，类型为 `cn.managame.network.netty.connection.OutboundWriteLimits`，这也是默认值。待完成写条数和估算字节在调用线程原子预留，覆盖提交 EventLoop 前的排队；原生写成功或失败后归还预算。`isWritable()` 同时检查此预算。返回 false 表示准入拒绝，调用方释放消息，并根据业务协议决定丢弃、有界重试或关闭慢连接。
+
+ByteBuf / ByteBufHolder 按 readableBytes 计费，FileRegion 按剩余字节计费，其他业务对象使用 builder 的原生 `ChannelOption.MESSAGE_SIZE_ESTIMATOR`（服务端 `childOption`、客户端 `option`）。业务对象编码后明显膨胀时应提供合适估算器，必要时计入帧头。此字节数属于准入估算，任意业务编码与 TLS 膨胀后的内存并不等于它；写条数上限始终适用于所有对象。原生 HTTP Handler 与直接 Channel 写仍由应用的原生管线管理。
 
 NetworkHandlerBridge 是 Pipeline 中的普通 SimpleChannelInboundHandler，直接调用用户 NetworkHandler，沿用原生串行事件传播。onMessage 的引用计数参数是借用引用；回调返回由原生自动释放机制释放。回写示例：
 

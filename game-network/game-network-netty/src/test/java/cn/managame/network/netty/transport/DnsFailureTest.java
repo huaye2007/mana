@@ -1,5 +1,7 @@
 package cn.managame.network.netty.transport;
 
+import cn.managame.network.testsupport.TestSignal;
+
 import cn.managame.network.netty.connection.NettyAccess;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -137,7 +139,7 @@ class DnsFailureTest {
     }
 
     private static final class Result implements ConnectCallback {
-        final CompletableFuture<Connection> future = new CompletableFuture<>();
+        final TestSignal<Connection> future = new TestSignal<>();
         final AtomicInteger calls = new AtomicInteger();
 
         public void onSuccess(Connection connection) {

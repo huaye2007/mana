@@ -1,5 +1,7 @@
 package cn.managame.network.tests;
 
+import cn.managame.network.testsupport.TestSignal;
+
 import cn.managame.network.netty.connection.NettyAccess;
 import cn.managame.network.netty.transport.NetworkResources;
 import cn.managame.network.netty.transport.TcpNetworkClient;
@@ -302,9 +304,9 @@ class NetworkLoadIT {
             throws Exception {
         // Bound only the test driver's simultaneous handshakes, not the component.
         for (int start = from; start < to; start += 256) {
-            var results = new ArrayList<CompletableFuture<Connection>>();
+            var results = new ArrayList<TestSignal<Connection>>();
             for (int i = start; i < Math.min(to, start + 256); i++) {
-                var result = new CompletableFuture<Connection>();
+                var result = new TestSignal<Connection>();
                 results.add(result);
                 ConnectCallback callback =
                         new ConnectCallback() {

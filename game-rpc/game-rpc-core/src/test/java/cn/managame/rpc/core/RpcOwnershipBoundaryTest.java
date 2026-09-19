@@ -206,7 +206,7 @@ class RpcOwnershipBoundaryTest {
             fixture.connect(a, b, 1);
             timer.stop();
             var callbacks = new AtomicInteger();
-            var result = new CompletableFuture<RpcResult>();
+            var result = new TestSignal<RpcResult>();
             a.call(
                     20,
                     1,

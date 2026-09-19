@@ -4,11 +4,11 @@
 
 [English](README.md) | 简体中文
 
-**面向 Java 游戏服务器的网络通信、RPC 与业务执行组件。**
+**面向 Java 游戏服务器的网络通信、RPC、业务执行与数据持久化组件。**
 
 Mana 提供面向客户端网关的网络传输组件、游戏服务之间的 RPC 通信，以及通过 game-runtime 实现的有序业务执行。应用自行实现消息编解码、服务发现、业务路由解析和游戏逻辑。
 
-当前仓库包含四个项目：**game-network**、**game-rpc**、**game-runtime** 和 **game-demo**。
+当前仓库包含四个项目：**game-network**、**game-rpc**、**game-runtime** 和 **game-data**。
 
 ## 项目
 
@@ -17,7 +17,7 @@ Mana 提供面向客户端网关的网络传输组件、游戏服务之间的 RP
 | **game-network** | TCP、WebSocket、加密 WebSocket 和 HTTP 服务端，以及 TCP 和 WebSocket 客户端，可直接使用原生 Netty Pipeline。 | [English](game-network/README.md) · [简体中文](game-network/README.zh-CN.md) |
 | **game-rpc** | 基于 game-network 的 RPC，支持节点连接、调用、通知、显式回复、超时和 Metadata。 | [English](game-rpc/README.md) · [简体中文](game-rpc/README.zh-CN.md) |
 | **game-runtime** | 仅依赖 JDK 的 OGBS 业务执行引擎，支持有序 Route、Command、Event、Cron、Timer、Callback、Metadata 和可替换时钟。 | [English](game-runtime/README.md) · [简体中文](game-runtime/README.zh-CN.md) |
-| **game-demo** | 客户端通过 game-network 直连游戏服，game-rpc 用于服间通信，game-runtime 有序执行玩家业务。 | [English](game-demo/README.md) · [简体中文](game-demo/README.zh-CN.md) |
+| **game-data** | Caffeine 实体缓存、异步 MySQL/MongoDB 持久化，以及独立数据库的日志分表。 | [English](game-data/README.md) · [简体中文](game-data/README.zh-CN.md) |
 
 ### game-network
 
@@ -115,13 +115,6 @@ RPC 通信，包含其网络实现：
 
 ### 运行示例
 
-构建并运行整合示例（Windows JVM 参数及独立服务端/客户端运行方式见 [demo 使用说明](game-demo/README.zh-CN.md)）：
-
-~~~sh
-mvn -pl game-demo -am verify
-java -jar game-demo/target/game-demo-0.1.0-SNAPSHOT.jar
-~~~
-
 [GatewayExample](game-network/game-network-netty/src/test/java/cn/managame/network/tests/GatewayExample.java) 展示了共享网络资源的 TCP、WebSocket 和 HTTP 网关。在 IDE 中使用 JDK 25 运行其 `main` 方法，按回车停止。提供 PEM 证书链和私钥后，也可启动 WSS。
 
 RPC 节点创建、Peer 连接、调用、通知和回复示例见 [game-rpc 使用说明](game-rpc/README.zh-CN.md)。
@@ -142,7 +135,7 @@ mana/
 │   ├── docs/                      # Wire 与 Java 实现规范
 │   └── benchmarks/                # 本地性能基线和 Docker 压力测试
 ├── game-runtime/                  # 仅依赖 JDK 的有序业务运行时、测试与规范
-└── game-demo/                     # game-network + game-rpc + game-runtime 接入示例
+└── game-data/                     # 实体 Repository 与异步持久化
 ~~~
 
 ## 文档与验证

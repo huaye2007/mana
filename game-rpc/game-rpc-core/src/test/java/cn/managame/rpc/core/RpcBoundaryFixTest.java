@@ -319,7 +319,7 @@ class RpcBoundaryFixTest {
         fixture.nodes.add(a);
         var b = fixture.node(20, (c, m) -> fail("Closed connection must reject the pending write"));
         fixture.connect(a, b, 1);
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         var callbacks = new AtomicInteger();
         try (var workers = Executors.newFixedThreadPool(2)) {
             var call =
@@ -337,7 +337,7 @@ class RpcBoundaryFixTest {
             try {
                 assertTrue(entered.await(2, TimeUnit.SECONDS));
                 workers.submit(() -> a.removePeer(20)).get(2, TimeUnit.SECONDS);
-                assertEquals(RpcError.UNAVAILABLE, result.getNow(null).error());
+                assertEquals(RpcError.UNAVAILABLE, result.get(0, TimeUnit.NANOSECONDS).error());
                 assertFalse(call.isDone());
                 release.countDown();
                 call.get(2, TimeUnit.SECONDS);

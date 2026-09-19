@@ -26,13 +26,13 @@ class RpcCallStopTest {
         });
         var b = fixture.node(20, (connection, message) -> {});
         fixture.connect(a, b, 1);
-        var outbound = new CompletableFuture<RpcResult>();
+        var outbound = new TestSignal<RpcResult>();
         a.call(20, 1, body("pending"), RpcOptions.DEFAULT, result -> {
             completed.incrementAndGet(); outbound.complete(result);
             // Reentrant calls are rejected; no transport or lifecycle lock is held here.
             a.stopCalls();
         });
-        var reply = new CompletableFuture<RpcResult>();
+        var reply = new TestSignal<RpcResult>();
         b.call(10, 1, body("incoming"), RpcOptions.DEFAULT, reply::complete);
         await(() -> incoming.get() != null && a.peer(20).pendingCount() == 1);
         a.stopCalls();
@@ -42,7 +42,7 @@ class RpcCallStopTest {
         assertTrue(a.peer(20).isReady());
         assertTrue(a.reply(incoming.get(), RpcResponse.error(incomingId.get(), RpcError.NO_HANDLER)));
         assertEquals(RpcError.NO_HANDLER, reply.get(3, TimeUnit.SECONDS).error());
-        var rejected = new CompletableFuture<RpcResult>();
+        var rejected = new TestSignal<RpcResult>();
         a.call(20, 1, body("new"), RpcOptions.DEFAULT, rejected::complete);
         assertEquals(RpcError.UNAVAILABLE, rejected.get(3, TimeUnit.SECONDS).error());
         assertFalse(a.send(20, 1, body("notification"), RpcOptions.DEFAULT));
@@ -55,14 +55,14 @@ class RpcCallStopTest {
         var b = fixture.node(20, (c, m) -> {});
         fixture.connect(a, b, 1);
         AtomicInteger completions = new AtomicInteger();
-        var results = new ConcurrentLinkedQueue<CompletableFuture<RpcResult>>();
+        var results = new ConcurrentLinkedQueue<TestSignal<RpcResult>>();
         CountDownLatch start = new CountDownLatch(1);
         try (var workers = Executors.newFixedThreadPool(5)) {
             var tasks = new ArrayList<Future<?>>();
             for (int worker = 0; worker < 4; worker++) tasks.add(workers.submit(() -> {
                 try { start.await(); } catch (InterruptedException e) { throw new AssertionError(e); }
                 for (int i = 0; i < 100; i++) {
-                    var result = new CompletableFuture<RpcResult>(); results.add(result);
+                    var result = new TestSignal<RpcResult>(); results.add(result);
                     a.call(20, 1, body("request"), RpcOptions.DEFAULT, value -> {
                         completions.incrementAndGet(); result.complete(value);
                     });
@@ -86,7 +86,7 @@ class RpcCallStopTest {
         var b = fixture.node(20, (c, m) -> {});
         fixture.connect(a, b, 1);
         a.timer.stop();
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         a.call(20, 1, body("timer-stopped"), RpcOptions.DEFAULT, result::complete);
         var failure = result.get(3, TimeUnit.SECONDS);
         assertEquals(RpcError.INTERNAL_ERROR, failure.error());

@@ -78,7 +78,7 @@ class RpcRegressionTest {
         fixture.nodes.add(a);
         var router = fixture.node(20, (c, m) -> fail("Expired request was sent"));
         fixture.connect(a, router, 1);
-        var result = new CompletableFuture<RpcResult>();
+        var result = new TestSignal<RpcResult>();
         var callbacks = new AtomicInteger();
         try (var workers = Executors.newSingleThreadExecutor()) {
             try {
@@ -267,7 +267,7 @@ class RpcRegressionTest {
                 var lockField = RpcConnections.class.getDeclaredField("lock");
                 lockField.setAccessible(true);
                 var lock = lockField.get(field.get(a));
-                var held = new CompletableFuture<Boolean>();
+                var held = new TestSignal<Boolean>();
                 a.connect(
                         b.nodeId(),
                         "127.0.0.1",

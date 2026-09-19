@@ -1,6 +1,7 @@
 package cn.managame.network.netty.transport;
 
 import cn.managame.network.netty.connection.NettyConnection;
+import cn.managame.network.netty.connection.OutboundWriteLimits;
 import cn.managame.network.netty.connection.NettyAccess;
 
 import cn.managame.network.*;
@@ -24,6 +25,7 @@ public final class TcpNetworkServer implements NetworkServer {
     private final NetworkResources resources;
     private final boolean ownsResources;
     private final Settings settings;
+    private final OutboundWriteLimits outboundWriteLimits;
     private final Supplier<? extends NetworkHandler> handlerFactory;
     private final BiConsumer<Connection, ChannelPipeline> pipelineInitializer;
     private final Map<String, InetSocketAddress> addresses;
@@ -34,6 +36,7 @@ public final class TcpNetworkServer implements NetworkServer {
     private volatile boolean stopped;
 
     private TcpNetworkServer(Builder b) {
+        outboundWriteLimits = b.outboundWriteLimits;
         settings =
                 new Settings(
                         b,
@@ -131,7 +134,7 @@ public final class TcpNetworkServer implements NetworkServer {
     }
 
     private void initPipeline(Channel ch) {
-        var connection = new NettyConnection(ch, ConnectionType.TCP);
+        var connection = new NettyConnection(ch, ConnectionType.TCP, outboundWriteLimits);
         ChannelPipeline pipeline = ch.pipeline();
         Promise<Connection> readiness = ch.eventLoop().newPromise();
         readiness.addListener(
@@ -157,6 +160,13 @@ public final class TcpNetworkServer implements NetworkServer {
     }
 
     public static final class Builder extends RealtimeServerBuilder<Builder> {
+        private OutboundWriteLimits outboundWriteLimits = OutboundWriteLimits.DEFAULT;
+
+        public Builder outboundWriteLimits(OutboundWriteLimits value) {
+            outboundWriteLimits = Objects.requireNonNull(value);
+            return this;
+        }
+
         public TcpNetworkServer build() {
             return new TcpNetworkServer(this);
         }

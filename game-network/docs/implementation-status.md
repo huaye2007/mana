@@ -14,7 +14,7 @@
 - 已删除 ProtocolSupport 及其 install 方法；五个具体 Server / Client 各自通过 initPipeline 配置原生 Handler，不再集中判断 TCP / WS / WSS 和客户端 / 服务端。
 - 五个具体类直接实现公共接口；移除 ComponentSupport、AbstractNetworkServer、AbstractNetworkClient、CallbackScope。直接调用原生绑定、关闭和资源释放，不增加后台停止任务或客户端 Attempt 状态机。
 - 用户通过 pipeline 安装业务 Decoder / Encoder。移除自动 String / byte[] 编码；TCP 默认无业务编解码器，WS/WSS 默认仅协议处理，帧聚合可选。
-- NettyConnection 持有 Channel 和不可变 ConnectionType，type 返回 TCP / WS / WSS，id 直接返回底层长格式标识字符串，其他方法直接委托；桥接 Handler 根据 connection.type() 区分就绪事件，在原生 Pipeline 中调用 NetworkHandler，不再保存 websocket 布尔变量。不记录在途写操作，不维护独立连接状态、锁或事件队列。
+- NettyConnection 持有 Channel 和不可变 ConnectionType，type 返回 TCP / WS / WSS，id 直接返回底层长格式标识字符串，其他方法直接委托；桥接 Handler 根据 connection.type() 区分就绪事件，在原生 Pipeline 中调用 NetworkHandler，不再保存 websocket 布尔变量。不维护独立连接状态或事件队列；以短临界区预留每连接出站预算（默认 1024 条 / 8 MiB），包括 EventLoop 排队，写完成归还预算。
 - Server 只监听自身协议，多协议由应用组合多个 Server；HTTP 与实时连接使用独立 IO group；显式资源借用，内部创建资源自有。
 - TLS 使用 WsNetworkServer / WsNetworkClient Builder 的 sslContext / tlsHandler，无额外 profile。
 - WsNetworkClient 在 init 中创建默认 SslContext 并复用，构建阶段只保存用户配置。
@@ -22,7 +22,7 @@
 - Settings 只负责原生和组件选项的不可变快照及默认值读取。业务 Handler、TLS、WS 配置由使用它们的具体类保存；四个公共 Builder 基类分别成文件，公共选项层不包含协议专属字段。
 - build 时拒绝组件不支持的 NetworkOption；原生 ChannelOption 不增加组件白名单。支持范围见 README 的组件选项表。
 - 普通 Java 对象按 GC 管理；带外部资源的自定义消息通过 Netty ReferenceCounted 契约及原生 Handler 管理，本版没有单独的资源清理策略注册表。
-- public API 不使用 CompletionStage；内部完成状态不构成对外异步生命周期 API。
+- public API 使用显式完成回调；内部 Netty Promise 不构成对外异步生命周期 API。测试使用 CountDownLatch 单次信号，不注册完成后续逻辑。
 - HTTP/WS 同端口分流不属于当前端点模型。每个端点有独立监听地址，可配置端口 0 后通过 boundAddresses 查询实际地址。
 
 ## 组件选项默认值
@@ -84,6 +84,7 @@ STOP_TIMEOUT / DESTROY_TIMEOUT 只控制组件 ChannelGroup 的关闭等待；Ne
 - build 后修改 Builder 的原生选项、组件选项、WS 协议参数和 Handler / Pipeline 回调，不影响已构建实例；通过实际 WS 分片往返验证快照行为。
 - TCP 和 WS 两端安装用户编解码器，NetworkHandler 收发业务对象；TCP 中文消息往返、WS 可选聚合后分片消息往返。
 - 并发 write / close 后所有测试 ByteBuf 引用归零。
+- 实际慢读 TCP、阻塞 EventLoop 下 128 次并发写（限 16 条）、字节上限、成功/失败预算回收、拒绝不转移引用且不回调。
 - WSS 实际加密往返，受信任证书成功，不匹配目标主机失败。
 
 测试证书 localhost-test.p12 位于测试资源目录，别名 localhost，密码 changeit，仅用于测试；不会进入主 JAR。只含 localhost DNS 名称，127.0.0.1 用于验证主机名不匹配失败。

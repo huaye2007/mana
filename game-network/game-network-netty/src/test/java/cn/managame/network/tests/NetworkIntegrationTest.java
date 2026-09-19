@@ -1,5 +1,7 @@
 package cn.managame.network.tests;
 
+import cn.managame.network.testsupport.TestSignal;
+
 import cn.managame.network.netty.connection.NettyAccess;
 import cn.managame.network.netty.transport.HttpNetworkServer;
 import cn.managame.network.netty.transport.NetworkOptions;
@@ -208,11 +210,11 @@ class NetworkIntegrationTest {
         return new InetSocketAddress("127.0.0.1", 0);
     }
 
-    private static <T> T await(CompletableFuture<T> f) throws Exception {
+    private static <T> T await(TestSignal<T> f) throws Exception {
         return f.get(8, TimeUnit.SECONDS);
     }
 
-    private static ConnectCallback callback(CompletableFuture<Connection> f) {
+    private static ConnectCallback callback(TestSignal<Connection> f) {
         return new ConnectCallback() {
             public void onSuccess(Connection c) {
                 f.complete(c);
@@ -225,13 +227,13 @@ class NetworkIntegrationTest {
     }
 
     private static Connection connect(TcpNetworkClient c, int port) throws Exception {
-        var f = new CompletableFuture<Connection>();
+        var f = new TestSignal<Connection>();
         c.connect("127.0.0.1", port, callback(f));
         return await(f);
     }
 
     private static Connection connect(WsNetworkClient c, URI uri) throws Exception {
-        var f = new CompletableFuture<Connection>();
+        var f = new TestSignal<Connection>();
         c.connect(uri, callback(f));
         return await(f);
     }
@@ -262,7 +264,7 @@ class NetworkIntegrationTest {
     @Test
     void tcpMaintainsMessageOrderAndReferenceOwnership() throws Exception {
         var r = resources();
-        var accepted = new CompletableFuture<Connection>();
+        var accepted = new TestSignal<Connection>();
         var s =
                 server(
                         tcp(r).pipeline(
@@ -272,7 +274,7 @@ class NetworkIntegrationTest {
                                         }));
         int count = 100;
         var received = new ArrayList<Integer>();
-        var finished = new CompletableFuture<Void>();
+        var finished = new TestSignal<Void>();
         var inbound = new AtomicReference<ByteBuf>();
         var c =
                 client(
@@ -311,8 +313,8 @@ class NetworkIntegrationTest {
         var a = server(tcp(r));
         var b = server(tcp(r));
         var c = client(TcpNetworkClient.builder().resources(r).handlerFactory(() -> (x, m) -> {}));
-        var f1 = new CompletableFuture<Connection>();
-        var f2 = new CompletableFuture<Connection>();
+        var f1 = new TestSignal<Connection>();
+        var f2 = new TestSignal<Connection>();
         c.connect("127.0.0.1", port(a, "tcp"), callback(f1));
         c.connect("127.0.0.1", port(b, "tcp"), callback(f2));
         var ca = await(f1);
@@ -337,8 +339,8 @@ class NetworkIntegrationTest {
                                 .webSocketServer(b -> b.websocketPath("/game")));
         var httpServer =
                 server(HttpNetworkServer.builder().resources(r).listen("http", loopback()));
-        var received = new CompletableFuture<String>();
-        var disconnected = new CompletableFuture<Void>();
+        var received = new TestSignal<String>();
+        var disconnected = new TestSignal<Void>();
         var c =
                 client(
                         WsNetworkClient.builder()
@@ -435,7 +437,7 @@ class NetworkIntegrationTest {
                                                                 ctx.writeAndFlush(response);
                                                             }
                                                         })));
-        var got = new CompletableFuture<Integer>();
+        var got = new TestSignal<Integer>();
         var c =
                 client(
                         TcpNetworkClient.builder()
@@ -450,7 +452,14 @@ class NetworkIntegrationTest {
                                     URI.create(
                                             "http://127.0.0.1:" + port(httpServer, "http") + "/"))
                             .build();
-            var response = http.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+            var response = new TestSignal<HttpResponse<String>>();
+            Thread.startVirtualThread(() -> {
+                try {
+                    response.complete(http.send(request, HttpResponse.BodyHandlers.ofString()));
+                } catch (Throwable failure) {
+                    response.completeExceptionally(failure);
+                }
+            });
             try {
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 connection.write(Unpooled.buffer(4).writeInt(42));
@@ -469,7 +478,7 @@ class NetworkIntegrationTest {
         var r = resources();
         var s = server(tcp(r));
         var events = new CopyOnWriteArrayList<String>();
-        var ended = new CompletableFuture<Void>();
+        var ended = new TestSignal<Void>();
         var c =
                 client(
                         TcpNetworkClient.builder()
@@ -510,8 +519,8 @@ class NetworkIntegrationTest {
         var r = resources();
         var s = server(tcp(r));
         var key = AttributeKey.of("user", String.class);
-        var idle = new CompletableFuture<IdleType>();
-        var ended = new CompletableFuture<Void>();
+        var idle = new TestSignal<IdleType>();
+        var ended = new TestSignal<Void>();
         var c =
                 client(
                         TcpNetworkClient.builder()
@@ -549,8 +558,8 @@ class NetworkIntegrationTest {
     @Test
     void changingBuildersDoesNotAffectBuiltComponents() throws Exception {
         var r = resources();
-        var serverNoDelay = new CompletableFuture<Boolean>();
-        var reply = new CompletableFuture<String>();
+        var serverNoDelay = new TestSignal<Boolean>();
+        var reply = new TestSignal<String>();
         var serverBuilder =
                 WsNetworkServer.builder()
                         .resources(r)
@@ -652,17 +661,17 @@ class NetworkIntegrationTest {
     private static void assertClientLifecycle(
             NetworkClient client, java.util.function.Consumer<ConnectCallback> connect)
             throws Exception {
-        var beforeInit = new CompletableFuture<Connection>();
+        var beforeInit = new TestSignal<Connection>();
         assertThrows(NetworkException.class, () -> connect.accept(callback(beforeInit)));
         assertFalse(beforeInit.isDone());
         client.init();
         client.init();
-        var first = new CompletableFuture<Connection>();
+        var first = new TestSignal<Connection>();
         connect.accept(callback(first));
         Connection connection = await(first);
         connection.close();
         assertTrue(NettyAccess.channel(connection).closeFuture().await(5, TimeUnit.SECONDS));
-        var second = new CompletableFuture<Connection>();
+        var second = new TestSignal<Connection>();
         connect.accept(callback(second));
         Connection anotherConnection = await(second);
         assertTrue(anotherConnection.isActive());
@@ -670,7 +679,7 @@ class NetworkIntegrationTest {
         client.destroy();
         assertFalse(anotherConnection.isActive());
         assertThrows(
-                NetworkException.class, () -> connect.accept(callback(new CompletableFuture<>())));
+                NetworkException.class, () -> connect.accept(callback(new TestSignal<>())));
         assertThrows(NetworkException.class, client::init);
     }
 
@@ -693,7 +702,7 @@ class NetworkIntegrationTest {
     void synchronousLifecycleCannotRunInsideCallback() throws Exception {
         var r = resources();
         var s = server(tcp(r));
-        var checked = new CompletableFuture<Void>();
+        var checked = new TestSignal<Void>();
         var ref = new AtomicReference<TcpNetworkClient>();
         var c =
                 client(
@@ -765,8 +774,8 @@ class NetworkIntegrationTest {
                                 .handlerFactory(NetworkIntegrationTest::echo));
         for (boolean websocket : new boolean[] {false, true}) {
             var cause = new IllegalStateException("Session initialization failed");
-            var observed = new CompletableFuture<Connection>();
-            var failure = new CompletableFuture<Throwable>();
+            var observed = new TestSignal<Connection>();
+            var failure = new TestSignal<Throwable>();
             var results = new AtomicInteger();
             var disconnected = new AtomicInteger();
             NetworkHandler handler =
@@ -835,7 +844,7 @@ class NetworkIntegrationTest {
                                         (x, p) -> {
                                             throw cause;
                                         }));
-        var result = new CompletableFuture<Connection>();
+        var result = new TestSignal<Connection>();
         c.connect("127.0.0.1", port(s, "tcp"), callback(result));
         assertSame(cause, assertThrows(ExecutionException.class, () -> await(result)).getCause());
         var ws =
@@ -847,7 +856,7 @@ class NetworkIntegrationTest {
                                         (x, p) -> {
                                             throw cause;
                                         }));
-        var wsResult = new CompletableFuture<Connection>();
+        var wsResult = new TestSignal<Connection>();
         ws.connect(URI.create("ws://127.0.0.1:" + port(s, "tcp") + "/"), callback(wsResult));
         assertSame(cause, assertThrows(ExecutionException.class, () -> await(wsResult)).getCause());
     }
@@ -868,12 +877,12 @@ class NetworkIntegrationTest {
                         .build();
         cleanup.add(r::close);
         var c = client(TcpNetworkClient.builder().resources(r).handlerFactory(() -> (x, m) -> {}));
-        var result = new CompletableFuture<Connection>();
+        var result = new TestSignal<Connection>();
         c.connect("127.0.0.1", 1, callback(result));
         assertSame(cause, assertThrows(ExecutionException.class, () -> await(result)).getCause());
         c.destroy();
         var ws = client(WsNetworkClient.builder().resources(r).handlerFactory(() -> (x, m) -> {}));
-        var wsResult = new CompletableFuture<Connection>();
+        var wsResult = new TestSignal<Connection>();
         ws.connect(URI.create("ws://127.0.0.1:1/"), callback(wsResult));
         assertSame(cause, assertThrows(ExecutionException.class, () -> await(wsResult)).getCause());
         ws.destroy();
@@ -886,7 +895,7 @@ class NetworkIntegrationTest {
         var s = server(tcp(r).pipeline((x, p) -> {}).handlerFactory(() -> (x, m) -> {}));
         var c = client(WsNetworkClient.builder().resources(r).handlerFactory(() -> (x, m) -> {}));
         var results = new AtomicInteger();
-        var failure = new CompletableFuture<Throwable>();
+        var failure = new TestSignal<Throwable>();
         var uri = URI.create("ws://127.0.0.1:" + port(s, "tcp") + "/");
         c.connect(
                 uri,
@@ -905,7 +914,7 @@ class NetworkIntegrationTest {
         assertNotNull(await(failure));
         assertEquals(1, results.get());
         assertThrows(
-                NetworkException.class, () -> c.connect(uri, callback(new CompletableFuture<>())));
+                NetworkException.class, () -> c.connect(uri, callback(new TestSignal<>())));
     }
 
     @Test
@@ -936,7 +945,7 @@ class NetworkIntegrationTest {
                                 .resources(r)
                                 .handlerFactory(() -> (x, m) -> {})
                                 .webSocketClient(config -> config.handshakeTimeoutMillis(500)));
-        var first = new CompletableFuture<Connection>();
+        var first = new TestSignal<Connection>();
         var uri = URI.create("ws://127.0.0.1:" + port(wsServer, "ws") + "/");
         c.connect(URI.create("ws://127.0.0.1:" + port(s, "tcp") + "/"), callback(first));
         assertTrue(accepted.await(5, TimeUnit.SECONDS));
@@ -992,7 +1001,7 @@ class NetworkIntegrationTest {
     @Test
     void userTcpCodecExchangesBusinessObjectsInBothDirections() throws Exception {
         var r = resources();
-        var received = new CompletableFuture<GameMessage>();
+        var received = new TestSignal<GameMessage>();
         var s =
                 server(
                         tcp(r).pipeline((c, p) -> tcpMessageCodec(p))
@@ -1073,7 +1082,7 @@ class NetworkIntegrationTest {
             unused = socket.getLocalPort();
         }
         var c = client(TcpNetworkClient.builder().resources(r).handlerFactory(() -> (x, m) -> {}));
-        var result = new CompletableFuture<Connection>();
+        var result = new TestSignal<Connection>();
         var count = new AtomicInteger();
         c.connect(
                 "127.0.0.1",
@@ -1115,7 +1124,7 @@ class NetworkIntegrationTest {
         record Message(int value) {}
         var r = resources();
         var s = server(tcp(r));
-        var got = new CompletableFuture<Integer>();
+        var got = new TestSignal<Integer>();
         var c =
                 client(
                         TcpNetworkClient.builder()
@@ -1160,7 +1169,7 @@ class NetworkIntegrationTest {
         var r = resources();
         var s = server(tcp(r));
         var entered = new CountDownLatch(1);
-        var release = new CompletableFuture<Void>();
+        var release = new java.util.concurrent.atomic.AtomicReference<Runnable>();
         var c =
                 client(
                         TcpNetworkClient.builder()
@@ -1174,15 +1183,8 @@ class NetworkIntegrationTest {
                                                             public void close(
                                                                     ChannelHandlerContext ctx,
                                                                     ChannelPromise promise) {
+                                                                release.set(() -> ctx.executor().execute(() -> ctx.close(promise)));
                                                                 entered.countDown();
-                                                                release.whenComplete(
-                                                                        (v, t) ->
-                                                                                ctx.executor()
-                                                                                        .execute(
-                                                                                                () ->
-                                                                                                        ctx
-                                                                                                                .close(
-                                                                                                                        promise)));
                                                             }
                                                         }))
                                 .handlerFactory(() -> (x, m) -> {}));
@@ -1192,7 +1194,7 @@ class NetworkIntegrationTest {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertThrows(NetworkException.class, c::destroy);
         } finally {
-            release.complete(null);
+            release.get().run();
         }
         NettyAccess.channel(connection).closeFuture().sync();
         c.destroy();
@@ -1202,7 +1204,7 @@ class NetworkIntegrationTest {
     void disconnectExceptionFollowsNativePipeline() throws Exception {
         var r = resources();
         var s = server(tcp(r));
-        var observed = new CompletableFuture<Throwable>();
+        var observed = new TestSignal<Throwable>();
         var c =
                 client(
                         TcpNetworkClient.builder()
@@ -1303,8 +1305,8 @@ class NetworkIntegrationTest {
                         .trustManager((X509Certificate) store.getCertificate("localhost"))
                         .build();
         var r = resources();
-        var secureAccepted = new CompletableFuture<Connection>();
-        var plainAccepted = new CompletableFuture<Connection>();
+        var secureAccepted = new TestSignal<Connection>();
+        var plainAccepted = new TestSignal<Connection>();
         var s =
                 server(
                         WsNetworkServer.builder()
@@ -1328,8 +1330,8 @@ class NetworkIntegrationTest {
                                 .sslContext(clientTls)
                                 .handlerFactory(
                                         () -> (x, m) -> got.add(((TextWebSocketFrame) m).text())));
-        var secure = new CompletableFuture<Connection>();
-        var insecure = new CompletableFuture<Connection>();
+        var secure = new TestSignal<Connection>();
+        var insecure = new TestSignal<Connection>();
         c.connect(URI.create("wss://localhost:" + port(s, "wss") + "/"), callback(secure));
         c.connect(URI.create("ws://127.0.0.1:" + port(plain, "ws") + "/"), callback(insecure));
         assertEquals(ConnectionType.WSS, await(secure).type());
@@ -1341,7 +1343,7 @@ class NetworkIntegrationTest {
         assertEquals(
                 Set.of("tls", "plain"),
                 Set.of(got.poll(5, TimeUnit.SECONDS), got.poll(5, TimeUnit.SECONDS)));
-        var bad = new CompletableFuture<Connection>();
+        var bad = new TestSignal<Connection>();
         c.connect(URI.create("wss://127.0.0.1:" + port(s, "wss") + "/"), callback(bad));
         assertThrows(ExecutionException.class, () -> await(bad));
     }

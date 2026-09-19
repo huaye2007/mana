@@ -1,5 +1,7 @@
 package cn.managame.network.netty.transport;
 
+import cn.managame.network.testsupport.TestSignal;
+
 import cn.managame.network.netty.connection.NettyAccess;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -22,7 +24,7 @@ class BootstrapReuseTest {
         return new InetSocketAddress("127.0.0.1", 0);
     }
 
-    private static <T> T await(CompletableFuture<T> future) throws Exception {
+    private static <T> T await(TestSignal<T> future) throws Exception {
         return future.get(10, TimeUnit.SECONDS);
     }
 
@@ -51,14 +53,14 @@ class BootstrapReuseTest {
                 var first = client.bootstrap;
                 client.init();
                 for (int batch = 0; batch < 2; batch++) {
-                    var results = new ArrayList<CompletableFuture<Connection>>();
+                    var results = new ArrayList<TestSignal<Connection>>();
                     var counts = new AtomicIntegerArray(64);
                     try (var callers = Executors.newFixedThreadPool(4)) {
                         for (int i = 0; i < 64; i++) {
                             int index = i;
                             int port =
                                     server.boundAddresses().get(i % 2 == 0 ? "a" : "b").getPort();
-                            var result = new CompletableFuture<Connection>();
+                            var result = new TestSignal<Connection>();
                             results.add(result);
                             callers.submit(
                                     () -> {
@@ -146,8 +148,8 @@ class BootstrapReuseTest {
                                                                                             m)
                                                                                     .text())))
                             .build();
-            var results = new ArrayList<CompletableFuture<String>>();
-            for (int i = 0; i < 64; i++) results.add(new CompletableFuture<>());
+            var results = new ArrayList<TestSignal<String>>();
+            for (int i = 0; i < 64; i++) results.add(new TestSignal<>());
             var client =
                     WsNetworkClient.builder()
                             .resources(resources)
