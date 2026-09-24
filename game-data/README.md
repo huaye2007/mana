@@ -8,7 +8,7 @@ Java entity loading, Caffeine caching, and asynchronous batch persistence for ga
 
 The standalone game-data build targets Java 21. Use JDK 21 or later and Maven. Other projects in this repository may require a newer JDK. A database is needed to run the database examples; regression tests use controlled in-memory DataAccess implementations.
 
-game-data is one Maven module producing one JAR. Core, JDBC, MongoDB, JSON, and optional Spring support are organized by Java packages instead of child Maven modules. Tests and runnable examples live in the test source tree and are not included in the library JAR.
+game-data is one Maven module producing one JAR. Core, JDBC, MongoDB, and JSON support are organized by Java packages instead of child Maven modules. Tests and runnable examples live in the test source tree and are not included in the library JAR.
 
 ```text
 game-data/
@@ -32,7 +32,6 @@ game-data/
     rdb/
     docdb/mongodb/
     codec/jackson/
-    spring/
   src/test/java/cn/managame/
     core/mapping/
     core/repository/
@@ -40,6 +39,7 @@ game-data/
     support/
     docdb/mongodb/
     example/
+    spring/
 ```
 
 | Area | Java packages | Purpose |
@@ -53,11 +53,10 @@ game-data/
 | mapping | `cn.managame.core.mapping` | Entity/value conversion and JSON codec contract |
 | metadata | `cn.managame.core.metadata` | Entity/property metadata, indexes, and storage kinds |
 | repository | `cn.managame.core.repository` | Single/group repositories and caches |
-| write | `cn.managame.core.write` | Write queues, batching, results, failures, and metrics |
+| write | `cn.managame.core.write` | Entity double buffers, log queues, batching, results, and failures |
 | JDBC | `cn.managame.rdb`, `cn.managame.rdb.dialect` | MySQL/MariaDB/PostgreSQL dialects and schema management |
 | MongoDB | `cn.managame.docdb.mongodb` | MongoDB access |
 | JSON | `cn.managame.codec.jackson` | Jackson JSON codec |
-| Spring | `cn.managame.spring` | Optional Spring repository scanning and bean registration |
 | Examples (test sources) | `cn.managame.example` | MySQL and MongoDB entry points |
 
 Java packages remain under `cn.managame`. The single artifact is `cn.managame:game-data:0.1.0-SNAPSHOT`. Install it locally before using this snapshot from another project:
@@ -78,14 +77,13 @@ Consumers use one game-data dependency:
 
 RDB and DocDB are both optional backends. The single JAR contains their implementations, but GameData uses only the DataAccess instances explicitly supplied by the application. You can use RDB alone, DocDB alone, both through named DataAccess instances, or a custom DataAccess with neither built-in backend. RDB uses the JDK JDBC API and needs only the chosen database driver; it does not require MongoDB. DocDB does not require a JDBC driver.
 
-Caffeine is included transitively. MongoDB, Jackson, and Spring are optional Maven dependencies: their adapter classes are in the JAR, but consumers add the matching dependency only when using those classes. JDBC users add their database driver. MySQL Connector/J is a test dependency here so examples can run from the test classpath.
+Caffeine is included transitively. MongoDB and Jackson are optional Maven dependencies: their adapter classes are in the JAR, but consumers add the matching dependency only when using those classes. JDBC users add their database driver. MySQL Connector/J and Spring are test dependencies here so tests and examples can run from the test classpath; Spring adapter classes are excluded from the library JAR.
 
 | Feature | Additional consumer dependency |
 | --- | --- |
 | JDBC/MySQL | `com.mysql:mysql-connector-j:9.7.0` (runtime) |
 | MongoDB | `org.mongodb:mongodb-driver-sync:5.6.5` |
 | Jackson JSON codec | `com.fasterxml.jackson.core:jackson-databind:2.22.2` |
-| Spring integration | `org.springframework:spring-context` (application-managed version) |
 
 ## Quick start
 
@@ -140,7 +138,7 @@ public class QuickStart {
 }
 ```
 
-`insert()` and `update()` update the cache and enqueue writes. `flush()` waits for pending work to be processed; it is not a guarantee that every batch succeeded. Inspect failure logs and metrics. See the runnable [MySQL example](src/test/java/cn/managame/example/MysqlExample.java) and [MongoDB example](src/test/java/cn/managame/example/MongoExample.java).
+`insert()` and `update()` update the cache and enqueue writes. `flush()` waits for pending work to be processed; it is not a guarantee that every batch succeeded. Inspect failure logs. See the runnable [MySQL example](src/test/java/cn/managame/example/MysqlExample.java) and [MongoDB example](src/test/java/cn/managame/example/MongoExample.java).
 
 ## Business repository interfaces
 
@@ -155,63 +153,17 @@ For the same data source name, repeated lookup of an interface returns the same 
 
 Business interfaces must be non-sealed and bind entity/key parameters to concrete classes. Raw or unresolved generics, entity classes passed instead of interfaces, and interfaces extending multiple repository modes are rejected at initialization. Implement custom helpers as `default` methods; additional abstract query methods are rejected, not translated into SQL. CRUD calls dispatch to the implementation, and default methods use MethodHandles bound at initialization.
 
-## Spring repositories
+## Spring test example
 
-Spring applications mark business interfaces with Spring's own `org.springframework.stereotype.Repository` and inject them using constructors or `@Autowired`. Enable interface scanning once with `@EnableGameDataRepositories`; Spring's ordinary component scan does not instantiate repository interfaces. The adapter registers singleton FactoryBeans backed by `GameData.repository(...)`, preserving the same repository instances, caches, and asynchronous saving behavior.
+Production code and the published game-data JAR do not use Spring. `spring-context` is a test-scoped dependency. The scanner, enable annotation, and FactoryBean under [src/test/java/cn/managame/spring](src/test/java/cn/managame/spring) exist only as test/example support and are not published APIs.
 
-Add `org.springframework:spring-context` (compiled with 6.2.19; integration tests pass on 6.2.19 and 7.0.8), or use the Spring version managed by your application. This dependency is optional in game-data, so plain Java applications do not acquire Spring. Spring Boot applications can put the enable annotation on their application or configuration class; no Boot starter is required.
+[SpringRepositoryTest](src/test/java/cn/managame/spring/SpringRepositoryTest.java) demonstrates repository scanning, constructor/field injection, qualifiers, named data sources, startup validation, and draining accepted writes when the context closes. Run it with `mvn -f game-data/pom.xml -Dtest=SpringRepositoryTest test`.
 
-```java
-import cn.managame.core.repository.SingleRepository;
-import org.springframework.stereotype.Repository;
-
-@Repository
-public interface PlayerRepository extends SingleRepository<Player, Long> {
-}
-```
-
-```java
-import cn.managame.core.GameData;
-import cn.managame.core.access.DataAccess;
-import cn.managame.spring.EnableGameDataRepositories;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-@Configuration(proxyBeanMethods = false)
-@EnableGameDataRepositories(basePackageClasses = PlayerRepository.class)
-public class GameDataConfig {
-    @Bean(destroyMethod = "close")
-    GameData gameData(DataAccess dataAccess) {
-        return new GameData(dataAccess);
-    }
-}
-```
-
-```java
-import org.springframework.stereotype.Service;
-
-@Service
-public class PlayerService {
-    private final PlayerRepository players;
-
-    public PlayerService(PlayerRepository players) {
-        this.players = players;
-    }
-}
-```
-
-Supply your configured `DataAccess` as a Spring bean. GameData owns its close operation; if the same DataAccess is also a bean, use `@Bean(destroyMethod = "")` on that bean to avoid closing it twice. External JDBC pools remain application-owned. Stop accepting business work and drain your Runtime before closing the Spring context; the GameData bean then drains accepted writes during destruction.
-
-- `basePackageClasses` scans the packages of the marker types; `basePackages` accepts package names. If neither is set, the configuration class's package is used.
-- Only annotated SingleRepository/GroupRepository/LogRepository interfaces are registered. Ordinary `@Repository` classes remain the responsibility of Spring component scanning. Repository creation and validation run at context startup, including interfaces with no consumers.
-- `@Repository("playerRepository")` sets the **Spring bean name**. Use `@Qualifier("playerRepository")` for injection, or `@Primary` on a preferred interface.
-- `gameDataRef = "gameData"` selects the owning GameData bean. `dataAccess = "archive"` selects a named DataAccess inside that owner; the default empty value uses its default source. Use separate configuration classes and repository packages for different source bindings. Conflicting bean names fail startup.
-
-The integration uses Spring's [FactoryBean contract](https://docs.spring.io/spring-framework/docs/6.2.x/javadoc-api/org/springframework/beans/factory/FactoryBean.html) and [interface scanner extension point](https://docs.spring.io/spring-framework/docs/6.2.19/javadoc-api/org/springframework/context/annotation/ClassPathScanningCandidateComponentProvider.html).
+Applications obtain repositories through `GameData.repository(...)` and pass them through constructors as shown below. Existing consumers of `cn.managame.spring` must replace those imports; the adapter is no longer included in the library JAR.
 
 ## Plain Java repository wiring
 
-Outside Spring, obtain business repository interfaces from `gameData.repository(...)` and pass them to services or handlers through constructors. Use `repository("archive", PlayerRepository.class)` for a named DataAccess.
+Obtain business repository interfaces from `gameData.repository(...)` and pass them to services or handlers through constructors. Use `repository("archive", PlayerRepository.class)` for a named DataAccess.
 
 ```java
 public class PlayerService {
@@ -231,7 +183,7 @@ PlayerService service = new PlayerService(gameData.repository(PlayerRepository.c
 
 ```text
 READ:  Application -> Repository -> Caffeine -> cache miss -> DataAccess -> Database
-WRITE: Modify entity -> Repository.update() -> TableWriter -> Batch -> DataAccess -> Database
+WRITE: Modify entity -> Repository.update() -> EntityWriter -> Batch -> DataAccess -> Database
 ```
 
 Memory is the authoritative runtime state; the database is updated asynchronously.
@@ -366,28 +318,33 @@ Resident caches never expire and never load missing keys from the database. Init
 
 ## Buffered writes and batching
 
-Each physical writer key in a write engine has two reusable buffers and one virtual writer thread. Producers append to the active buffer; the writer swaps buffers and persists the detached buffer while producers continue on the other one. A short per-table synchronized section protects buffer changes, with no global admission read/write lock. A volatile accepting flag stops new submissions; only writer registration shares a monitor with shutdown. Each table drains its own accepted operations, including producers already waiting for buffer space. Submissions still resolving a writer when shutdown starts are rejected. Encoding and database I/O run outside the synchronized section. Different physical tables can write in parallel. Ordinary data and logs use separate engines and settings; use separate tables for these roles and a single configured owner for each physical table.
+Each ordinary-data physical writer key has an `EntityWriter` owning one `DoubleWriteBuffer` with two reusable `WriteBuffer` instances. The active buffer merges operations into a `LinkedHashMap<ID, WriteOperation>` at submission time. The save worker swaps buffers and exclusively saves and clears the detached buffer while producers continue merging into the other one. One short per-table monitor protects admission, merging, swapping and lifecycle waits. The active reference is volatile, but correctness comes from the shared monitor: neither volatile publication nor waiting 100 ms stops a delayed producer from writing an old buffer. Encoding and database I/O never hold that monitor.
 
-A batch runs when its size or flush interval is reached. The active buffer capacity applies blocking backpressure. A detached buffer is drained in chunks no larger than the effective batch size; the capacity setting is not a total pending-operation limit across both buffers. Insert/update operations hold live entity references plus identity values; field encoding happens when the backend executes the batch, not when the application submits the operation.
+Each data source has a fixed number of save workers, configured with `writeThreads` and `logWriteThreads` (both default to 2). A physical writer key always hashes to the same worker; tables on different workers can save concurrently. A blocked database call delays other tables on its worker. Threads start on the first submission and stop when the engine closes. Use separate tables for ordinary data and logs, with one configured owner per physical table.
 
-Within a batch, operations for the same ID are compacted as follows:
+A save runs when the receiving buffer reaches the batch size or flush interval, or when flush/close requests draining. Capacity bounds the active buffer's effective entries; repeated updates to an existing ID can merge even when it is full. New IDs wait for space. `DELETE_GROUP` seals the preceding ID map and counts as an additional entry. Capacity is not a total limit across both buffers or admitted waiting producers. Insert/update operations retain live entity references and identity values; field encoding happens when the backend executes the batch. If an update supplies another object with the same ID, its reference replaces the previous one.
 
-```text
-INSERT + UPDATE -> INSERT using the latest entity
-UPDATE + UPDATE -> latest UPDATE
-UPDATE + DELETE -> DELETE
-INSERT + DELETE -> no operation
-DELETE + DELETE -> DELETE
-DELETE + INSERT -> keep DELETE followed by INSERT
-```
+Only operations still in the active buffer are merged. Operations already handed to the save worker cannot be cancelled by a later buffer:
 
-Group deletion is an ordering barrier. Surviving operations for different IDs retain their order. RDB batches consecutive operations that use the same SQL. Default-table SQL plans are cached during schema initialization; dynamic log INSERTs reuse the entity template without retaining per-table plans. ResultSet values are mapped directly into entities.
+| Buffered operation | Incoming INSERT | Incoming UPDATE | Incoming DELETE |
+| --- | --- | --- | --- |
+| None | INSERT | UPDATE | DELETE |
+| INSERT | Reject | INSERT, latest entity | Remove entry |
+| UPDATE | Reject | UPDATE, latest entity | DELETE |
+| DELETE | DELETE_INSERT | Reject | DELETE |
+| DELETE_INSERT | Reject | DELETE_INSERT, latest entity | DELETE |
+
+Invalid sequences throw `DataException` during submission without changing previously accepted work or repository cache membership. This validates the current buffer's sequence, not historical database state. Whole-group deletion is an ordering barrier; ID maps on either side are independent. Within a segment, IDs retain their first-entry order.
+
+`DELETE_INSERT` is expanded to ordered DELETE then INSERT before reaching DataAccess. The pair stays in one batch when the backend permits at least two operations; a size-one backend uses two calls and skips INSERT if DELETE fails. Other writes are saved in chunks bounded by the effective batch size. RDB batches consecutive operations using the same SQL. Default-table SQL plans are cached during schema initialization; dynamic log INSERTs reuse the entity template without retaining per-table plans.
+
+Each physical log table has a separate `LogWriter` with a bounded FIFO. The assigned worker drains up to the batch limit into a List and inserts it directly. Logs never allocate a DoubleWriteBuffer or merge IDs; repeated IDs remain separate inserts and may be rejected by the database's uniqueness constraints.
 
 ## Failures, flush, and shutdown
 
 A database failure affects the current batch. If DataAccess classifies the attempt as safe to retry, the writer performs bounded retries. RDB retries require commit not to have started, a confirmed successful rollback, and a retryable transaction error. MongoDB does not replay the whole ordered bulk by default because some operations may already have succeeded.
 
-After a final failure, WriteFailureHandler logs the unsuccessful operations synchronously and later batches continue. The framework does not retain the latest database exception, a history of exceptions, or failed batches for later replay. Counters and timestamps remain available. The default handler writes identity, current field values, and the error to stderr. A custom handler should record the failure promptly without retaining entities/errors; if it throws, logging falls back to stderr.
+After a final failure, WriteFailureHandler logs the unsuccessful operations synchronously and later batches continue. The framework does not retain the latest database exception, a history of exceptions, or failed batches for later replay. The default handler writes identity, current field values, and the error to stderr. A custom handler should record the failure promptly without retaining entities/errors; if it throws, logging falls back to stderr.
 
 `BatchResult` represents SUCCESS, FAILED, UNEXECUTED, and UNKNOWN. MongoDB indexed ordered-write errors distinguish the failed item and unexecuted suffix. The executed prefix is also checked against its matched-update count: if matches are missing, all prefix UPDATE operations are marked UNKNOWN because the aggregate result cannot identify individual misses; confirmed prefix INSERT operations remain successful. Write-concern failures keep the executed prefix UNKNOWN; uncertain results are conservatively reported as UNKNOWN. RDB returns all-success after commit. A confirmed rollback reports FAILED; failure before transaction execution reports UNEXECUTED; an uncertain commit or failed rollback reports UNKNOWN through BatchWriteException and is never retried automatically. This is not an automatic repair mechanism: later writes may still be affected by a previously failed insert or delete.
 
@@ -415,7 +372,7 @@ Concurrent close calls wait for the same close process. An interrupted closing c
 
 ## Log repositories and automatic partitions
 
-Business log interfaces extend `LogRepository<T>` and use the same factory and Spring registration as SingleRepository/GroupRepository. The business call is only `logs.append(log)`. The repository binds its entity type and DataAccess, while each physical partition is derived from the event-time field. No caller-supplied table name or router is required.
+Business log interfaces extend `LogRepository<T>` and use the same factory as SingleRepository/GroupRepository. The business call is only `logs.append(log)`. The repository binds its entity type and DataAccess, while each physical partition is derived from the event-time field. No caller-supplied table name or router is required.
 
 ```java
 import cn.managame.annotation.Id;
@@ -435,26 +392,16 @@ public class PlayerActionLog {
 
 ```java
 import cn.managame.core.log.LogRepository;
-import org.springframework.stereotype.Repository;
 
-@Repository
 public interface PlayerActionLogRepository extends LogRepository<PlayerActionLog> {
 }
-```
-
-```java
-@Autowired
-private PlayerActionLogRepository logs;
-
-// Inside a business method:
-logs.append(log);
 ```
 
 For `createTime` in September 2026, this appends to `player_action_log_202609`. Add `@LogPartition(Period.DAY)`, `MONTH`, or `YEAR` to exactly one mapped instance field to use suffixes `_yyyyMMdd`, `_yyyyMM`, or `_yyyy`. Without `@LogPartition`, logs use the entity's normal default table/collection name, including its `@Table`/`@Document` mapping.
 
 The field can be LocalDate, LocalDateTime, Instant, or epoch-millisecond long/Long. Instant and epoch milliseconds use the annotation's `zone` (default `UTC`); for example, `@LogPartition(value = LogPartition.Period.DAY, zone = "Asia/Shanghai")`. Local dates/times use their own date directly. Invalid field declarations or zones fail at repository initialization; a null partition time is rejected on append. Inherited mapped fields are supported. The event time selects the partition when appended, so do not change it after append.
 
-In Spring, `@EnableGameDataRepositories` registers this interface and constructor/`@Autowired` injection works normally. In plain Java, obtain it through the unified factory:
+Obtain the repository through the unified factory:
 
 ```java
 PlayerActionLogRepository logs = gameData.repository("log", PlayerActionLogRepository.class);
@@ -465,7 +412,7 @@ The two-argument factory selects a named DataAccess; `repository(PlayerActionLog
 
 Appends are automatically batched; do not flush after every event. `logs.flush()` explicitly drains this entity's log writes on its source; `gameData.flushLogs()` drains all logs. Normal `GameData.close()` handles accepted writes automatically.
 
-Partition writers release their queues and virtual threads after 5 idle minutes with no pending work. A later append to a historical partition recreates its writer. Pending batches, retries and failure callbacks prevent retirement. Configure `logWriterIdleTimeout(Duration)` on GameData.Builder; zero disables retirement. Fixed-table writers remain allocated. Entity metrics retain numeric totals, while physical metrics list current writers only.
+Partition writers release their queues after 5 idle minutes with no pending work; the fixed shared save threads remain until engine close. A later append to a historical partition recreates its queue on the same save worker. Pending batches, retries and failure callbacks prevent retirement. Configure `logWriterIdleTimeout(Duration)` on GameData.Builder; zero disables retirement. Fixed-table writers remain allocated.
 
 RDB caches the INSERT template per entity and fills in the quoted partition name once per batch, without retaining per-partition SQL plans. Pure INSERT batches preserve every log and skip entity-state reduction. Tables and collections are provisioned ahead of traffic; repository initialization and append perform no log DDL. Use deployment tooling or `dataAccess.ensureSchema(metadata, physicalName)` during initialization. Partition retention/deletion remains application-owned.
 
@@ -524,10 +471,12 @@ var gameData = GameData.builder()
         .cacheExpireAfterAccess(java.time.Duration.ofMinutes(30))
         .writeQueueCapacity(65_536)
         .writeBatchSize(256)
+        .writeThreads(2)
         .flushInterval(java.time.Duration.ofMillis(100))
         .maxRetries(3)
         .logQueueCapacity(131_072)
         .logBatchSize(2_048)
+        .logWriteThreads(2)
         .logFlushInterval(java.time.Duration.ofMillis(200))
         .logWriterIdleTimeout(java.time.Duration.ofMinutes(5))
         .ensureSchema(true)
@@ -541,6 +490,8 @@ PlayerRepository players = gameData.repository("game", PlayerRepository.class);
 | `cacheExpireAfterAccess` | 30 minutes | Ordinary caches; resident caches never expire |
 | `writeQueueCapacity` | 65,536 | Per physical ordinary-data writer |
 | `writeBatchSize` | 256 | Ordinary-data batch limit |
+| `writeThreads` | 2 | Fixed ordinary-data save workers per data source |
+| `logWriteThreads` | 2 | Fixed log save workers per data source |
 | `flushInterval` | 100 ms | Ordinary-data batch collection interval |
 | `maxRetries` | 3 | Additional retries only when classified safe |
 | `logQueueCapacity` | 131,072 | Per physical log writer |
@@ -552,17 +503,13 @@ PlayerRepository players = gameData.repository("game", PlayerRepository.class);
 
 The effective batch size is capped by `DataAccess.maxBatchSize()`. A full queue can block submitters. Flush intervals are batching settings, not a maximum persistence-latency guarantee. Close GameData after stopping traffic, and manage externally owned resources separately.
 
-## Metrics
+## Lifecycle state
 
 ```java
-var metrics = gameData.writerMetrics("game", Player.class);
-var logsMetrics = gameData.logWriterMetrics("log", PlayerActionLog.class);
-var physicalWriters = gameData.physicalWriterMetrics("game");
-var physicalLogs = gameData.physicalLogWriterMetrics("log");
 var state = gameData.writerState("game", Player.class);
 ```
 
-Metrics expose queue size, pending count, successful/failed batch counts, successful-operation count, last batch size, flush durations, and the last failure timestamp. Metrics aggregated by entity can cover multiple physical tables; use physical-writer maps for partition-level inspection. Framework-terminal errors set state to FAILED; an ordinary database batch failure does not. Monitoring integration is left to the application.
+`WriterState` reports RUNNING, FAILED or CLOSED. A terminal save-worker failure sets FAILED; an ordinary database batch failure is reported through WriteFailureHandler and later batches continue. Batch counters, timing statistics and metrics APIs have been removed. Internal pending submissions are retained only to coordinate admission, flush and close.
 
 ## Build, verification, and API migration
 
@@ -580,8 +527,8 @@ When migrating from the earlier API:
 
 - Replace Java imports under `io.gamedata` with `cn.managame`. Replace the former child-artifact dependencies with `cn.managame:game-data:0.1.0-SNAPSHOT`; add optional backend/codec dependencies as described above.
 - Replace `repository(Entity.class)` and `groupRepository(Entity.class)` with business interfaces and `repository(MyRepository.class)`.
-- Keep passing entity classes to flush and metrics APIs.
-- Replace `writerFailure()` polling and batch-error aggregation from flush/close with WriteFailureHandler logs and failure metrics.
+- Keep passing entity classes to flush and lifecycle-state APIs. The state type is now `WriterState`; the previous metrics APIs have been removed.
+- Replace `writerFailure()` polling and batch-error aggregation from flush/close with WriteFailureHandler logs.
 - Provision routed log tables before append.
 - Group maps are the actual cached maps. Serialize group access and use Repository methods to persist changes.
 

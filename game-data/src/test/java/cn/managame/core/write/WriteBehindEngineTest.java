@@ -14,16 +14,13 @@ import static cn.managame.support.DataTestSupport.*;
 
 @Timeout(15)
 class WriteBehindEngineTest {
-    @Test void closeDrainsBatchAlreadyTakenFromQueue() {
+    @Test void closeDrainsAccumulatingBufferWithoutWaitingForItsInterval() {
         var access = new Access();
         var writer = engine(access, 10, 10, Duration.ofMinutes(1), (ops, error) -> fail(error));
         writer.submit(insert(1));
-        until(() -> writer.metrics(Row.class).queueSize() == 0);
-        assertEquals(1, writer.metrics(Row.class).pendingCount());
         writer.close();
         assertEquals(List.of(1L), access.saved);
-        assertEquals(0, writer.metrics(Row.class).pendingCount());
-        assertEquals(TableWriterState.CLOSED, writer.state(Row.class));
+        assertEquals(WriterState.CLOSED, writer.state(Row.class));
         assertThrows(IllegalStateException.class, () -> writer.submit(insert(2)));
     }
 
@@ -41,12 +38,12 @@ class WriteBehindEngineTest {
         try {
             var closer = task(writer::close);
             closer.join();
-            assertEquals(0, writer.tableWriterCount());
+            assertEquals(0, writer.writerCount());
         } finally { release.countDown(); }
         producer.join();
         assertTrue(access.saved.isEmpty());
-        assertEquals(0, writer.tableWriterCount());
-        assertEquals(TableWriterState.CLOSED, writer.state(Row.class));
+        assertEquals(0, writer.writerCount());
+        assertEquals(WriterState.CLOSED, writer.state(Row.class));
     }
 
     @Test void fullQueueAndInterruptedCloseStillDrainWithoutInterruptingDatabase() {
@@ -61,7 +58,7 @@ class WriteBehindEngineTest {
         var writer = engine(access, 1, 1, Duration.ofMillis(1), (ops, error) -> fail(error));
         writer.submit(insert(1)); await(entered); writer.submit(insert(2));
         var producer = task(() -> writer.submit(insert(3)));
-        until(() -> writer.metrics(Row.class).pendingCount() == 3);
+        until(() -> producer.thread.getState() == Thread.State.WAITING);
         var interruptedAtReturn = new AtomicBoolean();
         var closer = task(() -> { writer.close(); interruptedAtReturn.set(Thread.currentThread().isInterrupted()); });
         closer.thread.interrupt();
@@ -69,7 +66,6 @@ class WriteBehindEngineTest {
         release.countDown(); producer.join(); closer.join(); secondCloser.join();
         assertTrue(interruptedAtReturn.get());
         assertEquals(List.of(1L, 2L, 3L), access.saved);
-        assertEquals(0, writer.metrics(Row.class).pendingCount());
     }
 
     @Test void producersFillOtherBufferWhileDatabaseIsBlockedAndDrainInOrder() {
@@ -91,8 +87,6 @@ class WriteBehindEngineTest {
                 producers.add(task(() -> { for (int i = 0; i < 200; i++) writer.submit(insert(offset + i)); }));
             }
             for (var producer : producers) producer.join();
-            assertEquals(800, writer.metrics(Row.class).queueSize());
-            assertEquals(801, writer.metrics(Row.class).pendingCount());
             release.countDown(); writer.close();
             assertEquals(801, access.saved.size());
             assertEquals(801, new HashSet<>(access.saved).size());
@@ -117,7 +111,6 @@ class WriteBehindEngineTest {
         for (long i = 0; i <= 100; i++) writer.submit(insert(i));
         assertDoesNotThrow(() -> { writer.flush(); });
         assertEquals(100, failures.get());
-        assertEquals(100, writer.metrics(Row.class).failedBatches());
         assertEquals(List.of(100L), access.saved);
         assertDoesNotThrow(writer::close);
     }
@@ -134,7 +127,6 @@ class WriteBehindEngineTest {
         writer.submit(insert(1)); writer.submit(insert(2)); writer.submit(insert(3));
         writer.flush();
         assertEquals(List.of(2L), logged);
-        assertEquals(2, writer.metrics(Row.class).successfulOperations());
         writer.close();
     }
 

@@ -24,7 +24,7 @@ import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.ClassUtils;
 
-/** Scans metadata at startup; ordinary Spring repository classes are left to component scanning. */
+/** Test/example support only; not part of the published library. Scans metadata at startup; ordinary Spring repository classes are left to component scanning. */
 public final class GameDataRepositoriesRegistrar implements ImportBeanDefinitionRegistrar {
     private static final String BINDING = GameDataRepositoriesRegistrar.class.getName() + ".binding";
     private final Environment environment;

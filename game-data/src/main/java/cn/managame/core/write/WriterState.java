@@ -1,6 +1,6 @@
 package cn.managame.core.write;
 
-public enum TableWriterState {
+public enum WriterState {
     RUNNING,
     FAILED,
     CLOSED

@@ -4,8 +4,7 @@ import cn.managame.core.access.DataAccess;
 import cn.managame.core.metadata.MetadataRegistry;
 import cn.managame.core.repository.DefaultGroupRepository;
 import cn.managame.core.repository.DefaultSingleRepository;
-import cn.managame.core.write.TableWriterMetrics;
-import cn.managame.core.write.TableWriterState;
+import cn.managame.core.write.WriterState;
 import cn.managame.core.write.WriteBehindEngine;
 import cn.managame.core.write.WriteFailureHandler;
 import cn.managame.core.log.DefaultLogRepository;
@@ -78,7 +77,7 @@ public final class GameData implements AutoCloseable {
             WriteFailureHandler failureHandler) {
         this(dataAccesses, defaultAccessName, cacheExpireAfterAccess, ensureSchema,
                 writeQueueCapacity, writeBatchSize, flushInterval, maxRetries,
-                logQueueCapacity, logBatchSize, logFlushInterval, failureHandler, Duration.ofMinutes(5));
+                logQueueCapacity, logBatchSize, logFlushInterval, failureHandler, Duration.ofMinutes(5), 2, 2);
     }
 
     private GameData(
@@ -86,7 +85,7 @@ public final class GameData implements AutoCloseable {
             Duration cacheExpireAfterAccess, boolean ensureSchema,
             int writeQueueCapacity, int writeBatchSize, Duration flushInterval, int maxRetries,
             int logQueueCapacity, int logBatchSize, Duration logFlushInterval,
-            WriteFailureHandler failureHandler, Duration logWriterIdleTimeout) {
+            WriteFailureHandler failureHandler, Duration logWriterIdleTimeout, int writeThreads, int logWriteThreads) {
         Objects.requireNonNull(dataAccesses, "dataAccesses");
         if (dataAccesses.isEmpty()) throw new IllegalArgumentException("At least one DataAccess is required");
         this.defaultAccessName = requireAccessName(defaultAccessName);
@@ -100,9 +99,9 @@ public final class GameData implements AutoCloseable {
             if (built.containsKey(name)) throw new IllegalArgumentException("Duplicate DataAccess name: " + name);
             built.put(name, new AccessContext(access,
                     new WriteBehindEngine(access, writeQueueCapacity, writeBatchSize,
-                            flushInterval, maxRetries, failureHandler),
-                    new WriteBehindEngine(access, logQueueCapacity, logBatchSize,
-                            logFlushInterval, maxRetries, failureHandler, logWriterIdleTimeout)));
+                            flushInterval, maxRetries, failureHandler, Duration.ZERO, writeThreads),
+                    WriteBehindEngine.logs(access, logQueueCapacity, logBatchSize,
+                            logFlushInterval, maxRetries, failureHandler, logWriterIdleTimeout, logWriteThreads)));
         }
         if (!built.containsKey(this.defaultAccessName)) {
             throw new IllegalArgumentException("Default DataAccess does not exist: " + this.defaultAccessName);
@@ -194,32 +193,12 @@ public final class GameData implements AutoCloseable {
         if (failure != null) throw failure;
     }
 
-    public TableWriterState writerState(Class<?> entityType) {
+    public WriterState writerState(Class<?> entityType) {
         return writerState(defaultAccessName, entityType);
     }
 
-    public TableWriterState writerState(String accessName, Class<?> entityType) {
+    public WriterState writerState(String accessName, Class<?> entityType) {
         return access(accessName).writer.state(entityType);
-    }
-
-    public TableWriterMetrics writerMetrics(Class<?> entityType) {
-        return writerMetrics(defaultAccessName, entityType);
-    }
-
-    public TableWriterMetrics writerMetrics(String accessName, Class<?> entityType) {
-        return access(accessName).writer.metrics(entityType);
-    }
-
-    public TableWriterMetrics logWriterMetrics(String accessName, Class<?> logType) {
-        return access(accessName).logWriter.metrics(logType);
-    }
-
-    public Map<String, TableWriterMetrics> physicalWriterMetrics(String accessName) {
-        return access(accessName).writer.metricsByPhysicalWriter();
-    }
-
-    public Map<String, TableWriterMetrics> physicalLogWriterMetrics(String accessName) {
-        return access(accessName).logWriter.metricsByPhysicalWriter();
     }
 
     public Set<String> dataAccessNames() { return accesses.keySet(); }
@@ -294,6 +273,8 @@ public final class GameData implements AutoCloseable {
         private boolean ensureSchema = true;
         private int writeQueueCapacity = 65_536;
         private int writeBatchSize = 256;
+        private int writeThreads = 2;
+        private int logWriteThreads = 2;
         private Duration flushInterval = Duration.ofMillis(100);
         private int maxRetries = 3;
         private int logQueueCapacity = 131_072;
@@ -312,13 +293,25 @@ public final class GameData implements AutoCloseable {
         public Builder cacheExpireAfterAccess(Duration value) { this.cacheExpireAfterAccess = value; return this; }
         public Builder ensureSchema(boolean value) { this.ensureSchema = value; return this; }
         public Builder writeQueueCapacity(int value) { this.writeQueueCapacity = value; return this; }
+        /** Number of fixed save workers per DataAccess for ordinary entity tables. */
+        public Builder writeThreads(int value) {
+            if (value <= 0) throw new IllegalArgumentException("writeThreads must be > 0");
+            this.writeThreads = value;
+            return this;
+        }
+        /** Number of fixed save workers per DataAccess for log queues. */
+        public Builder logWriteThreads(int value) {
+            if (value <= 0) throw new IllegalArgumentException("logWriteThreads must be > 0");
+            this.logWriteThreads = value;
+            return this;
+        }
         public Builder writeBatchSize(int value) { this.writeBatchSize = value; return this; }
         public Builder flushInterval(Duration value) { this.flushInterval = value; return this; }
         public Builder maxRetries(int value) { this.maxRetries = value; return this; }
         public Builder logQueueCapacity(int value) { this.logQueueCapacity = value; return this; }
         public Builder logBatchSize(int value) { this.logBatchSize = value; return this; }
         public Builder logFlushInterval(Duration value) { this.logFlushInterval = value; return this; }
-        /** Idle routed log writers release their queues/threads; zero disables retirement. */
+        /** Idle routed log writers release their queues; shared save threads remain until close; zero disables retirement. */
         public Builder logWriterIdleTimeout(Duration value) {
             Objects.requireNonNull(value, "logWriterIdleTimeout");
             if (value.isNegative()) throw new IllegalArgumentException("logWriterIdleTimeout must be >= 0");
@@ -332,7 +325,7 @@ public final class GameData implements AutoCloseable {
             String defaultName = defaultAccessName == null ? dataAccesses.keySet().iterator().next() : defaultAccessName;
             return new GameData(dataAccesses, defaultName, cacheExpireAfterAccess, ensureSchema,
                     writeQueueCapacity, writeBatchSize, flushInterval, maxRetries,
-                    logQueueCapacity, logBatchSize, logFlushInterval, failureHandler, logWriterIdleTimeout);
+                    logQueueCapacity, logBatchSize, logFlushInterval, failureHandler, logWriterIdleTimeout, writeThreads, logWriteThreads);
         }
     }
 }

@@ -18,11 +18,11 @@ class WriterRetirementTest {
         return WriteOperation.insert(METADATA, new Row(id), id, 1L, "log_day");
     }
     private static WriteBehindEngine retiring(Access access, int capacity) {
-        return new WriteBehindEngine(access, capacity, 1, Duration.ofMillis(1), 0,
-                (ops, error) -> fail(error), Duration.ofMillis(10));
+        return WriteBehindEngine.logs(access, capacity, 1, Duration.ofMillis(1), 0,
+                (ops, error) -> fail(error), Duration.ofMillis(10), 2);
     }
 
-    @Test void idlePartitionsReleaseThreadsAndQueuesAndPreserveEntityCounters() {
+    @Test void idlePartitionsReleaseBuffersAndReuseFixedSaveWorkers() {
         var threads = new CopyOnWriteArrayList<Thread>();
         var access = new Access() {
             public BatchResult applyBatch(List<WriteOperation<?>> ops) {
@@ -32,15 +32,13 @@ class WriterRetirementTest {
         try (var engine = retiring(access, 2)) {
             for (int i = 1; i <= 3; i++) {
                 engine.submit(routed(i)); engine.flush();
-                until(() -> engine.tableWriterCount() == 0);
-                until(() -> threads.stream().noneMatch(Thread::isAlive));
-                assertTrue(engine.metricsByPhysicalWriter().isEmpty());
-                assertEquals(i, engine.metrics(Row.class).successfulOperations());
-                assertEquals(0, engine.metrics(Row.class).pendingCount());
+                until(() -> engine.writerCount() == 0);
+                assertTrue(threads.stream().allMatch(Thread::isAlive));
             }
             assertEquals(List.of(1L, 2L, 3L), access.saved);
-            assertEquals(3, new HashSet<>(threads).size());
+            assertEquals(1, new HashSet<>(threads).size());
         }
+        assertTrue(threads.stream().noneMatch(Thread::isAlive));
     }
 
     @Test void submissionResolvingItsKeyCanRecreateAnIdleWriter() {
@@ -57,23 +55,22 @@ class WriterRetirementTest {
             var producer = task(() -> engine.submit(routed(2)));
             await(entered);
             try {
-                until(() -> engine.tableWriterCount() == 0);
+                until(() -> engine.writerCount() == 0);
             } finally { release.countDown(); }
             producer.join(); engine.flush();
-            until(() -> engine.tableWriterCount() == 0);
+            until(() -> engine.writerCount() == 0);
             assertEquals(List.of(1L, 2L), access.saved);
-            assertEquals(2, engine.metrics(Row.class).successfulOperations());
         }
     }
 
-    @Test void inFlightBatchFullQueueAndCloseKeepSingleWriterAndAllowMetricsCallbacks() throws Exception {
+    @Test void inFlightBatchFullQueueAndCloseKeepSingleWriterAndAllowStateQueries() throws Exception {
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
         var engineRef = new AtomicReference<WriteBehindEngine>();
         var access = new Access() {
             public BatchResult applyBatch(List<WriteOperation<?>> ops) {
                 if (ops.getFirst().id().equals(1L)) {
                     entered.countDown(); await(release);
-                    engineRef.get().metrics(Row.class);
+                    engineRef.get().state(Row.class);
                 }
                 return super.applyBatch(ops);
             }
@@ -82,15 +79,15 @@ class WriterRetirementTest {
             engineRef.set(engine);
             engine.submit(routed(1)); await(entered); engine.submit(routed(2));
             var producer = task(() -> engine.submit(routed(3)));
-            until(() -> engine.metrics(Row.class).pendingCount() == 3);
+            until(() -> producer.thread.getState() == Thread.State.WAITING);
             try {
                 Thread.sleep(250);
-                assertEquals(1, engine.tableWriterCount());
+                assertEquals(1, engine.writerCount());
                 var closer = task(engine::close);
                 until(() -> closer.thread.getState() == Thread.State.WAITING);
                 release.countDown(); producer.join(); closer.join();
                 assertEquals(List.of(1L, 2L, 3L), access.saved);
-                assertEquals(TableWriterState.CLOSED, engine.state(Row.class));
+                assertEquals(WriterState.CLOSED, engine.state(Row.class));
             } finally { release.countDown(); }
         }
     }
@@ -113,11 +110,10 @@ class WriterRetirementTest {
                 }
                 producers.forEach(Task::join);
                 engine.flush();
-                until(() -> engine.tableWriterCount() == 0);
+                until(() -> engine.writerCount() == 0);
             }
             assertEquals(800, access.saved.size());
             assertEquals(800, new HashSet<>(access.saved).size());
-            assertEquals(800, engine.metrics(Row.class).successfulOperations());
             assertEquals(1, maxActive.get());
         }
     }
@@ -125,13 +121,12 @@ class WriterRetirementTest {
     @Test void fixedWritersAndDisabledRetirementArePreserved() throws Exception {
         try (var engine = retiring(new Access(), 2)) {
             engine.submit(insert(1)); engine.submit(routed(2)); engine.flush();
-            until(() -> engine.tableWriterCount() == 1);
-            assertTrue(engine.metricsByPhysicalWriter().keySet().stream().allMatch(k -> k.endsWith("@default")));
+            until(() -> engine.writerCount() == 1);
         }
         try (var engine = new WriteBehindEngine(new Access(), 2, 1, Duration.ofMillis(1), 0,
                 (ops, error) -> fail(error), Duration.ZERO)) {
             engine.submit(routed(1)); engine.flush(); Thread.sleep(250);
-            assertEquals(1, engine.tableWriterCount());
+            assertEquals(1, engine.writerCount());
         }
     }
 
@@ -142,23 +137,21 @@ class WriterRetirementTest {
         };
         try (var engine = new WriteBehindEngine(access, 2, 1, Duration.ofMillis(1), 0,
                 (ops, error) -> logged.incrementAndGet(), Duration.ofMillis(10))) {
-            engine.submit(routed(1)); engine.flush(); until(() -> engine.tableWriterCount() == 0);
+            engine.submit(routed(1)); engine.flush(); until(() -> engine.writerCount() == 0);
             assertEquals(1, logged.get());
-            assertEquals(1, engine.metrics(Row.class).failedBatches());
-            assertTrue(engine.metrics(Row.class).lastFailureEpochMillis() > 0);
         }
     }
 
-    @Test void gameDataBuilderConfiguresOnlyLogWriterRetirement() {
-        try (var game = GameData.builder().dataAccess("game", new Access()).ensureSchema(false)
+    @Test void gameDataBuilderAcceptsLogRetirementAndDrainsBothWriterKinds() {
+        var access = new Access();
+        try (var game = GameData.builder().dataAccess("game", access).ensureSchema(false)
                 .writeBatchSize(1).logBatchSize(1).logWriterIdleTimeout(Duration.ofMillis(10)).build()) {
             game.repository(Rows.class).insert(new Row(1));
             game.repository("game", Events.class).append(new Event(2, java.time.LocalDate.of(2026, 9, 1)));
             game.flush();
-            until(() -> game.physicalLogWriterMetrics("game").isEmpty());
-            assertEquals(1, game.physicalWriterMetrics("game").size());
-            assertEquals(1, game.logWriterMetrics("game", Event.class).successfulOperations());
         }
+        assertEquals(Set.of(1L, 2L), new HashSet<>(access.saved));
+        assertTrue(access.closed);
         assertThrows(IllegalArgumentException.class, () -> GameData.builder().logWriterIdleTimeout(Duration.ofSeconds(-1)));
     }
 }

@@ -73,14 +73,14 @@ Java 包前缀与 Maven groupId 统一为 `cn.managame`。
 | mapping | cn.managame.core.mapping | 实体及字段转换、JSON Codec 接口 |
 | metadata | cn.managame.core.metadata | 实体及字段元数据、索引与存储类型 |
 | repository | cn.managame.core.repository | Single/Group Repository 与缓存 |
-| write | cn.managame.core.write | 写队列、批量保存、结果、失败处理及指标 |
+| write | cn.managame.core.write | EntityWriter 双缓冲、LogWriter 队列、批量保存及失败处理 |
 | JDBC | cn.managame.rdb、cn.managame.rdb.dialect | JDBC 访问、MySQL/MariaDB/PostgreSQL 方言、SQL Plan 与 Schema 管理 |
 | MongoDB | cn.managame.docdb.mongodb | MongoDB 查询、扫描、ordered bulk 与索引初始化 |
 | JSON | cn.managame.codec.jackson | Jackson JSON Codec |
-| Spring | cn.managame.spring | 可选 Spring 集成，扫描原生 @Repository 业务接口并注册 Bean |
+| 测试目录中的 Spring 示例 | cn.managame.spring | 仅测试使用的 Repository 扫描和 Bean 注册，不进入发布 JAR |
 | 测试目录中的示例 | cn.managame.example | MySQL、MongoDB 接入示例及业务 Repository 接口 |
 
-MongoDB 驱动、Jackson 与 Spring 为可选 Maven 依赖，使用相应功能的应用显式添加；示例不进入发布 JAR。
+MongoDB 驱动与 Jackson 为可选 Maven 依赖，使用相应功能的应用显式添加。所有生产模块均不使用 Spring；Spring 仅以 test scope 用于测试和示例，相关适配器位于测试源码目录，不进入发布 JAR。
 
 业务接口继承 SingleRepository、GroupRepository 或 LogRepository，统一通过 `gameData.repository(业务接口.class)` 获取实例。同数据源名称、同实体、同模式共享底层缓存，禁止混用 Single 和 Group。GroupRepository<T, ID> 返回缓存中的 Map<Object, T>，增删改原地执行，同组业务访问由上层保证串行。
 

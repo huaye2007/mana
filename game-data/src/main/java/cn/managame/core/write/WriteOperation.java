@@ -1,6 +1,5 @@
 package cn.managame.core.write;
 
-import cn.managame.core.DataException;
 import cn.managame.core.access.DataAccess;
 import cn.managame.core.metadata.EntityMetadata;
 
@@ -32,7 +31,7 @@ public final class WriteOperation<T> {
         this.groupKey = groupKey;
         this.physicalName = physicalName == null || physicalName.isBlank() ? null : physicalName;
         switch (type) {
-            case INSERT, UPDATE -> {
+            case INSERT, UPDATE, DELETE_INSERT -> {
                 Objects.requireNonNull(entity, type + " requires entity");
                 Objects.requireNonNull(id, type + " requires id");
             }
@@ -68,8 +67,8 @@ public final class WriteOperation<T> {
     public Object groupKey() { return groupKey; }
     public String physicalName() { return physicalName; }
 
-    WriteOperation<T> asInsert() {
-        if (entity == null || id == null) throw new DataException("Cannot convert operation without entity/id to INSERT");
-        return new WriteOperation<>(WriteType.INSERT, metadata, entity, id, groupKey, physicalName);
+    WriteOperation<T> withType(WriteType nextType) {
+        return new WriteOperation<>(nextType, metadata, nextType == WriteType.DELETE ? null : entity,
+                id, groupKey, physicalName);
     }
 }

@@ -18,7 +18,11 @@ public interface DataAccess extends AutoCloseable {
     /** Streams a complete table/collection without building an intermediate List. */
     <T> void scan(EntityMetadata<T> metadata, Consumer<T> consumer);
 
-    /** Applies one homogeneous physical table/collection batch. */
+    /**
+     * Applies one homogeneous physical table/collection batch in list order.
+     * DELETE_INSERT is expanded by the engine to DELETE followed by INSERT; backends receive
+     * only primitive operations. In an ordered batch, a failed delete must not execute its insert.
+     */
     BatchResult applyBatch(List<WriteOperation<?>> operations);
 
     /** Validates mapping configuration only: no database connections or schema changes. */

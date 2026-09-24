@@ -8,7 +8,7 @@
 
 game-data 独立构建的目标版本为 Java 21，需要 JDK 21 或更高版本及 Maven。仓库其他项目可能要求更高版本的 JDK。运行数据库示例需要准备数据库；回归测试使用受控的内存 DataAccess 实现。
 
-game-data 只保留一个 Maven 模块、一个 JAR。核心、JDBC、MongoDB、JSON 与可选 Spring 支持通过 Java 包组织，不再拆分子 Maven 模块。测试与可运行示例放在测试源码目录，不打入库 JAR。
+game-data 只保留一个 Maven 模块、一个 JAR。核心、JDBC、MongoDB 与 JSON 支持通过 Java 包组织，不再拆分子 Maven 模块。测试与可运行示例放在测试源码目录，不打入库 JAR。
 
 ```text
 game-data/
@@ -32,7 +32,6 @@ game-data/
     rdb/
     docdb/mongodb/
     codec/jackson/
-    spring/
   src/test/java/cn/managame/
     core/mapping/
     core/repository/
@@ -40,6 +39,7 @@ game-data/
     support/
     docdb/mongodb/
     example/
+    spring/
 ```
 
 | 功能 | Java 包 | 职责 |
@@ -53,11 +53,10 @@ game-data/
 | mapping | `cn.managame.core.mapping` | 实体及字段转换、JSON Codec 接口 |
 | metadata | `cn.managame.core.metadata` | 实体及字段元数据、索引与存储类型 |
 | repository | `cn.managame.core.repository` | Single/Group Repository 与缓存 |
-| write | `cn.managame.core.write` | 写队列、批量保存、结果、失败处理及指标 |
+| write | `cn.managame.core.write` | 实体双缓冲、日志队列、批量保存、结果及失败处理 |
 | JDBC | `cn.managame.rdb`, `cn.managame.rdb.dialect` | MySQL/MariaDB/PostgreSQL 方言及 Schema 管理 |
 | MongoDB | `cn.managame.docdb.mongodb` | MongoDB 访问 |
 | JSON | `cn.managame.codec.jackson` | Jackson JSON Codec |
-| Spring | `cn.managame.spring` | 可选的 Spring Repository 扫描和 Bean 注册 |
 | 示例（测试源码） | `cn.managame.example` | MySQL 和 MongoDB 入口 |
 
 Java 包仍位于 `cn.managame`，统一构件坐标为 `cn.managame:game-data:0.1.0-SNAPSHOT`。其他项目使用该快照前，可先安装到本地仓库：
@@ -78,14 +77,13 @@ mvn -f game-data/pom.xml install
 
 RDB 和 DocDB 都是可选后端。单 JAR 包含两套实现，但 GameData 只使用应用显式传入的 DataAccess 实例。可以只用 RDB、只用 DocDB、通过命名 DataAccess 同时使用两者，或者使用自定义 DataAccess 而不启用内置后端。RDB 基于 JDK 自带的 JDBC API，只需添加所选数据库驱动，不依赖 MongoDB；DocDB 不需要 JDBC 驱动。
 
-Caffeine 会作为传递依赖引入。MongoDB、Jackson 和 Spring 为 Maven 可选依赖：适配器类在 JAR 内，使用方仅在使用对应类时显式添加相应依赖。JDBC 使用方添加所选数据库驱动。这里的 MySQL Connector/J 为测试依赖，便于在测试 classpath 下运行示例。
+Caffeine 会作为传递依赖引入。MongoDB 和 Jackson 为 Maven 可选依赖：适配器类在 JAR 内，使用方仅在使用对应类时显式添加相应依赖。JDBC 使用方添加所选数据库驱动。MySQL Connector/J 和 Spring 仅为测试依赖，便于在测试 classpath 下运行测试与示例；Spring 适配器类不进入库 JAR。
 
 | 功能 | 使用方额外添加的依赖 |
 | --- | --- |
 | JDBC/MySQL | `com.mysql:mysql-connector-j:9.7.0`（runtime） |
 | MongoDB | `org.mongodb:mongodb-driver-sync:5.6.5` |
 | Jackson JSON Codec | `com.fasterxml.jackson.core:jackson-databind:2.22.2` |
-| Spring 集成 | `org.springframework:spring-context`（由应用管理版本） |
 
 ## 快速开始
 
@@ -140,7 +138,7 @@ public class QuickStart {
 }
 ```
 
-`insert()`、`update()` 更新缓存并提交异步保存。`flush()` 等待 pending 工作处理结束，不表示所有 batch 都保存成功；失败需通过日志和指标观察。可运行示例见 [MySQL](src/test/java/cn/managame/example/MysqlExample.java) 和 [MongoDB](src/test/java/cn/managame/example/MongoExample.java)。
+`insert()`、`update()` 更新缓存并提交异步保存。`flush()` 等待 pending 工作处理结束，不表示所有 batch 都保存成功；失败需通过日志观察。可运行示例见 [MySQL](src/test/java/cn/managame/example/MysqlExample.java) 和 [MongoDB](src/test/java/cn/managame/example/MongoExample.java)。
 
 ## 业务 Repository 接口
 
@@ -155,63 +153,17 @@ public class QuickStart {
 
 业务接口必须为非 sealed 接口，实体和 key 泛型参数必须绑定为具体类。原始泛型、未绑定泛型、传入实体类及同时继承两种模式都会在初始化时报错。自定义辅助方法使用 `default` 实现；额外抽象查询方法会被拒绝，不会自动生成 SQL。CRUD 直接分派到底层实现，默认方法在初始化时绑定 MethodHandle。
 
-## Spring Repository
+## Spring 测试示例
 
-Spring 项目直接使用原生 `org.springframework.stereotype.Repository` 标记业务接口，通过构造器或 `@Autowired` 注入。配置一次 `@EnableGameDataRepositories` 开启接口扫描；Spring 普通组件扫描不会实例化 Repository 接口。适配器注册单例 FactoryBean，底层调用 `GameData.repository(...)`，复用现有 Repository 实例、缓存和异步保存逻辑。
+生产代码与发布的 game-data JAR 不使用 Spring。`spring-context` 仅为 test scope 依赖。[src/test/java/cn/managame/spring](src/test/java/cn/managame/spring) 中的扫描器、开启注解和 FactoryBean 仅供测试和示例使用，不属于发布 API。
 
-添加 `org.springframework:spring-context`（编译版本为 6.2.19，集成测试已通过 6.2.19 和 7.0.8），或使用应用管理的 Spring 版本。game-data 将其声明为可选依赖，普通 Java 项目不会被传递引入 Spring。Spring Boot 项目可把开启注解放在启动类或配置类上，不需要额外的 Boot starter。
+[SpringRepositoryTest](src/test/java/cn/managame/spring/SpringRepositoryTest.java) 展示接口扫描、构造器与字段注入、Qualifier、命名数据源、启动校验，以及容器关闭时排空已接收写入。运行命令：`mvn -f game-data/pom.xml -Dtest=SpringRepositoryTest test`。
 
-```java
-import cn.managame.core.repository.SingleRepository;
-import org.springframework.stereotype.Repository;
-
-@Repository
-public interface PlayerRepository extends SingleRepository<Player, Long> {
-}
-```
-
-```java
-import cn.managame.core.GameData;
-import cn.managame.core.access.DataAccess;
-import cn.managame.spring.EnableGameDataRepositories;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-@Configuration(proxyBeanMethods = false)
-@EnableGameDataRepositories(basePackageClasses = PlayerRepository.class)
-public class GameDataConfig {
-    @Bean(destroyMethod = "close")
-    GameData gameData(DataAccess dataAccess) {
-        return new GameData(dataAccess);
-    }
-}
-```
-
-```java
-import org.springframework.stereotype.Service;
-
-@Service
-public class PlayerService {
-    private final PlayerRepository players;
-
-    public PlayerService(PlayerRepository players) {
-        this.players = players;
-    }
-}
-```
-
-应用提供已配置的 `DataAccess` Bean。GameData 负责关闭它；若该 DataAccess 也是独立 Bean，应使用 `@Bean(destroyMethod = "")` 避免重复关闭。外部 JDBC 连接池仍由应用管理。关闭 Spring 容器之前，先停止业务入口并排空 Runtime；随后 GameData Bean 销毁时排空已接收的写入。
-
-- `basePackageClasses` 扫描标记类所在包；`basePackages` 接受包名。都不指定时，扫描配置类所在包。
-- 只注册带注解的 SingleRepository/GroupRepository/LogRepository 业务接口。普通 `@Repository` 实现类仍由 Spring 组件扫描处理。即使尚未被业务引用，接口也会在容器启动时完成创建和校验。
-- `@Repository("playerRepository")` 指定的是 **Spring Bean 名称**，可以通过 `@Qualifier("playerRepository")` 注入，也可以在首选接口上标注 `@Primary`。
-- `gameDataRef = "gameData"` 指定 GameData Bean；`dataAccess = "archive"` 指定其内部命名 DataAccess，空值使用默认数据源。不同数据源使用独立配置类和 Repository 包绑定，Bean 名称冲突会在启动时报错。
-
-适配器使用 Spring 的 [FactoryBean 契约](https://docs.spring.io/spring-framework/docs/6.2.x/javadoc-api/org/springframework/beans/factory/FactoryBean.html)和[接口扫描扩展点](https://docs.spring.io/spring-framework/docs/6.2.19/javadoc-api/org/springframework/context/annotation/ClassPathScanningCandidateComponentProvider.html)。
+应用通过 `GameData.repository(...)` 获取 Repository，再按下文通过构造器传入。原先使用 `cn.managame.spring` 的调用方需要替换这些 import；适配器已不再随库 JAR 发布。
 
 ## 普通 Java Repository 组装
 
-非 Spring 场景通过 `gameData.repository(...)` 获取业务 Repository 接口，再通过构造器传给服务或 Handler。命名数据源使用 `repository("archive", PlayerRepository.class)`。
+通过 `gameData.repository(...)` 获取业务 Repository 接口，再通过构造器传给服务或 Handler。命名数据源使用 `repository("archive", PlayerRepository.class)`。
 
 ```java
 public class PlayerService {
@@ -231,7 +183,7 @@ PlayerService service = new PlayerService(gameData.repository(PlayerRepository.c
 
 ```text
 READ:  Application -> Repository -> Caffeine -> cache miss -> DataAccess -> Database
-WRITE: Modify entity -> Repository.update() -> TableWriter -> Batch -> DataAccess -> Database
+WRITE: Modify entity -> Repository.update() -> EntityWriter -> Batch -> DataAccess -> Database
 ```
 
 运行期间以内存为权威状态，数据库异步更新。
@@ -366,28 +318,33 @@ tasks.deleteGroup(10001L);
 
 ## 缓冲保存与批量合并
 
-一个写引擎内，每个物理 writer key 对应两个复用缓冲区和一个虚拟保存线程。业务向当前缓冲区追加操作；后台交换缓冲区并保存取出的缓冲区，业务继续写另一份。每张表只在缓冲区变更时短暂同步，不使用全局准入读写锁。通过 volatile 接收标志停止新提交，仅创建 writer 时与关闭流程协调注册。每张表自行排空已经接收的操作，包括已在等待缓冲区容量的提交；关闭开始时仍在解析 writer 的提交会被拒绝。编码和数据库 I/O 在同步区外执行。不同物理表可以并行保存。普通数据与日志使用独立引擎和配置；应分别使用不同表，并为每个物理表配置唯一写入管理方。
+每个普通数据物理 writer key 对应一个 `EntityWriter`，持有一个 `DoubleWriteBuffer`，内部有两个复用的 `WriteBuffer`。业务提交时，当前缓冲直接使用 `LinkedHashMap<ID, WriteOperation>` 合并操作。保存线程交换缓冲后独占取出的那一份，保存并清空；业务继续向另一份接收缓冲合并。每张表共用一个短锁，保护准入、合并、交换和生命周期等待。当前缓冲引用为 volatile，但正确交接由短锁保证：volatile 或等待 100ms 都不能阻止暂停的提交线程稍后继续写旧缓冲。编码和数据库 I/O 均在锁外执行。
 
-达到 batch 大小或 flush 间隔时执行批次。当前写入缓冲区满时阻塞提交产生背压。后台按有效 batch 大小分批处理取出的缓冲区；容量配置限制当前写入缓冲区，不是两个缓冲区合计的 pending 上限。insert/update 保存活实体引用和身份值；字段编码发生在后端执行 batch 时，而不是业务提交时。
+每个数据源使用固定数量的保存线程，通过 `writeThreads` 和 `logWriteThreads` 配置，默认各为 2。同一个物理 writer key 始终哈希路由到同一个保存线程；分配到不同线程的表可以并行保存。数据库调用阻塞时，同线程上的其他表也会等待。首次提交时启动线程，引擎关闭时停止。普通数据与日志应使用不同表，并为每个物理表配置唯一写入管理方。
 
-同 batch 中同 ID 的操作按以下规则合并：
+接收缓冲达到 batch 大小、flush 间隔到期，或 flush/close 请求排空时开始保存。容量限制当前接收缓冲的有效项数；即使满了，同 ID 的后续更新仍可合并，新 ID 则等待空间。`DELETE_GROUP` 封存之前的 ID Map，并额外占用一项。容量不是两份缓冲及已准入等待提交的合计上限。insert/update 保存活实体引用和身份值，字段编码在后端执行 batch 时发生；同 ID 更新传入另一个对象时替换为最新引用。
 
-```text
-INSERT + UPDATE -> INSERT using the latest entity
-UPDATE + UPDATE -> latest UPDATE
-UPDATE + DELETE -> DELETE
-INSERT + DELETE -> no operation
-DELETE + DELETE -> DELETE
-DELETE + INSERT -> keep DELETE followed by INSERT
-```
+合并仅作用于当前接收缓冲，已经交给保存线程的操作不能被下一份缓冲中的操作抵消：
 
-整组删除构成顺序屏障。不同 ID 保留下来的操作保持顺序，RDB 仅合并连续使用相同 SQL 的操作。默认表 SQL Plan 在 Schema 初始化时缓存；动态日志 INSERT 复用实体模板，不保留每个分表的 Plan。ResultSet 字段直接映射到实体。
+| 缓冲中操作 | 收到 INSERT | 收到 UPDATE | 收到 DELETE |
+| --- | --- | --- | --- |
+| 无 | INSERT | UPDATE | DELETE |
+| INSERT | 拒绝 | INSERT，最新对象 | 移除该项 |
+| UPDATE | 拒绝 | UPDATE，最新对象 | DELETE |
+| DELETE | DELETE_INSERT | 拒绝 | DELETE |
+| DELETE_INSERT | 拒绝 | DELETE_INSERT，最新对象 | DELETE |
+
+非法顺序在提交时抛出 `DataException`，不改变之前已接收的操作或 Repository 缓存成员。这只校验当前缓冲的操作顺序，不校验历史数据库状态。整组删除构成顺序屏障，前后的 ID Map 独立合并；同一段内按 ID 首次进入的顺序保存。
+
+`DELETE_INSERT` 在调用 DataAccess 前展开为先 DELETE、后 INSERT。后端允许至少两条操作时，将二者放在同一批；后端 batch 上限为 1 时分两次执行，DELETE 失败则跳过 INSERT。其他操作按有效 batch 上限分批保存。RDB 仅合并连续使用相同 SQL 的操作。默认表 SQL Plan 在 Schema 初始化时缓存；动态日志 INSERT 复用实体模板，不保留每个分表的 Plan。
+
+日志使用独立的 `LogWriter`：每张物理表一个有界 FIFO 队列，对应保存线程取出不超过 batch 上限的记录到 List，直接批量插入。日志不创建 DoubleWriteBuffer，也不按 ID 合并；重复 ID 仍然是独立的 INSERT，数据库唯一约束可能拒绝它们。
 
 ## 失败、flush 与正常关闭
 
 数据库失败只影响当前 batch。DataAccess 判定当前尝试可以安全重放时，writer 进行有限重试。RDB 重试要求 commit 尚未开始、rollback 明确成功且错误属于可重试事务错误。MongoDB 默认不重放整个 ordered bulk，因为可能已有部分操作成功。
 
-最终失败后，WriteFailureHandler 同步记录非成功操作，后续 batch 继续。框架不保存最近一次数据库异常、历史异常链或用于未来重放的失败 batch，仅保留计数和时间指标。默认处理器将身份、当前字段值和异常写入 stderr。自定义处理器应及时记录，不长期持有实体或异常；处理器抛错时回退到 stderr。
+最终失败后，WriteFailureHandler 同步记录非成功操作，后续 batch 继续。框架不保存最近一次数据库异常、历史异常链或用于未来重放的失败 batch。默认处理器将身份、当前字段值和异常写入 stderr。自定义处理器应及时记录，不长期持有实体或异常；处理器抛错时回退到 stderr。
 
 `BatchResult` 区分 SUCCESS、FAILED、UNEXECUTED 和 UNKNOWN。MongoDB 有索引的 ordered-write 错误可区分失败项和未执行后缀；同时检查报错前已执行部分的 UPDATE 匹配数量。如果匹配数量不足，因为汇总结果无法定位具体未命中项，这部分 UPDATE 全部标记 UNKNOWN，已确认执行成功的 INSERT 仍保留成功状态。write concern 失败时，已执行部分保持 UNKNOWN。无法确定的结果保守标记 UNKNOWN。RDB 在 commit 成功后返回全成功；明确回滚报告 FAILED，事务执行前失败报告 UNEXECUTED，commit 结果不明或 rollback 失败通过 BatchWriteException 报告 UNKNOWN，且不自动重试。这不是自动修复机制：此前失败的 insert 或 delete 仍可能影响后续写入。
 
@@ -415,7 +372,7 @@ flush 传入的是**实体类**，Repository 获取传入的是**业务接口**�
 
 ## 日志 Repository 与自动分表
 
-业务日志接口继承 `LogRepository<T>`，与 SingleRepository/GroupRepository 共用统一工厂和 Spring 注册机制。业务只调用 `logs.append(log)`。Repository 绑定实体类型和 DataAccess，具体分表由日志时间字段值生成，调用方不传表名，也不配置 router。
+业务日志接口继承 `LogRepository<T>`，与 SingleRepository/GroupRepository 共用统一工厂。业务只调用 `logs.append(log)`。Repository 绑定实体类型和 DataAccess，具体分表由日志时间字段值生成，调用方不传表名，也不配置 router。
 
 ```java
 import cn.managame.annotation.Id;
@@ -435,26 +392,16 @@ public class PlayerActionLog {
 
 ```java
 import cn.managame.core.log.LogRepository;
-import org.springframework.stereotype.Repository;
 
-@Repository
 public interface PlayerActionLogRepository extends LogRepository<PlayerActionLog> {
 }
-```
-
-```java
-@Autowired
-private PlayerActionLogRepository logs;
-
-// Inside a business method:
-logs.append(log);
 ```
 
 `createTime` 为 2026 年 9 月时写入 `player_action_log_202609`。在唯一的已映射实例字段上声明 `@LogPartition(Period.DAY)`、`MONTH` 或 `YEAR`，分别使用 `_yyyyMMdd`、`_yyyyMM`、`_yyyy` 后缀。没有 `@LogPartition` 时使用实体默认表或集合名，包括 `@Table`/`@Document` 配置。
 
 时间字段支持 LocalDate、LocalDateTime、Instant、毫秒时间戳 long/Long。Instant 和毫秒时间戳按注解的 `zone` 转换，默认 `UTC`；例如 `@LogPartition(value = LogPartition.Period.DAY, zone = "Asia/Shanghai")`。LocalDate 和 LocalDateTime 直接使用其日期。非法字段声明或时区在 Repository 初始化时报错；追加时不允许分表时间为空。支持继承的已映射字段。追加时根据事件时间确定目标分表，追加后不要修改该字段。
 
-Spring 中由 `@EnableGameDataRepositories` 注册业务接口，通过构造器或 `@Autowired` 正常注入。普通 Java 项目使用统一工厂：
+通过统一工厂获取 Repository：
 
 ```java
 PlayerActionLogRepository logs = gameData.repository("log", PlayerActionLogRepository.class);
@@ -465,9 +412,9 @@ logs.append(log);
 
 append 自动攒批，不要每条日志都 flush。确实需要等待时，`logs.flush()` 排空该数据源上该日志实体的写入，`gameData.flushLogs()` 排空全部日志。正常 `GameData.close()` 自动处理完已接收写入。
 
-动态分表默认空闲 5 分钟且没有待写工作后，释放队列和虚拟线程。再次追加历史时间的日志会重新创建对应 writer。正在执行的 batch、重试和失败回调阻止回收。通过 Builder 的 `logWriterIdleTimeout(Duration)` 配置，零表示禁用回收。未分表的固定表 writer 保留。实体指标保留数值累计，物理指标只列出当前 writer。
+动态分表默认空闲 5 分钟且没有待写工作后释放队列，共享的固定保存线程保留到引擎关闭。再次追加历史时间的日志会在同一个保存线程上重新创建对应队列。正在执行的 batch、重试和失败回调阻止回收。通过 Builder 的 `logWriterIdleTimeout(Duration)` 配置，零表示禁用回收。未分表的固定表 writer 保留。
 
-RDB 按实体缓存 INSERT 模板，每个 batch 填入方言引用后的分表名，不保留历史分表 SQL Plan。纯 INSERT 批次保留每条日志并跳过实体状态合并。日志表或集合提前创建，Repository 初始化和 append 都不执行日志 DDL。可在部署时预建，或初始化时调用 `dataAccess.ensureSchema(metadata, physicalName)`。分表保留和删除仍由应用负责。
+RDB 按实体缓存 INSERT 模板，每个 batch 填入方言引用后的分表名，不保留历史分表 SQL Plan。日志队列保留每条 INSERT，不参与实体状态合并。日志表或集合提前创建，Repository 初始化和 append 都不执行日志 DDL。可在部署时预建，或初始化时调用 `dataAccess.ensureSchema(metadata, physicalName)`。分表保留和删除仍由应用负责。
 
 ## 多个索引与复合索引
 
@@ -526,10 +473,12 @@ var gameData = GameData.builder()
         .cacheExpireAfterAccess(java.time.Duration.ofMinutes(30))
         .writeQueueCapacity(65_536)
         .writeBatchSize(256)
+        .writeThreads(2)
         .flushInterval(java.time.Duration.ofMillis(100))
         .maxRetries(3)
         .logQueueCapacity(131_072)
         .logBatchSize(2_048)
+        .logWriteThreads(2)
         .logFlushInterval(java.time.Duration.ofMillis(200))
         .logWriterIdleTimeout(java.time.Duration.ofMinutes(5))
         .ensureSchema(true)
@@ -543,6 +492,8 @@ PlayerRepository players = gameData.repository("game", PlayerRepository.class);
 | `cacheExpireAfterAccess` | 30 分钟 | 普通缓存；常驻缓存不过期 |
 | `writeQueueCapacity` | 65,536 | 每个普通数据物理 writer |
 | `writeBatchSize` | 256 | 普通数据 batch 上限 |
+| `writeThreads` | 2 | 每个数据源的普通数据固定保存线程数 |
+| `logWriteThreads` | 2 | 每个数据源的日志固定保存线程数 |
 | `flushInterval` | 100 ms | 普通数据凑批间隔 |
 | `maxRetries` | 3 | 仅在判定安全时进行的额外重试次数 |
 | `logQueueCapacity` | 131,072 | 每个日志物理 writer |
@@ -554,17 +505,13 @@ PlayerRepository players = gameData.repository("game", PlayerRepository.class);
 
 实际 batch 大小还受 `DataAccess.maxBatchSize()` 限制。队列满时可能阻塞提交线程，flush 间隔属于凑批设置，不是持久化延迟上限保证。停止业务流量后关闭 GameData，并单独管理外部资源的生命周期。
 
-## 运行指标
+## 生命周期状态
 
 ```java
-var metrics = gameData.writerMetrics("game", Player.class);
-var logsMetrics = gameData.logWriterMetrics("log", PlayerActionLog.class);
-var physicalWriters = gameData.physicalWriterMetrics("game");
-var physicalLogs = gameData.physicalLogWriterMetrics("log");
 var state = gameData.writerState("game", Player.class);
 ```
 
-指标包括队列大小、pending 数量、成功及失败 batch 数、成功操作数、最近 batch 大小、flush 耗时及最近失败时间。按实体汇总的指标可能涵盖多个物理表，分表排查时使用物理 writer 指标。框架级终止错误将状态置为 FAILED，普通数据库 batch 失败不会。监控系统接入由业务完成。
+`WriterState` 表示 RUNNING、FAILED 或 CLOSED。保存线程发生框架级终止错误时进入 FAILED；普通数据库 batch 失败通过 WriteFailureHandler 记录，后续批次继续。已移除批次数、耗时等统计字段及指标 API。内部 pending 提交数仅用于协调准入、flush 和关闭排空。
 
 ## 构建、验证与 API 迁移
 
@@ -582,8 +529,8 @@ mvn -f game-data/pom.xml verify
 
 - Java import 从 `io.gamedata` 改为 `cn.managame`。原有子构件依赖统一改为 `cn.managame:game-data:0.1.0-SNAPSHOT`，后端及 Codec 的可选依赖按前文添加。
 - 将 `repository(Entity.class)`、`groupRepository(Entity.class)` 改为业务接口及 `repository(MyRepository.class)`。
-- flush 和指标 API 仍传入实体类。
-- 使用 WriteFailureHandler 日志及失败指标，替代 `writerFailure()` 轮询及 flush/close 的 batch 异常汇总。
+- flush 和生命周期状态 API 仍传入实体类。状态类型已改为 `WriterState`，原指标 API 已移除。
+- 使用 WriteFailureHandler 日志，替代 `writerFailure()` 轮询及 flush/close 的 batch 异常汇总。
 - 在 append 前预建日志分表。
 - 组 Map 就是缓存中的原始 Map；保证同组访问串行，通过 Repository 方法持久化变更。
 

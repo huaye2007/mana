@@ -85,8 +85,6 @@ class MongoBatchFailureTest {
                 writer.submit(update(1)); writer.submit(insert(2)); writer.submit(insert(3));
                 writer.flush();
                 assertEquals(List.of(1L, 2L, 3L), logged.stream().sorted().toList());
-                assertEquals(0, writer.metrics(Row.class).successfulOperations());
-                assertEquals(1, writer.metrics(Row.class).failedBatches());
             }
         }
     }

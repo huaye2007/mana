@@ -122,6 +122,7 @@ public final class MongoDataAccess implements DataAccess {
 
         for (WriteOperation<?> op : operations) {
             switch (op.type()) {
+                case DELETE_INSERT -> throw new DataException("DELETE_INSERT must be expanded by the write buffer");
                 case INSERT -> models.add(new InsertOneModel<>(toDocument(metadata, op.entity())));
                 case UPDATE -> {
                     Object storeId = mapper.toStore(op.id(), metadata.idProperty().type());

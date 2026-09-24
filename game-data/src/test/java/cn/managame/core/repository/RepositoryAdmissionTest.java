@@ -52,4 +52,14 @@ class RepositoryAdmissionTest {
             assertSame(view, group.getGroup(1L)); assertEquals(1, view.size()); assertSame(second, view.get(2L));
         }
     }
+    @Test void invalidBufferedInsertDoesNotReplaceAnAcceptedCachedEntity() {
+        try (var writer = engine(new Access(), 10, 10, Duration.ofDays(1), (ops, error) -> fail(error))) {
+            var repository = new DefaultSingleRepository<Row, Long>(Row.class, new MetadataRegistry(),
+                    new Access(), writer, Duration.ofMinutes(30), false);
+            Row row = new Row(1);
+            repository.update(row);
+            assertThrows(DataException.class, () -> repository.insert(new Row(1)));
+            assertSame(row, repository.get(1L).orElseThrow());
+        }
+    }
 }

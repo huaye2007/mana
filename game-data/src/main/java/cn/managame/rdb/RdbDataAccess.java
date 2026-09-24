@@ -288,6 +288,7 @@ public final class RdbDataAccess implements DataAccess {
         RdbEntityPlan plan = physicalName == null || first.type() == cn.managame.core.write.WriteType.INSERT
                 ? plan(first.metadata()) : new RdbEntityPlan(first.metadata(), dialect, physicalName);
         String sql = switch (first.type()) {
+            case DELETE_INSERT -> throw new DataException("DELETE_INSERT must be expanded by the write buffer");
             case INSERT -> physicalName == null ? plan.insert
                     : plan.insertInto(dialect.qualifiedTable(first.metadata(), physicalName));
             case UPDATE -> plan.update;

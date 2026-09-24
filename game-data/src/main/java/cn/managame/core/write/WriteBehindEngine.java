@@ -3,23 +3,16 @@ package cn.managame.core.write;
 import cn.managame.core.DataException;
 import cn.managame.core.access.DataAccess;
 import cn.managame.core.metadata.EntityMetadata;
-
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.concurrent.locks.LockSupport;
 
-/**
- * Physical-table-affine asynchronous write-behind.
- *
- * All operations that DataAccess resolves to the same writer key are persisted by one virtual
- * thread. Different physical tables/collections run in parallel. Values are read from live entity
- * references only when the batch executes; no entity snapshot is created.
- */
+/** Table-affine save workers with merging double buffers for entities or FIFO queues for logs. */
 public final class WriteBehindEngine implements AutoCloseable {
     private final Object closeMonitor = new Object();
-    private final Object metricsMonitor = new Object();
     private final DataAccess dataAccess;
     private final int queueCapacityPerTable;
     private final int batchSize;
@@ -27,62 +20,124 @@ public final class WriteBehindEngine implements AutoCloseable {
     private final int maxRetries;
     private final long idleTimeoutNanos;
     private final WriteFailureHandler failureHandler;
+    private final boolean appendOnly;
+    private final Thread[] workers;
+    private final AtomicReferenceArray<Throwable> workerFailures;
     private volatile boolean accepting = true;
-    private final ConcurrentHashMap<String, TableWriter> writers = new ConcurrentHashMap<>();
-    // One numeric summary per entity, not one retained entry per historical partition.
-    private final Map<Class<?>, TableWriterMetrics> retiredMetrics = new HashMap<>();
+    private volatile boolean stopping;
+    private final ConcurrentHashMap<String, Writer> writers = new ConcurrentHashMap<>();
 
-    public WriteBehindEngine(
-            DataAccess dataAccess,
-            int queueCapacityPerTable,
-            int batchSize,
-            Duration flushInterval,
-            int maxRetries,
-            WriteFailureHandler failureHandler) {
-        this(dataAccess, queueCapacityPerTable, batchSize, flushInterval, maxRetries, failureHandler, Duration.ZERO);
+    public WriteBehindEngine(DataAccess access, int capacity, int batchSize, Duration interval,
+                             int retries, WriteFailureHandler handler) {
+        this(access, capacity, batchSize, interval, retries, handler, Duration.ZERO);
     }
 
-    /** A positive idle timeout retires empty routed-table writers; zero disables retirement. */
-    public WriteBehindEngine(
-            DataAccess dataAccess,
-            int queueCapacityPerTable,
-            int batchSize,
-            Duration flushInterval,
-            int maxRetries,
-            WriteFailureHandler failureHandler,
-            Duration idleTimeout) {
-        Objects.requireNonNull(idleTimeout, "idleTimeout");
-        if (idleTimeout.isNegative()) throw new IllegalArgumentException("idleTimeout must be >= 0");
+    public WriteBehindEngine(DataAccess access, int capacity, int batchSize, Duration interval,
+                             int retries, WriteFailureHandler handler, Duration idleTimeout) {
+        this(access, capacity, batchSize, interval, retries, handler, idleTimeout, 2, false);
+    }
+
+    /** Fixed worker count; a physical writer key always hashes to the same worker. */
+    public WriteBehindEngine(DataAccess access, int capacity, int batchSize, Duration interval,
+                             int retries, WriteFailureHandler handler, Duration idleTimeout, int workerCount) {
+        this(access, capacity, batchSize, interval, retries, handler, idleTimeout, workerCount, false);
+    }
+
+    /** Separate log receive path: one bounded FIFO per table, drained directly to INSERT batches. */
+    public static WriteBehindEngine logs(DataAccess access, int capacity, int batchSize, Duration interval,
+                                        int retries, WriteFailureHandler handler, Duration idleTimeout, int workerCount) {
+        return new WriteBehindEngine(access, capacity, batchSize, interval, retries, handler,
+                idleTimeout, workerCount, true);
+    }
+
+    private WriteBehindEngine(DataAccess access, int capacity, int batchSize, Duration interval,
+                              int retries, WriteFailureHandler handler, Duration idleTimeout,
+                              int workerCount, boolean appendOnly) {
+        this.dataAccess = Objects.requireNonNull(access);
+        if (capacity <= 0 || batchSize <= 0 || workerCount <= 0) {
+            throw new IllegalArgumentException("capacity, batchSize and workerCount must be > 0");
+        }
+        if (Objects.requireNonNull(idleTimeout).isNegative()) {
+            throw new IllegalArgumentException("idleTimeout must be >= 0");
+        }
+        this.queueCapacityPerTable = capacity;
+        this.batchSize = Math.min(batchSize, Math.max(1, access.maxBatchSize()));
+        this.flushIntervalNanos = Math.max(1, Objects.requireNonNull(interval).toNanos());
         this.idleTimeoutNanos = idleTimeout.toNanos();
-        this.dataAccess = Objects.requireNonNull(dataAccess);
-        if (queueCapacityPerTable <= 0) throw new IllegalArgumentException("queueCapacityPerTable must be > 0");
-        if (batchSize <= 0) throw new IllegalArgumentException("batchSize must be > 0");
-        this.queueCapacityPerTable = queueCapacityPerTable;
-        this.batchSize = Math.min(batchSize, Math.max(1, dataAccess.maxBatchSize()));
-        this.flushIntervalNanos = Math.max(1L, Objects.requireNonNull(flushInterval).toNanos());
-        this.maxRetries = Math.max(0, maxRetries);
-        this.failureHandler = failureHandler == null ? WriteFailureHandler.stderr() : failureHandler;
+        this.maxRetries = Math.max(0, retries);
+        this.failureHandler = handler == null ? WriteFailureHandler.stderr() : handler;
+        this.appendOnly = appendOnly;
+        this.workers = new Thread[workerCount];
+        this.workerFailures = new AtomicReferenceArray<>(workerCount);
     }
 
-    public void submit(WriteOperation<?> op) {
-        Objects.requireNonNull(op, "op");
+    public void submit(WriteOperation<?> operation) {
+        Objects.requireNonNull(operation, "operation");
+        if (operation.type() == WriteType.DELETE_INSERT || (appendOnly && operation.type() != WriteType.INSERT)) {
+            throw new IllegalArgumentException("Unsupported submission: " + operation.type());
+        }
         checkAccepting();
-        String writerKey = dataAccess.writerKey(op.metadata(), op.physicalName());
+        String key = Objects.requireNonNull(dataAccess.writerKey(operation.metadata(), operation.physicalName()));
         for (;;) {
-            TableWriter writer = writers.get(writerKey);
+            Writer writer = writers.get(key);
             if (writer == null) {
-                // Only writer registration shares a monitor with shutdown; ordinary submissions do not.
                 synchronized (writers) {
                     checkAccepting();
-                    writer = writers.computeIfAbsent(writerKey,
-                            ignored -> new TableWriter(op.metadata(), writerKey, op.physicalName() != null));
+                    writer = writers.computeIfAbsent(key,
+                            ignored -> appendOnly
+                                    ? new LogWriter(operation.metadata(), key, operation.physicalName() != null)
+                                    : new EntityWriter(operation.metadata(), key, operation.physicalName() != null));
+                    startWorkers();
                 }
             }
-            if (writer.metadata.type() != op.metadata().type()) {
-                throw new DataException("Two entity types resolved to the same physical writer key: " + writerKey);
+            if (writer.metadata.type() != operation.metadata().type()) {
+                throw new DataException("Two entity types resolved to the same physical writer key: " + key);
             }
-            if (writer.enqueue(op)) return;
-            // An idle writer can retire between lookup and enqueue; retry with its replacement.
+            if (writer.enqueue(operation)) return;
+        }
+    }
+
+    // Called under the registration monitor. Engines with no submissions create no threads.
+    private void startWorkers() {
+        if (workers[0] != null) return;
+        for (int i = 0; i < workers.length; i++) {
+            int shard = i;
+            workers[i] = Thread.ofVirtual().name("game-data-" + (appendOnly ? "log-" : "write-") + i)
+                    .unstarted(() -> runWorker(shard));
+        }
+        for (Thread worker : workers) worker.start();
+    }
+
+    private void runWorker(int shard) {
+        for (;;) {
+            boolean progressed = false;
+            for (Writer writer : writers.values()) {
+                if (writer.shard != shard) continue;
+                try { progressed |= writer.saveIfReady(); }
+                catch (Throwable failure) { writer.failTerminal(failure); }
+            }
+            if (stopping) {
+                boolean drained = true;
+                for (Writer writer : writers.values()) {
+                    if (writer.shard != shard) continue;
+                    synchronized (writer.monitor) {
+                        if (writer.pending != 0 && writer.state != WriterState.FAILED) drained = false;
+                        else if (writer.state == WriterState.RUNNING) writer.state = WriterState.CLOSED;
+                    }
+                }
+                if (drained) return;
+            }
+            if (Thread.interrupted()) {
+                DataException failure = new DataException("Save worker interrupted: " + shard);
+                workerFailures.set(shard, failure);
+                for (Writer writer : writers.values()) {
+                    if (writer.shard == shard) writer.failTerminal(failure);
+                }
+                return;
+            }
+            if (progressed) continue;
+            LockSupport.parkNanos(this, Math.max(TimeUnit.MILLISECONDS.toNanos(1),
+                    Math.min(flushIntervalNanos, TimeUnit.MILLISECONDS.toNanos(10))));
         }
     }
 
@@ -90,327 +145,191 @@ public final class WriteBehindEngine implements AutoCloseable {
         if (!accepting) throw new IllegalStateException("write engine is closing/closed");
     }
 
-    /** Stops new submissions; each table drains operations it has already accepted. */
+    /** Tables finish submissions already admitted, including producers waiting for capacity. */
     public void stopAccepting() {
-        synchronized (writers) { accepting = false; }
+        synchronized (writers) {
+            accepting = false;
+            for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
+        }
     }
 
     public void flush() {
-        for (TableWriter writer : List.copyOf(writers.values())) writer.flush();
+        checkNotWriterThread();
+        for (Writer writer : List.copyOf(writers.values())) writer.flush();
     }
 
     public void flush(Class<?> entityType) {
-        for (TableWriter writer : List.copyOf(writers.values())) {
+        checkNotWriterThread();
+        for (Writer writer : List.copyOf(writers.values())) {
             if (writer.metadata.type() == entityType) writer.flush();
         }
     }
 
-    public TableWriterState state(Class<?> entityType) {
-        List<TableWriter> matched = writers.values().stream()
+    public WriterState state(Class<?> entityType) {
+        List<Writer> matched = writers.values().stream()
                 .filter(w -> w.metadata.type() == entityType).toList();
-        if (matched.isEmpty()) return accepting ? TableWriterState.RUNNING : TableWriterState.CLOSED;
-        if (matched.stream().anyMatch(w -> w.state == TableWriterState.FAILED)) return TableWriterState.FAILED;
-        if (matched.stream().allMatch(w -> w.state == TableWriterState.CLOSED)) return TableWriterState.CLOSED;
-        return TableWriterState.RUNNING;
+        if (matched.isEmpty()) return accepting ? WriterState.RUNNING : WriterState.CLOSED;
+        if (matched.stream().anyMatch(w -> w.state == WriterState.FAILED)) return WriterState.FAILED;
+        if (matched.stream().allMatch(w -> w.state == WriterState.CLOSED)) return WriterState.CLOSED;
+        return WriterState.RUNNING;
     }
 
-    public TableWriterMetrics metrics(Class<?> entityType) {
-        synchronized (metricsMonitor) {
-            TableWriterMetrics result = retiredMetrics.getOrDefault(entityType, TableWriterMetrics.empty());
-            for (TableWriter writer : writers.values()) {
-                if (writer.metadata.type() == entityType) result = mergeMetrics(result, writer.metrics());
-            }
-            return new TableWriterMetrics(state(entityType), result.queueSize(), result.pendingCount(),
-                    result.successfulBatches(), result.successfulOperations(), result.failedBatches(),
-                    result.lastBatchSize(), result.lastFlushNanos(), result.maxFlushNanos(), result.lastFailureEpochMillis());
-        }
-    }
+    int writerCount() { return writers.size(); }
 
-    private static TableWriterMetrics mergeMetrics(TableWriterMetrics a, TableWriterMetrics b) {
-        return new TableWriterMetrics(TableWriterState.RUNNING, a.queueSize() + b.queueSize(),
-                a.pendingCount() + b.pendingCount(), a.successfulBatches() + b.successfulBatches(),
-                a.successfulOperations() + b.successfulOperations(), a.failedBatches() + b.failedBatches(),
-                Math.max(a.lastBatchSize(), b.lastBatchSize()), Math.max(a.lastFlushNanos(), b.lastFlushNanos()),
-                Math.max(a.maxFlushNanos(), b.maxFlushNanos()), Math.max(a.lastFailureEpochMillis(), b.lastFailureEpochMillis()));
-    }
-
-    public Map<String, TableWriterMetrics> metricsByPhysicalWriter() {
-        Map<String, TableWriterMetrics> result = new LinkedHashMap<>();
-        writers.forEach((key, value) -> result.put(key, value.metrics()));
-        return Map.copyOf(result);
-    }
-
-    public int tableWriterCount() { return writers.size(); }
-
-    /** Reject lifecycle waits from this engine's own database/failure callbacks. */
+    /** Blocking lifecycle calls from any save worker would deadlock its assigned tables. */
     public void checkNotWriterThread() {
-        for (TableWriter writer : writers.values()) {
-            if (Thread.currentThread() == writer.thread) {
-                throw new IllegalStateException("Cannot close a write engine from its own writer callback");
+        synchronized (writers) {
+            for (Thread worker : workers) {
+                if (Thread.currentThread() == worker) {
+                    throw new IllegalStateException("Cannot wait for a write engine from its own save worker");
+                }
             }
         }
     }
 
-    @Override
-    public void close() {
+    @Override public void close() {
         checkNotWriterThread();
         synchronized (closeMonitor) {
-            closeWriters();
+            stopAccepting();
+            // Complete the admission boundary before workers are allowed to exit. A producer
+            // which passed checkAccepting while holding this monitor has already incremented pending.
+            for (Writer writer : writers.values()) {
+                synchronized (writer.monitor) { writer.monitor.notifyAll(); }
+            }
+            stopping = true;
+            boolean interrupted = false;
+            try {
+                for (Thread worker : workers) {
+                    if (worker == null) continue;
+                    LockSupport.unpark(worker);
+                    while (worker.isAlive()) {
+                        try { worker.join(); }
+                        catch (InterruptedException e) { interrupted = true; }
+                    }
+                }
+                RuntimeException failure = null;
+                for (Writer writer : writers.values()) {
+                    try { writer.checkTerminalFailure(); }
+                    catch (RuntimeException e) {
+                        if (failure == null) failure = e;
+                        else failure.addSuppressed(e);
+                    }
+                }
+                if (failure != null) throw failure;
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
+            }
         }
     }
 
-    private void closeWriters() {
-        stopAccepting();
-        List<TableWriter> closing = List.copyOf(writers.values());
-        for (TableWriter writer : closing) writer.stopAccepting();
-        RuntimeException failure = null;
-        for (TableWriter writer : closing) {
-            try { writer.join(); }
-            catch (RuntimeException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
-        }
-        if (failure != null) throw failure;
-    }
-
-    private final class TableWriter {
+    private abstract class Writer {
         private final EntityMetadata<?> metadata;
         private final String writerKey;
         private final boolean routed;
-        private long lastActivityNanos = System.nanoTime();
-        private final Object bufferMonitor = new Object();
-        private ArrayList<WriteOperation<?>> incoming = new ArrayList<>(Math.min(queueCapacityPerTable, batchSize));
-        private ArrayList<WriteOperation<?>> spare = new ArrayList<>(Math.min(queueCapacityPerTable, batchSize));
-        private volatile int queued;
-        private final AtomicLong pending = new AtomicLong();
+        private final int shard;
+        // The only table lock: admission, merge/swap or queue drain, pending waits and retirement.
         private final Object monitor = new Object();
-        private final Thread thread;
-        private volatile TableWriterState state = TableWriterState.RUNNING;
+        private long readyAt;
+        private long lastActivityNanos = System.nanoTime();
+        private int flushWaiters;
+        private boolean retired;
+        private long pending;
+        private volatile WriterState state = WriterState.RUNNING;
         private volatile Throwable terminalFailure;
-        private volatile boolean stopRequested;
 
-        private volatile long successfulBatches;
-        private volatile long successfulOperations;
-        private volatile long failedBatches;
-        private volatile int lastBatchSize;
-        private volatile long lastFlushNanos;
-        private volatile long maxFlushNanos;
-        private volatile long lastFailureEpochMillis;
-
-        private TableWriter(EntityMetadata<?> metadata, String writerKey, boolean routed) {
+        Writer(EntityMetadata<?> metadata, String writerKey, boolean routed) {
             this.metadata = metadata;
             this.writerKey = writerKey;
             this.routed = routed;
-            String safe = writerKey.replaceAll("[^A-Za-z0-9_.-]", "_");
-            this.thread = Thread.ofVirtual().name("game-data-write-" + safe).start(this::runLoop);
+            this.shard = Math.floorMod(writerKey.hashCode(), workers.length);
         }
 
-        private boolean enqueue(WriteOperation<?> operation) {
-            synchronized (bufferMonitor) {
+        abstract int size();
+        abstract long queuedSubmissions();
+        abstract boolean canAdd(WriteOperation<?> operation);
+        abstract void add(WriteOperation<?> operation);
+        abstract SaveBatch detach();
+
+        boolean enqueue(WriteOperation<?> operation) {
+            synchronized (monitor) {
                 checkAccepting();
-                if (stopRequested) return false;
+                if (retired) return false;
                 checkTerminalFailure();
-                pending.incrementAndGet();
+                pending++;
                 boolean published = false;
                 try {
                     if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
-                    while (incoming.size() >= queueCapacityPerTable) {
-                        bufferMonitor.wait();
+                    while (!canAdd(operation)) {
+                        // Save callbacks must not form capacity waits between worker shards.
+                        for (Thread worker : workers) {
+                            if (Thread.currentThread() == worker) {
+                                throw new IllegalStateException("Cannot wait for buffer space from a save worker");
+                            }
+                        }
+                        monitor.wait();
                         checkTerminalFailure();
                     }
-                    incoming.add(operation);
-                    queued = incoming.size();
+                    if (size() == 0) readyAt = System.nanoTime() + flushIntervalNanos;
+                    add(operation);
                     published = true;
-                    bufferMonitor.notifyAll();
+                    LockSupport.unpark(workers[shard]);
                     return true;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new DataException("Interrupted while enqueueing write for " + writerKey, e);
                 } finally {
-                    if (!published) { pending.decrementAndGet(); signal(); }
+                    if (!published) pending--;
+                    monitor.notifyAll();
                 }
             }
         }
 
-        private void runLoop() {
-            try {
-                while (!stopRequested || pending.get() != 0) {
-                    List<WriteOperation<?>> draining = takeBuffer();
-                    if (draining == null) {
-                        if (retireIfIdle()) return;
-                        continue;
-                    }
-                    // Only this thread owns the drained buffer; producers continue on the other buffer.
-                    try {
-                        for (int start = 0; start < draining.size(); start += batchSize) {
-                            process(draining.subList(start, Math.min(draining.size(), start + batchSize)));
-                        }
-                    } finally { draining.clear(); }
+        boolean saveIfReady() {
+            SaveBatch batch;
+            synchronized (monitor) {
+                if (state != WriterState.RUNNING || retired) return false;
+                if (pending == 0) {
+                    if (stopping) { state = WriterState.CLOSED; monitor.notifyAll(); }
+                    else retireIfIdle();
+                    return false;
                 }
-                state = TableWriterState.CLOSED;
-                signal();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                failTerminal(new DataException("Table writer interrupted: " + writerKey, e));
-            } catch (Throwable e) {
-                if (terminalFailure == null) failTerminal(e);
+                int queued = size();
+                if (queuedSubmissions() == 0 || (queued > 0 && queued < batchSize && flushWaiters == 0 && accepting
+                        && System.nanoTime() - readyAt < 0)) return false;
+                batch = detach();
+                monitor.notifyAll();
             }
-        }
-
-        private boolean retireIfIdle() {
-            if (!routed || idleTimeoutNanos == 0 || pending.get() != 0 || !accepting
-                    || System.nanoTime() - lastActivityNanos < idleTimeoutNanos) return false;
-            synchronized (bufferMonitor) {
-                if (!accepting || stopRequested || pending.get() != 0 || !incoming.isEmpty()) return false;
-                synchronized (metricsMonitor) {
-                    retiredMetrics.merge(metadata.type(), metrics(), WriteBehindEngine::mergeMetrics);
-                    stopRequested = true;
-                    state = TableWriterState.CLOSED;
-                    writers.remove(writerKey, this);
+            try { batch.save().run(); }
+            finally {
+                batch.clear().run();
+                synchronized (monitor) {
+                    pending -= batch.submissions();
+                    lastActivityNanos = System.nanoTime();
+                    monitor.notifyAll();
                 }
             }
-            signal();
             return true;
         }
 
-        private void process(List<WriteOperation<?>> raw) {
-            List<WriteOperation<?>> compacted = compact(raw);
-            long start = System.nanoTime();
+        private void retireIfIdle() {
+            if (!routed || idleTimeoutNanos == 0 || !accepting
+                    || System.nanoTime() - lastActivityNanos < idleTimeoutNanos) return;
+            retired = true;
+            state = WriterState.CLOSED;
+            writers.remove(writerKey, this);
+        }
+        final boolean process(List<WriteOperation<?>> batch) {
+            if (batch.isEmpty()) return true;
             try {
-                BatchResult result = persist(compacted);
-                long elapsed = System.nanoTime() - start;
-                lastBatchSize = compacted.size();
-                lastFlushNanos = elapsed;
-                if (elapsed > maxFlushNanos) maxFlushNanos = elapsed;
-
-                if (result.allSuccess()) {
-                    successfulBatches++;
-                    successfulOperations += raw.size();
-                } else {
-                    failedBatches++;
-                    successfulOperations += result.successCount();
-                    lastFailureEpochMillis = System.currentTimeMillis();
-                    BatchWriteException error = new BatchWriteException(
-                            "Batch completed with non-successful operations: writer=" + writerKey, result);
-                    reportFailure(result.problemOperations(compacted), error);
-                }
+                BatchResult result = persist(batch);
+                if (result.allSuccess()) return true;
+                throw new BatchWriteException("Batch completed with non-successful operations: writer=" + writerKey, result);
             } catch (BatchWriteException e) {
-                failedBatches++;
-                lastFailureEpochMillis = System.currentTimeMillis();
-                if (e.result() != null) successfulOperations += e.result().successCount();
-                List<WriteOperation<?>> problems = e.result() == null
-                        ? compacted : e.result().problemOperations(compacted);
-                reportFailure(problems, e);
+                reportFailure(e.result() == null ? batch : e.result().problemOperations(batch), e);
             } catch (Throwable e) {
-                failedBatches++;
-                lastFailureEpochMillis = System.currentTimeMillis();
-                reportFailure(compacted, e);
-            } finally {
-                lastActivityNanos = System.nanoTime();
-                pending.addAndGet(-raw.size());
-                signal();
+                reportFailure(batch, e);
             }
-        }
-
-        private List<WriteOperation<?>> takeBuffer() throws InterruptedException {
-            synchronized (bufferMonitor) {
-                if (incoming.isEmpty()) {
-                    if (!stopRequested || pending.get() != 0) bufferMonitor.wait(100);
-                    if (incoming.isEmpty()) return null;
-                }
-                ArrayList<WriteOperation<?>> draining = incoming;
-                incoming = spare;
-                spare = draining;
-                queued = 0;
-                bufferMonitor.notifyAll();
-                long deadline = System.nanoTime() + flushIntervalNanos;
-                while (draining.size() < batchSize && !stopRequested && accepting) {
-                    if (!incoming.isEmpty()) {
-                        // Transfer a complete accumulation, never shift the active list for each individual item.
-                        draining.addAll(incoming);
-                        incoming.clear();
-                        queued = 0;
-                        bufferMonitor.notifyAll();
-                        continue;
-                    }
-                    long remaining = deadline - System.nanoTime();
-                    if (remaining <= 0) break;
-                    TimeUnit.NANOSECONDS.timedWait(bufferMonitor, Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)));
-                }
-                return draining;
-            }
-        }
-
-        /** DELETE_GROUP is an ordering barrier; entity-state reduction happens between barriers. */
-        private List<WriteOperation<?>> compact(List<WriteOperation<?>> operations) {
-            if (operations.size() < 2) return operations;
-            // Append-only batches need no identity map or entity-state reduction.
-            boolean insertsOnly = true;
-            for (WriteOperation<?> operation : operations) {
-                if (operation.type() != WriteType.INSERT) { insertsOnly = false; break; }
-            }
-            if (insertsOnly) return operations;
-            List<WriteOperation<?>> result = new ArrayList<>(operations.size());
-            int start = 0;
-            for (int i = 0; i < operations.size(); i++) {
-                if (operations.get(i).type() != WriteType.DELETE_GROUP) continue;
-                if (start < i) result.addAll(compactEntityOperations(operations.subList(start, i)));
-                WriteOperation<?> deleteGroup = operations.get(i);
-                if (result.isEmpty() || result.getLast().type() != WriteType.DELETE_GROUP
-                        || !Objects.equals(result.getLast().groupKey(), deleteGroup.groupKey())) {
-                    result.add(deleteGroup);
-                }
-                start = i + 1;
-            }
-            if (start < operations.size()) result.addAll(compactEntityOperations(operations.subList(start, operations.size())));
-            return result;
-        }
-
-        private List<WriteOperation<?>> compactEntityOperations(List<WriteOperation<?>> operations) {
-            if (operations.size() < 2) return new ArrayList<>(operations);
-            boolean[] keep = new boolean[operations.size()];
-            WriteOperation<?>[] replacement = new WriteOperation<?>[operations.size()];
-            Map<Object, Deque<Integer>> effective = new HashMap<>();
-            for (int i = 0; i < operations.size(); i++) {
-                WriteOperation<?> current = operations.get(i);
-                if (current.type() == WriteType.DELETE_GROUP) throw new IllegalStateException("unexpected DELETE_GROUP");
-                Deque<Integer> stack = effective.computeIfAbsent(current.id(), ignored -> new ArrayDeque<>());
-                Integer prevIndex = stack.peekLast();
-                WriteOperation<?> prev = prevIndex == null ? null
-                        : (replacement[prevIndex] != null ? replacement[prevIndex] : operations.get(prevIndex));
-
-                if (prev == null) {
-                    keep[i] = true;
-                    stack.addLast(i);
-                    continue;
-                }
-
-                if (prev.type() == WriteType.INSERT && current.type() == WriteType.UPDATE) {
-                    replacement[prevIndex] = current.asInsert();
-                } else if (prev.type() == WriteType.INSERT && current.type() == WriteType.DELETE) {
-                    keep[prevIndex] = false;
-                    replacement[prevIndex] = null;
-                    stack.removeLast();
-                } else if (prev.type() == WriteType.UPDATE && current.type() == WriteType.UPDATE) {
-                    replacement[prevIndex] = current;
-                } else if (prev.type() == WriteType.UPDATE && current.type() == WriteType.DELETE) {
-                    keep[prevIndex] = false;
-                    replacement[prevIndex] = null;
-                    stack.removeLast();
-                    keep[i] = true;
-                    stack.addLast(i);
-                } else if (prev.type() == WriteType.DELETE && current.type() == WriteType.DELETE) {
-                    // duplicate delete
-                } else {
-                    keep[i] = true;
-                    stack.addLast(i);
-                }
-            }
-
-            List<WriteOperation<?>> result = new ArrayList<>();
-            for (int i = 0; i < operations.size(); i++) {
-                if (!keep[i]) continue;
-                result.add(replacement[i] != null ? replacement[i] : operations.get(i));
-            }
-            return result;
+            return false;
         }
 
         private BatchResult persist(List<WriteOperation<?>> batch) {
@@ -443,14 +362,7 @@ public final class WriteBehindEngine implements AutoCloseable {
             return new DataException(message + ": writer=" + writerKey + ", retries=" + retries, error);
         }
 
-        private void failTerminal(Throwable error) {
-            terminalFailure = error;
-            state = TableWriterState.FAILED;
-            synchronized (bufferMonitor) { bufferMonitor.notifyAll(); }
-            signal();
-        }
-
-        private void reportFailure(List<WriteOperation<?>> operations, Throwable error) {
+        final void reportFailure(List<WriteOperation<?>> operations, Throwable error) {
             if (operations == null || operations.isEmpty()) return;
             try { failureHandler.onFailure(List.copyOf(operations), error); }
             catch (Throwable handlerError) {
@@ -461,50 +373,93 @@ public final class WriteBehindEngine implements AutoCloseable {
             }
         }
 
-        private void flush() {
-            if (Thread.currentThread() == thread) throw new IllegalStateException("Cannot flush from writer callback");
-            checkTerminalFailure();
+        private void failTerminal(Throwable error) {
             synchronized (monitor) {
-                while (pending.get() > 0) {
-                    checkTerminalFailure();
-                    try { monitor.wait(20L); }
-                    catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new DataException("Interrupted while flushing " + writerKey, e);
-                    }
-                }
+                terminalFailure = error;
+                state = WriterState.FAILED;
+                monitor.notifyAll();
             }
-            checkTerminalFailure();
         }
 
-        private TableWriterMetrics metrics() {
-            return new TableWriterMetrics(state, queued, pending.get(), successfulBatches,
-                    successfulOperations, failedBatches, lastBatchSize, lastFlushNanos,
-                    maxFlushNanos, lastFailureEpochMillis);
-        }
-
-        private void stopAccepting() {
-            synchronized (bufferMonitor) { stopRequested = true; bufferMonitor.notifyAll(); }
-        }
-
-        private void join() {
-            boolean interrupted = false;
-            try {
-                while (thread.isAlive()) {
-                    try { thread.join(); }
-                    catch (InterruptedException e) { interrupted = true; }
-                }
+        private void flush() {
+            synchronized (monitor) {
                 checkTerminalFailure();
-            } finally {
-                if (interrupted) Thread.currentThread().interrupt();
+                flushWaiters++;
+                LockSupport.unpark(workers[shard]);
+                try {
+                    while (pending > 0) {
+                        checkTerminalFailure();
+                        try { monitor.wait(); }
+                        catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new DataException("Interrupted while flushing " + writerKey, e);
+                        }
+                    }
+                    checkTerminalFailure();
+                } finally { flushWaiters--; }
             }
         }
 
         private void checkTerminalFailure() {
-            Throwable failure = terminalFailure;
-            if (failure != null) throw new DataException("Table writer terminated unexpectedly: " + writerKey, failure);
+            Throwable failure = terminalFailure == null ? workerFailures.get(shard) : terminalFailure;
+            if (failure != null) {
+                state = WriterState.FAILED;
+                throw new DataException("Writer terminated unexpectedly: " + writerKey, failure);
+            }
+        }
+    }
+
+    /** A detached batch owns its payload until save and clear complete on the assigned worker. */
+    private record SaveBatch(long submissions, Runnable save, Runnable clear) { }
+
+    private final class EntityWriter extends Writer {
+        private final DoubleWriteBuffer buffers = new DoubleWriteBuffer();
+
+        EntityWriter(EntityMetadata<?> metadata, String key, boolean routed) { super(metadata, key, routed); }
+        @Override int size() { return buffers.active().size(); }
+        @Override long queuedSubmissions() { return buffers.active().submissions(); }
+        @Override boolean canAdd(WriteOperation<?> operation) {
+            return buffers.active().canAdd(operation, queueCapacityPerTable);
+        }
+        @Override void add(WriteOperation<?> operation) { buffers.active().add(operation); }
+        @Override SaveBatch detach() {
+            WriteBuffer buffer = buffers.swap();
+            return new SaveBatch(buffer.submissions(), () -> save(buffer), buffer::clear);
         }
 
-        private void signal() { synchronized (monitor) { monitor.notifyAll(); } }
+        private void save(WriteBuffer buffer) {
+            List<WriteOperation<?>> batch = new ArrayList<>(batchSize);
+            buffer.forEach(operation -> {
+                if (operation.type() == WriteType.DELETE_INSERT) {
+                    // Never split the replacement across unrelated batches. A size-one backend
+                    // needs two calls, and the INSERT is skipped if its DELETE failed.
+                    if (!batch.isEmpty()) { process(batch); batch.clear(); }
+                    var deletion = operation.withType(WriteType.DELETE);
+                    var insertion = operation.withType(WriteType.INSERT);
+                    if (batchSize >= 2) process(List.of(deletion, insertion));
+                    else if (process(List.of(deletion))) process(List.of(insertion));
+                    else reportFailure(List.of(insertion), new DataException("INSERT skipped after failed DELETE"));
+                } else {
+                    batch.add(operation);
+                    if (batch.size() == batchSize) { process(batch); batch.clear(); }
+                }
+            });
+            if (!batch.isEmpty()) process(batch);
+        }
+
+    }
+
+    private final class LogWriter extends Writer {
+        private final LogWriteQueue queue = new LogWriteQueue();
+
+        LogWriter(EntityMetadata<?> metadata, String key, boolean routed) { super(metadata, key, routed); }
+        @Override int size() { return queue.size(); }
+        @Override long queuedSubmissions() { return queue.size(); }
+        @Override boolean canAdd(WriteOperation<?> operation) { return queue.size() < queueCapacityPerTable; }
+        @Override void add(WriteOperation<?> operation) { queue.add(operation); }
+        @Override SaveBatch detach() {
+            List<WriteOperation<?>> batch = queue.drain(batchSize);
+            return new SaveBatch(batch.size(), () -> process(batch), batch::clear);
+        }
     }
 }

@@ -3,7 +3,7 @@ package cn.managame.spring;
 import java.lang.annotation.*;
 import org.springframework.context.annotation.Import;
 
-/** Registers Spring @Repository business interfaces as singleton beans. */
+/** Test/example support only; not part of the published library. Registers Spring @Repository business interfaces as singleton beans. */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
