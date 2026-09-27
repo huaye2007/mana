@@ -1,0 +1,16 @@
+package cn.managame.core;
+
+public final class FrameworkErrorCodes {
+    public static final int DATA_SAVE_FAILED = 4001, DATA_LOG_SAVE_FAILED = 4002;
+    private FrameworkErrorCodes() {}
+    public static final int SUCCESS = 0;
+    public static final int RPC_PEER_NOT_FOUND = 2001, RPC_UNAVAILABLE = 2002,
+        RPC_TIMEOUT = 2003, RPC_PEER_REMOVED = 2004, RPC_NODE_CLOSED = 2005,
+        RPC_HANDLER_ERROR = 2006, RPC_PROTOCOL_ERROR = 2007;
+    public static final int RUNTIME_CLOSED = 3001, HANDLER_NOT_FOUND = 3002,
+        HANDLER_CONTEXT_MISMATCH = 3003, ROUTE_DOMAIN_MISMATCH = 3004,
+        INVALID_ROUTE_KEY = 3005, ROUTE_EXECUTOR_OVERLOADED = 3006,
+        ROUTE_EXECUTOR_CLOSED = 3007, ROUTE_CALL_EXECUTION_ERROR = 3008,
+        RUNTIME_EXECUTION_ERROR = 3009, ROUTE_CALLBACK_DISPATCH_FAILED = 3010;
+}
+

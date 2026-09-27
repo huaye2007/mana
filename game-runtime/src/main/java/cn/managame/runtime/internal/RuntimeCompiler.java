@@ -1,0 +1,169 @@
+package cn.managame.runtime.internal;
+
+import cn.managame.runtime.GameRuntime;
+import cn.managame.runtime.context.Context;
+import cn.managame.runtime.context.HandlerContext;
+import cn.managame.runtime.error.RuntimeErrorHandler;
+import cn.managame.runtime.event.Event;
+import cn.managame.runtime.event.EventMethod;
+import cn.managame.runtime.executor.RouteExecutor;
+import cn.managame.runtime.executor.RouteExecutorBinding;
+import cn.managame.runtime.handler.Handler;
+import cn.managame.runtime.handler.HandlerMethod;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
+import cn.managame.runtime.protocol.ProtocolProvider;
+import cn.managame.runtime.protocol.ProtocolRegistrar;
+import cn.managame.runtime.protocol.ProtocolRegistry;
+import cn.managame.runtime.protocol.ProtocolType;
+import cn.managame.runtime.protocol.Protocols;
+import cn.managame.runtime.route.RouteDomain;
+import cn.managame.runtime.route.RouteKeyBinding;
+import cn.managame.runtime.time.GameTime;
+import cn.managame.runtime.timer.Cron;
+
+import java.lang.invoke.*;
+import java.lang.reflect.*;
+import java.time.*;
+import java.util.*;
+
+/** Builds immutable runtime bindings. Internal implementation, not an application API. */
+public final class RuntimeCompiler {
+    private RuntimeCompiler() {}
+    public static GameRuntime build(List<RouteDomain> domains, List<RouteExecutorBinding> executors,
+            List<ProtocolProvider> providers, List<RouteKeyBinding<?>> keys,
+            List<Object> handlers, List<Object> events, List<Object> crons,
+            ZoneId cronZone, RuntimeErrorHandler errors) {
+        Set<Integer> ids = new HashSet<>();
+        for (var d : domains) if (!ids.add(d.id())) throw invalid("Duplicate domain " + d.id());
+        Map<Integer, RouteExecutor> routes = new HashMap<>();
+        for (var b : executors) for (int domain : b.routeDomains()) {
+            if (!ids.contains(domain)) throw invalid("Executor binds unknown domain " + domain);
+            if (routes.putIfAbsent(domain, b.executor()) != null) throw invalid("Duplicate executor binding " + domain);
+        }
+        if (!routes.keySet().equals(ids)) throw invalid("Every domain needs exactly one executor");
+        Registry registry = new Registry(providers);
+        Map<Class<?>, RouteKeyBinding<?>> routeKeys = new HashMap<>();
+        for (var key : keys) if (routeKeys.putIfAbsent(key.messageType(), key) != null) throw invalid("Duplicate route-key binding");
+        Map<Class<?>, HandlerBinding> compiled = new HashMap<>();
+        for (Object target : handlers) {
+            Handler annotation = target.getClass().getAnnotation(Handler.class);
+            if (annotation == null) throw invalid("Missing @Handler: " + target.getClass());
+            for (Method m : methods(target)) {
+                HandlerMethod entry = m.getAnnotation(HandlerMethod.class);
+                if (entry == null) continue;
+                validate(m);
+                int domain = entry.domain() != 0 ? entry.domain() : annotation.domain();
+                if (!ids.contains(domain)) throw invalid("Unregistered handler domain: " + m);
+                Class<?> contextType = null, messageType = null;
+                int contextIndex = -1;
+                for (int i = 0; i < m.getParameterCount(); i++) {
+                    Class<?> type = m.getParameterTypes()[i];
+                    if (Context.class.isAssignableFrom(type)) {
+                        if (contextType != null || !(type.isAssignableFrom(HandlerContext.class) || HandlerContext.class.isAssignableFrom(type)))
+                            throw invalid("Invalid handler context: " + m);
+                        contextType = type; contextIndex = i;
+                    } else {
+                        if (messageType != null) throw invalid("Multiple message parameters: " + m);
+                        messageType = type;
+                    }
+                }
+                if (messageType == null || registry.get(messageType) == null) throw invalid("Handler needs one registered message: " + m);
+                if (registry.get(messageType).type() == ProtocolType.RESPONSE) throw invalid("Response cannot be an inbound handler: " + m);
+                MethodHandle handle = bind(target, m);
+                if (contextType == null) handle = MethodHandles.dropArguments(handle.asType(MethodType.methodType(void.class, Object.class)), 0, Object.class);
+                else {
+                    handle = handle.asType(MethodType.methodType(void.class, Object.class, Object.class));
+                    if (contextIndex == 1) handle = MethodHandles.permuteArguments(handle, handle.type(), 1, 0);
+                }
+                if (compiled.putIfAbsent(messageType, new HandlerBinding(domain, contextType, handle)) != null) throw invalid("Duplicate handler " + messageType);
+            }
+        }
+        Map<Class<?>, List<EventBinding>> compiledEvents = new HashMap<>();
+        for (Object target : events) for (Method m : methods(target)) {
+            EventMethod event = m.getAnnotation(EventMethod.class);
+            if (event == null) continue;
+            validate(m);
+            if (m.getParameterCount() != 1 || !Event.class.isAssignableFrom(m.getParameterTypes()[0])) throw invalid("Event method needs one Event: " + m);
+            compiledEvents.computeIfAbsent(m.getParameterTypes()[0], _ -> new ArrayList<>())
+                .add(new EventBinding(event.order(), bind(target, m).asType(MethodType.methodType(void.class, Object.class))));
+        }
+        compiledEvents.replaceAll((_, value) -> value.stream().sorted(Comparator.comparingInt(EventBinding::order)).toList());
+        List<CronBinding> compiledCrons = new ArrayList<>();
+        Set<CronKey> cronKeys = new HashSet<>();
+        for (Object target : crons) for (Method m : methods(target)) {
+            Cron cron = m.getAnnotation(Cron.class);
+            if (cron == null) continue;
+            validate(m);
+            if (m.getParameterCount() != 0 || !ids.contains(cron.domain()) || cron.routeKey() == 0) throw invalid("Invalid cron method: " + m);
+            CronSchedule schedule = new CronSchedule(cron.value(), cronZone);
+            schedule.next(Instant.ofEpochMilli(GameTime.currentTimeMillis())); // validate before allocating resources
+            CronKey cronKey = new CronKey(m.getDeclaringClass(), m.getName());
+            if (!cronKeys.add(cronKey)) throw invalid("Duplicate cron " + cronKey);
+            compiledCrons.add(new CronBinding(cronKey, cron.domain(), cron.routeKey(), schedule, bind(target, m)));
+        }
+        return new DefaultGameRuntime(Map.copyOf(routes), registry, Map.copyOf(routeKeys),
+            Map.copyOf(compiled), Map.copyOf(compiledEvents), List.copyOf(compiledCrons), errors);
+    }
+    private static Set<Method> methods(Object target) {
+        // Detect invalid private/static annotated methods instead of silently ignoring them.
+        for (Class<?> type = target.getClass(); type != Object.class; type = type.getSuperclass())
+            for (Method m : type.getDeclaredMethods())
+                if (m.isAnnotationPresent(HandlerMethod.class) || m.isAnnotationPresent(EventMethod.class) || m.isAnnotationPresent(Cron.class)) validate(m);
+        return new LinkedHashSet<>(Arrays.asList(target.getClass().getMethods()));
+    }
+    private static void validate(Method m) {
+        if (!Modifier.isPublic(m.getModifiers()) || Modifier.isStatic(m.getModifiers()) || m.getReturnType() != void.class || m.isVarArgs())
+            throw invalid("Expected public instance void method: " + m);
+    }
+    private static MethodHandle bind(Object target, Method method) {
+        try { return MethodHandles.privateLookupIn(method.getDeclaringClass(), MethodHandles.lookup()).unreflect(method).bindTo(target); }
+        catch (IllegalAccessException e) { throw new IllegalArgumentException("Cannot access " + method, e); }
+    }
+    private static IllegalArgumentException invalid(String message) { return new IllegalArgumentException(message); }
+    record HandlerBinding(int domain, Class<?> contextType, MethodHandle handle) {
+        void invoke(Object context, Object message) throws Throwable { handle.invokeExact(context, message); }
+    }
+    record EventBinding(int order, MethodHandle handle) {
+        void invoke(Object event) throws Throwable { handle.invokeExact(event); }
+    }
+    record CronKey(Class<?> type, String methodName) {}
+    record CronBinding(CronKey id, int domain, long key, CronSchedule schedule, MethodHandle handle) {
+        void invoke() throws Throwable { handle.invokeExact(); }
+    }
+    private static final class Registry implements ProtocolRegistry {
+        private record Key(ProtocolType type, int command) {}
+        private final Map<Key, ProtocolDescriptor<?>> byKey;
+        private final Map<Class<?>, ProtocolDescriptor<?>> byType;
+        private final Map<Class<?>, Class<?>> responses;
+        Registry(List<ProtocolProvider> providers) {
+            Map<Key, ProtocolDescriptor<?>> k = new HashMap<>();
+            Map<Class<?>, ProtocolDescriptor<?>> t = new HashMap<>();
+            Map<Class<?>, Class<?>> r = new HashMap<>();
+            ProtocolRegistrar registrar = new ProtocolRegistrar() {
+                public void register(ProtocolDescriptor<?> d) {
+                    Objects.requireNonNull(d);
+                    // Copy descriptors: a provider cannot mutate the frozen runtime registry.
+                    ProtocolDescriptor<?> frozen = switch (Objects.requireNonNull(d.type())) {
+                        case REQUEST -> Protocols.request(d.command(), d.messageType());
+                        case RESPONSE -> Protocols.response(d.command(), d.messageType());
+                        case NOTIFY -> Protocols.notify(d.command(), d.messageType());
+                    };
+                    if (k.putIfAbsent(new Key(frozen.type(), frozen.command()), frozen) != null || t.putIfAbsent(frozen.messageType(), frozen) != null)
+                        throw invalid("Duplicate protocol identity/class");
+                }
+                public void bindResponse(Class<?> request, Class<?> response) {
+                    if (r.putIfAbsent(Objects.requireNonNull(request), Objects.requireNonNull(response)) != null) throw invalid("Duplicate response binding");
+                }
+            };
+            providers.forEach(p -> p.register(registrar));
+            r.forEach((req, res) -> {
+                if (t.get(req) == null || t.get(req).type() != ProtocolType.REQUEST || t.get(res) == null || t.get(res).type() != ProtocolType.RESPONSE)
+                    throw invalid("Response binding must reference registered REQUEST and RESPONSE");
+            });
+            byKey = Map.copyOf(k); byType = Map.copyOf(t); responses = Map.copyOf(r);
+        }
+        public ProtocolDescriptor<?> get(ProtocolType type, int command) { return byKey.get(new Key(type, command)); }
+        public ProtocolDescriptor<?> get(Class<?> type) { return byType.get(type); }
+        public Class<?> getResponseType(Class<?> type) { return responses.get(type); }
+    }
+}

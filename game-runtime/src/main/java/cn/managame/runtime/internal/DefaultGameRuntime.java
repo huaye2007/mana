@@ -1,0 +1,144 @@
+package cn.managame.runtime.internal;
+
+import cn.managame.runtime.GameRuntime;
+import cn.managame.runtime.context.Context;
+import cn.managame.runtime.context.Contexts;
+import cn.managame.runtime.context.DefaultEventContext;
+import cn.managame.runtime.context.DefaultInvocationContext;
+import cn.managame.runtime.context.DefaultRouteCallContext;
+import cn.managame.runtime.context.DefaultTimerContext;
+import cn.managame.runtime.context.HandlerContext;
+import cn.managame.runtime.context.InvocationContext;
+import cn.managame.runtime.error.RuntimeDispatchException;
+import cn.managame.runtime.error.RuntimeError;
+import cn.managame.runtime.error.RuntimeErrorHandler;
+import cn.managame.runtime.event.Event;
+import cn.managame.runtime.event.EventBus;
+import cn.managame.runtime.executor.RouteExecutor;
+import cn.managame.runtime.protocol.ProtocolRegistry;
+import cn.managame.runtime.route.RouteCallback;
+import cn.managame.runtime.route.RouteKeyBinding;
+import cn.managame.runtime.route.RouteKeyRegistry;
+import cn.managame.runtime.timer.CronScheduler;
+import cn.managame.runtime.timer.RuntimeTimer;
+
+import cn.managame.core.*;
+import static cn.managame.core.FrameworkErrorCodes.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+import cn.managame.runtime.internal.RuntimeCompiler.*;
+final class DefaultGameRuntime implements GameRuntime {
+    private final Map<Integer, RouteExecutor> routes;
+    private final ProtocolRegistry protocols;
+    private final Map<Class<?>, RouteKeyBinding<?>> keys;
+    private final Map<Class<?>, HandlerBinding> handlers;
+    private final Map<Class<?>, List<EventBinding>> events;
+    private final RuntimeErrorHandler errors;
+    private final RuntimeTimers timers;
+    private final DefaultCronScheduler crons;
+    private final AtomicBoolean closed = new AtomicBoolean();
+    DefaultGameRuntime(Map<Integer, RouteExecutor> routes, ProtocolRegistry protocols,
+        Map<Class<?>, RouteKeyBinding<?>> keys, Map<Class<?>, HandlerBinding> handlers,
+        Map<Class<?>, List<EventBinding>> events, List<CronBinding> crons, RuntimeErrorHandler errors) {
+        this.routes=routes; this.protocols=protocols; this.keys=keys; this.handlers=handlers; this.events=events; this.errors=errors;
+        timers = new RuntimeTimers(this::validate, (context, action) -> submit(context, action, false),
+            error -> report(error.errorCode(), error.context(), error.cause()));
+        this.crons = new DefaultCronScheduler(crons, timers,
+            (binding, error) -> report(RUNTIME_EXECUTION_ERROR,
+                new DefaultTimerContext(binding.domain(), binding.key()), error));
+        try { this.crons.start(); }
+        catch (RuntimeException | Error e) { this.crons.close(); timers.close(); throw e; }
+    }
+    public ProtocolRegistry protocols() { return protocols; }
+    public RouteKeyRegistry routeKeys() { return message -> { var b = keys.get(Objects.requireNonNull(message).getClass()); return b == null ? 0 : extractKey(b, message); }; }
+    private static <T> long extractKey(RouteKeyBinding<T> binding, Object message) {
+        return binding.extractor().extract(binding.messageType().cast(message));
+    }
+    public EventBus eventBus() { return this::publish; }
+    public RuntimeTimer timer() { return timers; }
+    public CronScheduler cron() { return crons; }
+    private void validate(int domain, long key) {
+        if (closed.get()) throw failure(RUNTIME_CLOSED);
+        if (!routes.containsKey(domain)) throw failure(ROUTE_DOMAIN_MISMATCH);
+        if (key == 0) throw failure(INVALID_ROUTE_KEY);
+    }
+    private static RuntimeDispatchException failure(int code) { return new RuntimeDispatchException(code, "Runtime dispatch rejected: " + code); }
+    private int submit(Context context, Runnable action, boolean allowClosed) {
+        if (closed.get() && !allowClosed) return RUNTIME_CLOSED;
+        RouteExecutor executor = routes.get(context.routeDomain());
+        if (executor == null) return ROUTE_DOMAIN_MISMATCH;
+        if (context.routeKey() == 0) return INVALID_ROUTE_KEY;
+        Runnable bound = () -> RuntimeContexts.run(this, context, action);
+        Context current = Contexts.currentOrNull();
+        if (RuntimeContexts.ownedBy(this) && current.routeDomain() == context.routeDomain() && current.routeKey() == context.routeKey()) {
+            bound.run(); return 0;
+        }
+        try {
+            return switch (Objects.requireNonNull(executor.tryExecute(context.routeDomain(), context.routeKey(), bound))) {
+                case ACCEPTED -> 0;
+                case OVERLOADED -> ROUTE_EXECUTOR_OVERLOADED;
+                case CLOSED -> ROUTE_EXECUTOR_CLOSED;
+            };
+        } catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); return RUNTIME_EXECUTION_ERROR; }
+    }
+    public void dispatch(HandlerContext context) {
+        Objects.requireNonNull(context); validate(context.routeDomain(), context.routeKey());
+        Object message = Objects.requireNonNull(context.message());
+        var handler = handlers.get(message.getClass());
+        if (handler == null) throw failure(HANDLER_NOT_FOUND);
+        if (handler.domain() != context.routeDomain()) throw failure(ROUTE_DOMAIN_MISMATCH);
+        if (handler.contextType() != null && !handler.contextType().isInstance(context)) throw failure(HANDLER_CONTEXT_MISMATCH);
+        int error = submit(context, () -> {
+            try { handler.invoke(context, message); } catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
+        }, false);
+        if (error != 0) throw failure(error);
+    }
+    private InvocationContext inherited(Context source) {
+        return source instanceof InvocationContext i ? i : new DefaultInvocationContext(0, 0, 0, 0, Metadatas.empty());
+    }
+    private void publish(Event event) {
+        Objects.requireNonNull(event); validate(event.routeDomain(), event.routeKey());
+        InvocationContext parent = inherited(RuntimeContexts.ownedBy(this) ? Contexts.current() : null);
+        var context = new DefaultEventContext(event, parent.businessIdType(), parent.businessId(), parent.metadata());
+        int error = submit(context, () -> {
+            for (var handler : events.getOrDefault(event.getClass(), List.of())) {
+                try { handler.invoke(event); } catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
+            }
+        }, false);
+        if (error != 0) throw failure(error);
+    }
+    public <T> void call(int domain, long key, Supplier<T> action, RouteCallback<T> callback) {
+        Objects.requireNonNull(action); Objects.requireNonNull(callback);
+        if (!RuntimeContexts.ownedBy(this)) throw new IllegalStateException("call requires a current context owned by this runtime");
+        Context source = Contexts.current();
+        InvocationContext inherited = inherited(source);
+        var target = new DefaultRouteCallContext(domain, key, inherited.businessIdType(), inherited.businessId(), inherited.metadata());
+        int error = submit(target, () -> {
+            T result;
+            try { result = action.get(); }
+            catch (Throwable e) { report(ROUTE_CALL_EXECUTION_ERROR, target, e); complete(source, callback, null, ROUTE_CALL_EXECUTION_ERROR); return; }
+            complete(source, callback, result, 0);
+        }, false);
+        if (error != 0) complete(source, callback, null, error);
+    }
+    private <T> void complete(Context source, RouteCallback<T> callback, T result, int error) {
+        int rejected = submit(source, () -> {
+            try { if (error == 0) callback.onSuccess(result); else callback.onFail(error); }
+            catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, source, e); }
+        }, true);
+        if (rejected != 0) report(ROUTE_CALLBACK_DISPATCH_FAILED, source, failure(rejected));
+    }
+    private void report(int code, Context context, Throwable cause) {
+        try { errors.onError(new RuntimeError(code, context, context.routeDomain(), context.routeKey(), cause)); }
+        catch (Throwable e) { System.getLogger("cn.managame.runtime").log(System.Logger.Level.ERROR, "Runtime error handler or close failed", e); }
+    }
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        crons.close();
+        timers.close();
+        Set<RouteExecutor> unique = Collections.newSetFromMap(new IdentityHashMap<>());
+        unique.addAll(routes.values());
+        for (RouteExecutor executor : unique) try { executor.close(); } catch (Throwable e) { System.getLogger("cn.managame.runtime").log(System.Logger.Level.ERROR, "Runtime error handler or close failed", e); }
+    }
+}
