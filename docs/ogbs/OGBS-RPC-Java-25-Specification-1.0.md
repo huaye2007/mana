@@ -20,7 +20,7 @@ Status: game-rpc implemented. JDK 25 without preview; Maven cn.managame:game-rpc
 | cn.managame.rpc.netty | Public RpcWire binding; package-private RpcEncoder, RpcProtocol |
 | cn.managame.rpc.example | Runnable RpcEchoExample |
 
-Responsibility-based packages follow the user's confirmed choice. Read-only records avoid exposing requestId setters or internal cross-package bridges. Node passes its assigned ID to the encoder and **does not mutate the caller's Request**. Public full constructors can represent decoded messages, but call/notify reject nonzero requestId. This differs from the earlier single-package mutable-object sketch without changing Wire or call semantics.
+Types use responsibility-based packages with package-private internals. Read-only records avoid exposing requestId setters or internal cross-package bridges. Node passes its assigned ID to the encoder and **does not mutate the caller's Request**. Public full constructors can represent decoded messages, but call/notify reject nonzero requestId. This encapsulation preserves Wire layout and call semantics.
 
 RpcWire is an independently usable Wire Profile API, exposing no mutable Peer/Slot/timer. Core RPC, Network adaptation, and codecs share one artifact; no separate netty artifact. Old RpcNodeConfig, RpcDialer, EstablishmentOwnership, RpcRequestHandler, and RpcErrors drafts are not provided.
 
@@ -162,9 +162,11 @@ No maxPendingCallsPerPeer or message retry queue. Volume and timeout determine m
 
 ## 6. Network assembly and Peer concurrency
 
-RpcWire.install adds LengthFieldBasedFrameDecoder(maxFrameSize,0,4,0,4), then IdleStateHandler. Complete frames drive Read Idle; fragments cannot keep a connection alive indefinitely. Network adaptation receives ByteBuf with the four-byte prefix stripped.
+The pipeline entry point is `RpcWire.configurePipeline(pipeline, maxFrameSize, heartbeatIntervalMillis, heartbeatTimeoutMillis)`. This replaces the former `RpcWire.install` name without retaining an alias. Direct callers must update their source and recompile; existing binaries invoking the old method are incompatible. Pipeline order, framing, heartbeat behavior, and wire compatibility are unchanged.
 
-Network guarantees client onConnected before ConnectCallback.onSuccess. The former installs AttributeKey<RpcConnectionContext> and handshake timeout; the latter sets expectedPeer/expectedSlot and starts handshake. Do not bind a Slot twice across these callbacks.
+RpcWire.configurePipeline adds LengthFieldBasedFrameDecoder(maxFrameSize,0,4,0,4), then IdleStateHandler. Complete frames drive Read Idle; fragments cannot keep a connection alive indefinitely. Network adaptation receives ByteBuf with the four-byte prefix stripped.
+
+Network guarantees client onConnected before ConnectCallback.onSuccess. The former binds AttributeKey<RpcConnectionContext> and starts the handshake timeout; the latter sets expectedPeer/expectedSlot and starts handshake. Do not bind a Slot twice across these callbacks.
 
 One HashedWheelTimer per Node, tick=10ms, handles call/handshake timeouts and fixed-delay reconnect. Per-connection IdleStateHandler handles heartbeats. Neither timing wheel nor EventLoop runs blocking business work.
 
@@ -194,7 +196,7 @@ After close returns, no PendingCall, RPC connection, or timing wheel remains. It
 
 Main entries: [RpcNode](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNode.java), [RpcNodeBuilder](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNodeBuilder.java), [RpcWire](../../game-rpc/src/main/java/cn/managame/rpc/netty/RpcWire.java).
 
-RpcWire exposes install, encodeRequest(request,assignedId,maxFrameSize), encodeResponse, encodeHandshake, encodeHeartbeat, and matching decoders. Encoding consumes body; decoding returns slices borrowed from the input frame. Follow Javadoc type/ID read-position requirements. Direct RpcWire use lacks RpcNode's handshake state, Peers, and completion arbitration and is not a complete semantic RPC implementation.
+RpcWire exposes configurePipeline, encodeRequest(request,assignedId,maxFrameSize), encodeResponse, encodeHandshake, encodeHeartbeat, and matching decoders. Encoding consumes body; decoding returns slices borrowed from the input frame. Follow Javadoc type/ID read-position requirements. Direct RpcWire use lacks RpcNode's handshake state, Peers, and completion arbitration and is not a complete semantic RPC implementation.
 
 <a id="9-验证与未实现范围"></a>
 

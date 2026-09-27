@@ -19,7 +19,7 @@ Maven：`cn.managame:game-network:1.0.0-SNAPSHOT`。JDK 25，无 preview；Netty
 | cn.managame.network.error | NetworkException |
 | cn.managame.network.netty | NetworkServer、NetworkServerBuilder、NetworkClient、NetworkClientBuilder |
 
-NettyConnection、ConnectAttempt、NetworkPipeline、TransportGate、ConnectionHandlerAdapter、WS 适配均保持 netty 包级封装。Server/Client 入口与其实现同包，避免为拆包公开内部协作类型。
+NettyConnection、ConnectAttempt、NetworkChannelInitializer、ConnectionLifecycle、ChannelTransport、ConnectionEstablishment、TlsTransport、WebSocketTransport、ConnectionHandlerAdapter 与 WS payload 适配均保持 netty 包级封装。Server/Client 入口与其实现同包，避免为拆包公开内部协作类型。
 
 不再建立 attribute 包或自定义 ConnectionKey，直接使用 Netty AttributeKey。原 Acceptor/Connector 抽象由具体 NetworkServer/NetworkClient 替代。模块入口及可运行示例见 [game-network](../../game-network/README.zh-CN.md)。
 
@@ -209,14 +209,14 @@ WebSocketConnectOptions 另行复制 Headers：构造后改变原 Headers，以�
 ## 6. Pipeline 与超时
 
 ```text
-TCP: [SslHandler] → transport lifecycle gate → 用户 pipeline → ConnectionHandler adapter
-WS:  [SslHandler] → HTTP codec / HTTP aggregator / WS protocol / frame aggregator
-     → transport lifecycle gate → binary decoder/encoder → 用户 pipeline → ConnectionHandler adapter
+TCP: [SslHandler / TLS handshake observer] → ConnectionLifecycle → 用户 pipeline → ConnectionHandler adapter
+WS:  [SslHandler / TLS handshake observer] → HTTP codec / HTTP aggregator / WS protocol / frame aggregator
+     → WS handshake observer → ConnectionLifecycle → binary decoder/encoder → 用户 pipeline → ConnectionHandler adapter
 ```
 
 每条 Channel 重新执行 configurer；多次 pipeline(a).pipeline(b) 按 a、b 执行。用户 decoder/encoder 应各自创建非 Sharable 实例。出站逆序经过用户 encoder，再由 ByteBuf 转 BinaryWebSocketFrame。入站聚合后 content.retain，原 frame 由 Netty decoder 释放。
 
-生命周期 gate 在用户 pipeline 前消费内部 TLS/WS 握手事件并观察真实 inactive；业务消息/异常 adapter 在末端。TCP 字节流不内置业务 framing。用户 IdleStateHandler 的事件经 onEvent 交付，不重新定义 Idle 类型。自定义异步 handler 必须自行维护事件传播及消息顺序，不得删除/重排内部 `managame-*` handler 或伪造生命周期/握手事件。
+协议专用 observer 消费内部 TLS/WS 握手事件。ConnectionLifecycle 在用户 pipeline 前观察真实 inactive；业务消息/异常 adapter 在末端。TCP 字节流不内置业务 framing。用户 IdleStateHandler 的事件经 onEvent 交付，不重新定义 Idle 类型。自定义异步 handler 必须自行维护事件传播及消息顺序，不得删除/重排内部 `managame-*` handler 或伪造生命周期/握手事件。
 
 内置 handler 名称可用于原生插入，例如在 `managame-http-aggregate` 后添加 HTTP Upgrade 校验；在 `managame-tls` 上配置 Netty TLS handler。必须把 TLS 交给 sslContext(...) 才纳入建立语义，手动插入 SslHandler 不触发框架自动识别。
 
@@ -234,16 +234,16 @@ Text 用关闭码 1003 拒绝。单帧/聚合超限和 WS 协议违规关闭，�
 
 ### 6.1 装配时点与事件方向
 
-NetworkPipeline.install 在 Channel 初始化期间装配内部 Transport handler、调用用户 configurer，再添加末端 ConnectionHandlerAdapter。它发生在 Transport 握手完成之前；这样用户可以配置已经装配的原生 handler。Connection 创建则等待握手完成并由 TransportGate 放行，不能把两者混为一个时点。
+NetworkChannelInitializer 在 Channel 初始化期间依次装配 Transport handlers、ConnectionLifecycle、payload 适配、用户 configurer 和末端 ConnectionHandlerAdapter，全部成功后才标记初始化完成。Connection 创建同时要求初始化完成、Channel active、所有已注册握手前置条件完成，以及所属入口认领成功。用户可以在握手完成前配置已装配的原生 handler；流水线装配与连接交付是两个不同的时点。
 
 入站事件大体从头到尾传播，出站写入从尾到头传播。以下列出主要内部顺序，方括号表示可选：
 
 ```text
 managame-write-errors
-→ [managame-tls]
+→ [managame-tls → managame-tls-handshake]
 → [managame-http → managame-http-aggregate
    → 服务端 managame-websocket-path → managame-websocket
-   → managame-websocket-aggregate]
+   → managame-websocket-aggregate → managame-websocket-handshake]
 → managame-transport
 → [managame-binary-in → managame-binary-out]
 → 用户编解码/事件 handler
@@ -254,19 +254,37 @@ WS 出站用户 encoder 先把业务对象变成 ByteBuf，binary-out 再包装�
 
 用户 configurer 若通过 addBefore/addAfter 插入原生 handler，应保持内部握手、生命周期和释放逻辑有效。吞掉 handshake/inactive 事件或删除内部 handler 会破坏前置条件；这不属于框架支持的任意流水线改写。
 
-### 6.2 为什么区分生命周期 gate 与末端 adapter
+<a id="62-为什么区分生命周期-gate-与末端-adapter"></a>
 
-TransportGate 位于用户 pipeline 之前，负责握手事件、建立前错误、真实断开及协议拒绝。末端 adapter 才负责业务消息和异常。用户 decoder 即使消费了某些普通消息，也不能因此阻止框架观察底层断开。
+### 6.2 内部职责与扩展边界
 
-ready 放行时取消建立超时、解除建立中集合的关联并清除临时建立回调引用。成功 Channel 不需要长期通过建立闭包持有 Client/Server；业务连接管理仍由上层负责。
+NetworkPipeline 和 TransportGate 已删除。装配顺序与生命周期协调仍是必要职责，但它们不再识别具体协议事件，也不通过参数是否为 null 推断端点角色。
 
-WS 的额外服务端建立计时从 channelActive 开始，是因为 Netty 的 Upgrade 握手计时不能独自覆盖连接建立后始终不发 HTTP 请求的静默客户端。这个计时器只限制建立阶段，不是业务心跳或读空闲超时。
+| 内部组件 | 职责 |
+| --- | --- |
+| NetworkServer / NetworkClient | 显式选择服务端/客户端协议工厂；负责监听、未完成尝试、资源关闭与接纳 |
+| [NetworkChannelInitializer](../../game-network/src/main/java/cn/managame/network/netty/NetworkChannelInitializer.java) | 按顺序装配公共阶段，所有 configurer 成功后才标记初始化完成 |
+| [ChannelTransport](../../game-network/src/main/java/cn/managame/network/netty/ChannelTransport.java) | 内部协议与 payload 装配边界：`addProtocolHandlers` 添加协议 handler 并注册握手前置条件；`addPayloadHandlers` 在生命周期 handler 之后添加 payload 适配器。普通 TCP 无额外握手 |
+| [TlsTransport](../../game-network/src/main/java/cn/managame/network/netty/TlsTransport.java) / [WebSocketTransport](../../game-network/src/main/java/cn/managame/network/netty/WebSocketTransport.java) | 负责协议 handler、握手事件转换、协议专用超时/拒绝和 payload 适配；TLS 可组合 TCP 或 WS |
+| [ConnectionLifecycle](../../game-network/src/main/java/cn/managame/network/netty/ConnectionLifecycle.java) | 协调初始化、激活、握手前置条件、唯一建立结果、真实断开与应用错误转发 |
+| [ConnectionEstablishment](../../game-network/src/main/java/cn/managame/network/netty/ConnectionEstablishment.java) | 所属入口的成功认领、结果与清理；ConnectAttempt 实现客户端完成协议，Server 提供接纳与 pending 移除 |
+| ConnectionHandlerAdapter | 创建 NettyConnection、调用业务回调、释放借用消息并隔离回调异常 |
+
+ConnectionLifecycle 不依赖 TLS/HTTP/WS，也不检查 ConnectAttempt。它位于用户 handler 前，保证 decoder 无法屏蔽真实 inactive；末端 adapter 位于用户 codec 后，接收已解码的业务消息。将两者合并会失去其中一个事件位置，或把应用解码与传输观察混在一起。
+
+全部握手前置条件在协议装配期间注册，早于初始化完成标记。每个一次性握手凭据只能完成自己的前置条件，重复完成不能抵消另一个协议的握手。创建连接要求初始化、激活、所有握手条件及所属入口认领成功。失败/关闭是终态，迟到完成不能复活连接。业务交付前清除所属入口引用，在局部变量中保留已认领入口，onConnected 返回后再交付成功；即使 onConnected 关闭连接，成功结果仍保持不变。
+
+Server 在 build 时快照协议组合，start 只创建基础设施并绑定监听。私有 AcceptedConnection 负责 pending 成员关系与临时关闭监听器。成功认领及移除与停止接纳使用同一个 pending 短锁排序：成功先认领则退出取消集合，关闭先发生则禁止交付；锁内不调用业务回调，也不关闭 Channel。建立结果确定后移除临时监听器，成功 Channel 不再持有 Server 的清理归属。Client 同样在 pending 锁内增删尝试、在锁外报告拒绝，并把已完成尝试直接传给移除回调，不使用数组保存自身引用；完成时清除该回调引用。
+
+例如增加一种内部流式传输握手时，由自己的 observer 注册前置条件，并把协议完成/失败转换为该条件完成或生命周期失败，无须向 ConnectionLifecycle 增加协议分支。observer 负责自己的超时，在完成/断开时取消。TLS 和 WS 采用此模式；WS 服务端从 channelActive 起以 10 秒限制静默对端，与业务心跳/读空闲策略分离。
+
+该边界保持包级封装，不是新的公开 Transport registry，也不承诺支持 UDP/QUIC。公开 pipeline(...) 继续用于原生 handler/codec 定制；仅加入 handler 不会注册建立前置条件。新增 Transport 仍须明确消息边界、所有权、拒绝、配置与契约测试。不增加 Maven artifact，也不公开内部访问桥。
 
 ### 6.3 写入错误的路由
 
 当前实现使用 voidPromise 避免每次发送暴露或维护完成 Future。void-promise 的失败可能从 pipeline 头部发出；若直接穿过 WS protocol handler，普通发送错误可能被其默认逻辑关闭连接。
 
-因此 managame-write-errors 在已建立后将这类错误转到 transport gate 后的应用方向，保留用户 pipeline 和 onException 的处理机会。它不是吞掉错误，也不取消 WS 对非法入站帧的关闭规则。建立前错误仍按握手失败处理。
+因此 managame-write-errors 在已建立后通过 ConnectionLifecycle 直接持有的 ChannelHandlerContext 将这类错误转到应用方向，保留用户 pipeline 和 onException 的处理机会，不再按 handler 名称查找转发目标。它不是吞掉错误，也不取消 WS 对非法入站帧的关闭规则。建立前错误仍按握手失败处理。
 
 原生自定义 handler 自己关闭 Channel 的行为不受“Network 普通异常不自动关闭”限制。接入者必须审视自己的 exceptionCaught；框架无法撤销用户 handler 已主动发起的关闭。
 
@@ -327,7 +345,8 @@ Client.close 会取消仍未完成的尝试；成功已经认领的尝试保持�
 
 - [NetworkContractTest](../../game-network/src/test/java/cn/managame/network/netty/NetworkContractTest.java)：真实 TCP/TLS/WS/WSS、发送顺序、生命周期、背压、属性、引用计数、业务异常、配置快照、外部资源。
 - [WebSocketContractTest](../../game-network/src/test/java/cn/managame/network/netty/WebSocketContractTest.java)：分片、控制帧、Text/超限拒绝、精确路径、Header 快照、TLS 不可信证书、参数校验。
-- [ConnectRaceTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectRaceTest.java)：pending 关闭、中断恢复、并发完成、onConnected 内关闭。
+- [ConnectRaceTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectRaceTest.java)：pending 关闭、中断恢复、并发完成、onConnected 内关闭、Server 初始化期间关闭，以及外部 group 上未完成与已建立连接的关闭边界。
+- [ConnectionLifecycleTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectionLifecycleTest.java)：独立握手前置条件、初始化失败、失败/关闭后的迟到完成、所属入口取消、与协议无关的发送错误路由及静默 WS 超时/取消。
 - [NetworkEchoExampleTest](../../game-network/src/test/java/cn/managame/network/example/NetworkEchoExampleTest.java)：完整示例编译运行。
 
 `mvn -pl game-network -am test` 运行模块测试；仓库整体验证用 `mvn clean verify`。测试临时证书由当前 JDK keytool 生成；测试限定 Netty 默认线程数为 2，并在 Windows 下让 JDK Selector 唤醒管道回退到 TCP（测试专用的不可作为目录使用的 unixdomain.tmpdir，规避该环境 AF_UNIX connect 间歇失败），生产代码不修改 JVM 属性。
@@ -346,6 +365,8 @@ Client.close 会取消仍未完成的尝试；成功已经认领的尝试保持�
 | 借用 group 不被关闭、禁止阻塞自身 EventLoop | NetworkContractTest.externalGroupsKeepEstablishedConnectionsAndRejectBlockingCalls |
 | 快照与每 Channel pipeline 顺序 | NetworkContractTest.snapshotsAndPerChannelPipelineOrder |
 | 普通出站异常不自动关闭 TCP/WS 两端 | NetworkContractTest.outboundFailuresDoNotAutoCloseEitherPeer |
+| Server 关闭取消握手，保留外部 group 上的成功连接 | ConnectRaceTest.serverCloseCancelsHandshakeButKeepsEstablishedExternalConnections |
+| Server 初始化期间关闭阻止迟到交付 | ConnectRaceTest.serverCloseDuringInitializationPreventsLateDelivery |
 | 关闭 pending 只通知一次 | ConnectRaceTest.closeCancelsPendingHandshakeExactlyOnceOnEventLoop |
 | 同步中断回收与恢复中断标记 | ConnectRaceTest.interruptCancelsHandshakeAndRestoresFlag |
 | 成功与关闭竞争、onConnected 内关闭仍成功 | ConnectRaceTest.successAndCloseRaceHasOneOutcomePerAttempt / onConnectedCloseStillReportsSuccessfulConnect |

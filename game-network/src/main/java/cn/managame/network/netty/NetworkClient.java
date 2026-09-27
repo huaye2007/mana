@@ -3,7 +3,6 @@ package cn.managame.network.netty;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import cn.managame.network.connector.*;
-import cn.managame.network.error.NetworkException;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -80,36 +79,51 @@ public final class NetworkClient implements AutoCloseable {
     }
     private ConnectAttempt connect(SocketAddress address, URI uri, WebSocketConnectOptions wsOptions, ConnectCallback callback) {
         EventLoop loop = group.next();
-        ConnectAttempt[] holder = new ConnectAttempt[1];
-        ConnectAttempt attempt = new ConnectAttempt(loop, callback, () -> {
-            synchronized (pending) { pending.remove(holder[0]); }
-        });
-        holder[0] = attempt;
-        synchronized (pending) {
-            if (!closed) pending.add(attempt);
-            else { attempt.fail(new IllegalStateException("Client is closed")); return attempt; }
+        ConnectAttempt attempt = new ConnectAttempt(loop, callback, this::removeAttempt);
+        if (!addAttempt(attempt)) {
+            attempt.fail(new IllegalStateException("Client is closed"));
+            return attempt;
         }
         try {
-            SslContext context = uri == null ? ssl : ("wss".equalsIgnoreCase(uri.getScheme()) ? clientSsl() : null);
-            String host = address instanceof InetSocketAddress inet ? inet.getHostString() : null;
-            int port = address instanceof InetSocketAddress inet ? inet.getPort() : -1;
             Bootstrap bootstrap = new Bootstrap().group(loop).channelFactory(factory);
             applyOptions(bootstrap);
-            bootstrap.handler(new ChannelInitializer<Channel>() {
-                @Override protected void initChannel(Channel ch) {
-                    attempt.attach(ch);
-                    try {
-                        NetworkPipeline.install(ch, handler, pipelines, context, host, port,
-                                webSocket, null, uri, wsOptions, maxMessageSize, attempt, () -> true, () -> {});
-                    } catch (Throwable cause) { attempt.networkFailure(cause); }
-                }
-            });
+            ChannelTransport transport = createTransport(address, uri, wsOptions);
+            bootstrap.handler(new NetworkChannelInitializer(handler, pipelines, transport, ch -> {
+                attempt.attach(ch);
+                return attempt;
+            }));
             ChannelFuture future = bootstrap.connect(address);
             attempt.attach(future.channel());
             future.addListener(f -> { if (!f.isSuccess()) attempt.networkFailure(f.cause()); });
         } catch (Throwable cause) { attempt.networkFailure(cause); }
         return attempt;
     }
+    private boolean addAttempt(ConnectAttempt attempt) {
+        synchronized (pending) {
+            if (closed) return false;
+            return pending.add(attempt);
+        }
+    }
+
+    private void removeAttempt(ConnectAttempt attempt) {
+        synchronized (pending) {
+            pending.remove(attempt);
+        }
+    }
+
+    private ChannelTransport createTransport(SocketAddress address, URI uri, WebSocketConnectOptions options)
+            throws javax.net.ssl.SSLException {
+        ChannelTransport transport = ChannelTransport.TCP;
+        SslContext context = ssl;
+        if (webSocket) {
+            transport = WebSocketTransport.client(uri, options, maxMessageSize);
+            context = "wss".equalsIgnoreCase(uri.getScheme()) ? clientSsl() : null;
+        }
+        if (context == null) return transport;
+        InetSocketAddress endpoint = (InetSocketAddress) address;
+        return TlsTransport.client(context, endpoint.getHostString(), endpoint.getPort(), transport);
+    }
+
     @SuppressWarnings({"rawtypes", "unchecked"})
     private void applyOptions(Bootstrap bootstrap) {
         options.forEach((key, value) -> bootstrap.option((ChannelOption) key, value));

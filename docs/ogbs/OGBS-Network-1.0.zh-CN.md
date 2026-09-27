@@ -4,7 +4,7 @@
 
 文档类型：**标准规范（语言无关）**。对应实现规范：[OGBS Network Java 开发规范](OGBS-Network-Java-25-Specification-1.0.zh-CN.md)。
 
-状态：V1 Draft，按最新 Network 讨论修订。Java 实现与验证入口见 [Java 25 开发规范](OGBS-Network-Java-25-Specification-1.0.zh-CN.md)。
+状态：V1 Draft。Java 实现与验证入口见 [Java 25 开发规范](OGBS-Network-Java-25-Specification-1.0.zh-CN.md)。
 
 ## 1. 职责与范围
 
@@ -240,7 +240,7 @@ WebSocket 完整二进制消息与 TCP 入站字节片段的边界不同。应�
 | 原生传输扩展点 | 避免重复包装 codec、心跳与底层参数 | 引入跨实现统一扩展能力 |
 | 二进制 WS Profile | 明确业务载荷与控制帧边界 | 支持文本或其他传输 |
 
-旧 Connector/Acceptor、生命周期中间状态、tryWrite、自定义属性键和 CloseCause 模型不是本版的待补功能。后续继续完善当前设计时，不应因旧聊天出现过这些提议而重新加回；如确有新需求，应明确记录变更动机与迁移影响。
+旧 Connector/Acceptor、生命周期中间状态、tryWrite、自定义属性键和 CloseCause 模型不是本版的待补功能。引入这些能力需要明确的新需求，并记录变更动机与迁移影响。
 
 
 ## 8. 合规验证

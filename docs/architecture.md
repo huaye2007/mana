@@ -4,7 +4,7 @@
 
 **[English](architecture.md)** | [简体中文](architecture.zh-CN.md)
 
-This implementation follows the latest conclusions in the referenced discussion. Earlier proposals for predefined Domains, automatic getter inference, ReplyHandle, and a Metadata type field were not adopted. Historical downloadable attachments are not in this repository; the code, documentation, and tests together define the current Java binding.
+The architecture follows the repository's OGBS standards and Java development specifications, with source and tests providing implementation and validation entry points. Applications explicitly register Domains, obtain RouteKeys through explicit extractors or integration logic, and handle response sending in the integration layer. Metadata carries no type field.
 
 See the [OGBS 1.0 documentation index](ogbs/README.md) for component clauses and Java development specifications. This document describes composition; component documents and current source define specific interfaces and boundaries.
 
@@ -14,7 +14,7 @@ See the [OGBS 1.0 documentation index](ogbs/README.md) for component clauses and
 
 Java Network interfaces and Netty implementation are published together in game-network. RPC depends on game-network and game-core and provides internal TCP with multiple slots. Network uses connection, connector, error, and netty packages and Netty AttributeKey directly; RPC uses node, message, call, transport, error, and netty.
 
-The layout preserves package-private encapsulation: Network's NettyConnection/NetworkPipeline remain in netty; RPC's ConnectionSlot remains in node. Callers must update imports for moved types. See the [Network Java Development Specification](ogbs/OGBS-Network-Java-25-Specification-1.0.md) and [RPC Java Development Specification](ogbs/OGBS-RPC-Java-25-Specification-1.0.md) for type mappings.
+The layout preserves package-private encapsulation: Network's NettyConnection/NetworkChannelInitializer remain in netty; RPC's ConnectionSlot remains in node. Callers must update imports for moved types. See the [Network Java Development Specification](ogbs/OGBS-Network-Java-25-Specification-1.0.md) and [RPC Java Development Specification](ogbs/OGBS-RPC-Java-25-Specification-1.0.md) for type mappings.
 
 <a id="runtime-包边界"></a>
 
@@ -44,7 +44,7 @@ write checks active/writable and calls writeAndFlush directly. ACCEPTED transfer
 
 Inbound ReferenceCounted messages are borrowed during onMessage and released on return or exception; asynchronous retention or echo requires retain. Attributes use Netty AttributeKey directly, without additional shutdown freeze/clear rules.
 
-Pipeline order is transport handlers → binary adapter (WS) → user codecs/handlers → ConnectionHandler adapter. Internal lifecycle gates consume TLS/WS establishment events. The send-exception entry prevents Netty's WS protocol handler from interpreting ordinary encoding failures as connection closure. Advanced users configure ChannelPipeline, ChannelOption, EventLoopGroup, ChannelFactory, and SslContext directly.
+Pipeline order is transport handlers → binary adapter (WS) → user codecs/handlers → ConnectionHandler adapter. NetworkChannelInitializer defines assembly order; TlsTransport/WebSocketTransport consume their own handshake events, while ConnectionLifecycle coordinates protocol-independent establishment and disconnection. The send-exception entry prevents Netty's WS protocol handler from interpreting ordinary encoding failures as connection closure. Advanced users configure ChannelPipeline, ChannelOption, EventLoopGroup, ChannelFactory, and SslContext directly.
 
 NetworkEchoExample demonstrates Network; RpcEchoExample demonstrates two RPC nodes. Automatic RPC→Runtime integration is not implemented.
 

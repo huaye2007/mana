@@ -2,7 +2,7 @@
 
 [English](architecture.md) | **[简体中文](architecture.zh-CN.md)**
 
-本实现依据引用对话的最新结论；较早版本中预置 Domain、自动 getter 猜测、ReplyHandle、Metadata type 字段等方案均未采用。引用对话的历史下载附件不在当前仓库，本仓库代码、文档和测试共同定义当前 Java binding。
+本架构以仓库内的 OGBS 标准规范和 Java 开发规范为基线，源码与测试提供实现和验证入口。Domain 由应用显式注册，RouteKey 由显式提取器或接入层计算，响应发送由接入层负责，Metadata 不携带 type 字段。
 
 分组件条款及 Java 开发规范 见 [OGBS 1.0 文档索引](ogbs/README.zh-CN.md)。本文保留组合视角，具体接口与边界以对应组件文档及当前源码为准。
 
@@ -10,7 +10,7 @@
 
 Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖 game-network 和 game-core，已实现内部 TCP 与多 Slot 通信。Network 按 connection、connector、error、netty 分包，直接使用 Netty AttributeKey；RPC 按 node、message、call、transport、error、netty 分包。
 
-目录划分保留包级封装：Network 的 NettyConnection/NetworkPipeline 留在 netty 包内，RPC 的 ConnectionSlot 留在 node 包内。调用方需要更新已迁移类型的 import。具体类型映射见 [Network Java 开发规范](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) 和 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。
+目录划分保留包级封装：Network 的 NettyConnection/NetworkChannelInitializer 留在 netty 包内，RPC 的 ConnectionSlot 留在 node 包内。调用方需要更新已迁移类型的 import。具体类型映射见 [Network Java 开发规范](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) 和 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。
 
 ## Runtime 包边界
 
@@ -36,7 +36,7 @@ write 检查 active/writable 后直接 writeAndFlush；ACCEPTED 转移所有权�
 
 入站 ReferenceCounted 在 onMessage 范围内借用，返回或异常后由框架释放；异步持有/回写需 retain。属性直接使用 Netty AttributeKey，不额外定义关闭冻结/清空规则。
 
-Pipeline 为 Transport handlers → binary adapter（WS）→ 用户 codec/handler → ConnectionHandler adapter。内部生命周期 gate 消费 TLS/WS 建立事件；发送异常入口避免 Netty WS protocol handler 将普通编码失败自动解释成连接关闭。高级用户直接配置 ChannelPipeline、ChannelOption、EventLoopGroup、ChannelFactory 和 SslContext。
+Pipeline 为 Transport handlers → binary adapter（WS）→ 用户 codec/handler → ConnectionHandler adapter。NetworkChannelInitializer 只确定装配顺序；TlsTransport/WebSocketTransport 各自消费握手事件，ConnectionLifecycle 协调与协议无关的建立与断开；发送异常入口避免 Netty WS protocol handler 将普通编码失败自动解释成连接关闭。高级用户直接配置 ChannelPipeline、ChannelOption、EventLoopGroup、ChannelFactory 和 SslContext。
 
 Network 示例为 NetworkEchoExample，RPC 双节点示例为 RpcEchoExample；自动 RPC→Runtime 接入尚未实现。
 ## RPC

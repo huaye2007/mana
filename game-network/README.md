@@ -59,6 +59,8 @@ For a WebSocket server, add `.webSocket("/game")`. Build a client with `NetworkC
 - error: NetworkException.
 - netty: Server/Client, builders, package-private implementation.
 
+Internal assembly separates NetworkChannelInitializer, protocol-specific TlsTransport/WebSocketTransport, and protocol-independent ConnectionLifecycle. These remain package-private; public Builder and pipeline(...) usage is unchanged. See Java specification §6 for ownership and extension boundaries.
+
 ConnectionHandler.onMessage borrows its message; the framework releases it afterward. ACCEPTED transfers write ownership to Netty; INACTIVE/NOT_WRITABLE do not. Attributes use Netty AttributeKey directly; there is no separate attribute package.
 
 Server/Client close only EventLoopGroups they created. Applications close external groups and own established connections. Synchronous start/connect/close must not block their own EventLoop; use Connection.close() for individual connections inside callbacks.

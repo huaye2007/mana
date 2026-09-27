@@ -19,8 +19,9 @@ public final class RpcWire {
     public static final int HANDSHAKE = 1, HEARTBEAT = 2, REQUEST = 3, RESPONSE = 4;
     private RpcWire() {}
 
-    public static void install(ChannelPipeline pipeline, int maxFrameSize,
-                               long heartbeatIntervalMillis, long heartbeatTimeoutMillis) {
+    /** Adds frame decoding and heartbeat idle detection, in that order, to the pipeline. */
+    public static void configurePipeline(ChannelPipeline pipeline, int maxFrameSize,
+                                         long heartbeatIntervalMillis, long heartbeatTimeoutMillis) {
         if (maxFrameSize < 32) throw new IllegalArgumentException("maxFrameSize must be >= 32");
         if (heartbeatIntervalMillis <= 0 || heartbeatTimeoutMillis <= heartbeatIntervalMillis)
             throw new IllegalArgumentException("invalid heartbeat timing");

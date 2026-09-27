@@ -6,7 +6,7 @@
 
 OGBS = Open Game Backend Specification（开放游戏后端规范）。
 
-状态：仓库规范草案，已提供 Java 25 参考实现 `game-data`。设计来源为“游戏服务器开发转型策略”对话的最终确认内容；Java 类型、注解、线程与缓存实现集中在 [Data Java 开发规范](OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。共享错误码以 [OGBS Core](OGBS-Core-1.0.zh-CN.md#4-frameworkerrorcode) 为单一来源。
+状态：仓库规范草案，已提供 Java 25 参考实现 `game-data`。Java 类型、注解、线程与缓存实现集中在 [Data Java 开发规范](OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。共享错误码以 [OGBS Core](OGBS-Core-1.0.zh-CN.md#4-frameworkerrorcode) 为单一来源。
 
 ## 1. 职责与边界
 

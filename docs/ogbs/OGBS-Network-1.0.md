@@ -4,7 +4,7 @@
 
 Document type: **Language-independent specification**. Companion: [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md).
 
-Status: V1 Draft, revised against the latest Network decisions. Java implementation and validation: [Java 25 specification](OGBS-Network-Java-25-Specification-1.0.md).
+Status: V1 Draft. Java implementation and validation: [Java 25 specification](OGBS-Network-Java-25-Specification-1.0.md).
 
 <a id="1-职责与范围"></a>
 
@@ -267,7 +267,7 @@ Maximum message size is neither a connection traffic quota nor a limit on decode
 | Native transport extension points | Avoid rewrapping codecs, heartbeats, and low-level parameters | Cross-implementation extensions are needed |
 | Binary WS profile | Clear payload/control-frame boundaries | Supporting text or other transports |
 
-Old Connector/Acceptor, intermediate lifecycle states, tryWrite, custom attribute keys, and CloseCause are not unfinished V1 features. Do not restore superseded chat proposals while refining this design. New needs require explicit rationale and migration impact.
+Old Connector/Acceptor, intermediate lifecycle states, tryWrite, custom attribute keys, and CloseCause are not unfinished V1 features. Introducing these capabilities requires an explicit new requirement, rationale, and migration-impact analysis.
 
 <a id="8-合规验证"></a>
 

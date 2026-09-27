@@ -44,7 +44,7 @@ class WebSocketContractTest extends NetworkTestSupport {
         try (var server = NetworkServer.builder().bindAddress(LOCAL).webSocket("/game").handler(serverProbe).build();
              var client = NetworkClient.builder().webSocket().handler(clientProbe).pipeline(p -> {
                  channel.set(p.channel());
-                 p.addBefore(NetworkPipeline.WS_PROTOCOL, "observe-pong", new ChannelInboundHandlerAdapter() {
+                 p.addBefore(WebSocketTransport.PROTOCOL, "observe-pong", new ChannelInboundHandlerAdapter() {
                      public void channelRead(ChannelHandlerContext ctx, Object message) {
                          if (message instanceof PongWebSocketFrame frame)
                              pong.complete(frame.content().toString(StandardCharsets.UTF_8));

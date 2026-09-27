@@ -107,4 +107,84 @@ class ConnectRaceTest extends NetworkTestSupport {
             assertEquals(1, probe.connections.get()); assertEquals(1, probe.disconnects.get());
         }
     }
+
+    @Test void serverCloseCancelsHandshakeButKeepsEstablishedExternalConnections() throws Exception {
+        var boss = new NioEventLoopGroup(1);
+        var worker = new NioEventLoopGroup(1);
+        Probe serverProbe = new Probe();
+        Probe rawProbe = new Probe();
+        BlockingQueue<Channel> accepted = new LinkedBlockingQueue<>();
+        try (var server = NetworkServer.builder().bindAddress(LOCAL).bossGroup(boss).workerGroup(worker)
+                     .webSocket("/game").handler(serverProbe).pipeline(p -> accepted.add(p.channel())).build();
+             var client = NetworkClient.builder().webSocket().handler(new Probe()).build();
+             var raw = NetworkClient.builder().handler(rawProbe).build()) {
+            server.start();
+            URI uri = URI.create("ws://127.0.0.1:" + ((InetSocketAddress) server.localAddress()).getPort() + "/game");
+            Connection established = client.connect(uri);
+            Channel establishedChannel = take(accepted);
+            Connection remote = take(serverProbe.connected);
+            raw.connect(server.localAddress());
+            Channel handshakingChannel = take(accepted);
+            handshakingChannel.eventLoop().submit(() -> {}).sync();
+
+            server.close();
+            handshakingChannel.closeFuture().sync();
+            take(rawProbe.disconnected);
+            worker.submit(() -> {}).sync();
+            assertFalse(boss.isShuttingDown());
+            assertFalse(worker.isShuttingDown());
+            assertTrue(establishedChannel.isActive());
+            assertTrue(established.isActive());
+            assertEquals(1, serverProbe.connections.get());
+            assertEquals(0, serverProbe.disconnects.get());
+            assertTrue(serverProbe.errors.isEmpty());
+
+            established.close();
+            remote.close();
+        } finally {
+            shutdown(worker);
+            shutdown(boss);
+        }
+    }
+
+    @Test void serverCloseDuringInitializationPreventsLateDelivery() throws Exception {
+        var boss = new NioEventLoopGroup(1);
+        var worker = new NioEventLoopGroup(1);
+        Probe probe = new Probe();
+        CountDownLatch initializing = new CountDownLatch(1);
+        CountDownLatch continueInitialization = new CountDownLatch(1);
+        AtomicReference<Channel> accepted = new AtomicReference<>();
+        try (var server = NetworkServer.builder().bindAddress(LOCAL).bossGroup(boss).workerGroup(worker)
+                     .handler(probe).pipeline(p -> {
+                         accepted.set(p.channel());
+                         initializing.countDown();
+                         try {
+                             if (!continueInitialization.await(5, TimeUnit.SECONDS))
+                                 throw new IllegalStateException("Initialization was not released");
+                         } catch (InterruptedException interrupted) {
+                             Thread.currentThread().interrupt();
+                             throw new IllegalStateException(interrupted);
+                         }
+                     }).build();
+             var client = NetworkClient.builder().handler(new Probe()).build()) {
+            server.start();
+            client.connect(server.localAddress());
+            assertTrue(initializing.await(5, TimeUnit.SECONDS));
+            try {
+                server.close();
+            } finally {
+                continueInitialization.countDown();
+            }
+            accepted.get().closeFuture().sync();
+            worker.submit(() -> {}).sync();
+            assertEquals(0, probe.connections.get());
+            assertEquals(0, probe.disconnects.get());
+            assertTrue(probe.errors.isEmpty());
+            assertFalse(worker.isShuttingDown());
+        } finally {
+            continueInitialization.countDown();
+            shutdown(worker);
+            shutdown(boss);
+        }
+    }
 }

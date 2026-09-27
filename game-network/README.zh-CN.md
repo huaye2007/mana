@@ -53,6 +53,8 @@ WebSocket 服务端添加 `.webSocket("/game")`，客户端用 `NetworkClient.bu
 - error：NetworkException。
 - netty：Server/Client 与 Builder，以及包级内部实现。
 
+内部装配由 NetworkChannelInitializer、协议专用的 TlsTransport/WebSocketTransport，以及与协议无关的 ConnectionLifecycle 分工完成，均保持包级封装。公开 Builder 和 pipeline(...) 用法不变；职责与扩展边界见 Java 规范第 6 章。
+
 ConnectionHandler 的 onMessage 借用消息；框架最终 release。write 返回 ACCEPTED 后所有权转给 Netty；INACTIVE/NOT_WRITABLE 不接管。属性直接用 Netty AttributeKey，不再维护 attribute 包。
 
 Server/Client 只关闭自己创建的 EventLoopGroup。外部 group 由应用关闭；成功连接交给业务持有。同步 start/connect/close 不可阻塞自己的 EventLoop；回调中关闭单条连接用 Connection.close()。

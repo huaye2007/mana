@@ -193,7 +193,7 @@ Exactly two PendingBuffers precreate EntityMeta → ConcurrentHashMap<PrimaryId,
 
 The sole persistence thread swaps A/B, waits a fixed 100ms grace, processes every old-buffer entity batch, reports final failures, then clears it. No cross-buffer merge. Next delay is max(0, interval - previous round duration), with no catch-up backlog of missed periods.
 
-**The 100ms grace is an explicitly accepted engineering tradeoff, not a strict concurrency barrier.** A producer paused after obtaining the old buffer for longer than grace may miss traversal or race clear. There is no writer counter, sealed buffer, epoch, or third buffer, and no arbitrary-pause losslessness guarantee. record must remain short; applications serialize business entity access.
+**The fixed 100ms grace simplifies buffer switching; it is not a strict concurrency barrier.** A producer paused after obtaining the old buffer for longer than grace may miss traversal or race clear. There is no writer counter, sealed buffer, epoch, or third buffer, and no arbitrary-pause losslessness guarantee. record must remain short; applications serialize business entity access.
 
 Admission uses a shared read lock; close takes the write lock to close admission. This protects admitted-operation/shutdown races, not buffer switching or serialization of unrelated entities. close awaits the pipeline and handles both buffers; any remembered final failure throws DataSaveException, regardless of later successes.
 

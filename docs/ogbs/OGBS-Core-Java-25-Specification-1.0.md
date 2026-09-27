@@ -102,7 +102,7 @@ stringKey uses JDK StandardCharsets.UTF_8 for String encoding/decoding; bytesKey
 
 Java FrameworkErrorCodes exposes public static final int constants for [Core's error allocation](OGBS-Core-1.0.md#4-frameworkerrorcode). Do not maintain a duplicate allocation table here. Defined values cannot be arbitrarily reordered; amend the standard before adding allocations, then update Java constants and consumers.
 
-The first RPC implementation adopts the latest 2001..2007 allocation, replacing the unimplemented draft. RpcErrorCodes references FrameworkErrorCodes only. errorCode has no high-bit wrapping: 0 success, 1..9999 framework, 10000..Integer.MAX_VALUE business; negative values are invalid. Old RPC constants have source/allocation changes and must not be mixed with the old draft. Runtime/Data allocations are unchanged.
+The RPC implementation uses Core's 2001..2007 allocation, replacing the unimplemented draft. RpcErrorCodes references FrameworkErrorCodes only. errorCode has no high-bit wrapping: 0 success, 1..9999 framework, 10000..Integer.MAX_VALUE business; negative values are invalid. Old RPC constants have source/allocation changes and must not be mixed with the old draft. Runtime/Data allocations are unchanged.
 
 Network uses WriteStatus, NetworkException, and ConnectionHandler.onException. Core's Network range is only reserved; it does not force Network to depend on game-core or assign a code for every closure.
 

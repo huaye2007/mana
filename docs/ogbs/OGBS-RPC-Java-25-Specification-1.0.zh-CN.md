@@ -18,7 +18,7 @@
 | cn.managame.rpc.netty | RpcWire 公开 wire 绑定；包级 RpcEncoder、RpcProtocol |
 | cn.managame.rpc.example | 可运行 RpcEchoExample |
 
-按用户确认保留职责分包。为避免跨包暴露 requestId setter 或内部访问桥，消息沿用只读 record 形式；节点给编码器传入内部生成的 ID，**不回写调用方 Request**。公开完整值构造器可表示已解码消息，但 call/notify 拒绝非零 requestId。与会话中单包可变对象的 Java 草图有此区别，Wire 与调用行为不变。
+类型按职责分包，内部实现保持包级封装。为避免跨包暴露 requestId setter 或内部访问桥，消息沿用只读 record 形式；节点给编码器传入内部生成的 ID，**不回写调用方 Request**。公开完整值构造器可表示已解码消息，但 call/notify 拒绝非零 requestId。该封装方式不改变 Wire 布局与调用行为。
 
 RpcWire 是可独立使用的 Wire Profile 接入 API，不暴露可变 Peer/Slot/计时器。RPC 核心、Network 适配和编解码在同一 artifact 发布，不创建独立 netty artifact。旧草案 RpcNodeConfig、RpcDialer、EstablishmentOwnership、RpcRequestHandler、RpcErrors 不再提供。
 
@@ -150,7 +150,9 @@ PendingCall 仅保存 ID、command、callback、volatile Timeout。条件 remove
 
 ## 6. 网络装配与 Peer 并发
 
-RpcWire.install 安装 LengthFieldBasedFrameDecoder(maxFrameSize,0,4,0,4)，随后安装 IdleStateHandler；因此完整帧驱动 Read Idle，未完成帧的零散字节不能无限保持活性。Network 适配收到已剥离 4 字节长度前缀的 ByteBuf。
+管线入口为 `RpcWire.configurePipeline(pipeline, maxFrameSize, heartbeatIntervalMillis, heartbeatTimeoutMillis)`，替代原 `RpcWire.install` 命名，不保留旧名别名。直接调用方需要修改源码并重新编译；调用旧方法的已有二进制不兼容。管线顺序、分帧、心跳行为及线协议兼容性保持不变。
+
+RpcWire.configurePipeline 添加 LengthFieldBasedFrameDecoder(maxFrameSize,0,4,0,4)，随后添加 IdleStateHandler；因此完整帧驱动 Read Idle，未完成帧的零散字节不能无限保持活性。Network 适配收到已剥离 4 字节长度前缀的 ByteBuf。
 
 Network 已保证客户端 onConnected 先于 ConnectCallback.onSuccess：前者安装 AttributeKey<RpcConnectionContext> 与握手超时，后者关联 expectedPeer/expectedSlot 并发起握手。不会在两个回调中重复绑定 Slot。
 
@@ -178,7 +180,7 @@ close 返回后不再保留 PendingCall、RPC 网络连接或时间轮；它不�
 
 [RpcNode](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNode.java)、[RpcNodeBuilder](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNodeBuilder.java)、[RpcWire](../../game-rpc/src/main/java/cn/managame/rpc/netty/RpcWire.java) 是主要实现入口。
 
-RpcWire 公开 install、encodeRequest(request,assignedId,maxFrameSize)、encodeResponse、encodeHandshake、encodeHeartbeat 和对应 decode 方法。encode 消费输入 body，decode 返回依附输入 frame 的借用 slice；调用方须遵守 Javadoc 的 type/ID 读取位置。直接使用 RpcWire 不具备 RpcNode 的握手状态、Peer 或完成仲裁，不能绕过语义层宣称完整 RPC 实现。
+RpcWire 公开 configurePipeline、encodeRequest(request,assignedId,maxFrameSize)、encodeResponse、encodeHandshake、encodeHeartbeat 和对应 decode 方法。encode 消费输入 body，decode 返回依附输入 frame 的借用 slice；调用方须遵守 Javadoc 的 type/ID 读取位置。直接使用 RpcWire 不具备 RpcNode 的握手状态、Peer 或完成仲裁，不能绕过语义层宣称完整 RPC 实现。
 
 ## 9. 验证与未实现范围
 

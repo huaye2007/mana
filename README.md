@@ -4,7 +4,7 @@
 
 **OGBS = Open Game Backend Specification.**
 
-Implements the responsibilities finalized in the “Game Server Development Transition Strategy” discussion. Java 25, no preview features; Maven multi-module project, with public packages under `cn.managame.*`.
+mana3 is a Java reference implementation of OGBS, providing shared types, networking, RPC, business execution, and data access for game servers. Java 25, no preview features; Maven multi-module project, with public packages under `cn.managame.*`.
 
 | Module | Responsibility |
 | --- | --- |

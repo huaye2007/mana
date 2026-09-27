@@ -24,7 +24,6 @@ final class ConnectionHandlerAdapter extends ChannelInboundHandlerAdapter {
         catch (Throwable cause) { report(cause); }
         return current;
     }
-    boolean hasConnection() { return connection != null; }
     void disconnected() {
         if (ended) return;
         ended = true;

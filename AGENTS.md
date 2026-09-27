@@ -27,7 +27,7 @@ Every framework component, including game-core, game-network, game-runtime, game
 1. **Specification**: language-independent responsibilities, models, observable behavior, ordering, lifecycle, ownership, errors, cancellation, time, and compatibility.
 2. **Java Development Specification**: Java public types/APIs, defaults, exceptions, packages and Maven dependencies, threading and resource mechanisms, internal constraints, extension integration, and validation requirements implementing the standard.
 
-Both documents must link to each other and appear in docs/ogbs/README.md, the project README, and the component README. An API list, module README, or chat transcript cannot replace a Java development specification. Do not mix Java-only requirements into the general standard. Shared Core follows the same separation.
+Both documents must link to each other and appear in docs/ogbs/README.md, the project README, and the component README. An API list, module README, or external record cannot replace a Java development specification. Do not mix Java-only requirements into the general standard. Shared Core follows the same separation.
 
 Use docs/ogbs/OGBS-<Component>-1.0.md and docs/ogbs/OGBS-<Component>-Java-25-Specification-1.0.md. Maintain one contract with English and Chinese texts in the existing documents, not competing design versions.
 
@@ -37,7 +37,7 @@ When adding a component or changing a public contract, update code, both specifi
 
 ## Specification depth and design memory
 
-Specifications must enable maintainers unfamiliar with the chat to continue implementation and review. Lists of clauses or method signatures are insufficient. For each public behavior, document as applicable:
+Specifications must enable maintainers unfamiliar with the design background to continue implementation and review. Lists of clauses or method signatures are insufficient. For each public behavior, document as applicable:
 
 - Preconditions, inputs/outputs, normal flow, and observable ordering.
 - Rejection, exception, cancellation, shutdown, and race outcomes; whether results imply execution or persistence.
@@ -45,7 +45,9 @@ Specifications must enable maintainers unfamiliar with the chat to continue impl
 - At least one concrete example of an easily misunderstood boundary, with source and validation entry points.
 - Confirmed tradeoffs, rationale, and reconsideration triggers. Distinguish unimplemented, unverified, out-of-scope, and undecided items.
 
-Use existing confirmed clause IDs and text as the baseline. Discuss only new details or conflicts, without asking the user to reconfirm entire component designs. Do not revive chat proposals superseded by later conclusions. When the user explicitly changes a design, update the rules, rationale, examples, code, and validation together.
+Use existing confirmed clause IDs and text as the baseline. Discuss only new details or conflicts, without asking the user to reconfirm entire component designs. Do not revive design proposals superseded by later conclusions. When the user explicitly changes a design, update the rules, rationale, examples, code, and validation together.
+
+Documents must be self-contained and directly describe component responsibilities, current contracts, and design rationale. Cite repository specifications, source, or tests as supporting evidence; external discussion records must not serve as normative authority.
 
 Keep rationale and flow explanations in the relevant specification sections, not parallel Specs. Rationale explains clauses and does not independently add MUST requirements. Do not present undecided options as active requirements. Length does not establish completeness; real boundaries and failure paths do.
 
@@ -99,7 +101,7 @@ Maintain one primary definition per rule and reference it elsewhere. Core's stan
 
 ## Workflow for subsequent requirements
 
-1. Read the affected component's standard, language implementation specification, and code. Compare the request with the latest confirmed conclusions; do not use superseded chat proposals.
+1. Read the affected component's standard, language implementation specification, and code. Compare the request with the latest confirmed conclusions; do not use superseded design proposals.
 2. Decide documentation layers autonomously. Implement explicit requests directly; evaluate exploratory suggestions before making them active MUST requirements.
 3. For explicit design changes, update affected rules, code, examples, and tests. Fix code that violates an existing contract instead of rewriting the specification to hide the defect.
 4. Briefly explain and clarify only unresolved ambiguities materially affecting business behavior, compatibility, or scope. Decide document ownership, routine details, and inferable choices yourself.

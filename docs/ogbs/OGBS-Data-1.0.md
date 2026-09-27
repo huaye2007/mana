@@ -6,7 +6,7 @@ Document type: **Language-independent specification**. Companion: [Data Java spe
 
 OGBS = Open Game Backend Specification.
 
-Status: repository draft with Java 25 reference implementation `game-data`. Design follows the final confirmed decisions in the game-server development strategy conversation. Java types, annotations, threads, and caching belong in the [Java specification](OGBS-Data-Java-25-Specification-1.0.md). [Core](OGBS-Core-1.0.md#4-frameworkerrorcode) alone defines shared error codes.
+Status: repository draft with Java 25 reference implementation `game-data`. Java types, annotations, threads, and caching belong in the [Java specification](OGBS-Data-Java-25-Specification-1.0.md). [Core](OGBS-Core-1.0.md#4-frameworkerrorcode) alone defines shared error codes.
 
 <a id="1-职责与边界"></a>
 

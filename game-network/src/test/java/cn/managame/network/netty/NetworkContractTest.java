@@ -99,7 +99,7 @@ class NetworkContractTest extends NetworkTestSupport {
         ch.pipeline().fireUserEventTriggered(event);
         assertEquals(1, event.refCnt()); event.release();
         assertTrue(c.isActive());
-        var adapterContext = ch.pipeline().context(NetworkPipeline.HANDLER);
+        var adapterContext = ch.pipeline().context(NetworkChannelInitializer.HANDLER);
         var adapter = (ConnectionHandlerAdapter) adapterContext.handler();
         c.close(); ch.runPendingTasks();
         int errors = probe.errors.size();
@@ -230,11 +230,11 @@ class NetworkContractTest extends NetworkTestSupport {
         }
     }
     static EmbeddedChannel embedded(Probe probe, java.util.function.Consumer<ChannelPipeline> configurer) {
-        return new EmbeddedChannel(new ChannelInitializer<Channel>() {
-            protected void initChannel(Channel ch) {
-                NetworkPipeline.install(ch, probe, List.of(configurer), null, null, -1,
-                        false, null, null, null, 1024, null, () -> true, () -> {});
-            }
-        });
+        return new EmbeddedChannel(new NetworkChannelInitializer(probe, List.of(configurer),
+                ChannelTransport.TCP, ch -> new ConnectionEstablishment() {
+                    public boolean claimSuccess() { return true; }
+                    public void success(Connection connection) {}
+                    public void networkFailure(Throwable cause) { NetworkSupport.log("Test establishment failed", cause); }
+                }));
     }
 }

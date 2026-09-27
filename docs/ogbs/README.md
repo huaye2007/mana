@@ -52,7 +52,7 @@ See [AGENTS.md](../../AGENTS.md) for collaboration rules. Mark complete runnable
 
 ## Where to continue design work
 
-The following links point into existing detailed flows, without creating extra specification copies. Read standard clauses for behavior, then Java chapters for implementation. Maintainers should not need historical chat participation.
+The following links point into existing detailed flows, without creating extra specification copies. Read standard clauses for behavior, then Java chapters for implementation. The documentation should provide all the context maintainers need to continue implementation and review.
 
 | Detail | Standard baseline | Java implementation entry |
 | --- | --- | --- |
@@ -104,6 +104,6 @@ Arrows run from dependency to consumer. The root build includes Core, Runtime, D
 
 ## Version and validation boundaries
 
-Do not casually change used Metadata key encodings or error meanings. Breaking Wire changes require a new protocol version or explicit new Profile. Historical chat attachments are not imported; no byte compatibility with them is claimed.
+Do not casually change used Metadata key encodings or error meanings. Breaking Wire changes require a new protocol version or explicit new Profile. Byte-format compatibility is established by the repository's Wire Profile and interoperability validation.
 
 Each specification links sources/tests. Unit/integration success is not production-capacity certification. Report cross-language interoperability, public-network/native transport, real databases, and failure recovery separately.

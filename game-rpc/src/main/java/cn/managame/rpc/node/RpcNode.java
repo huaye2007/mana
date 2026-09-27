@@ -75,10 +75,10 @@ public final class RpcNode implements AutoCloseable {
                 workers = new NioEventLoopGroup();
                 RpcConnectionHandler bridge = new RpcConnectionHandler(this);
                 client = NetworkClient.builder().eventLoopGroup(workers).handler(bridge)
-                        .pipeline(p -> RpcWire.install(p, maxFrameSize, heartbeatInterval, heartbeatTimeout)).build();
+                        .pipeline(p -> RpcWire.configurePipeline(p, maxFrameSize, heartbeatInterval, heartbeatTimeout)).build();
                 server = NetworkServer.builder().bindAddress(bindAddress).bossGroup(boss).workerGroup(workers)
                         .handler(bridge)
-                        .pipeline(p -> RpcWire.install(p, maxFrameSize, heartbeatInterval, heartbeatTimeout)).build();
+                        .pipeline(p -> RpcWire.configurePipeline(p, maxFrameSize, heartbeatInterval, heartbeatTimeout)).build();
                 server.start();
                 state = State.RUNNING;
             } catch (RuntimeException error) {

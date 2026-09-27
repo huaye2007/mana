@@ -2,7 +2,7 @@
 
 [English](rpc-wire.md) | **[简体中文](rpc-wire.zh-CN.md)**
 
-本文件是字节布局的唯一来源。此 binding 按最新 RPC 讨论实现，替代旧的未实现草案：nodeId 从 uint64 改为 uint32，Slot 从 uint16 改为 uint8，errorCode 取消高位标记。旧草案从未发布实现；不能与旧布局混用，也不宣称兼容无法读取的历史附件。未来已部署版本的破坏性修改必须提升协议版本。
+本文件是字节布局的唯一来源。此 binding 替代旧的未实现草案：nodeId 从 uint64 改为 uint32，Slot 从 uint16 改为 uint8，errorCode 取消高位标记。旧草案从未发布实现；不能与旧布局混用。未来已部署版本的破坏性修改必须提升协议版本。
 
 语义见 [RPC Specification](ogbs/OGBS-RPC-1.0.zh-CN.md)，Java 接入见 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)，Metadata 与错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
 

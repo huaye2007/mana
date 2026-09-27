@@ -4,7 +4,7 @@
 
 **[English](rpc-wire.md)** | [简体中文](rpc-wire.zh-CN.md)
 
-This document is the sole byte-layout source. This implemented binding replaces the old unimplemented draft: nodeId changes from uint64 to uint32, Slot from uint16 to uint8, and errorCode loses its high-bit marker. The old draft never shipped an implementation; layouts cannot be mixed. No compatibility is claimed with unavailable historical attachments. Breaking changes to future deployed versions must increment the protocol version.
+This document is the sole byte-layout source. This implemented binding replaces the old unimplemented draft: nodeId changes from uint64 to uint32, Slot from uint16 to uint8, and errorCode loses its high-bit marker. The old draft never shipped an implementation; layouts cannot be mixed. Breaking changes to future deployed versions must increment the protocol version.
 
 Semantics: [RPC Specification](ogbs/OGBS-RPC-1.0.md). Java integration: [RPC Java specification](ogbs/OGBS-RPC-Java-25-Specification-1.0.md). Metadata/errors: [Core](ogbs/OGBS-Core-1.0.md).
 

@@ -4,7 +4,7 @@
 
 **OGBS = Open Game Backend Specification**（开放游戏后端规范）。
 
-按照《游戏服务器开发转型策略》中最终收口的职责实现。Java 25，无 preview 特性；Maven 多模块，公共包名为 `cn.managame.*`。
+mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类型、网络通信、RPC、业务运行时和数据访问组件。Java 25，无 preview 特性；Maven 多模块，公共包名为 `cn.managame.*`。
 
 | 模块 | 职责 |
 | --- | --- |

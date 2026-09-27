@@ -94,7 +94,7 @@ stringKey 使用 JDK StandardCharsets.UTF_8 的 String 编解码；bytesKey 解�
 
 Java FrameworkErrorCodes 暴露 public static final int 常量，对应 [Core 标准的错误码分配](OGBS-Core-1.0.zh-CN.md#4-frameworkerrorcode)。不得在 Java 文档复制维护第二套编号表。已定义常量值不可随意重排；新增编号先修订标准，再同步 Java 常量及消费方。
 
-本次 RPC 首次实现采用最新讨论的 2001..2007 分配，替代未实现草案；RpcErrorCodes 只引用 FrameworkErrorCodes。errorCode 不再有高位包装，0 成功、1..9999 框架、10000..Integer.MAX_VALUE 业务，负数非法。旧 RPC 常量发生源码/编号变更，不能与旧草案混用；Runtime/Data 编号未变。
+RPC 实现采用 Core 定义的 2001..2007 编号分配，替代未实现草案；RpcErrorCodes 只引用 FrameworkErrorCodes。errorCode 不再有高位包装，0 成功、1..9999 框架、10000..Integer.MAX_VALUE 业务，负数非法。旧 RPC 常量发生源码/编号变更，不能与旧草案混用；Runtime/Data 编号未变。
 
 Network 当前使用 WriteStatus、NetworkException、ConnectionHandler.onException 表达状态和失败；game-core 的 Network 编号区间仅预留，不强制 Network 依赖 game-core 或为每次关闭分配错误码。
 
