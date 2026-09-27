@@ -1,37 +1,45 @@
 # game-runtime
 
-## 规范文档
+**[English](README.md)** | [简体中文](README.zh-CN.md)
 
-| 标准规范（语言无关） | Java 开发规范 |
+<a id="规范文档"></a>
+
+## Specifications
+
+| Specification (language-independent) | Java Development Specification |
 | --- | --- |
 | [OGBS Runtime Specification](../docs/ogbs/OGBS-Runtime-1.0.md) | [OGBS Runtime Java Development Specification](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
 
-组件行为与 Java 实现分别维护在上述两份规范中，本文提供使用入口。
+Component behavior and Java implementation are maintained separately in these specifications. This document is the usage entry point.
 
-Java 25 业务运行时。Maven 坐标为 `cn.managame:game-runtime`，按包划分内部功能模块。
+Java 25 business runtime. Maven coordinates: `cn.managame:game-runtime`; internal functionality is organized by package.
 
-## 目录与职责
+<a id="目录与职责"></a>
+
+## Layout and responsibilities
 
 ```text
 cn.managame.runtime
-├── GameRuntime / GameRuntimeBuilder  公开入口与配置
-├── context                          Context 体系、默认实现、只读 Contexts
-├── route                            Domain、Key 提取与注册、RouteCallback
-├── executor                         RouteExecutor SPI、绑定、平台/虚拟线程实现
-├── protocol                         协议描述、注册及 Req → Res 关联
-├── handler                          Handler 注解
-├── event                            本地 Event、EventBus 及注解
-├── timer                            一次性 Timer、Cron 注解及管理接口
-├── time                             可替换的业务墙钟 GameTime
-├── error                            Runtime 错误、处理器与分发异常
-└── internal                         注册编译、Context 绑定、分发和时间调度实现
+├── GameRuntime / GameRuntimeBuilder  Public entry points and configuration
+├── context                          Context hierarchy, defaults, read-only Contexts
+├── route                            Domain, key extraction/registration, RouteCallback
+├── executor                         RouteExecutor SPI, bindings, platform/virtual threads
+├── protocol                         Protocol descriptions, registration, Req → Res mapping
+├── handler                          Handler annotations
+├── event                            Local Event, EventBus, annotations
+├── timer                            One-shot Timer, Cron annotations, management interfaces
+├── time                             Replaceable business wall clock: GameTime
+├── error                            Runtime errors, handlers, dispatch exceptions
+└── internal                         Registration compilation, context binding, dispatch, scheduling
 ```
 
-API 子包承载对应职责的类型；internal 负责组装，不属于应用支持接口。GameRuntimeBuilder 收集配置后交给 RuntimeCompiler 校验和编译，不再混放整个运行期实现。Context 绑定与 Timer/Cron 管理也独立于业务分发。
+API subpackages contain their respective public types. internal assembles the runtime and is not a supported application interface. GameRuntimeBuilder collects configuration, then delegates validation and compilation to RuntimeCompiler instead of containing the entire runtime implementation. Context binding and Timer/Cron management are separate from business dispatch.
 
-本次是包结构调整，未增加 Maven 发布单元。原来的 `cn.managame.runtime.HandlerContext` 等导入需改为 `cn.managame.runtime.context.HandlerContext`；`import cn.managame.runtime.*` 不会导入子包。仓库示例和测试已同步迁移。
+This package reorganization added no Maven publication units. Imports such as `cn.managame.runtime.HandlerContext` must become `cn.managame.runtime.context.HandlerContext`; `import cn.managame.runtime.*` does not import subpackages. Repository examples and tests have been migrated.
 
-## GameTime 与调度
+<a id="gametime-与调度"></a>
+
+## GameTime and scheduling
 
 ```java
 import cn.managame.runtime.time.GameTime;
@@ -44,9 +52,9 @@ runtime.cron().rescheduleAll();
 GameTime.resetClock();
 ```
 
-GameTime 是进程级业务墙钟；setClock/resetClock 不自动改变任何现存调度。测试应在 finally 或 AfterEach 恢复时钟。RuntimeTimer 仍按真实经过的 delay 触发。绝对业务 deadline 由应用自行换算成 Duration，需要重算时由业务 cancel + schedule。
+GameTime is the process-wide business wall clock. setClock/resetClock do not automatically change existing schedules. Tests should restore the clock in finally or AfterEach. RuntimeTimer still fires after real elapsed delay. Applications convert absolute business deadlines into Duration and use cancel + schedule when recalculation is needed.
 
-Cron 基于当前 GameTime 计算下一次时间，再使用 RuntimeTimer。按声明类与方法名管理：
+Cron computes its next time using current GameTime, then uses RuntimeTimer. Manage entries by declaring class and method name:
 
 ```java
 runtime.cron().cancel(SystemCron.class, "dailyReset");
@@ -54,14 +62,16 @@ runtime.cron().reschedule(SystemCron.class, "dailyReset");
 runtime.cron().rescheduleAll();
 ```
 
-SystemCron 是应用定义的 Cron 类。cancel 停止后续周期；reschedule 可以恢复取消的项，rescheduleAll 包含全部注册项。已经开始的方法可以完成，旧代任务不会覆盖新调度。Cron 每轮方法结束后计算下一轮，异常或接纳失败不重试当轮，但继续未来周期。
+SystemCron is an application-defined class. cancel stops future cycles; reschedule can resume cancelled entries; rescheduleAll includes every registered entry. A method that has started may finish; old-generation tasks cannot overwrite new schedules. Cron computes its next cycle after the current method ends. Exceptions or admission failures do not retry that cycle, but future cycles continue.
 
-## 文档与验证
+<a id="文档与验证"></a>
 
-- [OGBS Runtime 规范](../docs/ogbs/OGBS-Runtime-1.0.md)
-- [Java 25 开发规范](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md)
+## Documentation and validation
+
+- [OGBS Runtime Specification](../docs/ogbs/OGBS-Runtime-1.0.md)
+- [Java 25 Development Specification](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md)
 - [GameTime](src/main/java/cn/managame/runtime/time/GameTime.java)
 - [CronScheduler](src/main/java/cn/managame/runtime/timer/CronScheduler.java)
-- RPC / Runtime 完整集成示例尚未实现，当前接入示例见 Java 开发规范。
+- A complete RPC / Runtime integration example is not implemented; current integration examples are in the Java specification.
 
-根目录运行 `mvn -pl game-runtime -am test`；拆包后的完整接入验证运行 `mvn clean verify`。
+Run `mvn -pl game-runtime -am test` from the root. After package changes, run `mvn clean verify` for full integration validation.

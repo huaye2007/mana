@@ -1,17 +1,23 @@
 # game-core
 
-共享 Metadata 和框架错误码的 Java 25 实现，Maven 坐标为 cn.managame:game-core。
+**[English](README.md)** | [简体中文](README.zh-CN.md)
 
-## 规范文档
+Java 25 implementation of shared Metadata and framework error codes. Maven coordinates: cn.managame:game-core.
 
-| 标准规范（语言无关） | Java 开发规范 |
+<a id="规范文档"></a>
+
+## Specifications
+
+| Specification (language-independent) | Java Development Specification |
 | --- | --- |
 | [OGBS Core Specification](../docs/ogbs/OGBS-Core-1.0.md) | [OGBS Core Java Development Specification](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md) |
 
-标准定义共享编码、所有权和错误码含义；Java 开发规范定义公开 API、Builder、codec、异常和实现边界。不要在消费组件中复制维护共享编号。
+The standard defines shared encoding, ownership, and error-code meanings. The Java specification defines public APIs, builders, codecs, exceptions, and implementation boundaries. Do not maintain duplicate shared error-code allocations in consuming components.
 
-## 构建与验证
+<a id="构建与验证"></a>
 
-在仓库根目录运行 mvn -pl game-core -am test；跨组件或依赖调整运行 mvn clean verify。
+## Build and validation
 
-测试入口：[MetadataTest](src/test/java/cn/managame/core/MetadataTest.java)。源码位于 cn.managame.core，不依赖其他框架组件，不持有网络线程或数据库资源。
+Run mvn -pl game-core -am test from the repository root. For cross-component or dependency changes, run mvn clean verify.
+
+Test entry point: [MetadataTest](src/test/java/cn/managame/core/MetadataTest.java). Sources are in cn.managame.core, depend on no other framework components, and own no network threads or database resources.

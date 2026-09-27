@@ -1,18 +1,24 @@
 # game-network
 
-## 规范文档
+**[English](README.md)** | [简体中文](README.zh-CN.md)
 
-| 标准规范（语言无关） | Java 开发规范 |
+<a id="规范文档"></a>
+
+## Specifications
+
+| Specification (language-independent) | Java Development Specification |
 | --- | --- |
 | [OGBS Network Specification](../docs/ogbs/OGBS-Network-1.0.md) | [OGBS Network Java Development Specification](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) |
 
-组件行为与 Java 实现分别维护在上述两份规范中，本文提供使用入口。
+Component behavior and Java implementation are maintained separately in these specifications. This document is the usage entry point.
 
-JDK 25 + Netty 的 TCP、TLS TCP、Binary WebSocket、WSS 连接组件，统一发布为 `cn.managame:game-network`。
+JDK 25 + Netty connections for TCP, TLS TCP, binary WebSocket, and WSS, published together as `cn.managame:game-network`.
 
-语义见 [Network Specification](../docs/ogbs/OGBS-Network-1.0.md)，完整签名、默认值和生命周期见 [Java 开发规范](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md)。
+See the [Network Specification](../docs/ogbs/OGBS-Network-1.0.md) for semantics and the [Java Development Specification](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) for full signatures, defaults, and lifecycle.
 
-## 最小服务端
+<a id="最小服务端"></a>
+
+## Minimal server
 
 ```java
 import cn.managame.network.connection.*;
@@ -37,31 +43,35 @@ NetworkServer server = NetworkServer.builder()
         .handler(handler)
         .build();
 server.start();
-// 应用停服生命周期中调用 server.close()。
+// Call server.close() during application shutdown.
 ```
 
-没有 decoder 时 TCP 收到的是字节流片段。业务 framing、codec、IdleStateHandler 通过 pipeline(...) 注册；ChannelOption 直接配置底层 Netty。
+Without a decoder, TCP delivers byte-stream fragments. Register framing, codecs, and IdleStateHandler through pipeline(...); ChannelOption configures Netty directly.
 
-WebSocket 服务端添加 `.webSocket("/game")`，客户端用 `NetworkClient.builder().webSocket().handler(handler).build()`，然后 `client.connect(URI.create("ws://localhost:9000/game"))`。TLS 服务端提供 sslContext；WSS 客户端可以使用默认 JVM 信任库。
+For a WebSocket server, add `.webSocket("/game")`. Build a client with `NetworkClient.builder().webSocket().handler(handler).build()`, then call `client.connect(URI.create("ws://localhost:9000/game"))`. A TLS server supplies sslContext; a WSS client may use the default JVM trust store.
 
-## 包与所有权
+<a id="包与所有权"></a>
 
-- connection：Connection、ConnectionHandler、WriteStatus。
-- connector：ConnectCallback、WebSocketConnectOptions。
-- error：NetworkException。
-- netty：Server/Client 与 Builder，以及包级内部实现。
+## Packages and ownership
 
-ConnectionHandler 的 onMessage 借用消息；框架最终 release。write 返回 ACCEPTED 后所有权转给 Netty；INACTIVE/NOT_WRITABLE 不接管。属性直接用 Netty AttributeKey，不再维护 attribute 包。
+- connection: Connection, ConnectionHandler, WriteStatus.
+- connector: ConnectCallback, WebSocketConnectOptions.
+- error: NetworkException.
+- netty: Server/Client, builders, package-private implementation.
 
-Server/Client 只关闭自己创建的 EventLoopGroup。外部 group 由应用关闭；成功连接交给业务持有。同步 start/connect/close 不可阻塞自己的 EventLoop；回调中关闭单条连接用 Connection.close()。
+ConnectionHandler.onMessage borrows its message; the framework releases it afterward. ACCEPTED transfers write ownership to Netty; INACTIVE/NOT_WRITABLE do not. Attributes use Netty AttributeKey directly; there is no separate attribute package.
 
-## 运行与验证
+Server/Client close only EventLoopGroups they created. Applications close external groups and own established connections. Synchronous start/connect/close must not block their own EventLoop; use Connection.close() for individual connections inside callbacks.
+
+<a id="运行与验证"></a>
+
+## Run and validate
 
 ```shell
 mvn -pl game-network -am test
 mvn clean verify
 ```
 
-可在 IDE 运行 [NetworkEchoExample](src/main/java/cn/managame/network/example/NetworkEchoExample.java)。示例使用随机端口、长度 framing 与普通字符串，并完整释放连接和网络资源。
+Run [NetworkEchoExample](src/main/java/cn/managame/network/example/NetworkEchoExample.java) in an IDE. It uses a random port, length framing, and plain strings, and releases all connection and network resources.
 
-测试覆盖 TCP/TLS/WS/WSS、握手失败、引用计数、背压、关闭与中断竞争。测试自行创建临时证书，不要求外部服务；未验证公网部署、native transport 或生产容量。
+Tests cover TCP/TLS/WS/WSS, handshake failure, reference counts, backpressure, shutdown, and interruption races. They create temporary certificates and require no external services. Public-network deployment, native transport, and production capacity are unverified.

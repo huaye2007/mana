@@ -1,120 +1,137 @@
 # OGBS Data Specification 1.0
 
-文档类型：**标准规范（语言无关）**。对应实现规范：[OGBS Data Java 开发规范](OGBS-Data-Java-25-Specification-1.0.md)。
+**[English](OGBS-Data-1.0.md)** | [简体中文](OGBS-Data-1.0.zh-CN.md)
 
-OGBS = Open Game Backend Specification（开放游戏后端规范）。
+Document type: **Language-independent specification**. Companion: [Data Java specification](OGBS-Data-Java-25-Specification-1.0.md).
 
-状态：仓库规范草案，已提供 Java 25 参考实现 `game-data`。设计来源为“游戏服务器开发转型策略”对话的最终确认内容；Java 类型、注解、线程与缓存实现集中在 [Data Java 开发规范](OGBS-Data-Java-25-Specification-1.0.md)。共享错误码以 [OGBS Core](OGBS-Core-1.0.md#4-frameworkerrorcode) 为单一来源。
+OGBS = Open Game Backend Specification.
 
-## 1. 职责与边界
+Status: repository draft with Java 25 reference implementation `game-data`. Design follows the final confirmed decisions in the game-server development strategy conversation. Java types, annotations, threads, and caching belong in the [Java specification](OGBS-Data-Java-25-Specification-1.0.md). [Core](OGBS-Core-1.0.md#4-frameworkerrorcode) alone defines shared error codes.
 
-**D-MODEL-01** Data 面向游戏进程中的可变状态，提供 Single、Group 与追加型 Log 三种 Repository。读取缓存未命中时同步加载；状态变更先在内存生效，显式 insert/update/delete 后异步批量写回。update 表示保存完整可变持久化状态，不是字段差异。
+<a id="1-职责与边界"></a>
 
-不提供 ORM Session、代理、自动 Dirty Tracking、实体快照、自动回滚、关系映射、自动生成主键、任意条件查询 DSL、分布式事务、跨进程缓存一致性或 Redis 二级缓存。特殊查询使用原生数据库访问层。
+## 1. Responsibilities and boundaries
 
-**D-OWN-01** 同一实体/组的业务修改顺序由应用串行化；容器线程安全不等于实体字段线程安全。应用必须保证后台读取实体字段与业务修改之间的可见性，以及需要的多字段一致性。引用进入待保存集合后仍可能继续改变，持久化观察的是编码时状态，不承诺 update 调用时的快照。
+**D-MODEL-01** Data manages mutable game-process state through Single, Group, and append-only Log repositories. Cache misses load synchronously. Changes take effect in memory first; explicit insert/update/delete records asynchronous batch persistence. update saves complete mutable persistent state, not field differences.
 
-## 2. 身份
+No ORM Session, proxies, automatic dirty tracking, entity snapshots, rollback, relationships, generated primary keys, arbitrary query DSL, distributed transactions, cross-process cache coherence, or Redis L2 cache. Use native database access for specialized queries.
 
-**D-ID-01** Single 实体恰好一个持久化主键。Group 实体恰好一个持久化主键、至少一个组键字段及至少一个组内键字段。组键 + 组内键确定业务位置；后台变更始终按持久化主键合并、更新和删除，主键必须在整个实体存储范围唯一。
+**D-OWN-01** Applications serialize business modifications of the same entity/group. Thread-safe containers do not make fields thread-safe. Applications ensure visibility between business writes and background field reads, plus required multi-field consistency. Pending references may continue changing; persistence observes encoding-time state, not an update-time snapshot.
 
-**D-ID-02** 实体加载或 insert 后，主键、组键、组内键均不得修改。实现不要求快照、setter 拦截或运行时身份比较；违反约定的结果不保证。不同实体类型的相同主键不合并。
+<a id="2-身份"></a>
 
-**D-ID-03** 多字段组键及组内键必须声明稳定、不重复的顺序，不要求连续。单字段组内键使用原值；多字段组内键使用按该顺序的十进制整数/简单字符串，以 `:` 连接，不转义、不做长度编码。组件不得为 null；组合组内键的字符串不得含 `:`。组键保留各分量及类型，不转换为字符串。
+## 2. Identity
 
-### 2.1 三种身份不能混用
+**D-ID-01** Single entities have exactly one persistent primary key. Group entities have exactly one primary key, at least one group-key field, and at least one in-group-key field. Group plus in-group key identifies the business position; background coalescing/update/delete always uses the primary key, unique throughout that entity's storage.
 
-以玩家任务为例：
+**D-ID-02** Primary, group, and in-group keys cannot change after load/insert. No snapshots, setter interception, or runtime identity comparisons are required; violations have unspecified results. Equal primary keys of different entity types never coalesce.
 
-| 字段 | 示例 | 用途 |
+**D-ID-03** Multi-field group/in-group keys require stable distinct orders, not necessarily contiguous. Single-field in-group keys use the original value. Multi-field in-group keys join ordered decimal integers/simple strings with `:`, without escaping or length encoding. Components cannot be null; composite in-group string components cannot contain `:`. Group keys retain typed components rather than stringify them.
+
+<a id="21-三种身份不能混用"></a>
+
+### 2.1 Three distinct identities
+
+Player-task example:
+
+| Field | Example | Purpose |
 | --- | --- | --- |
-| 持久化主键 | id = 90001 | 数据库唯一行、待保存合并、更新和删除 |
-| 组键 | roleId = 42 | 一次加载玩家 42 的整组任务 |
-| 组内键 | taskId = 7 | 在该组 Map 中定位任务 |
+| Persistent primary key | id = 90001 | Unique database row, pending coalescing, update/delete |
+| Group key | roleId = 42 | Load every task for player 42 |
+| In-group key | taskId = 7 | Locate a task within that group's Map |
 
-另一个玩家也可以有 taskId = 7，但不能使用相同持久化主键 90001。GroupRepository 的 K 对应组内键，不是主键，也不是整个 GroupKey。复合组键的各分量保留类型和顺序；复合组内键的字符串规则见 D-ID-03，不能自行加入另一套编码方式。
+Another player may have taskId=7 but not primary key 90001. GroupRepository K is the in-group key, neither primary key nor whole GroupKey. Composite group keys retain type/order; composite in-group strings follow D-ID-03 without another encoding scheme.
 
-身份不可变意味着“把任务从玩家 A 移到玩家 B”不能通过修改现存对象的 roleId 完成。业务需要显式删除旧身份、创建符合新身份的对象，并承担这两步之间不存在跨组原子事务的事实。
-
+Moving a task from player A to B cannot mutate an existing roleId. Explicitly delete the old identity and create the new one, accepting that the two operations have no cross-group atomic transaction.
 
 ## 3. Single
 
-**D-SINGLE-01** get 命中缓存返回同一实体引用；不存在返回空结果并可负缓存；存储失败必须同步报告加载错误，不得伪装为不存在或缓存为不存在。
+**D-SINGLE-01** Cache hits return the same entity reference. Absence returns an empty result and may be negatively cached. Storage failure must synchronously report load failure, never absence or negative caching.
 
-**D-SINGLE-02** insert 声明新增，不得为检测存储是否存在而额外 SELECT。update 保存完整可变状态。两者立即更新缓存并记录变更，不等待数据库写入。存储冲突通过后台错误处理报告。
+**D-SINGLE-02** insert declares a new entity without an extra existence SELECT. update saves all mutable state. Both immediately update cache and record change without waiting for the database. Background error handling reports storage conflicts.
 
-**D-SINGLE-03** delete 不要求事先加载；接纳后缓存立即体现不存在，后续 get 不得在该缓存状态仍有效时加载尚未删除的旧行。
+**D-SINGLE-03** delete needs no prior load. Once accepted, cache immediately shows absence; while that cached state remains valid, get must not reload the not-yet-deleted old row.
 
 ## 4. Group
 
-**D-GROUP-01** 按完整组键加载整组，以组内键构造 Map；零行表示已加载空组。加载失败、重复组内键、返回其他组的数据必须报告加载错误。
+**D-GROUP-01** Load a complete group by its complete key and build a Map by in-group key. Zero rows means a loaded empty group. Load failures, duplicate in-group keys, and foreign-group rows are load errors.
 
-**D-GROUP-02** insert/update/delete/deleteGroup 前，该组必须仍在缓存中。未加载或已过期时同步拒绝，不得隐式访问数据库。delete 接收实体，从中获取完整身份；deleteGroup 对已加载组内各实体记录主键 DELETE，再清空原 Map。已清空组仍为已加载空组。
+**D-GROUP-02** Before insert/update/delete/deleteGroup, the group must still be cached. Unloaded/expired groups reject synchronously without implicit database access. delete accepts an entity to obtain complete identity. deleteGroup records primary-key DELETE for each cached member, then clears the original Map; the empty group remains loaded.
 
-**D-GROUP-03** getGroup 返回真实缓存 Map 引用。应用可以遍历 Map、读取实体和修改实体字段，但不得直接 put/remove/clear 等改变 Map 结构。结构变更必须经 Repository，字段变更必须显式 update 才有持久化保证。
+**D-GROUP-03** getGroup returns the actual cached Map reference. Applications may iterate/read entities and modify fields, but must not put/remove/clear its structure directly. Structural changes use Repository; field persistence requires explicit update.
 
-### 4.1 操作前提与即时效果
+<a id="41-操作前提与即时效果"></a>
 
-| 操作 | 是否会同步加载数据库 | 接纳后的内存效果 | 后台持久化意图 |
+### 4.1 Preconditions and immediate effects
+
+| Operation | Synchronous database load | Accepted in-memory effect | Persistence intent |
 | --- | --- | --- | --- |
-| Single.get | 缓存未命中时会 | 缓存实体或不存在 | 无 |
-| Single.insert / update | 不会 | 缓存指向传入对象 | INSERT / UPDATE，随后按合并表归并 |
-| Single.delete | 不会 | 缓存体现不存在 | DELETE |
-| Group.getGroup / get | 组未命中时加载整组 | 缓存真实 Map，包括空 Map | 无 |
-| Group.insert / update | 不会；组不在缓存则拒绝 | 写入对应组内位置 | 按实体主键登记变更 |
-| Group.delete | 不会；组不在缓存则拒绝 | 移除对应组内位置 | 按实体主键 DELETE |
-| Group.deleteGroup | 不会；组不在缓存则拒绝 | 清空原 Map，仍为已加载组 | 对当前组内各主键逐项 DELETE |
-| Log.insert | 不会 | 追加到日志队列 | 后续按实际表 INSERT |
+| Single.get | On cache miss | Cache entity or absence | None |
+| Single.insert / update | No | Cache the supplied object | INSERT / UPDATE, then coalesce |
+| Single.delete | No | Cache absence | DELETE |
+| Group.getGroup / get | Entire group on miss | Cache actual Map, including empty | None |
+| Group.insert / update | No; reject uncached group | Write in-group position | Record by entity primary key |
+| Group.delete | No; reject uncached group | Remove in-group position | Primary-key DELETE |
+| Group.deleteGroup | No; reject uncached group | Clear original Map, still loaded | DELETE each current primary key |
+| Log.insert | No | Append to log queue | Later INSERT by physical table |
 
-“组已经加载”是当前缓存状态，不是业务过去调用过一次 getGroup 的历史事实。持有已过期 Map 的局部变量不能代替重新取得当前缓存组。加载空组后可以插入第一条实体；完全没有加载过的组不能直接 insert。
+Loaded means current cache state, not historical getGroup usage. Holding an expired Map locally does not replace fetching the current group. A loaded empty group accepts its first insert; a never-loaded group does not.
 
-### 4.2 返回原 Map 的使用约定
+<a id="42-返回原-map-的使用约定"></a>
 
-返回原 Map 是已确认的 API 选择，便于读取组内实体并避免额外 view/包装层。它同时要求业务遵守结构修改边界：
+### 4.2 Using the original Map
 
-- 遍历、按组内键读取：可以。
-- 修改实体可变字段：可以，但需显式 update，且遵守并发可见性约定。
-- 直接向 Map 放入实体：不会登记 INSERT，不允许。
-- 直接 remove/clear：不会登记 DELETE，不允许。
-- 从外部线程同时修改实体：不因 Map 线程安全而获得许可。
+Returning the original Map is a confirmed choice for direct entity access without extra views/wrappers. It requires these structural boundaries:
 
-deleteGroup 清空的是原 Map，因此持有该 Map 的业务会看到它变空。该操作只覆盖缓存组内已知实体，不等价于对数据库执行任意条件删除；绕过 Repository 写入的额外数据库行不在其保证内。
+- Iteration and in-group lookup are allowed.
+- Mutable field changes are allowed with explicit update and visibility discipline.
+- Direct put is prohibited because it records no INSERT.
+- Direct remove/clear is prohibited because it records no DELETE.
+- Map thread safety does not authorize concurrent external entity mutation.
 
+deleteGroup clears the original Map, so holders observe it empty. It covers known cached members, not an arbitrary database predicate deletion. Rows written outside Repository are outside that guarantee.
 
-## 5. 缓存与保存生命周期
+<a id="5-缓存与保存生命周期"></a>
 
-**D-CACHE-01** 缓存与待保存变更解耦：缓存过期不丢弃已登记变更，不以淘汰监听强制保存。Repository 访问续期；直接访问此前返回的 Map/实体引用不续期。应用应在每次业务访问时经 Repository 获取当前缓存对象。
+## 5. Cache and persistence lifecycle
 
-**D-CACHE-02** 缓存有效时间必须远大于正常最大写回延迟。它不是无限重试期间的持久化屏障；在超长数据库停顿、保存最终失败、缓存过期后再次读取等场景，可能重载旧数据库状态。V1 不提供 pending overlay、脏项固定或任意故障时强读写一致性。
+**D-CACHE-01** Cache and pending changes are independent. Expiry never discards registered changes or forces persistence through eviction listeners. Repository access renews expiry; direct access through old Map/entity references does not. Fetch the current cached object through Repository for each business access.
 
-### 5.1 读取、修改与保存是三个时点
+**D-CACHE-02** Cache lifetime must greatly exceed normal maximum write delay. It is not a durability barrier during unlimited retries. Prolonged database stalls, final save failure, or rereading after expiry may reload old database state. V1 provides no pending overlay, dirty-item pinning, or strong read/write consistency under arbitrary failure.
+
+<a id="51-读取修改与保存是三个时点"></a>
+
+### 5.1 Read, modify, and save are different moments
 
 ```text
-T1 get 返回缓存 Entity
-T2 业务修改字段并调用 update
-T3 保存线程读取字段、编码并提交数据库
+T1 get returns cached Entity
+T2 business changes fields and calls update
+T3 persistence thread reads fields, encodes, and submits to database
 ```
 
-T2 表示持久化意图已登记。T3 可能看到 T2 之后的字段值；V1 没有“调用 update 时拍照”。多次 update 可以合并成一个后台更新，因此数据库不会必然观察到每一个中间状态。需要保留每次行为时应追加日志，而不是依赖状态更新次数。
+T2 registers intent. T3 may see later values; V1 takes no update-time snapshot. Several updates may coalesce into one database write, so intermediate states need not be observed. Append logs when every action must be retained.
 
-加载失败与不存在必须分开：数据库返回零行可以形成负缓存；连接异常、解码失败或身份非法应报告加载错误。将这些失败缓存成不存在，可能诱使业务创建本不该创建的实体。
+Distinguish absence from load failure: zero rows may produce negative cache; connectivity, decoding, or invalid identity reports failure. Caching failures as absence may provoke incorrect entity creation.
 
-### 5.2 缓存过期与故障的组合
+<a id="52-缓存过期与故障的组合"></a>
 
-待保存集合会独立持有实体引用，缓存过期不会主动取消保存。但如果数据库长期不可用、保存最终失败，或实际写回耗时超过缓存生命周期，再次读取可能加载到旧数据库值。V1 不在加载结果上叠加 pending，也不为脏数据无限续期。
+### 5.2 Expiry combined with failure
 
-因此 cacheExpire 大于配置周期只是一项启动校验，不代表运行中永远安全。实际保存耗时、业务访问间隔、故障处理时长共同决定部署边界。重试和失败补偿策略属于应用选择，不能以缓存 TTL 代替持久化确认。
+Pending collections retain entity references independently; expiry does not cancel persistence. However, prolonged unavailability, final failure, or writes exceeding cache lifetime can cause later reads to load old values. V1 neither overlays pending state nor renews dirty entries forever.
 
+cacheExpire exceeding the configured interval is only startup validation, not perpetual safety. Actual save duration, access intervals, and failure handling define deployment limits. Applications choose retries/compensation; TTL cannot substitute for persistence confirmation.
 
-## 6. 写回与合并
+<a id="6-写回与合并"></a>
 
-**D-WRITE-01** 只有同一实体元数据、同一主键、同一当前批次缓冲内的变更合并。更新保留最新传入的实体引用；DELETE 只保留主键。不同缓冲之间不得合并。
+## 6. Write-back and coalescing
 
-| 当前 | 新操作 | 结果 |
+**D-WRITE-01** Coalesce only within the same entity metadata, primary key, and current batch buffer. Updates retain the latest supplied entity reference; DELETE retains only the key. Never merge across buffers.
+
+| Current | New operation | Result |
 | --- | --- | --- |
-| 无 | INSERT / UPDATE / DELETE | 新操作 |
+| None | INSERT / UPDATE / DELETE | New operation |
 | INSERT | UPDATE | INSERT |
-| INSERT | DELETE | 无待保存变更 |
+| INSERT | DELETE | No pending change |
 | UPDATE | UPDATE | UPDATE |
 | UPDATE | DELETE | DELETE |
 | DELETE | INSERT | DELETE_INSERT |
@@ -122,128 +139,147 @@ T2 表示持久化意图已登记。T3 可能看到 T2 之后的字段值；V1 �
 | DELETE_INSERT | UPDATE | DELETE_INSERT |
 | DELETE_INSERT | DELETE | DELETE |
 
-其他组合必须同步拒绝，拒绝不得用新对象替换缓存。INSERT→DELETE 抵消基于调用方“确为新增”的声明，不探测已有数据库行。
+Other combinations reject synchronously without replacing cache with the new object. INSERT→DELETE cancellation trusts the declaration that the entity is new; it does not inspect existing storage.
 
-**D-WRITE-02** 任意时刻只有一条持久化流水线。旧缓冲全部批次处理结束后才处理新缓冲。每个实体类型内按 DELETE → DELETE_INSERT → INSERT → UPDATE 执行；各阶段按 batchSize 切分。实体类型间没有业务事务或原子性承诺。
+**D-WRITE-02** Only one persistence pipeline runs at a time. Finish every old-buffer batch before processing the new buffer. Within each entity type, run DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize. No cross-type business transaction or atomicity.
 
-**D-WRITE-03** 周期是目标启动间隔；上轮超过周期后可立即开始下一轮，不再额外等待完整周期。缓冲切换机制属于实现标准，不能把 Java 的固定等待当成跨语言一致性证明。
+**D-WRITE-03** Interval is a target start interval. If a round exceeds it, the next may start immediately without another full wait. Buffer-switch mechanics belong in implementation specifications; Java's fixed grace period is not cross-language consistency proof.
 
-### 6.1 合并示例与拒绝理由
+<a id="61-合并示例与拒绝理由"></a>
 
-下面的序列均假设同实体、同主键、同一缓冲：
+### 6.1 Merge examples and rejection rationale
 
-```text
-insert(A) → update(B)       => 一次 INSERT，使用 B 引用
-insert(A) → delete(id)      => 无数据库操作
-update(A) → update(B)       => 一次 UPDATE，使用 B 引用
-update(A) → delete(id)      => 一次 DELETE，仅保留 id
-delete(id) → insert(B)      => 一次 DELETE_INSERT，使用 B 引用
-delete(id) → insert(B) → delete(id) => 一次 DELETE
-```
-
-重复 INSERT、UPDATE 后 INSERT、DELETE 后 UPDATE 等未列入合并表的序列被同步拒绝。这样调用方不会把“新增”“修改”“替换”混成隐式 save。拒绝不会用新参数替换缓存，但框架不能撤销业务在调用前已经直接改过的实体字段。
-
-DELETE_INSERT 是删除后重建的持久化意图；各后端实现方式见第 8 章。它不是公开 Repository 方法，也不等于所有操作都有 upsert。
-
-### 6.2 跨缓冲与跨批次
-
-如果 insert 已进入旧缓冲，随后 delete 进入新缓冲，两者不会抵消：先处理旧缓冲 INSERT，再处理新缓冲 DELETE。即使数据库最终状态相同，也可能有两次真实 I/O、两次失败机会。
-
-每个实体内的阶段顺序不代表不同实体之间有事务。举例：玩家金币 UPDATE 与奖励日志 INSERT 可以分别成功或失败；把它们放在同一 GameData 中不会获得原子提交。批次大小只控制每次交给 Mapper 的数量，不能推导出整轮事务边界。
-
-
-## 7. 错误、重试与关闭
-
-**D-ERROR-01** 后台状态及日志保存失败必须使用同一错误处理机制，携带错误码、实体/日志类型、操作、失败批次数据、原因、尝试次数。是否重试由用户策略决定，框架限制最大尝试次数。默认不自动重试。
-
-**D-ERROR-02** 最终失败交给错误 Handler 后继续后续批次；不得自动重新塞入当前缓冲，不能永久堵住保存。Handler/重试策略自身失败必须隔离并留有诊断。实体不回滚。普通批量写可能部分成功或结果未知；重试策略必须考虑 INSERT 重复和业务幂等性。
-
-**D-ERROR-03** 正常路径不创建失败快照。Handler 同步借用失败批次及实体引用；要异步保存失败信息，必须在回调返回前完成必要序列化/复制。默认 Handler 只记录诊断，不代替业务失败数据归档。
-
-**D-CLOSE-01** close 是同步最终处理屏障：拒绝新的状态修改/日志接纳、停止周期调度、等待进行中的保存、处理两个缓冲及日志队列，最后关闭自己的调度资源。此前接纳的变更在 close 返回前完成成功或最终失败处理。应先停止业务接入再 close。
-
-**D-CLOSE-02** 任何已接纳批次发生未恢复的最终失败，关闭必须报告保存失败，不能仅因队列已清空而表示持久化成功。其他批次仍继续处理。close 幂等；失败关闭重复调用仍报告失败。数据库驱动超时由应用配置，close 本身不承诺固定完成时限。
-
-**D-CLOSE-03** 进程崩溃可能丢失尚未写入数据库的数据。V1 不提供 WAL 或崩溃恢复。
-
-### 7.1 从失败到最终处理
+Same entity, primary key, and buffer:
 
 ```text
-执行当前 batch
-  成功 → 继续下一 batch
-  失败 → 构造失败上下文
-       → 尚有次数且用户策略允许：再次执行当前 batch
-       → 否则：调用错误 Handler
-               记录此次最终失败
-               继续后续 batch
+insert(A) → update(B)       => one INSERT using B
+insert(A) → delete(id)      => no database operation
+update(A) → update(B)       => one UPDATE using B
+update(A) → delete(id)      => one DELETE retaining only id
+delete(id) → insert(B)      => one DELETE_INSERT using B
+delete(id) → insert(B) → delete(id) => one DELETE
 ```
 
-最大尝试次数包含首次执行。配置为 3 但策略始终返回 false 时仍只执行一次。用户策略可以按数据库错误原因决定是否重试；V1 不内置“一切异常均重试”的分类，也不保证一次失败的 batch 完全没有写入。
+Repeated INSERT, UPDATE→INSERT, DELETE→UPDATE, and other unlisted sequences reject synchronously, preserving distinct create/modify/replace intent rather than implicit save. Rejection does not replace cache, but cannot undo fields changed directly before the call.
 
-例如 INSERT batch 的前半部分已提交、后半部分失败，整批重试可能遇到重复主键。最终失败回调提供的是失败批次，不是经框架推断的“确定未写入行集合”。结果未知时需要查询核对、幂等设计或业务补偿，而不能盲目把 batch 当成全失败。
+DELETE_INSERT is delete-and-recreate intent with backend-specific implementation in §8. It is not a public Repository method or universal upsert.
 
-### 7.2 错误处理器的责任范围
+<a id="62-跨缓冲与跨批次"></a>
 
-错误 Handler 可以完成告警、同步序列化到外部失败存储，或记录人工恢复需要的信息。回调收到的实体引用仍属于原可变对象；将引用直接扔进异步队列不是保存了失败时快照。需要独立失败记录时，必须在回调返回前完成自己的复制或序列化。
+### 6.2 Across buffers and batches
 
-Handler 返回后框架继续推进，不把失败 batch 自动放回活动缓冲。Handler 自身抛异常也不能阻塞所有后续保存。默认日志处理器只提供诊断，所以“配置了默认 Handler”不等于失败数据已经有可恢复副本。
+If insert entered the old buffer and delete enters the new one, they do not cancel: old INSERT precedes new DELETE. Identical final state can still involve two I/O operations and two failure opportunities.
 
-### 7.3 关闭成功与持久化成功
+Within-entity phase ordering creates no transaction across entities. Player-currency UPDATE and reward-log INSERT may succeed/fail independently even within one GameData. batchSize controls the amount passed to Mapper, not an entire-round transaction.
 
-close 先关闭修改接纳，再处理已接纳工作。新的修改会被拒绝，已接纳工作不会因为关闭而直接丢弃。此前发生过最终保存失败时，即使停机时队列为空，close 仍应报告失败；它不能抹去运行期间的数据丢失风险。
+<a id="7-错误重试与关闭"></a>
 
-close 不负责停止上游 Runtime 或网络入口，也不关闭外部数据库客户端。应用应先停止业务生产、结束可能继续调用 Repository 的任务，再关闭 Data。进程被强制结束不具备正常 close 的处理保证。
+## 7. Errors, retries, and closure
 
+**D-ERROR-01** Background state/log failures share one mechanism carrying error code, entity/log type, operation, failed batch, cause, and attempt count. User policy chooses retries; framework bounds attempts. Default is no automatic retry.
 
-## 8. 存储适配语义
+**D-ERROR-02** After final failure reaches the error Handler, continue later batches. Never automatically reinsert into the active buffer or block forever. Isolate and diagnose Handler/retry-policy failures. No entity rollback. Ordinary batches may partially succeed or have unknown outcomes; retries must consider duplicate INSERT and idempotency.
 
-状态 Mapper 初始化时建立映射和必要存储结构。一个 Mapper 可以服务多个实体元数据；不得把不同实体的相同主键混合。
+**D-ERROR-03** Successful paths create no failure snapshots. Handler synchronously borrows batch/entity references. Asynchronous failure archiving requires needed serialization/copy before callback return. Default diagnostics do not archive recoverable business data.
 
-MySQL：只有显式持久化字段参与 INSERT；UPDATE 保存全部可变字段，排除所有身份字段；DELETE 按主键。DELETE_INSERT 使用覆盖该批次删除与插入的小事务。结构维护只建缺失表、补字段及显式索引，不自动删字段、改类型、删索引；发现明显类型/主键/同名索引冲突时初始化失败。组键不会自动推导索引。
+**D-CLOSE-01** close is a synchronous final-processing barrier: reject new state/log changes, stop periodic scheduling, await ongoing persistence, process both buffers and log queue, then close owned scheduling resources. Accepted changes reach success or final-failure handling before return. Stop business admission first.
 
-MongoDB：主键固定映射 `_id`。INSERT 为批量插入；UPDATE 为完整 Document replacement 且不 upsert；DELETE_INSERT 为 replacement upsert；DELETE 使用主键集合。仅创建缺失 collection 与显式升序索引，不提供 SQL 字段迁移。
+**D-CLOSE-02** Any unrecovered final failure in accepted work makes close report save failure; empty queues alone do not imply persistence success. Continue other batches. close is idempotent; repeated failed closure still reports failure. Applications configure driver timeouts; close has no fixed completion deadline.
 
-## 9. 追加日志
+**D-CLOSE-03** Process crashes may lose unwritten data. V1 has no WAL or crash recovery.
 
-**D-LOG-01** Log 只有 insert，进入追加队列，不缓存、不合并、不使用状态 EntityMapper、不要求状态主键。接纳后的日志及分表字段不得再修改。
+<a id="71-从失败到最终处理"></a>
 
-**D-LOG-02** 本版日志使用 MySQL，复用底层 MysqlAccess，不负责建表/补字段/索引。日志存储结构由外部日志服务管理。按实际物理表分组再批量 INSERT；每个周期取有限队列边界，持续生产不能阻塞状态保存；关闭期间排空全部已接纳日志。
-
-**D-LOG-03** 分表支持 VALUE、DAY、MONTH、YEAR，最多一个分表字段；未标注则使用基础表。表名为基础名 + 下划线 + 后缀。时间分表使用明确时区的事件时间；单位、时区默认值及合法类型见 Java 标准。
-
-### 9.1 日志完整流程
+### 7.1 From failure to final handling
 
 ```text
-构造日志并固定事件时间/分表值
-→ insert 校验并接纳
-→ 进入追加队列
-→ 本轮取得有限处理边界
-→ 按 batch 取出，按物理表分组
-→ 执行每组 INSERT
-→ 成功或经重试后交给同一错误 Handler
+Execute current batch
+  success → next batch
+  failure → create failure context
+          → attempts remain and policy permits: execute same batch again
+          → otherwise: invoke error Handler
+                       remember final failure
+                       continue next batch
 ```
 
-两条字段完全相同的日志也不会合并。事件时间决定 DAY/MONTH/YEAR 分表，不能改为保存线程执行时的时间；跨日积压日志仍应进入原事件日期的表。表是否提前建立由外部日志系统负责，缺表进入普通保存失败流程。
+Maximum attempts includes the first execution. A maximum of 3 with an always-false policy still executes once. Policies may inspect causes; V1 neither classifies every exception as retryable nor guarantees failed batches wrote nothing.
 
-日志字段在 insert 返回后不可修改，包括不持久化但参与分表的字段。框架不提供日志快照，因此修改它们会同时影响内容与目标表，无法得到可靠的“接纳时事件记录”。
+For example, retrying an INSERT batch whose first half committed may encounter duplicate keys. The callback provides the failed batch, not an inferred definitely-unwritten subset. Unknown outcomes require reconciliation, idempotency, or compensation, not assuming total failure.
 
-### 9.2 已确认取舍与扩展边界
+<a id="72-错误处理器的责任范围"></a>
 
-| 选择 | 设计理由与后果 | 后续需要重新评估的条件 |
+### 7.2 Error handler responsibilities
+
+Handlers may alert, synchronously serialize to external failure storage, or record recovery information. Entity references remain mutable originals; enqueueing references asynchronously does not capture failure-time state. Copy/serialize before return when independent records are required.
+
+After return, processing continues without automatic reinsertion. Handler exceptions cannot block all later saves. Default logging is diagnostic, not a recoverable copy of failed data.
+
+<a id="73-关闭成功与持久化成功"></a>
+
+### 7.3 Successful closure versus successful persistence
+
+close closes admission before processing accepted work. New changes reject; accepted changes are not discarded because of shutdown. Even with empty queues, earlier final failures remain reported so closure cannot erase runtime data-loss risk.
+
+close neither stops upstream Runtime/network admission nor closes external database clients. Stop producers and tasks that may still call Repository before closing Data. Forced process termination has no normal-close guarantees.
+
+<a id="8-存储适配语义"></a>
+
+## 8. Storage adapter semantics
+
+State Mappers compile mappings and required structures during initialization. One Mapper may serve several entity metadata objects without mixing equal keys across types.
+
+MySQL: INSERT includes explicitly persistent fields; UPDATE saves all mutable fields excluding every identity field; DELETE uses primary key. DELETE_INSERT uses a small transaction covering batch deletion/insertion. Schema maintenance creates missing tables, adds fields/explicit indexes, but never drops fields/indexes or changes types. Obvious type/primary-key/same-name-index conflicts fail initialization. Group keys do not imply indexes.
+
+MongoDB: primary key maps to _id. INSERT is bulk insertion; UPDATE is full Document replacement without upsert; DELETE_INSERT is replacement upsert; DELETE uses primary-key sets. Create only missing collections and explicit ascending indexes; no SQL field migration.
+
+<a id="9-追加日志"></a>
+
+## 9. Append-only logs
+
+**D-LOG-01** Log supports only insert into an append queue, with no caching/coalescing/state EntityMapper/required state primary key. Accepted log fields, including partition fields, must not change.
+
+**D-LOG-02** V1 logs use MySQL via MysqlAccess without table/field/index maintenance. External log services manage schemas. Group by physical table before batch INSERT. Each periodic round uses a finite queue boundary so continuous production cannot block state persistence. Closure drains all accepted logs.
+
+**D-LOG-03** Partitioning supports VALUE, DAY, MONTH, YEAR and at most one partition field. Without one, use the base table. Names are base + underscore + suffix. Time partitioning uses event time in an explicit zone; units/default zone/types are in the Java specification.
+
+<a id="91-日志完整流程"></a>
+
+### 9.1 Complete log flow
+
+```text
+Create log and fix event time/partition value
+→ validate and accept insert
+→ append queue
+→ obtain finite round boundary
+→ drain batches and group by physical table
+→ INSERT each group
+→ success or same error Handler after retries
+```
+
+Identical logs never coalesce. DAY/MONTH/YEAR use event time, not persistence-thread time; delayed cross-day logs still go to the original date's table. External systems prepare tables; missing tables enter normal save-failure handling.
+
+After insert returns, no log field may change, including nonpersistent partition fields. Without snapshots, mutation can change both content and destination and destroys reliable acceptance-time event records.
+
+<a id="92-已确认取舍与扩展边界"></a>
+
+### 9.2 Confirmed tradeoffs and extension boundaries
+
+| Choice | Rationale and consequence | Revisit when |
 | --- | --- | --- |
-| 显式 insert/update/delete | 操作意图明确，无代理或脏检测 | 自动追踪或字段级补丁需求 |
-| 返回可变实体及真实组 Map | 业务直接操作内存；结构修改必须经 Repository | 要求隔离视图、不可变对象或快照 |
-| 按 EntityMeta 与主键合并 | Mapper 可共享，不混淆不同实体类型 | 修改身份模型或引入动态实体映射 |
-| 缓存与保存解耦 | 缓存淘汰不承担保存责任 | 要求故障期间强读写一致性 |
-| 有限处理失败，用户决定重试 | 防止单个坏 batch 永久阻塞 | 引入持久失败队列、自动回放或退避 |
-| 日志独立追加、复用错误机制 | 保留事件，不与状态合并 | 引入日志查询、其他日志后端 |
-| 不维护日志 Schema | 与外部日志管理职责分开 | 要求组件统一管理日志存储结构 |
+| Explicit insert/update/delete | Clear intent, no proxies/dirty tracking | Automatic tracking or field patches needed |
+| Mutable entities and actual group Map | Direct memory access; Repository owns structural changes | Isolated views, immutable objects, snapshots needed |
+| Coalesce by EntityMeta and primary key | Shared Mappers without cross-type confusion | Identity model/dynamic mapping changes |
+| Independent cache/persistence | Eviction does not own save responsibility | Strong consistency during failure needed |
+| Bounded failure handling, user retries | One bad batch cannot block forever | Durable failure queues, replay, backoff needed |
+| Separate append logs, shared errors | Preserve events without state coalescing | Log queries/other backends needed |
+| No log Schema maintenance | Separate external log-management responsibility | Unified schema management needed |
 
-当前没有承诺 WAL、崩溃恢复、无界积压保护、跨表事务、失败 batch 自动回灌或多进程状态一致性。需要其中一项时，应明确补充行为、容量和恢复语义，不能只更换底层容器就宣布已支持。
+No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, automatic failed-batch reinsertion, or multi-process consistency is promised. Such extensions need explicit behavior/capacity/recovery semantics; changing a container alone cannot establish them.
 
+<a id="10-验证与已知范围"></a>
 
-## 10. 验证与已知范围
+## 10. Validation and known scope
 
-契约测试见 [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java)、[LogContractTest](../../game-data/src/test/java/cn/managame/data/LogContractTest.java)。Java 数据库映射、JDBC 事务及实机测试入口见 [模块 README](../../game-data/README.md)。
+Contract tests: [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java), [LogContractTest](../../game-data/src/test/java/cn/managame/data/LogContractTest.java). Database mapping, JDBC transaction, and real-service test entries: [module README](../../game-data/README.md).
 
-已实现不等于生产认证。固定缓冲宽限期、可变实体跨线程读取、无界队列容量、数据库超时和部分成功重试需要部署方评估；实机验证状态以当前 Java 实现文档为准。
+Implementation is not production certification. Deployments evaluate fixed buffer grace, cross-thread mutable reads, unbounded queues, driver timeouts, and partial-success retries. Current real-service verification status is in the Java specification.

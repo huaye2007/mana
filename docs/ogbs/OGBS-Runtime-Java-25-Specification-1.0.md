@@ -1,16 +1,20 @@
 # OGBS Runtime Java 25 Development Specification 1.0
 
-文档类型：**Java 开发规范**。对应标准：[OGBS Runtime Specification](OGBS-Runtime-1.0.md)。
+**[English](OGBS-Runtime-Java-25-Specification-1.0.md)** | [简体中文](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md)
 
-本文规定 Java 实现的公开 API、默认配置、异常形式、线程与资源机制、扩展接入以及验证要求。Java 实现必须同时满足本文和对应标准规范；不能只满足方法签名而忽略行为契约。代码与规范冲突时应修正实现，设计变更则同步修订两层规范。下文明确标注的待实现、未验证能力不代表已完成。
+Document type: **Java Development Specification**. Standard: [Runtime Specification](OGBS-Runtime-1.0.md).
 
-状态：当前仓库实现约定。语义规范见 [OGBS Runtime](OGBS-Runtime-1.0.md)，共享类型见 [OGBS Core](OGBS-Core-1.0.md)。
+This document defines public Java APIs, defaults, exceptions, threads/resources, extensions, and validation. Implementations satisfy both specifications, including behavior, not signatures alone. Fix implementation deviations; design changes update both layers. Pending/unverified capabilities are not completed features.
 
-## 1. 模块与主 API
+Status: current repository implementation contract. Semantics: [OGBS Runtime](OGBS-Runtime-1.0.md). Shared types: [Core](OGBS-Core-1.0.md).
 
-Maven 坐标为 `cn.managame:game-runtime:1.0.0-SNAPSHOT`，入口包名 `cn.managame.runtime`，按职责分为子包，依赖 `game-core`，要求 Java 25。
+<a id="1-模块与主-api"></a>
 
-以下代码块列出接口签名；类型以源码为准。
+## 1. Module and main API
+
+Maven: `cn.managame:game-runtime:1.0.0-SNAPSHOT`. Entry package: `cn.managame.runtime`, with responsibility-based subpackages. Depends on `game-core`; requires Java 25.
+
+Signature excerpts below; source defines the types.
 
 ```java
 public interface GameRuntime extends AutoCloseable {
@@ -31,27 +35,29 @@ public interface RouteCallback<T> {
 }
 ```
 
-没有独立 start 阶段、动态注册 API 或公开的任意 Runnable 分发入口。build 成功后可使用；外部网络回调需由接入层构造 HandlerContext 后 dispatch。
+No separate start, dynamic registration, or public arbitrary Runnable dispatch. Successful build is usable; network callbacks need integration-created HandlerContext and dispatch.
 
-公开 API 的包划分：
+Public packages:
 
-| 包 | 内容 |
+| Package | Contents |
 | --- | --- |
-| cn.managame.runtime | GameRuntime、GameRuntimeBuilder |
-| cn.managame.runtime.context | Context 体系、默认实现、只读 Contexts |
-| cn.managame.runtime.route | Domain、Key 绑定/提取/注册、RouteCallback |
-| cn.managame.runtime.executor | Executor SPI、绑定与官方实现 |
-| cn.managame.runtime.protocol | 协议描述、注册、请求响应关联 |
-| cn.managame.runtime.handler | Handler 注解 |
-| cn.managame.runtime.event | Event、EventBus、事件注解 |
-| cn.managame.runtime.timer | RuntimeTimer、TimerRef、Cron、CronScheduler |
+| cn.managame.runtime | GameRuntime, GameRuntimeBuilder |
+| cn.managame.runtime.context | Context hierarchy, defaults, read-only Contexts |
+| cn.managame.runtime.route | Domain, Key binding/extraction/registry, RouteCallback |
+| cn.managame.runtime.executor | Executor SPI, bindings, official implementations |
+| cn.managame.runtime.protocol | Descriptors, registration, request/response association |
+| cn.managame.runtime.handler | Handler annotations |
+| cn.managame.runtime.event | Event, EventBus, annotations |
+| cn.managame.runtime.timer | RuntimeTimer, TimerRef, Cron, CronScheduler |
 | cn.managame.runtime.time | GameTime |
-| cn.managame.runtime.error | RuntimeError、处理器与分发异常 |
-| cn.managame.runtime.internal | 注册编译、调度与上下文绑定内部实现，应用不得依赖 |
+| cn.managame.runtime.error | RuntimeError, handlers, dispatch exceptions |
+| cn.managame.runtime.internal | Registration compilation, scheduling, context binding; not application API |
 
-原先 `cn.managame.runtime.*` 中的类型已迁移到对应子包。Java 通配 import 不包含子包，调用方需更新 import。Maven artifact 仍为一个 game-runtime，未拆成多个发布单元。详见 [模块目录](../../game-runtime/README.md)。
+Former `cn.managame.runtime.*` types moved into corresponding subpackages. Wildcard imports do not include subpackages; update imports. One game-runtime artifact remains, without separate publication units. See [module layout](../../game-runtime/README.md).
 
-## 2. 构建
+<a id="2-构建"></a>
+
+## 2. Build
 
 ```java
 GameRuntimeBuilder.builder()
@@ -67,47 +73,52 @@ GameRuntimeBuilder.builder()
     .build();
 ```
 
-上述列表配置方法采用替换语义，每次调用复制本次 Iterable，不累加旧配置。列表默认空，Cron 默认 UTC，默认错误处理器写入 System.Logger。
+List setters replace previous configuration and copy each Iterable, without accumulation. Defaults: empty lists, UTC Cron zone, System.Logger error handler.
 
-`RouteDomain.of(int id, String name)` 要求 id > 0、name 非 null。`RouteExecutorBinding.of(executor, int... domains)` 必须绑定至少一个 Domain。构建要求每个已注册 Domain 恰好绑定一个 Executor，不允许绑定未知 Domain。
+`RouteDomain.of(int id, String name)` requires id>0 and nonnull name. `RouteExecutorBinding.of(executor, int... domains)` needs at least one Domain. Every registered Domain binds exactly one Executor; unknown Domains reject.
 
-构建时解析注解并编译 MethodHandle；注册表在成功后固定。没有 classpath 扫描，实例由调用方显式提供。注解方法必须 public、实例方法、返回 void、非 varargs。错误配置通常抛出 IllegalArgumentException，null 输入可能抛出 NullPointerException。
+Build parses annotations and compiles MethodHandles, then freezes registries. No classpath scanning; callers provide instances. Annotated methods must be public instance void methods without varargs. Invalid configuration generally throws IllegalArgumentException; null may throw NullPointerException.
 
-构建失败不自动关闭调用方提供的 Executor；成功后 Runtime 负责关闭。不要把生命周期独立的 Runtime 绑定到同一个可关闭 Executor，除非明确实现了外部所有权适配。
+Failed build does not close supplied Executors; successful Runtime owns their closure. Independently managed Runtimes must not share a closable Executor without explicit external-ownership adaptation.
 
-### 2.1 构建阶段应完成什么
+<a id="21-构建阶段应完成什么"></a>
 
-构建不是把对象列表保存下来等第一次消息再解析。实现需要在返回可用实例前，编译 Domain/Executor 绑定、协议与响应关系、Key 提取器、Handler/Event/Cron 方法和 Cron 表达式。重复或无法解析的定义在启动时拒绝，不能让同一部署因为消息到达顺序不同而选择不同 Handler。
+### 2.1 Required build work
+
+Do not defer parsing until the first message. Before returning, compile Domain/Executor bindings, protocols/response relations, Key extractors, Handler/Event/Cron methods, and expressions. Reject duplicate/unresolvable definitions at startup, preventing arrival order from choosing a Handler.
 
 ```text
-应用显式创建业务对象和 Executor
-→ Builder 复制每次传入的列表
-→ RuntimeCompiler 校验注册关系并编译方法
-→ 建立固定注册表与执行入口
-→ 装配 Timer/Cron
-→ 返回可工作的 Runtime
+Application creates business objects and Executors explicitly
+→ Builder copies each supplied list
+→ RuntimeCompiler validates relationships and compiles methods
+→ establish fixed registries and execution entries
+→ assemble Timer/Cron
+→ return usable Runtime
 ```
 
-列表快照只固定注册对象的集合，不深复制业务对象内部状态。Handler 实例仍是应用提供的同一个对象；它可以同时服务不同 Route，因此不能把“实例字段天然串行”当成保证。可变业务状态应按 Route 组织。
+List snapshots freeze membership, not business-object internals. Handler instances remain the supplied objects and may serve several Routes concurrently. Instance fields are not inherently serialized; organize mutable state by Route.
 
-配置列表采用替换语义，例如先 handlers(A)，再 handlers(B)，最终只注册 B。需要同时注册多个模块的 Handler 时，应用先合并列表再设置。此行为与 Data 的追加注册、Network 的追加 pipeline 不同，不能由 Builder 名字推断。
+handlers(A) then handlers(B) registers only B. Merge module lists first to register both. This differs from Data's appended registrations and Network's appended pipelines; builder names do not imply identical semantics.
 
-### 2.2 注册失败的定位
+<a id="22-注册失败的定位"></a>
 
-| 检查类别 | 典型错误 | 修正位置 |
+### 2.2 Locating registration failures
+
+| Check | Typical error | Fix location |
 | --- | --- | --- |
-| Domain/Executor | 重复 ID、未知 Domain、缺少绑定 | 应用启动装配 |
-| Protocol | 相同类型或相同 type+command 重复 | ProtocolProvider |
-| 请求响应 | 绑定未注册类型或类型方向错误 | bindResponse 注册 |
-| Handler | 消息未注册、同消息多方法、Domain 非法 | 注解和 handlers 列表 |
-| Context | 方法声明不能接收 HandlerContext 体系 | Handler 方法签名 |
-| Event | 方法并非单个 Event 参数 | 监听器定义 |
-| Cron | 表达式无效、目标 Route 无效、重复声明类+方法名 | Cron 注解及注册列表 |
+| Domain/Executor | Duplicate ID, unknown Domain, missing binding | Startup assembly |
+| Protocol | Duplicate message type or type+command | ProtocolProvider |
+| Request/response | Unregistered type or wrong direction | bindResponse registration |
+| Handler | Unregistered message, multiple methods, invalid Domain | Annotation/handlers list |
+| Context | Signature cannot accept HandlerContext hierarchy | Handler signature |
+| Event | Not a single Event parameter | Listener definition |
+| Cron | Invalid expression/Route, duplicate declaring class+method | Annotation/registration |
 
-构建失败前应用创建的 Executor 仍由应用清理。成功构建后，Runtime 会在 close 时关闭已绑定 Executor；不要让两个生命周期互不相关的 Runtime 不加适配地共享同一个 Executor。
+Applications clean Executors created before failed build. Successful Runtime closes bound Executors; unrelated lifetimes require ownership adaptation before sharing.
 
+<a id="3-最小接入示例"></a>
 
-## 3. 最小接入示例
+## 3. Minimal integration example
 
 ```java
 import cn.managame.runtime.GameRuntime;
@@ -155,9 +166,11 @@ public class RuntimeExample {
 }
 ```
 
-示例中的 Key 提取是接入层显式调用。close 不等待执行完成；官方平台线程执行器会继续处理已接受的任务。实际服务应自行安排停止入口与在途业务完成的顺序。
+Key extraction above is explicitly invoked by integration. close does not wait for completion; official platform executors continue accepted tasks. Services arrange admission shutdown and in-flight completion themselves.
 
-## 4. Context 与作用域
+<a id="4-context-与作用域"></a>
+
+## 4. Context and scope
 
 ```java
 interface Context {
@@ -175,9 +188,9 @@ interface TimerContext extends Context {}
 interface RouteCallContext extends InvocationContext {}
 ```
 
-Metadata 位于 `cn.managame.core`。默认实现的构造器：
+Metadata is in `cn.managame.core`. Default constructors:
 
-| 类型 | 构造参数 |
+| Type | Parameters |
 | --- | --- |
 | DefaultContext | (int domain, long key) |
 | DefaultInvocationContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata) |
@@ -187,7 +200,7 @@ Metadata 位于 `cn.managame.core`。默认实现的构造器：
 | DefaultTimerContext | (int domain, long key) |
 | DefaultRouteCallContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata) |
 
-短 HandlerContext 构造器使用身份 0 和空 Metadata。businessIdType 范围 0–255，Metadata 和 message 不得为 null。默认类可继承，允许接入层增加连接、请求关联等信息；这些额外信息不会自动复制进 EventContext 或 RouteCallContext。
+Short HandlerContext construction uses identity 0 and empty Metadata. businessIdType is 0–255; Metadata/message cannot be null. Defaults are extensible for connections/correlation fields, which do not automatically copy into EventContext/RouteCallContext.
 
 ```java
 Context Contexts.current();
@@ -195,29 +208,32 @@ Context Contexts.currentOrNull();
 <T extends Context> T Contexts.current(Class<T> type);
 ```
 
-实现使用 Java 25 ScopedValue。current 在未绑定时抛 NoSuchElementException，currentOrNull 返回 null，类型转换错误抛 ClassCastException。只有 Runtime 执行任务时绑定，无公共手动 bind API；嵌套任务结束后恢复外层值。
+Uses Java 25 ScopedValue. Unbound current throws NoSuchElementException; currentOrNull returns null; wrong casts throw ClassCastException. Only Runtime execution binds context; no public manual bind. Nested completion restores the outer value.
 
-### 4.1 绑定与恢复的实现约束
+<a id="41-绑定与恢复的实现约束"></a>
 
-内部 RuntimeContexts 同时绑定 Runtime 身份与 Context。执行包装的逻辑可概括为以下伪代码，省略错误处理，不是新的公开 API：
+### 4.1 Binding and restoration constraints
+
+Internal RuntimeContexts binds Runtime identity and Context together. Pseudocode, omitting errors and not defining another API:
 
 ```text
-执行任务:
-    在当前 Runtime + 本次 Context 的 ScopedValue 作用域中运行动作
-    动作结束时恢复此前作用域（包括异常退出）
+Execute:
+    run action inside ScopedValue scope for this Runtime + Context
+    restore previous scope afterward, including exceptional exit
 
-提交任务:
-    校验目标 Route
-    若当前 Runtime 身份、Domain、Key 全部相等：立即运行执行包装
-    否则：交给已绑定 RouteExecutor.tryExecute
+Submit:
+    validate target Route
+    if current Runtime identity, Domain, and Key all match: execute wrapper immediately
+    otherwise: use bound RouteExecutor.tryExecute
 ```
 
-这解释了为什么只比较 Context.routeKey() 不够，也解释了为什么回调需要保留原 Context 对象。外层是自定义 HandlerContext 时，跨 Route action 使用 DefaultRouteCallContext；回源后才再次得到原自定义对象。
+Comparing only routeKey is insufficient. Callbacks retain the original context object. With a custom outer HandlerContext, target computation uses DefaultRouteCallContext; only returning to source restores the custom object.
 
-业务代码可用 Contexts.current(MyHandlerContext.class) 读取自己的扩展字段，但必须知道当前动作确实是该上下文类型。事件、Timer 和目标 RouteCall 中不能假定它仍然是网络请求 Context。框架不提供公开 bind 来让任意线程冒充 Route 执行。
+Contexts.current(MyHandlerContext.class) is valid only when that is the actual context. Event, Timer, and target RouteCall code must not assume network-request context. No public bind lets arbitrary threads impersonate Route execution.
 
+<a id="5-protocol-与-routekey-注册"></a>
 
-## 5. Protocol 与 RouteKey 注册
+## 5. Protocol and RouteKey registration
 
 ```java
 interface ProtocolProvider { void register(ProtocolRegistrar registrar); }
@@ -234,9 +250,9 @@ interface ProtocolDescriptor<T> {
 }
 ```
 
-ProtocolType 为 REQUEST、RESPONSE、NOTIFY。工厂为 `Protocols.request(command, type)`、`response`、`notify`。command 使用 int 的完整 32 位模式，不限制为正数或 24 位。
+ProtocolType: REQUEST, RESPONSE, NOTIFY. Factories: `Protocols.request(command, type)`, `response`, `notify`. command uses the full int bit pattern without positive-only or 24-bit restrictions.
 
-注册表按“ProtocolType + command”和精确消息 Class 建索引；两种索引都不得重复。REQUEST 与 RESPONSE 可以使用相同 command。bindResponse 的两端必须分别注册为 REQUEST、RESPONSE；每个请求至多绑定一个响应，但不强制所有请求都绑定响应。
+Index by ProtocolType+command and exact message Class; both must be unique. REQUEST/RESPONSE may share command. bindResponse requires registered REQUEST and RESPONSE endpoints; at most one response per request, but not every request requires binding.
 
 ```java
 ProtocolDescriptor<?> ProtocolRegistry.get(ProtocolType type, int command);
@@ -249,13 +265,13 @@ RouteKeyBinding<T> RouteKeyBinding.of(
 long RouteKeyRegistry.getRouteKey(Object message);
 ```
 
-非 null 类型的查询未命中时返回 null。Key 注册独立于协议注册；按精确 Class 查询，未找到提取器返回 0。提取器异常传回调用方；0 无法作为有效的分发 Key。dispatch 不会因为注册了提取器就自动修正 Context。
+Nonnull-type lookup misses return null. Key registration is independent; exact-Class lookup without extractor returns 0. Extractor exceptions propagate. Zero cannot dispatch. Registration never makes dispatch automatically correct Context.
 
 ## 6. Handler
 
-`@Handler(domain = ...)` 是 handlers 列表内对象必须具备的类型注解，可以从父类继承。`@HandlerMethod(domain = ...)` 的非零 domain 覆盖类上的 domain，否则使用类配置。
+Objects in handlers require the inheritable type annotation `@Handler(domain = ...)`. Nonzero method-level `@HandlerMethod(domain = ...)` overrides the class Domain; zero uses it.
 
-方法必须包含且仅包含一个已注册 REQUEST/NOTIFY 消息参数，可以额外带一个 Context 参数，参数顺序不限，例如：
+Methods require exactly one registered REQUEST/NOTIFY parameter and optionally one Context parameter, in either order:
 
 ```java
 @HandlerMethod
@@ -265,27 +281,28 @@ public void onMessage(MyMessage message) { /* ... */ }
 public void onMessage(MyHandlerContext context, MyMessage message) { /* ... */ }
 ```
 
-Context 参数可为 Context、InvocationContext、HandlerContext，或自定义 HandlerContext 实现。EventContext、TimerContext 等不属于 HandlerContext 的类型不能替代 HandlerContext。分发会检查实际 Context 对象是否满足方法参数类型。
+Context parameter may be Context, InvocationContext, HandlerContext, or custom HandlerContext implementation. EventContext/TimerContext and unrelated types cannot substitute. Dispatch validates the actual context against the method parameter.
 
-消息按精确 Class 匹配；每种消息最多一个 Handler。dispatch 的前置校验与接纳失败抛 RuntimeDispatchException；已开始执行的 Handler 异常交给 RuntimeErrorHandler，即使当前是同 Route 内联执行也不会改成业务响应。
+Exact Class matching; at most one Handler per message. Preconditions/admission failures throw RuntimeDispatchException. Once execution starts, exceptions go to RuntimeErrorHandler, including inline execution, without becoming business responses.
 
-### 6.1 方法签名判定示例
+<a id="61-方法签名判定示例"></a>
 
-以下 M 表示已注册 REQUEST/NOTIFY 类型，CustomContext 表示 HandlerContext 子类型：
+### 6.1 Signature examples
 
-| 形式 | 是否可作为 Handler 方法 | 原因 |
+M is a registered REQUEST/NOTIFY; CustomContext is a HandlerContext subtype:
+
+| Form | Valid Handler | Reason |
 | --- | --- | --- |
-| public void handle(M m) | 可以 | 单个消息参数 |
-| public void handle(HandlerContext c, M m) | 可以 | 一个消息、一个合法上下文 |
-| public void handle(M m, CustomContext c) | 可以 | 参数顺序不限；分发检查实际 Context |
-| public M handle(M m) | 不可以 | 返回值必须 void，不自动发送返回值 |
-| public static void handle(M m) | 不可以 | 必须是实例方法 |
-| public void handle(M a, M b) | 不可以 | 消息参数不唯一 |
-| public void handle(TimerContext c, M m) | 不可以 | TimerContext 不是此 Handler 可接收的上下文 |
-| public void handle(M... messages) | 不可以 | 不支持 varargs |
+| public void handle(M m) | Yes | One message |
+| public void handle(HandlerContext c, M m) | Yes | One message, valid context |
+| public void handle(M m, CustomContext c) | Yes | Either order; actual context checked |
+| public M handle(M m) | No | Must return void; no automatic response sending |
+| public static void handle(M m) | No | Instance method required |
+| public void handle(M a, M b) | No | Message not unique |
+| public void handle(TimerContext c, M m) | No | Wrong context hierarchy |
+| public void handle(M... messages) | No | No varargs |
 
-分发检查失败与业务执行失败必须分开：RuntimeDispatchException 表示前置条件或接纳失败；Handler 内抛出的异常进入 RuntimeErrorHandler。即使同 Route 内联，调用方也不能通过捕获 Handler 的原始业务异常来获得业务结果。
-
+RuntimeDispatchException means precondition/admission failure; Handler exceptions go to RuntimeErrorHandler. Even inline callers cannot obtain business results by catching original Handler exceptions.
 
 ## 7. RouteExecutor
 
@@ -296,56 +313,61 @@ interface RouteExecutor extends AutoCloseable {
 }
 ```
 
-状态为 ACCEPTED、OVERLOADED、CLOSED。
+Statuses: ACCEPTED, OVERLOADED, CLOSED.
 
-| 创建方式 | 串行策略 | 容量 |
+| Construction | Serialization | Capacity |
 | --- | --- | --- |
-| RouteExecutors.platformThreads(workers) | 固定数量平台线程分片 | 每个分片默认 65,536 个等待任务 |
-| new StripedRouteExecutor(workers, queueCapacity) | 完整 Route 哈希到单线程分片 | 每分片等待队列；不含正在执行任务 |
-| RouteExecutors.virtualThreads() | 每个活跃 Route 一个串行 Mailbox | 默认总计 65,536 个未完成任务 |
-| new VirtualThreadRouteExecutor(capacity) | 活跃 Mailbox 由虚拟线程处理 | 所有 Route 合计，包含正在执行任务 |
+| RouteExecutors.platformThreads(workers) | Fixed platform-thread shards | Default 65,536 waiting tasks per shard |
+| new StripedRouteExecutor(workers, queueCapacity) | Complete Route hashes to single-thread shard | Per-shard waiting queue, excluding running task |
+| RouteExecutors.virtualThreads() | Serial Mailbox per active Route | Default 65,536 unfinished tasks total |
+| new VirtualThreadRouteExecutor(capacity) | Virtual threads process active Mailboxes | All Routes combined, including running tasks |
 
-参数必须为正数。平台线程方案中不同 Route 可能落到同一分片并互相等待；虚拟线程方案在 Mailbox 空闲后移除对应状态。
+Parameters must be positive. Different Routes on one platform shard wait for each other. Virtual-thread Mailbox state is removed when idle.
 
-两种执行器 close 都不等待完成，已接受任务继续处理。自定义执行器必须遵守规范的接纳和串行契约；不可用普通多线程线程池直接替代 Route 串行语义。
+Both close without waiting and continue accepted tasks. Custom executors must honor admission/serialization; an ordinary multithreaded pool alone is insufficient.
 
-### 7.1 两种容量的计算示例
+<a id="71-两种容量的计算示例"></a>
 
-假设 StripedRouteExecutor 有 2 个分片、每分片 queueCapacity=100。当分片 A 已有一个执行中任务和 100 个等待任务时，下一项映射到 A 的任务会过载；即使分片 B 空闲，也不借用 B 来打破 A 的排队边界。容量统计不包括正在执行的那个任务。
+### 7.1 Capacity examples
 
-VirtualThreadRouteExecutor(capacity=100) 则计算所有 Route 的未完成任务。若已有 99 个等待任务加 1 个执行中任务，容量已满；不能按“等待队列只有 99”再接受一个。虚拟线程数量不代表可无限接纳。
+With 2 StripedRouteExecutor shards and queueCapacity=100, shard A containing 1 running +100 waiting tasks rejects the next A task even if B is idle. Do not borrow B and break A's queue boundary. Running work is excluded from this capacity.
 
-同 Route 内联不经过上述容量检查，也不计入新的排队份额。递归触发同 Route Event/call 仍可能消耗调用栈，容量限制不会替业务防止无限递归。
+VirtualThreadRouteExecutor(capacity=100) counts every unfinished task across Routes: 99 waiting +1 running is full. Virtual threads do not mean unlimited admission.
 
-### 7.2 自定义 Executor 的验收边界
+Same-Route inlining bypasses capacity checks and adds no queued share. Recursive same-Route Event/call still consumes stack; capacity does not prevent infinite recursion.
 
-扩展 SPI 时至少应验证：完整 Route 的互斥执行、同 Route 入队顺序、拒绝任务从不执行、已接受任务仅执行一次，以及关闭与提交竞争。错误返回后又执行 Runnable 会造成调用方误判；先返回 ACCEPTED 再静默丢弃也不符合契约。
+<a id="72-自定义-executor-的验收边界"></a>
 
-任务包装绑定 Context 的工作由 Runtime 完成，Executor 只承担接纳与调度。Executor 不应自行猜测玩家 ID、协议类型或业务异常含义。调整队列容量或关闭行为属于 Java 实现契约变化，若改变可观察接纳语义还需同步标准 Spec。
+### 7.2 Custom Executor acceptance criteria
 
+Verify complete-Route mutual exclusion, enqueue order, rejected tasks never executing, admitted tasks executing once, and close/submit races. Executing after rejection misleads callers; accepting then silently dropping also violates the contract.
 
-## 8. 跨 Route 调用与回调
+Runtime binds Context in task wrappers; Executor owns admission/scheduling only. Do not infer player IDs, protocols, or business exception meaning. Capacity/closure changes affect Java contracts; observable admission changes also update the standard.
 
-只能从当前 Runtime 的业务执行上下文内调用：
+<a id="8-跨-route-调用与回调"></a>
+
+## 8. Cross-Route calls and callbacks
+
+Call only inside this Runtime's execution context:
 
 ```java
 runtime.call(2, guildId,
     () -> loadGuildSnapshot(guildId),
     new RouteCallback<GuildSnapshot>() {
         public void onSuccess(GuildSnapshot snapshot) {
-            // 已回到源 Route，Contexts.current() 是原始源上下文。
+            // Back on source Route; Contexts.current() is the original source context.
         }
         public void onFail(int errorCode) {
-            // 框架错误；业务失败建议包含在结果对象中。
+            // Framework error; represent business failures in the result object.
         }
     });
 ```
 
-目标 action 运行在 DefaultRouteCallContext 下。它继承源 InvocationContext 的业务身份和 Metadata，但不继承自定义 Context 的额外字段。
+Target action uses DefaultRouteCallContext, inheriting InvocationContext identity/Metadata, not custom fields.
 
-无当前上下文或当前上下文属于其他 Runtime 时抛 IllegalStateException。目标校验或接纳失败走 onFail；action 抛异常时报告 ROUTE_CALL_EXECUTION_ERROR（3008）并尝试 onFail。回调异常只报告 RUNTIME_EXECUTION_ERROR（3009）。
+Absent/foreign current context throws IllegalStateException. Target validation/admission failure calls onFail. Action exceptions report ROUTE_CALL_EXECUTION_ERROR (3008) and attempt onFail. Callback exceptions only report RUNTIME_EXECUTION_ERROR (3009).
 
-源 Route 的回调提交失败会报告 ROUTE_CALLBACK_DISPATCH_FAILED（3010），此时回调不会在其他线程或 Route 上兜底执行。同 Route 调用可能在 call 返回前完成；调用方不得假定始终异步。此 API 没有 Future、超时参数或取消句柄。
+Source callback rejection reports ROUTE_CALLBACK_DISPATCH_FAILED (3010), without fallback on another thread/Route. Same-Route calls may finish before call returns; do not assume asynchronous completion. No Future, timeout parameter, or cancellation handle.
 
 ## 9. EventBus
 
@@ -357,16 +379,18 @@ interface Event {
 interface EventBus { void publish(Event event); }
 
 @EventMethod(order = 10)
-public void onChanged(MyEvent event) { /* Contexts.current() 获取上下文 */ }
+public void onChanged(MyEvent event) { /* Use Contexts.current() for context. */ }
 ```
 
-使用 builder.eventHandlers 显式注册对象。`@EventHandler` 是可用的标记注解，当前构建器不强制要求它。监听方法只接收一个 Event 子类型参数，不接收额外 Context 参数。
+Register objects explicitly with builder.eventHandlers. Optional marker @EventHandler is not currently required. Listener methods take one Event subtype, no extra Context parameter.
 
-按事件精确 Class 匹配，order 越小越先执行，相同值顺序不保证。监听器失败报告 3009 后继续下一个。无监听器也会校验目标 Route，并受接纳限制。
+Match exact Class, ascending order, unspecified ties. Report listener failure as 3009 and continue. Even without listeners, validate Route and admission.
 
-事件使用 DefaultEventContext。同一 Runtime 的 InvocationContext 发布时继承身份和 Metadata；其他来源使用身份 0 与空 Metadata。同 Route 发布可内联，publish 返回不等于所有跨 Route 监听器已完成。
+Use DefaultEventContext. Same-Runtime InvocationContext publication inherits identity/Metadata; other sources use identity 0/empty. Same-Route publication may inline; publish return does not mean every cross-Route listener finished.
 
-## 10. GameTime、Timer 与 Cron
+<a id="10-gametimetimer-与-cron"></a>
+
+## 10. GameTime, Timer, and Cron
 
 ### 10.1 GameTime
 
@@ -379,11 +403,13 @@ GameTime.setClock(Clock.fixed(Instant.parse("2026-09-25T00:00:00Z"), ZoneOffset.
 GameTime.resetClock();
 ```
 
-默认 Clock.systemUTC()，Clock 引用使用 volatile，作用域是整个进程，不属于某个 Runtime。now 使用显式 ZoneId；setClock 和 now 均拒绝 null。测试结束后应 resetClock，避免影响其他 Runtime。
+Default Clock.systemUTC(); volatile Clock reference is process-wide, not per Runtime. now requires explicit ZoneId; setClock/now reject null. Tests resetClock afterward to avoid affecting other Runtimes.
 
-setClock/resetClock 只替换业务墙钟，不通知调度器、不自动重排现存 Timer/Cron，也不会自动补跑。网络 timeout 与耗时统计仍使用单调时间。动态业务 Timer 由业务持有 TimerRef，cancel 后按新的 GameTime 重新计算 Duration 并 schedule。
+setClock/resetClock only replace business wall time, without scheduler notification, automatic rescheduling, or replay. Network timeout/duration measurement remains monotonic. Business code holds TimerRef, cancels, recomputes Duration from new GameTime, and schedules dynamic timers again.
 
-### 10.2 一次性 Timer
+<a id="102-一次性-timer"></a>
+
+### 10.2 One-shot Timer
 
 ```java
 TimerRef RuntimeTimer.schedule(
@@ -394,29 +420,33 @@ boolean TimerRef.cancel();
 public void refresh() { /* ... */ }
 ```
 
-schedule 在调用时校验 Runtime 和 Route；delay 允许零，不允许负值。每个 Runtime 有一个守护调度线程，到期后将业务任务提交到目标 Route。任务运行于 DefaultTimerContext。
+schedule validates Runtime/Route immediately. Zero delay is allowed, negative is not. One daemon scheduler thread per Runtime submits due business work to Route, where it runs in DefaultTimerContext.
 
-cancel 仅在取得触发资格之前成功；重复取消或已经触发时返回 false，不能撤销已排队的业务任务。过载或执行异常通过错误处理器报告；Runtime 关闭期间停止调度，不提供每个计时器的取消通知。
+cancel succeeds only before trigger eligibility; repeated/already-triggered cancellation returns false and cannot retract queued work. Report overload/execution failures through error handling. Closure stops scheduling without individual timer cancellation notifications.
 
-### 10.3 Cron 表达式
+<a id="103-cron-表达式"></a>
 
-Cron 方法必须 public、实例 void、无参数。通过 cronHandlers 注册对象。cronZone 默认 UTC，可显式设为 `ZoneId.of("Asia/Shanghai")`。
+### 10.3 Cron expressions
 
-当前表达式支持：
+Cron methods are public instance void with no parameters, registered through cronHandlers. cronZone defaults UTC; configure explicitly, e.g. `ZoneId.of("Asia/Shanghai")`.
 
-| 项目 | 范围/约定 |
+Supported syntax:
+
+| Item | Range/convention |
 | --- | --- |
-| 字段 | 秒、分、时、日、月、星期，共六项 |
-| 数字范围 | 秒/分 0–59，时 0–23，日 1–31，月 1–12，星期 1–7 |
-| 星期 | 1 为星期日 |
-| 语法 | 数字、*、逗号列表、范围、步长；? 仅限日/星期 |
-| 日和星期 | 都有限制时取 AND |
-| 不支持 | 名称、L、W、#、年份字段、完整 Quartz 扩展 |
-| 搜索窗口 | 查找未来八年内的下一次触发；无结果时拒绝 |
+| Fields | Second, minute, hour, day, month, weekday: six |
+| Numeric ranges | Seconds/minutes 0–59, hours 0–23, days 1–31, months 1–12, weekdays 1–7 |
+| Weekday | 1 = Sunday |
+| Syntax | Numbers, *, comma lists, ranges, steps; ? only in day/weekday |
+| Day and weekday | AND when both restricted |
+| Unsupported | Names, L, W, #, year field, full Quartz extensions |
+| Search horizon | Next trigger within eight years; reject if none |
 
-例如 `0 */5 * * * ?` 表示每五分钟的第 0 秒触发。Cron 通过同一套一次性 RuntimeTimer 调度，在本轮业务方法结束后读取当前 GameTime，重新计算未来的一次触发；任务异常不重试，本次 Route 接纳失败后仍安排下一周期。不补发所有错过的时刻，不适合充当实时游戏 Tick。
+`0 */5 * * * ?` fires at second 0 every five minutes. Cron uses the same one-shot RuntimeTimer. After business completion, read current GameTime and calculate one future trigger. No business retries; Route rejection still schedules another cycle. No replay of every missed instant; unsuitable for real-time game Tick.
 
-### 10.4 Cron 取消与重排
+<a id="104-cron-取消与重排"></a>
+
+### 10.4 Cron cancellation and rescheduling
 
 ```java
 interface CronScheduler {
@@ -431,33 +461,36 @@ runtime.cron().cancel(SystemCron.class, "dailyReset");
 runtime.cron().reschedule(SystemCron.class, "dailyReset");
 ```
 
-SystemCron/testClock 是应用定义的类型/变量。Key 使用反射方法的 **DeclaringClass + methodName**；继承父类未覆盖的方法时，使用父类 Class。重复注册相同 Key 在 build 时失败，即使来自不同实例。
+SystemCron/testClock are application-defined. Key is reflected **DeclaringClass + methodName**; inherited non-overridden methods use the parent Class. Duplicate keys fail build even across different instances.
 
-- cancel：活动项返回 true，取消后不再继续下一周期；未知或已取消项返回 false。已经被 Cron 认领执行的业务方法允许完成。
-- reschedule：取消旧 TimerRef，按当前 GameTime 重新计算；可重新启用已取消项。未知 Key 返回 false。
-- rescheduleAll：逐项重排所有注册项，包含此前取消的项，不是跨项原子操作。
-- 关闭后 cancel 返回 false；reschedule/rescheduleAll 抛携带 RUNTIME_CLOSED 的 RuntimeDispatchException。
-- 新旧调度通过代次隔离，旧回调不能覆盖新调度。已经提交到 Route 但尚未被 Cron 认领的旧代任务会跳过业务方法。
-- 取消/重排不打断已开始的方法；重排时若旧方法仍在执行，新任务继续遵守同 Route 串行约定。
+- cancel returns true for active items and stops future cycles; unknown/already canceled returns false. Already claimed methods may finish.
+- reschedule cancels old TimerRef and recalculates from current GameTime, reactivating canceled items; unknown key returns false.
+- rescheduleAll includes previously canceled items, one at a time, without cross-item atomicity.
+- After close, cancel returns false; reschedule/rescheduleAll throw RuntimeDispatchException with RUNTIME_CLOSED.
+- Generations isolate old/new schedules. Old callbacks cannot overwrite new schedules; queued old actions not yet claimed by Cron skip business execution.
+- Neither cancellation nor rescheduling interrupts started methods. New tasks still obey same-Route serialization while old work runs.
 
-Cron 的取消包含停止后续周期，区别于只取消一次性触发的 TimerRef。显式重排可能再次遇到同一个日历时刻；不提供按日历时刻去重或业务幂等保证。
+Cron cancellation also stops future cycles, unlike one-shot TimerRef. Explicit rescheduling may revisit a calendar instant; no calendar deduplication or business idempotency.
 
-### 10.5 Timer 与 Cron 的内部协作
+<a id="105-timer-与-cron-的内部协作"></a>
 
-RuntimeTimers 使用单个 ScheduledThreadPoolExecutor 负责到期信号，业务任务仍交给 RouteExecutor。每个一次性任务有一个触发/取消竞争标记；到期方成功认领后才提交 Route。remove-on-cancel 让取消的调度项可从调度队列移除，关闭后不继续执行尚未到期的延迟项。
+### 10.5 Internal Timer/Cron cooperation
 
-Cron 在这一层之上维护注册项及调度代次。Timer 到期并不立即授权 Cron 方法执行：任务进入 Route 后还要确认自己仍属于当前有效代次。重排可以使已入队但尚未被 Cron 认领的旧代动作失效；已执行的旧代方法完成后也不能重新挂上旧周期。
+RuntimeTimers uses one ScheduledThreadPoolExecutor for expiry signals; RouteExecutor runs business work. A trigger/cancel flag arbitrates each one-shot task before Route submission. remove-on-cancel removes canceled scheduler entries; closure does not run future delayed tasks.
 
-这两个检查点用途不同：
+Cron adds registration state and generations. Timer expiry alone does not authorize the Cron method: after entering Route, check the current valid generation. Rescheduling invalidates queued unclaimed old actions; completed old methods cannot reinstall old cycles.
+
+Different checkpoints:
 
 ```text
-Timer 触发资格 → 尝试提交 Route → Cron 代次/执行资格检查 → 执行业务方法
+Timer trigger eligibility → attempt Route submission → Cron generation/execution check → business method
 ```
 
-普通一次性 Timer 没有 Cron 代次机制，不能把 Cron 的旧代跳过语义套到 TimerRef.cancel。Cron 的下一周期是在当前方法结束后重新计算；业务方法耗时会影响下一次可安排时刻，不积压一串历史触发。
+Ordinary Timer has no Cron generation check; do not apply Cron skipping semantics to TimerRef.cancel. Cron recalculates after method completion, so duration affects the next possible instant without accumulating historical triggers.
 
+<a id="11-错误与关闭"></a>
 
-## 11. 错误与关闭
+## 11. Errors and closure
 
 ```java
 interface RuntimeErrorHandler { void onError(RuntimeError error); }
@@ -468,61 +501,66 @@ record RuntimeError(int errorCode, Context context,
 int RuntimeDispatchException.errorCode();
 ```
 
-Runtime 错误编号见 [OGBS Core](OGBS-Core-1.0.md)。当前实现报告的 RuntimeError 包含发生错误的 Context 和 Route。错误处理器应快速返回，避免再次抛异常；其异常会由实现记录。
+Codes: [Core](OGBS-Core-1.0.md). RuntimeError carries the failing Context/Route. Error handlers should return quickly and avoid throwing; implementation logs their exceptions.
 
-close 幂等：停止调度器，按对象身份对 Executor 去重并分别关闭，不等待队列排空。关闭后新 dispatch、publish、schedule 被拒绝；已执行源任务中的 call 可以通过 onFail 得到 RUNTIME_CLOSED，但回源提交仍可能受执行器关闭影响。协议与 Key 注册表仍可只读查询。
+Idempotent close stops scheduling and closes each Executor once by object identity without awaiting queue drain. New dispatch/publish/schedule rejects. call from an already executing source may receive RUNTIME_CLOSED via onFail, though return submission may itself face executor closure. Protocol/Key registries remain readable.
 
-### 11.1 API 结果与异步错误的区别
+<a id="111-api-结果与异步错误的区别"></a>
 
-| 入口/阶段 | 调用者直接观察 | 错误处理器观察 |
+### 11.1 API results versus asynchronous errors
+
+| Entry/stage | Direct caller observation | Error-handler observation |
 | --- | --- | --- |
-| dispatch / publish 前置校验或拒绝 | RuntimeDispatchException | 不把拒绝伪装成业务执行成功 |
-| Handler / Event 方法执行异常 | 不由 API 自动构造业务响应 | RUNTIME_EXECUTION_ERROR |
-| call 无合法源上下文 | IllegalStateException | 不发起目标调用 |
-| call 目标拒绝 | 尝试 onFail(errorCode) | 回源失败时另报 3010 |
-| call action 抛异常 | 尝试 onFail(3008) | ROUTE_CALL_EXECUTION_ERROR |
-| call 回调抛异常 | 不产生第二次回调 | RUNTIME_EXECUTION_ERROR |
-| Timer 到期后 Route 拒绝 | 无同步调用栈可返回 | 通过调度错误路径报告；关闭停止调度 |
-| close 后查询注册表 | 保持只读可用 | 不重新开启执行 |
+| dispatch / publish validation or rejection | RuntimeDispatchException | Rejection is not represented as successful execution |
+| Handler / Event exception | No automatic business response | RUNTIME_EXECUTION_ERROR |
+| call without valid source | IllegalStateException | No target call starts |
+| call target rejects | Attempt onFail(errorCode) | Additional 3010 if return fails |
+| call action throws | Attempt onFail(3008) | ROUTE_CALL_EXECUTION_ERROR |
+| call callback throws | No second callback | RUNTIME_EXECUTION_ERROR |
+| Timer Route rejection after expiry | No synchronous caller stack | Scheduling error path; closure stops scheduling |
+| Registry reads after close | Read-only access remains | Execution not restarted |
 
-错误处理器不保证固定在一个专用错误线程运行，它随触发路径被调用；应快速返回，避免访问不属于当前 Route 的可变状态。需要外部告警时自行做好异步交付边界。
+No dedicated error thread is guaranteed; handlers run on the triggering path. Return quickly and avoid foreign-Route mutable state. External alerts need explicit asynchronous ownership/delivery boundaries.
 
-### 11.2 后续维护检查点
+<a id="112-后续维护检查点"></a>
 
-新增一种执行入口时，应明确目标 Route、Context 类型、身份继承、接纳失败如何表达、执行异常如何报告、关闭时如何处理。新增 Context 字段时，应明确是原实例保留还是跨 Context 复制，不能默认扩大身份传播。
+### 11.2 Maintenance checkpoints
 
-这里的 MethodHandle、ScopedValue、平台/虚拟线程属于 Java 实现机制。只要保持标准行为，其他语言可以使用不同机制；Java 内部算法优化也不需要重写 Route 的业务定义。
+New execution entries define target Route, Context type, identity inheritance, admission failure, execution errors, and closure behavior. New Context fields specify whether preserved on the same instance or copied across contexts; never silently broaden identity propagation.
 
+MethodHandle, ScopedValue, and platform/virtual threads are Java mechanisms. Other languages may use different mechanisms while preserving standard behavior; internal optimization need not redefine business Route identity.
 
-## 12. 源码与测试
+<a id="12-源码与测试"></a>
+
+## 12. Source and tests
 
 - [GameTime](../../game-runtime/src/main/java/cn/managame/runtime/time/GameTime.java)
 - [CronScheduler](../../game-runtime/src/main/java/cn/managame/runtime/timer/CronScheduler.java)
 - [GameTimeTest](../../game-runtime/src/test/java/cn/managame/runtime/time/GameTimeTest.java)
 - [CronSchedulerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/CronSchedulerTest.java)
 
-- [GameRuntime / 主 API](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntime.java)
-- [GameRuntimeBuilder / 注册校验](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java)
-- [DefaultGameRuntime / 执行与关闭](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)
+- [GameRuntime / main API](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntime.java)
+- [GameRuntimeBuilder / registration validation](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java)
+- [DefaultGameRuntime / execution and closure](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)
 - [Contexts / ScopedValue](../../game-runtime/src/main/java/cn/managame/runtime/context/Contexts.java)
 - [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java)
 - [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java)
 
-在仓库根目录执行 `mvn -pl game-runtime -am test` 验证 Runtime 与依赖模块；完整验证执行 `mvn verify`。
+Run root `mvn -pl game-runtime -am test` for Runtime/dependencies; `mvn verify` for full verification.
 
+<a id="121-易错契约的测试定位"></a>
 
-### 12.1 易错契约的测试定位
+### 12.1 Tests for error-prone contracts
 
-下表提供现有测试方法入口，便于修改相关规则时定位回归检查；不表示已穷举所有线程交错。
+Existing regression entry points, not exhaustive enumeration of thread interleavings:
 
-| 契约 | 测试类与方法 |
+| Contract | Test class and method |
 | --- | --- |
-| 同 Route 内联、事件失败隔离、外层 Context 恢复 | RuntimeTest.sameRouteInlineEventsAreOrderedAndIsolated |
-| 多 Runtime 即便 Route 数值相同也不能内联 | RuntimeTest.separateRuntimesNeverInlineOnEqualRoute |
-| 跨 Route 计算及原始源 Context 恢复 | RuntimeTest.crossRouteSuccessFailureAndSourceRestoration |
-| 目标拒绝与回源拒绝分别处理 | RuntimeTest.rejectedTargetFailsOnSourceAndRejectedReturnOnlyReports |
-| Timer 新 Context 与取消边界 | RuntimeTest.timerHasFreshContextAndCancellationIsBeforeSubmissionOnly |
-| 改钟不自动重排 | CronSchedulerTest.changingGameClockNeedsExplicitRescheduleAndDoesNotChangeDynamicTimer |
-| 排队旧代失效、运行旧代不能覆盖新调度 | CronSchedulerTest.cancellationAndRescheduleInvalidateAlreadyQueuedGenerations / rescheduleDuringExecutionCannotBeUndoneByOldCompletion |
-| 共享 Executor 只关闭一次、错误回调隔离 | RuntimeTest.sharedExecutorClosesOnceAndErrorHandlerCannotEscape |
-
+| Same-Route inline events, failure isolation, outer restoration | RuntimeTest.sameRouteInlineEventsAreOrderedAndIsolated |
+| Equal Route values across Runtimes never inline | RuntimeTest.separateRuntimesNeverInlineOnEqualRoute |
+| Cross-Route compute and exact source context restoration | RuntimeTest.crossRouteSuccessFailureAndSourceRestoration |
+| Target rejection versus return rejection | RuntimeTest.rejectedTargetFailsOnSourceAndRejectedReturnOnlyReports |
+| Fresh Timer Context and cancellation boundary | RuntimeTest.timerHasFreshContextAndCancellationIsBeforeSubmissionOnly |
+| Clock changes do not auto-reschedule | CronSchedulerTest.changingGameClockNeedsExplicitRescheduleAndDoesNotChangeDynamicTimer |
+| Queued old generation invalidated; running old completion cannot overwrite new | CronSchedulerTest.cancellationAndRescheduleInvalidateAlreadyQueuedGenerations / rescheduleDuringExecutionCannotBeUndoneByOldCompletion |
+| Shared Executor closed once, error handler isolated | RuntimeTest.sharedExecutorClosesOnceAndErrorHandlerCannotEscape |

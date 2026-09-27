@@ -1,19 +1,21 @@
 # mana3 — OGBS Java 25
 
-**OGBS = Open Game Backend Specification**（开放游戏后端规范）。
+**[English](README.md)** | [简体中文](README.zh-CN.md)
 
-按照《游戏服务器开发转型策略》中最终收口的职责实现。Java 25，无 preview 特性；Maven 多模块，公共包名为 `cn.managame.*`。
+**OGBS = Open Game Backend Specification.**
 
-| 模块 | 职责 |
+Implements the responsibilities finalized in the “Game Server Development Transition Strategy” discussion. Java 25, no preview features; Maven multi-module project, with public packages under `cn.managame.*`.
+
+| Module | Responsibility |
 | --- | --- |
-| game-core | 共享 Metadata、类型化 MetadataKey、统一框架错误码 |
-| game-network | Connection / ConnectionHandler / NetworkServer / NetworkClient，以及 TCP / TLS / 二进制 WebSocket / WSS 的 Netty 实现 |
-| game-rpc | RpcNode、主动/被动 Peer、固定 Slot、握手、心跳、重连、call / notify / reply，以及 Netty Wire 编解码 |
-| game-runtime | Route 执行、Context、Handler、Event、GameTime、可取消 Timer / Cron、跨 Route call |
-| game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
-| game-examples（规划，当前目录不存在） | RPC → Runtime 网络集成示例、DataMemoryDemo 与集成验证 |
+| game-core | Shared Metadata, typed MetadataKey, common framework error codes |
+| game-network | Connection / ConnectionHandler / NetworkServer / NetworkClient and Netty TCP / TLS / binary WebSocket / WSS implementations |
+| game-rpc | RpcNode, active/passive peers, fixed slots, handshakes, heartbeats, reconnects, call / notify / reply, and Netty wire codecs |
+| game-runtime | Route execution, Context, Handler, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
+| game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
+| game-examples (planned; directory not present) | RPC → Runtime network examples, DataMemoryDemo, integration validation |
 
-依赖方向：
+Dependency direction:
 
 ```text
 game-core ──────→ game-runtime
@@ -24,57 +26,66 @@ game-core ──────→ game-runtime
                game-data ← game-core
 ```
 
-game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。Runtime 不依赖 RPC、网络、Spring 或业务序列化。
+game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. Runtime does not depend on RPC, networking, Spring, or business serialization.
 
-Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包。Network 入口见 [game-network](game-network/README.md)；RPC 入口见 [game-rpc](game-rpc/README.md)。
+Network and RPC each publish one Maven artifact, with responsibility-based subpackages. Start at [game-network](game-network/README.md) and [game-rpc](game-rpc/README.md).
 
-## OGBS 规范文档
+<a id="ogbs-规范文档"></a>
 
-每个框架组件必须配套标准规范和 Java 开发规范；当前五个组件的成对文档统一入口见 [OGBS 1.0 文档索引](docs/ogbs/README.md)。
+## OGBS specifications
 
-| 组件 | 标准规范（语言无关） | Java 开发规范 |
+Every framework component requires a standard specification and a Java development specification. All five pairs are listed in the [OGBS 1.0 documentation index](docs/ogbs/README.md).
+
+| Component | Specification (language-independent) | Java Development Specification |
 | --- | --- | --- |
-| game-core | [OGBS Core Specification](docs/ogbs/OGBS-Core-1.0.md) | [Core Java 开发规范](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md) |
-| game-network | [OGBS Network Specification](docs/ogbs/OGBS-Network-1.0.md) | [Network Java 开发规范](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) |
-| game-rpc | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.md) | [RPC Java 开发规范](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md) |
-| game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) | [Runtime Java 开发规范](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
-| game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) | [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
+| game-core | [OGBS Core Specification](docs/ogbs/OGBS-Core-1.0.md) | [Core Java Development Specification](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md) |
+| game-network | [OGBS Network Specification](docs/ogbs/OGBS-Network-1.0.md) | [Network Java Development Specification](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) |
+| game-rpc | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.md) | [RPC Java Development Specification](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md) |
+| game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
+| game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) | [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
 
-game-data 已提供 Single/Group 缓存与异步写回、MySQL/JDBC、MongoDB 适配及 MySQL 追加日志，依赖 game-core；未来 game-examples 将依赖 game-data。详见 [模块入口](game-data/README.md)、[Data 语义规范](docs/ogbs/OGBS-Data-1.0.md) 和 [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md)。实机数据库验证状态见模块文档。
+game-data provides Single/Group caches, asynchronous write-behind, MySQL/JDBC and MongoDB adapters, and append-only MySQL logs. It depends on game-core; future game-examples will depend on game-data. See the [module entry](game-data/README.md), [Data semantics](docs/ogbs/OGBS-Data-1.0.md), and [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md). Live database validation status is in the module documentation.
 
-共享 Metadata 与错误码见 [OGBS Core](docs/ogbs/OGBS-Core-1.0.md)，字节布局见 [RPC Wire Profile](docs/rpc-wire.md)。
+See [OGBS Core](docs/ogbs/OGBS-Core-1.0.md) for shared Metadata and error codes, and the [RPC Wire Profile](docs/rpc-wire.md) for byte layout.
 
-## 构建与运行
+<a id="构建与运行"></a>
 
-安装 JDK 25，确保 mvn -version 使用该 JDK：
+## Build and run
+
+Install JDK 25 and ensure mvn -version uses it:
 
 ```shell
 mvn clean verify
 mvn -pl game-network -am test
 ```
 
-当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data。game-examples 和 RPC→Runtime 自动接入仍属规划；RPC 模块内已有独立可运行 TCP 示例。
+The root build includes game-core, game-network, game-rpc, game-runtime, and game-data. game-examples and automatic RPC→Runtime integration remain planned; RPC already has an independently runnable TCP example.
 
-在 IDE 运行 [NetworkEchoExample](game-network/src/main/java/cn/managame/network/example/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
+Run [NetworkEchoExample](game-network/src/main/java/cn/managame/network/example/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 
-Network 测试覆盖 TCP/TLS/WS/WSS、顺序、引用计数、异常、背压、握手失败及关闭/中断竞争。临时证书由当前 JDK keytool 创建。Windows Network 测试让 JDK Selector 唤醒管道回退到 TCP，并限定默认 Netty 线程数；生产框架不修改 JVM 属性。数据库实机验证状态见 Data 模块文档。
-## Runtime 包结构与业务时间
+Network tests cover TCP/TLS/WS/WSS, ordering, reference counts, exceptions, backpressure, handshake failure, and shutdown/interruption races. The current JDK's keytool creates temporary certificates. Windows tests force the JDK Selector wakeup pipe to fall back to TCP and limit Netty's default thread count; production code does not change JVM properties. See Data documentation for live database verification.
 
-[game-runtime 模块目录](game-runtime/README.md) 按 context、route、executor、protocol、handler、event、timer、time、error、internal 划分职责。根包只保留 GameRuntime / GameRuntimeBuilder；使用方需要按新子包更新 import。
+<a id="runtime-包结构与业务时间"></a>
+
+## Runtime packages and business time
+
+The [game-runtime module](game-runtime/README.md) separates context, route, executor, protocol, handler, event, timer, time, error, and internal responsibilities. Only GameRuntime / GameRuntimeBuilder remain in the root package; update imports to the corresponding subpackages.
 
 ```java
 import cn.managame.runtime.time.GameTime;
 
 GameTime.setClock(Clock.offset(Clock.systemUTC(), Duration.ofDays(1)));
-runtime.cron().rescheduleAll(); // 显式重算所有 Cron，包含已取消项
+runtime.cron().rescheduleAll(); // Explicitly recompute every Cron entry, including cancelled ones.
 runtime.cron().cancel(SystemCron.class, "dailyReset");
 runtime.cron().reschedule(SystemCron.class, "dailyReset");
 GameTime.resetClock();
 ```
 
-Clock/Duration 来自 java.time，SystemCron 是应用类。GameTime 修改整个进程的业务墙钟，**不会自动重排**已创建的 Timer/Cron。动态业务 Timer 由业务 cancel 后按新时间重新 schedule。Cron 使用声明类 + 方法名作为 Key；详情见 [时间 API](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#10-gametimetimer-与-cron)。
+Clock/Duration are from java.time; SystemCron is an application class. GameTime changes the process-wide business wall clock and **does not automatically reschedule** existing Timer/Cron tasks. Applications cancel and reschedule dynamic business timers against the new time. Cron uses declaring class + method name as its key; see the [time API](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#10-gametime-timer-and-cron).
 
-## Runtime 最小用法
+<a id="runtime-最小用法"></a>
+
+## Minimal Runtime usage
 
 ```java
 record Request(long id) {}
@@ -84,7 +95,7 @@ record Response(long value) {}
 class Requests {
     @HandlerMethod
     public void handle(HandlerContext context, Request request) {
-        // 已在 (domain=1, key=request.id) 的串行执行范围内。
+        // Already executing serially within (domain=1, key=request.id).
     }
 }
 
@@ -105,27 +116,31 @@ try (GameRuntime runtime = GameRuntimeBuilder.builder()
 }
 ```
 
-接入层自己解码消息并构造 Context。Context 默认实现可继承；框架不自动读取 `getRoleId/getGuildId`。需要提取消息字段时使用显式的 `RouteKeyBinding.of(Request.class, Request::id)`。
+The integration layer decodes messages and creates Context. Default Context implementations are extensible; the framework does not automatically read `getRoleId/getGuildId`. Use explicit field extraction such as `RouteKeyBinding.of(Request.class, Request::id)`.
 
-## Network / RPC 接入
+<a id="network--rpc-接入"></a>
 
-Network 的公开入口为 cn.managame.network.netty.NetworkServer 与 NetworkClient，业务通过 ConnectionHandler 接收生命周期、消息、事件与异常。普通发送失败交给 onException，由业务决定是否关闭；write 的三种结果只表达接纳状态。
+## Network / RPC integration
 
-完整用法与资源所有权见 [Network 模块](game-network/README.md) 和 [Network Java 开发规范](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md)。
+Network's public entry points are cn.managame.network.netty.NetworkServer and NetworkClient. ConnectionHandler receives lifecycle, message, event, and exception callbacks. Ordinary send failures go to onException, and applications decide whether to close. The three write statuses describe admission only.
 
-RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot、主动/被动 Peer 与 call/notify/reply。运行 [RpcEchoExample](game-rpc/src/main/java/cn/managame/rpc/example/RpcEchoExample.java) 可看到 hello game-rpc。RpcHandler 统一处理消息、远端错误与应用解码；RPC→Runtime 自动接入尚未实现。
-## 约定与当前边界
+See the [Network module](game-network/README.md) and [Network Java Development Specification](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) for complete usage and ownership.
 
-- 没有预置业务 RouteDomain。每个已注册 Domain 必须且只能绑定一个 RouteExecutor；允许多个 Domain 共享执行器。
-- `build()` 完成校验并立即可用。注册表冻结；不提供运行期动态注册。
-- `runtime.call()` 必须在该 Runtime 的 Context 内调用。成功和失败回调都回原 Route、恢复原 Context；返回 Route 已拒绝时只报告错误，不在别的 Route 上执行回调。
-- 同 Route 串行不等于异步调用期间锁住实体。跨 Route 返回值应为不可变结果、快照或独立 DTO。
-- Metadata 的 `byte[]` 按不可变约定共享。Wire 为 `uint16 key + uint16 length + bytes`，不含类型字段。读取时才调用 Key 的 codec。
-- Java RPC body 使用 ByteBuf；入站回调内借用，异步使用必须 retain/copy。出站通过校验后接管一个引用，编码为连续帧并释放 body。
-- Cron 支持六字段数字表达式（秒、分、时、日、月、周），支持 `* ? , - /`，周日为 1，默认 UTC。当前不支持 Quartz 的 `L/W/#`、名称与年份字段。
-- RPC 每 Node 一个 HashedWheelTimer，负责调用超时、握手超时和重连延迟；心跳由连接上的 IdleStateHandler 负责。调用超时从网络 ACCEPTED 后开始。
-- Network 回调与 RPC 完成回调应快速返回；耗时业务应投递到 Runtime。RPC Core 不自动解码响应，也不自动切换 Runtime Route。
-- 当前提供 Core、Network、RPC、Runtime、Data 实现与测试；RPC 包含真实 TCP 与重连测试，自动 Runtime 接入仍待实现，尚未进行生产容量基准测试。Spring 自动装配、协议代码生成、服务发现、Router、业务 codec 均为外围集成。
+RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple slots, active/passive peers, and call/notify/reply. Run [RpcEchoExample](game-rpc/src/main/java/cn/managame/rpc/example/RpcEchoExample.java) to print hello game-rpc. RpcHandler centrally handles messages, remote errors, and application decoding; automatic RPC→Runtime integration is not implemented.
 
-详见 [架构与执行契约](docs/architecture.md) 和 [本仓库 RPC Wire Profile](docs/rpc-wire.md)。
+<a id="约定与当前边界"></a>
 
+## Conventions and current boundaries
+
+- No business RouteDomain is predefined. Each registered Domain must bind exactly one RouteExecutor; multiple Domains may share an executor.
+- `build()` validates and makes Runtime immediately usable. Registries are frozen; runtime registration is unsupported.
+- `runtime.call()` must run inside that Runtime's Context. Success/failure callbacks return to the original Route and restore its Context. If that Route rejects dispatch, report the error without invoking the callback on another Route.
+- Same-Route serialization does not lock an entity across asynchronous work. Cross-Route results should be immutable values, snapshots, or independent DTOs.
+- Metadata shares `byte[]` by immutable-use convention. Wire format is `uint16 key + uint16 length + bytes`, with no type field. The Key codec runs only on reads.
+- RPC bodies use ByteBuf. Inbound callbacks borrow them; asynchronous use requires retain/copy. Outbound validation transfers one reference; encoding into a contiguous frame releases the body.
+- Cron has six numeric fields (second, minute, hour, day, month, weekday), supports `* ? , - /`, uses Sunday=1 and UTC by default. Quartz `L/W/#`, names, and year fields are unsupported.
+- RPC uses one HashedWheelTimer per Node for call/handshake timeouts and reconnect delays; connection IdleStateHandler instances handle heartbeats. Call timeout starts after network ACCEPTED.
+- Network/RPC callbacks should return quickly; dispatch expensive work to Runtime. RPC core does not automatically decode responses or switch Runtime Routes.
+- Core, Network, RPC, Runtime, and Data implementations/tests are available. RPC has real TCP/reconnect tests; automatic Runtime integration remains pending, and production capacity benchmarks are not done. Spring auto-configuration, protocol generation, service discovery, Router, and business codecs are peripheral integrations.
+
+See [Architecture and execution contracts](docs/architecture.md) and the [repository RPC Wire Profile](docs/rpc-wire.md).

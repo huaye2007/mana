@@ -1,29 +1,33 @@
 # OGBS Data Java 25 Development Specification 1.0
 
-文档类型：**Java 开发规范**。对应标准：[OGBS Data Specification](OGBS-Data-1.0.md)。
+**[English](OGBS-Data-Java-25-Specification-1.0.md)** | [简体中文](OGBS-Data-Java-25-Specification-1.0.zh-CN.md)
 
-本文规定 Java 实现的公开 API、默认配置、异常形式、线程与资源机制、扩展接入以及验证要求。Java 实现必须同时满足本文和对应标准规范；不能只满足方法签名而忽略行为契约。代码与规范冲突时应修正实现，设计变更则同步修订两层规范。下文明确标注的待实现、未验证能力不代表已完成。
+Document type: **Java Development Specification**. Standard: [OGBS Data Specification](OGBS-Data-1.0.md).
 
-状态：Java 25 参考实现，Maven `cn.managame:game-data:1.0.0-SNAPSHOT`。行为定义以 [Data Specification](OGBS-Data-1.0.md) 为准。
+This document defines public Java APIs, defaults, exceptions, threads/resources, extensions, and validation. Implementations satisfy both documents, including behavior, not signatures alone. Fix implementation deviations; synchronize both layers for design changes. Pending/unverified capabilities are not completed features.
 
-## 1. 模块与公共入口
+Status: Java 25 reference implementation, Maven `cn.managame:game-data:1.0.0-SNAPSHOT`. Behavior is defined by the [Data Specification](OGBS-Data-1.0.md).
 
-一个 game-data artifact 内包含 Repository、Caffeine 缓存、写回、MySQL/JDBC、MongoDB 适配和日志。依赖 game-core、Caffeine 3.2.3；MongoDB Sync Driver 5.5.1 是 optional 依赖，使用 Mongo 的应用需显式添加。JDBC 依赖标准 DataSource，不绑定连接池；应用提供 MySQL JDBC Driver。
+<a id="1-模块与公共入口"></a>
 
-| 包 | 职责 |
+## 1. Module and public entry points
+
+One game-data artifact contains Repository, Caffeine caching, write-back, MySQL/JDBC, MongoDB adaptation, and logs. Dependencies: game-core, Caffeine 3.2.3; MongoDB Sync Driver 5.5.1 is optional and must be explicitly included by Mongo applications. JDBC uses standard DataSource without selecting a pool; applications supply the MySQL JDBC Driver.
+
+| Package | Responsibility |
 | --- | --- |
-| cn.managame.data | GameData、GameDataBuilder、三种 Repository；包级 PendingBuffer/WriteBehindManager |
-| annotation / key | 身份字段注解、GroupKey、MapKeys |
-| meta / mapper | 面向存储 SPI 的身份元数据、VarHandle 字段访问、EntityMapper |
-| codec / error | JSON/BINARY 编码接口、异常、失败上下文、重试及错误回调 |
-| mysql | SQL 注解、MysqlAccess、JdbcMysqlAccess、MysqlEntityMapper、日志映射 |
-| mongo | BSON 注解、MongoAccess、DriverMongoAccess、MongoEntityMapper |
+| cn.managame.data | GameData, GameDataBuilder, three repositories; package-private PendingBuffer/WriteBehindManager |
+| annotation / key | Identity annotations, GroupKey, MapKeys |
+| meta / mapper | Storage-SPI identity metadata, VarHandle access, EntityMapper |
+| codec / error | JSON/BINARY interfaces, exceptions, failure context, retries/error callbacks |
+| mysql | SQL annotations, MysqlAccess, JdbcMysqlAccess, MysqlEntityMapper, log mapping |
+| mongo | BSON annotations, MongoAccess, DriverMongoAccess, MongoEntityMapper |
 
-MysqlEntityMeta、MysqlFieldMeta、MysqlSchema、MongoEntityMeta、MongoValueCodec 均为包级实现。MysqlLogWriter 是跨包内部装配桥，不是业务扩展 SPI。不存在 RepositorySupport、CacheGroup 或 Map view。
+MysqlEntityMeta, MysqlFieldMeta, MysqlSchema, MongoEntityMeta, and MongoValueCodec are package-private. MysqlLogWriter is an internal cross-package assembly bridge, not a business extension SPI. No RepositorySupport, CacheGroup, or Map view.
 
 ## 2. Repository API
 
-以下为签名摘要：
+Signature summary:
 
 ```java
 public abstract class SingleRepository<K, E> {
@@ -45,50 +49,55 @@ public abstract class LogRepository<E> {
 }
 ```
 
-业务 Repository 必须直接继承一个具体参数化基类，有无参构造；不支持中间泛型 Repository、raw type、未解析类型变量。由 build 创建，使用 `data.repository(Players.class)` 获取。同一个实体类型只能注册一个状态 Repository，重复注册在初始化数据库之前拒绝。
+Business repositories directly extend a concrete parameterized base and have a no-argument constructor. Intermediate generic repositories, raw types, and unresolved variables are unsupported. build creates them; retrieve with `data.repository(Players.class)`. Register only one state Repository per entity type; duplicates reject before database initialization.
 
-Single 的 K 必须等于 Id 字段装箱类型；Group 的 K 是 MapKey，单字段为字段装箱类型，多字段固定 String。GroupKey 对象与同名注解分别在 key/annotation 包；避免同时 wildcard import 产生歧义。
+Single K equals the boxed Id type. Group K is MapKey: boxed field type for one field, String for multiple fields. GroupKey object and annotation live in key/annotation packages; avoid ambiguous wildcard imports.
 
-缓存使用 expireAfterAccess：Single 是 LoadingCache<K, CacheEntity<E>>，entity=null 表示负缓存；Group 是 LoadingCache<GroupKey, ConcurrentHashMap<K,E>>。只有 get/getGroup 触发加载；修改组只 getIfPresent。无容量驱逐配置、手动 eviction API 或缓存包装视图。
+expireAfterAccess caches: Single uses LoadingCache<K, CacheEntity<E>>, where entity=null represents absence; Group uses LoadingCache<GroupKey, ConcurrentHashMap<K,E>>. Only get/getGroup loads; mutations use getIfPresent. No capacity-eviction setting, manual eviction API, or wrapper view.
 
-### 2.1 Repository 直接持有依赖
+<a id="21-repository-直接持有依赖"></a>
 
-业务 Repository 的职责是声明具体 K/E，公共操作在基类中 final 实现。SingleRepository 与 GroupRepository 各自直接持有 EntityMeta、EntityMapper、WriteBehindManager 和 Caffeine cache，不再委托 SingleRepositorySupport/GroupRepositorySupport。
+### 2.1 Repositories hold dependencies directly
 
-包级初始化签名为：
+Business repositories declare concrete K/E; base classes implement final operations. SingleRepository and GroupRepository directly hold EntityMeta, EntityMapper, WriteBehindManager, and Caffeine cache, without SingleRepositorySupport/GroupRepositorySupport delegation.
+
+Package-private initialization:
 
 ```java
-// SingleRepository / GroupRepository；内部装配，不是业务扩展 API
+// SingleRepository / GroupRepository: internal assembly, not business API
 final void initialize(EntityMeta meta, EntityMapper mapper,
                       WriteBehindManager writer, Duration expiry);
 
-// LogRepository；内部装配
+// LogRepository: internal assembly
 final void initialize(MysqlLogWriter logWriter, WriteBehindManager writer);
 ```
 
-业务不应手动 new Repository 后自行填充这些依赖。initialize 不向业务公开，Builder 负责在开始接纳操作之前完整装配。自定义数据库后端通过 EntityMapper 扩展，不通过重写 final CRUD 改变契约。
+Do not manually construct and inject repositories. Builder completes nonpublic initialization before admission. Extend EntityMapper for custom backends, not final CRUD methods.
 
-### 2.2 读写路径
+<a id="22-读写路径"></a>
 
-Single.get 校验初始化和运行状态、精确 Key 类型，随后调用 LoadingCache.get。Loader 使用 Mapper.load；返回 null 用 CacheEntity 包装成负缓存，抛异常则转换为 DataLoadException。不能直接把 null 存进 Caffeine，也不能把异常改写为 null。
+### 2.2 Read and mutation paths
 
-Group.getGroup 先验证 GroupKey 的分量数量和类型，再加载整组。Loader 检查每个 Entity 的组键，使用 putIfAbsent 检查重复 MapKey。Group.get 只是整组缓存上的读取，不新增单行 SELECT 路径。
+Single.get validates initialization/running state and exact key type, then calls LoadingCache.get. Loader calls Mapper.load; null becomes CacheEntity negative cache, exceptions become DataLoadException. Neither direct null insertion into Caffeine nor exception-to-null conversion is allowed.
 
-修改路径如下，属于实现顺序说明：
+Group.getGroup validates component count/types and loads the entire group. Loader checks each entity's group and detects duplicate MapKey via putIfAbsent. Group.get reads that cached group without a separate single-row SELECT path.
+
+Mutation order:
 
 ```text
-校验 Repository 运行状态、参数与身份
-→ 进入 writer.mutate 的接纳读锁并再次确认 RUNNING
-→ Group 检查当前缓存中仍存在目标组
-→ writer.record 合并意图（可能拒绝非法序列）
-→ 修改缓存实体/组 Map
-→ 退出接纳范围
+Validate Repository state, arguments, and identity
+→ enter writer.mutate admission read lock and recheck RUNNING
+→ Group checks target is still cached
+→ writer.record coalesces intent (may reject invalid sequence)
+→ change cached entity/group Map
+→ leave admission scope
 ```
 
-先 record 后修改缓存，确保非法合并不会把缓存指向新对象。该顺序不是实体字段事务：调用者在 update 前已经改过的字段不会回滚。deleteGroup 按当前 Map 中实体逐个登记删除后清空原 Map，不调用 Mapper 的条件删除接口。
+Record before cache mutation so invalid merges cannot replace the cached reference. This is not a field transaction: prior direct field changes do not roll back. deleteGroup records each current member's primary-key deletion then clears the original Map; no Mapper predicate-delete operation.
 
+<a id="3-构建与生命周期"></a>
 
-## 3. 构建与生命周期
+## 3. Build and lifecycle
 
 ```java
 MysqlAccess access = new JdbcMysqlAccess(dataSource);
@@ -107,51 +116,54 @@ try (GameData data = GameDataBuilder.builder()
 }
 ```
 
-示例中的 DataSource、业务类、codec 和失败归档/重试函数由应用提供。DataMemoryDemo 尚未落入当前仓库；无需外部数据库的内存 Mapper/Repository 用法见 [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java)。
+Applications provide DataSource, business classes, codecs, and archive/retry functions. DataMemoryDemo is not in the repository; database-free Mapper/Repository usage is in [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
 
-| 配置 | 默认 | 校验/含义 |
+| Configuration | Default | Validation/meaning |
 | --- | --- | --- |
-| cacheExpire | 30 分钟 | 正值且大于 flushInterval；部署应远大于实际保存延迟 |
-| flushInterval | 1 秒 | 正值，单调时间目标周期 |
-| batchSize | 500 | 正整数 |
-| maxAttempts | 3 | 含第一次执行；正整数；只有 RetryPolicy 返回 true 才重试 |
-| retryPolicy | 总是 false | 默认执行一次，无内建 SQLState/Mongo 错误分类 |
-| errorHandler | System.Logger | 最终失败诊断；业务负责归档失败数据 |
-| partitionZone | UTC | 显式 ZoneId，可配置 Asia/Shanghai |
-| logCodecs(json,binary) | 均为 null | 日志复杂字段编码；状态字段 codec 在 MysqlEntityMapper 构造时传入 |
+| cacheExpire | 30 minutes | Positive and greater than flushInterval; deploy well above actual save delay |
+| flushInterval | 1 second | Positive monotonic target interval |
+| batchSize | 500 | Positive integer |
+| maxAttempts | 3 | Includes first attempt; positive; retry only when policy returns true |
+| retryPolicy | Always false | One execution by default; no built-in SQLState/Mongo classification |
+| errorHandler | System.Logger | Final-failure diagnostics; application archives failed data |
+| partitionZone | UTC | Explicit ZoneId; configurable, e.g. Asia/Shanghai |
+| logCodecs(json,binary) | Both null | Complex log-field codecs; state codecs supplied to MysqlEntityMapper |
 
-repositories/logRepositories 也接受 List<Class<?>>。先校验 Repository 泛型、身份元数据和日志映射；随后状态 Mapper.initialize 编译各自存储映射并执行 Schema 初始化，再装配缓存并启动一个保存线程。Schema DDL 不承诺整体回滚，后续初始化失败时此前新增字段/表可能已存在；不会因此接管/关闭应用资源。
+repositories/logRepositories also accept List<Class<?>>. Validate repository generics, identity metadata, and log mapping first; state Mapper.initialize then compiles backend mappings and initializes Schema; assemble caches and start one persistence thread. Schema DDL has no aggregate rollback: earlier additions may survive later initialization failure. External resources are not taken over or closed.
 
-GameData 只关闭自己的调度资源，不关闭 DataSource、MongoClient 或外部 Mapper。close 可同步等待数据库操作；不要从 Mapper、RetryPolicy、DataErrorHandler 回调内调用 close，框架同步拒绝以避免死锁。关闭后所有 Repository 访问均拒绝。
+GameData closes only its scheduler, not DataSource, MongoClient, or external Mapper. close may wait on database operations. Calling it from Mapper, RetryPolicy, or DataErrorHandler callbacks is synchronously rejected to avoid deadlock. All Repository access rejects after closure.
 
-### 3.1 build 的装配阶段
+<a id="31-build-的装配阶段"></a>
 
-| 阶段 | 执行内容 | 失败后状态 |
+### 3.1 build assembly stages
+
+| Stage | Work | Failure state |
 | --- | --- | --- |
-| 配置校验 | Duration 可转纳秒且为正、cacheExpire 大于 interval、正整数限制 | 不创建后台保存线程 |
-| Repository 解析 | 直接参数化父类、具体 Entity、无参 Repository 构造、重复注册校验 | 不返回半成品 GameData |
-| 身份/日志预编译 | 状态 EntityMeta 与 K 匹配；日志 MysqlLogWriter | 不启动保存 |
-| 状态 Mapper.initialize | 编译后端映射、初始化 Schema | 已执行 DDL 不整体回滚 |
-| 创建 WriteBehindManager | 两个缓冲、错误/重试配置、调度资源 | 仅内部装配 |
-| initialize Repository | 直接注入依赖、创建缓存；日志加入保存管理 | 不暴露未初始化 Repository |
-| GameData 建立 | 固定 Repository class 到实例映射，启动周期保存 | 返回可用入口 |
+| Configuration | Positive nanosecond-representable Duration, cacheExpire > interval, positive integers | No persistence thread |
+| Repository parsing | Direct parameterized parent, concrete Entity, no-arg Repository constructor, duplicates | No partial GameData returned |
+| Identity/log compilation | EntityMeta/K match; MysqlLogWriter | No persistence started |
+| State Mapper.initialize | Backend mapping and Schema | Executed DDL not wholly rolled back |
+| WriteBehindManager creation | Two buffers, error/retry configuration, scheduler | Internal assembly only |
+| Repository initialization | Inject dependencies, create caches, register logs | No uninitialized Repository exposed |
+| GameData creation | Fixed class-to-instance mapping, periodic startup | Usable entry returned |
 
-注意第三阶段不意味着所有数据库映射都已经验证：MySQL/Mongo 的存储映射由对应 Mapper.initialize 完成。前一个实体 Schema 成功、后一个实体映射失败时，前一个实体的 DDL 可能已经生效。应用可以修正配置后重建，但不能期待自动撤销建表或补字段。
+Stage three does not validate every backend mapping; MySQL/Mongo do that in Mapper.initialize. A later mapping failure may follow an earlier successful Schema change. Correcting configuration and rebuilding does not undo prior tables/columns.
 
-repositories 和 logRepositories 的每次调用是追加绑定，不是替换。一个 Mapper 可以绑定多个实体，同一个实体不能注册两个状态 Repository。读取 GameData.repository(type) 只查已注册实例；关闭后仍可取得引用，但 Repository 的访问方法会拒绝使用，不会重新初始化。
+Each repositories/logRepositories call appends bindings. A Mapper may serve multiple entities; one entity cannot have two state repositories. GameData.repository(type) only looks up registered instances. After closure it still returns a reference, but Repository operations reject instead of reinitializing.
 
+<a id="4-entity-与身份元数据"></a>
 
-## 4. Entity 与身份元数据
+## 4. Entity and identity metadata
 
-Entity 支持父类持久化字段；全继承链检查身份及存储列重名。状态 Entity 必须有可访问无参构造，加载通过预编译构造器创建，再直接写字段，不调用 setter。注解只用于字段。映射字段必须为非 static、非 final；启动反射、运行期 VarHandle。JPMS 场景需要向实现模块开放字段所属包。
+Inherited persistent fields are supported; duplicate identity/storage names are checked across the hierarchy. State Entity requires an accessible no-arg constructor. Loading invokes its precompiled constructor and writes fields directly, without setters. Annotations are field-only; mapped fields are nonstatic/nonfinal. Startup uses reflection; runtime uses VarHandle. JPMS packages must be opened to the implementation module.
 
-当前身份字段支持 byte/short/int/long 及包装类型、String；不允许 null。该受限键域是当前 Java binding 的约束。单字段 order 可省略；多字段每个 order 必须显式填写且互异，Integer.MIN_VALUE 为未指定标记。
+Identity types: byte/short/int/long and wrappers, plus String; null prohibited. This restricted key domain is Java-binding-specific. Single-field order may be omitted; every multi-field order must be explicit/distinct, with Integer.MIN_VALUE indicating unspecified.
 
-`GroupKey.of(Object...)` 保存原始数组、预计算 hash，不做 defensive copy；调用方不得修改传入数组及分量。equals 保留类型，1L 与 1 不相等。为 Mapper 提供只读 size()/valueAt(index)，不暴露可替换数组。
+`GroupKey.of(Object...)` stores the original array and precomputes hash without defensive copy. Callers must not mutate array/components. equals preserves types: 1L differs from 1. Read-only size()/valueAt(index) support Mappers without exposing a replaceable array.
 
-`MapKeys.of(a,b,...)` 至少两个非 null 的整数/String，拒绝包含冒号的字符串；只简单拼接。无 CompositeKey、转义、长度协议。
+`MapKeys.of(a,b,...)` needs at least two nonnull integer/String values and rejects colons in strings. Simple joining only: no CompositeKey, escaping, or length protocol.
 
-EntityMeta 是公开 Mapper SPI 元数据，不含存储注解语义。EntityMapper 签名：
+EntityMeta is public Mapper SPI metadata without storage-annotation semantics. EntityMapper:
 
 ```java
 void initialize(EntityMeta meta);
@@ -163,88 +175,100 @@ void deleteBatch(EntityMeta meta, List<Object> ids);
 void deleteInsertBatch(EntityMeta meta, List<?> entities);
 ```
 
-### 4.1 身份编译与存储编译的分工
+<a id="41-身份编译与存储编译的分工"></a>
 
-EntityMeta 负责 Single/Group 身份、字段访问以及键类型，不应包含 MySQL 列类型或 Mongo 索引定义。一个实体首先在身份层合法，随后还必须在所选存储层合法。例如 @Id 字段未标 @Column，在身份层能识别主键，但 MySQL 映射仍会拒绝。
+### 4.1 Identity compilation versus storage compilation
 
-多字段顺序只要求显式且唯一，不要求 0、1、2 连续。GroupKey 保留类型，GroupKey.of(42L) 与 GroupKey.of(42) 不相等；调用方应使用与实体字段相同的装箱类型。MapKeys 的组合字符串则必须由相同顺序构造，不自行排序。
+EntityMeta owns Single/Group identity, field access, and key types, not MySQL types or Mongo indexes. Identity-valid entities must also pass backend validation. For example, @Id without @Column is recognized as identity but rejected by MySQL mapping.
 
-Mapper.loadGroup 应返回非 null 集合，空组返回空集合；Repository 对身份和 MapKey 做防御检查，但不会把任意第三方 Mapper 变成完整验证器。自定义 Mapper 仍需遵守 load 的实体类型、loadGroup 的完整组、批量操作及异常契约。
+Multi-field order must be explicit/unique, not contiguous 0,1,2. GroupKey.of(42L) differs from GroupKey.of(42); use matching boxed field types. Composite MapKeys must use the declared order without independent sorting.
 
+Mapper.loadGroup returns a nonnull list, empty for no rows. Repository defensively checks identity/MapKey but is not a complete validator for arbitrary third-party Mappers. Custom implementations must satisfy entity type, complete-group loading, batch, and exception contracts.
 
-## 5. 写回实现与适用边界
+<a id="5-写回实现与适用边界"></a>
 
-固定两个 PendingBuffer，各自预创建 EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>；PendingChange 只保存操作与实体引用，DELETE 不保存实体。record 每次重新读取 volatile activeBuffer，使用 compute 按规范合并，不缓存 buffer 引用。
+## 5. Write-back implementation and limits
 
-唯一保存线程交换 A/B，等待固定 100ms grace，处理旧缓冲全部实体批次，最终失败也上报后清空；不会跨缓冲合并。下一轮调度延迟为 max(0, interval - 上轮耗时)，不累计补跑历史周期。
+Exactly two PendingBuffers precreate EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>. PendingChange stores operation and entity reference; DELETE stores no entity. Each record rereads volatile activeBuffer and coalesces through compute, never caching a buffer reference.
 
-**100ms 是对话明确接受的工程取舍，不是严格并发屏障。** 若业务线程取得旧缓冲后停顿超过宽限期，可能错过本轮遍历或被 clear 覆盖。实现没有 writer counter、sealed buffer、epoch 或第三缓冲，不宣称在任意线程暂停下无丢失。正常 record 必须短小，实体业务顺序由应用保证。
+The sole persistence thread swaps A/B, waits a fixed 100ms grace, processes every old-buffer entity batch, reports final failures, then clears it. No cross-buffer merge. Next delay is max(0, interval - previous round duration), with no catch-up backlog of missed periods.
 
-接纳路径使用共享读锁，close 使用写锁关闭接纳；该锁只解决停服与已经接纳操作的竞争，不参与缓冲切换、不串行化不同业务实体。close 等待 pipeline 后清理两缓冲，累计出现过的最终失败会使 close 抛 DataSaveException。批次最终失败不会因后续批次成功而恢复成关闭成功。
+**The 100ms grace is an explicitly accepted engineering tradeoff, not a strict concurrency barrier.** A producer paused after obtaining the old buffer for longer than grace may miss traversal or race clear. There is no writer counter, sealed buffer, epoch, or third buffer, and no arbitrary-pause losslessness guarantee. record must remain short; applications serialize business entity access.
 
-缓存和日志队列/待保存集合不设容量上限。持续写入速度超过保存速度会增加内存占用；V1 未实现容量背压或生产容量验证。
+Admission uses a shared read lock; close takes the write lock to close admission. This protects admitted-operation/shutdown races, not buffer switching or serialization of unrelated entities. close awaits the pipeline and handles both buffers; any remembered final failure throws DataSaveException, regardless of later successes.
 
-### 5.1 PendingBuffer 的数据形状
+Caches, log queues, and pending sets have no capacity limit. Sustained production above persistence rate grows memory. Capacity backpressure and production-capacity validation are unimplemented.
+
+<a id="51-pendingbuffer-的数据形状"></a>
+
+### 5.1 PendingBuffer shape
 
 ```text
 WriteBehindManager
-  activeBuffer ──→ A 或 B（volatile）
+  activeBuffer ──→ A or B (volatile)
   A: EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>
   B: EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>
 
 PendingChange
   operation
-  entityReference（DELETE 为 null）
+  entityReference (null for DELETE)
 ```
 
-外层键是 EntityMeta，不是 EntityMapper。玩家与公会可以共用一个 MysqlEntityMapper，并各自有 id=42；这两条变更必须落在不同表的不同 pending map。每次 record 重新读取 activeBuffer，同一主键通过 compute 合并；没有为每次 update 建立深拷贝。
+Outer keys are EntityMeta, not EntityMapper. Player and guild may share a MysqlEntityMapper and both have id=42; they need separate pending maps for separate tables. Every record rereads activeBuffer; compute coalesces each key without per-update deep copies.
 
-### 5.2 一轮 flush 的时间线
+<a id="52-一轮-flush-的时间线"></a>
+
+### 5.2 One flush timeline
 
 ```text
-记录本轮单调开始时间
-→ A/B 交换：生产者后续写新 active
-→ 等待固定 100ms
-→ 遍历旧缓冲：每个 EntityMeta 按操作阶段切 batch
-→ 各 batch 执行、按用户策略重试或最终报错
-→ 清空已处理旧缓冲
-→ 对日志进行本轮有限 drain
-→ 按 max(0, interval - 本轮耗时) 安排下一轮
+Record monotonic round start
+→ swap A/B; later producers use new active
+→ wait fixed 100ms
+→ traverse old buffer; split each EntityMeta into operation-phase batches
+→ execute/retry by policy/report final error for each batch
+→ clear processed old buffer
+→ bounded log drain for this round
+→ schedule after max(0, interval - elapsed)
 ```
 
-保存 pipeline 互斥，周期调用与 close 不会同时执行 Mapper 批次。外层实体遍历次序不构成业务事务顺序；ConcurrentHashMap 内主键遍历顺序也不是更新调用顺序。需要依赖多实体操作顺序的业务不能把 batch 遍历当成串行事务。
+Pipeline exclusion prevents periodic and close-driven Mapper batches from running concurrently. Entity traversal is not business transaction order; ConcurrentHashMap key traversal is not update call order. Multi-entity ordering requirements cannot rely on traversal as a serial transaction.
 
-固定宽限期的失效例子必须保留在实现文档中：线程取得旧 A 后暂停；保存线程切到 B、等 100ms 并遍历/清空 A；暂停线程随后才写入 A。此时变更可能错过本轮，或与 clear 竞争被覆盖。当前设计没有严格完成握手，因此不能宣称任意暂停下无丢失。若未来改成计数/封存/epoch 协议，应同步更新此机制、性能取舍和并发验证，不能只删除限制说明。
+The grace failure example must remain documented: a thread takes old A and pauses; persistence switches to B, waits 100ms, traverses/clears A; the thread then writes A. Its change may miss the round or be erased by racing clear. Without strict completion handshake, arbitrary-pause safety is not claimed. A future counter/sealing/epoch protocol must update mechanics, performance tradeoffs, and concurrency tests, not merely remove this limitation.
 
-### 5.3 批次错误与尝试次数
+<a id="53-批次错误与尝试次数"></a>
 
-以下为语义伪代码，不是可调用 API：
+### 5.3 Batch errors and attempts
+
+Semantic pseudocode, not an API:
 
 ```text
 attempt = 1
-执行 batch
-失败时:
-    构造 DataFailure（包含本次 attempt）
-    若 attempt < maxAttempts 且 RetryPolicy 同意:
-        attempt 加一，立即重试相同 batch
-    否则:
-        记住生命周期内发生过最终失败
-        同步调用 DataErrorHandler
-        继续下一 batch
+execute batch
+on failure:
+    create DataFailure with current attempt
+    if attempt < maxAttempts and RetryPolicy permits:
+        increment attempt and immediately retry same batch
+    else:
+        remember lifetime final failure
+        synchronously invoke DataErrorHandler
+        continue next batch
 ```
 
-当前没有退避、随机抖动或单独重试线程。RetryPolicy 和 DataErrorHandler 在保存流水线上同步执行，耗时会延长整轮写回。RetryPolicy 自身抛异常时附加诊断并转最终失败；DataErrorHandler 抛异常时记录后继续。
+No backoff, jitter, or separate retry thread. RetryPolicy/DataErrorHandler run synchronously in the persistence pipeline and extend round duration. Policy failure adds diagnostics and becomes final failure; Handler failure logs and continues.
 
-DataFailure 的批次列表不允许回调修改其结构，但元素仍是实体引用，不是不可变快照。DELETE 批次携带 ID；实体写入和日志批次携带对象。只有实际失败时才构造失败上下文，成功路径不生成失败归档副本。
+Callbacks cannot structurally modify DataFailure.batch, but elements remain entity references, not immutable snapshots. DELETE batches contain IDs; writes/logs contain objects. Construct failure context only on actual failure; successful paths create no archive copies.
 
-### 5.4 close 的内部屏障
+<a id="54-close-的内部屏障"></a>
 
-close 在接纳写锁内切为 CLOSING，阻止新的 mutate；停止后续周期调度，然后等待正在运行的 pipeline 完成，处理较旧的非活动缓冲、活动缓冲及全部已接纳日志，最后进入 CLOSED。运行期已经记录的最终失败也会使 close 抛 DataSaveException，重复调用仍报告该失败。
+### 5.4 Internal close barrier
 
-不允许在保存线程执行的 Mapper/策略/错误回调里调用 close；否则会等待自己正在执行的流水线。框架检测并拒绝这种使用。外部数据库驱动调用若不返回，close 也可能一直等待，数据库 timeout 仍需要由应用配置。
+Under admission write lock, close enters CLOSING and blocks new mutate, stops future scheduling, awaits the active pipeline, processes older inactive buffer, active buffer, and all admitted logs, then enters CLOSED. Remembered runtime final failures cause DataSaveException, also on repeated close.
 
+Mapper/policy/error callbacks on the persistence thread cannot close and wait for themselves; the framework detects/rejects this. A driver operation that never returns can keep close waiting indefinitely; applications configure database timeouts.
 
-## 6. MySQL 映射
+<a id="6-mysql-映射"></a>
+
+## 6. MySQL mapping
 
 ```java
 @Table(name = "player_task", indexes = {
@@ -258,100 +282,110 @@ public class Task {
 }
 ```
 
-Table.name 必填，只有 @Column 字段持久化，身份字段缺少 @Column 会初始化失败。默认字段名 camelCase → snake_case。表/列/索引名只接受字母或下划线开头的 ASCII 字母、数字、下划线，MySQL 最长 64 字符；自动长索引名截断并加稳定 hash。SQL 标识符加反引号，值使用参数绑定。
+Table.name is required. Only @Column persists; missing it on identity fields fails initialization. Default names convert camelCase to snake_case. Table/column/index names use ASCII letters/digits/underscore starting with letter/underscore, at most 64 MySQL characters. Long generated indexes are truncated with a stable hash. Quote identifiers with backticks and bind values.
 
-| Java DEFAULT 类型 | MySQL | 自动 DEFAULT |
+| Java DEFAULT type | MySQL | Automatic DEFAULT |
 | --- | --- | --- |
 | byte / short / int / long | TINYINT / SMALLINT / INT / BIGINT | 0 |
 | float / double / boolean | FLOAT / DOUBLE / TINYINT | 0 |
 | char / String | CHAR(1) / VARCHAR(255) | '' |
-| byte[] | BLOB | 无 |
+| byte[] | BLOB | None |
 
-包装类型相同映射；primitive 与身份列 NOT NULL，其余可 null。读取 SQL NULL 到 primitive 报加载错误。TEXT 仅 String；JSON 的 String 是原始 JSON 文本，其他类型需要 JsonCodec；BINARY 的 byte[] 原样传递，其他类型需要 BinaryCodec。null 不调用 codec。DEFAULT 不接受复杂对象。
+Wrappers map identically. Primitives/identity columns are NOT NULL; others nullable. SQL NULL into primitive is a load error. TEXT accepts only String. JSON String is raw JSON; other types require JsonCodec. BINARY byte[] passes through; other types require BinaryCodec. Null bypasses codecs. DEFAULT rejects complex objects.
 
-`Column.defaultValue` 为受信任的 SQL 表达式，原样用于 DDL、不自动加引号。JSON/BINARY/TEXT 不自动推断默认值。JsonCodec/BinaryCodec 的 decode 接收 java.lang.reflect.Type 并返回 Object，保留 List<Item> 等泛型信息。
+`Column.defaultValue` is a trusted raw SQL DDL expression without automatic quoting. JSON/BINARY/TEXT infer no defaults. JsonCodec/BinaryCodec.decode receives java.lang.reflect.Type and returns Object, preserving generics such as List<Item>.
 
-字段读写转换、SELECT/INSERT/UPDATE/DELETE SQL、参数字段顺序在初始化时生成。UPDATE 排除 Id/GroupKey/MapKey，只有身份字段的实体 UPDATE 为无操作。DELETE_INSERT 先编码，再在一个显式事务内删除并插入当前批次。
+Initialization compiles conversions, SELECT/INSERT/UPDATE/DELETE SQL, and parameter order. UPDATE excludes Id/GroupKey/MapKey; identity-only entities update as no-op. DELETE_INSERT encodes first, then deletes/inserts the batch in an explicit transaction.
 
-Schema 查询 information_schema，只创建缺失结构。已有字段检查基本类型；不同 VARCHAR 长度不做完整兼容判定，也不自动迁移默认值/nullable。检查单列主键与显式索引的列顺序及唯一性；不会推断 GroupKey 索引。并发 Schema 迁移应由部署编排串行执行。
+Schema queries information_schema and only adds missing structures. Existing columns get basic type checks, not full VARCHAR-length compatibility or default/nullable migration. Check single-column primary key and explicit index order/uniqueness; never infer GroupKey indexes. Deployment orchestration serializes schema migration.
 
-MysqlAccess 提供 queryOne/query/update/batchUpdate/transaction。queryOne 零行 null，多行抛 MysqlException；query 零行空 List。批量参数由写回层切分，Access 不再切分。事务回调获得 MysqlTransaction，同一连接执行、成功 commit、异常 rollback、恢复 autoCommit 并关闭；对象只在回调线程/作用域有效。
+MysqlAccess provides queryOne/query/update/batchUpdate/transaction. queryOne returns null for zero rows and throws MysqlException for multiple rows; query returns an empty List. Write-back splits batches; Access does not split again. Transaction callback receives one-connection MysqlTransaction, commits success, rolls back exceptions, restores autoCommit, and closes; valid only on callback thread/scope.
 
-JdbcMysqlAccess 每次操作从 DataSource 获取连接并释放。普通操作遵循 DataSource 的默认 autoCommit，应用通常应配置 true。MysqlException 保留 SQL、SQLException cause、sqlState()/vendorCode()。底层不会自动重试或映射数据库业务错误。
+JdbcMysqlAccess obtains/releases a DataSource connection per operation. Ordinary operations follow DataSource autoCommit, normally configured true. MysqlException retains SQL, SQLException cause, sqlState()/vendorCode(). No low-level automatic retry or business database-error mapping.
 
-### 6.1 预编译和运行期工作
+<a id="61-预编译和运行期工作"></a>
 
-初始化时确定列顺序、字段 VarHandle、值编码器、SELECT/INSERT/UPDATE/DELETE 模板和索引描述。运行期按既定顺序读取字段并绑定参数，不重新扫描全部注解或拼接业务条件。
+### 6.1 Precompilation and runtime work
 
-| 操作 | 关键约束 |
+Initialization fixes column order, VarHandles, value encoders, SQL templates, and indexes. Runtime reads/binds in that order without rescanning annotations or building business predicates.
+
+| Operation | Constraint |
 | --- | --- |
-| load | 按唯一主键查询，创建 Entity 并直接写字段 |
-| loadGroup | 使用全部组键条件，返回整组 |
-| INSERT | 写入所有显式持久化列，不提前 SELECT 检测存在 |
-| UPDATE | 主键定位，仅更新非身份列；无可变列时不发空 UPDATE |
-| DELETE | 只依赖主键，不需要读取实体 |
-| DELETE_INSERT | 编码当前 batch 后，在同一小事务内删除并插入 |
+| load | Unique primary-key query, construct Entity, write fields directly |
+| loadGroup | All group-key predicates, full group |
+| INSERT | All explicitly persistent columns; no preflight SELECT |
+| UPDATE | Locate by primary key, update nonidentity columns; no empty UPDATE |
+| DELETE | Primary key only, no entity read |
+| DELETE_INSERT | Encode current batch, then delete/insert in one small transaction |
 
-JdbcMysqlAccess 是数据库访问边界，不负责 Repository 变更合并和业务重试。transaction 回调只可在当前线程和作用域使用，不能把 MysqlTransaction 缓存起来供后台异步任务继续操作。事务针对该回调，不把整个 flush 或多个 Repository 自动纳入其中。
+JdbcMysqlAccess is the database boundary, not coalescing/retry policy. Do not retain MysqlTransaction for asynchronous work; it is thread/scope-bound. Transactions cover their callback, not all flush work or multiple repositories automatically.
 
-Schema 初始化属于保守增量维护：发现缺表/缺列/显式索引时补齐，发现明显冲突则失败。不支持的迁移由部署工具负责；不能因初始化成功就推断已有 VARCHAR 长度、默认值或 nullable 均与 Java 声明完全一致。
+Schema maintenance conservatively adds missing tables/columns/explicit indexes and rejects obvious conflicts. Deployment tools handle unsupported migrations. Successful initialization does not prove existing VARCHAR lengths/defaults/nullable exactly match Java declarations.
 
+<a id="7-mongodb-映射"></a>
 
-## 7. MongoDB 映射
+## 7. MongoDB mapping
 
-Collection.name 必填，只有 @Field 持久化。普通字段名默认 snake_case；Id 固定 _id，配置成其他名字初始化失败。只接受简单 ASCII 存储名称。MongoIndex.fields 使用数据库字段名，全部升序；不支持 TTL/text/geo/partial 等高级索引。
+Collection.name is required; only @Field persists. Default names use snake_case. Id is fixed _id; other names fail initialization. Only simple ASCII storage names. MongoIndex.fields uses database names, all ascending; no TTL/text/geo/partial indexes.
 
-MongoEntityMapper 可接收 MongoDatabase 或 MongoAccess。DriverMongoAccess 使用数据库 CodecRegistry，不绕经 JSON 文本。支持标量、byte[]、List/Set/Collection、Map<String/Integer/Long,V>；嵌套值按 Type 编译。具体复杂类由应用在 MongoDatabase 上配置 CodecRegistry（例如 POJO codec 或自定义 Codec）；其他参数化自定义类暂不支持，初始化明确失败。
+MongoEntityMapper accepts MongoDatabase or MongoAccess. DriverMongoAccess uses its CodecRegistry directly, without JSON conversion. Supports scalars, byte[], List/Set/Collection, and Map<String/Integer/Long,V>, compiling nested values by Type. Applications configure codecs for concrete complex classes on MongoDatabase, e.g. POJO/custom Codec. Other parameterized custom classes explicitly fail initialization.
 
-加载通过无参构造 + VarHandle；缺失字段保留构造器默认值，显式 BSON null 不可写 primitive。UPDATE 使用 ordered bulk replacement 且 upsert=false；DELETE_INSERT 使用 upsert=true；DELETE 为 _id 的 $in。默认驱动批量可能部分成功，重试须考虑这一点。
+Load uses no-arg construction + VarHandle. Missing fields retain constructor defaults; explicit BSON null cannot populate primitives. UPDATE uses ordered bulk replacement with upsert=false; DELETE_INSERT upsert=true; DELETE uses _id $in. Driver batches may partially succeed, affecting retry policy.
 
-### 7.1 与 MySQL 的相同点和差异
+<a id="71-与-mysql-的相同点和差异"></a>
 
-两个 Mapper 都按 EntityMeta 和持久化主键接收变更，失败均回到统一保存流程。它们不会为了接口统一而伪装成完全相同的数据库操作：
+### 7.1 Similarities and differences from MySQL
 
-| 意图 | MySQL | MongoDB |
+Both Mappers receive changes by EntityMeta/primary key and use unified failure handling, without pretending their database operations are identical:
+
+| Intent | MySQL | MongoDB |
 | --- | --- | --- |
-| UPDATE | 非身份列全量更新 | 完整 Document replacement，upsert=false |
-| DELETE_INSERT | 删除+插入的小事务 | replacement，upsert=true |
-| 类型扩展 | JsonCodec / BinaryCodec | MongoDatabase CodecRegistry |
-| 结构初始化 | 表、字段与显式索引 | collection 与显式升序索引 |
+| UPDATE | All nonidentity columns | Complete Document replacement, upsert=false |
+| DELETE_INSERT | Small delete/insert transaction | Replacement, upsert=true |
+| Type extensions | JsonCodec / BinaryCodec | MongoDatabase CodecRegistry |
+| Schema initialization | Tables, columns, explicit indexes | Collections, explicit ascending indexes |
 
-Mongo 的 replacement 不是字段级 $set，因此外部系统添加但不在映射中的 Document 字段不能依赖本组件替它保留。ordered bulk 也不是批次事务：前面操作可能已经成功，重试策略仍需处理部分成功。
-
+Mongo replacement is not field-level $set; unmapped fields added externally are not preserved by contract. Ordered bulk is not a batch transaction: earlier operations may have succeeded and retries must handle that.
 
 ## 8. Log
 
-LogRepository 不要求 Id 或无参构造，不调用 EntityMapper。使用 @Table/@Column 编译 INSERT 映射，不查询或修改 Schema；日志表由外部服务准备。
+LogRepository requires neither Id nor no-arg constructor and does not call EntityMapper. @Table/@Column compiles INSERT mapping without querying/changing Schema; external services prepare tables.
 
-@PartitionKey 至多一个，可以不持久化该字段。VALUE 支持整数/String，后缀只接受 ASCII 字母、数字、下划线；DAY/MONTH/YEAR 要求 long/Long Unix epoch milliseconds，按 partitionZone 生成 uuuuMMdd/uuuuMM/uuuu。没有分表字段则直接写基础表。
+At most one @PartitionKey, optionally nonpersistent. VALUE supports integers/String with ASCII alphanumeric/underscore suffixes. DAY/MONTH/YEAR requires long/Long Unix epoch milliseconds, rendered in partitionZone as uuuuMMdd/uuuuMM/uuuu. Without partitioning, use the base table.
 
-insert 先验证类型与分表值，再进入 ConcurrentLinkedQueue；不序列化快照。保存线程分批 drain、按物理表分组，并通过相同错误/重试路径执行。进入队列后不得修改日志。
+insert validates type/partition then enqueues in ConcurrentLinkedQueue without snapshots. Persistence drains batches, groups by physical table, and uses the same error/retry path. Do not mutate enqueued logs.
 
-### 8.1 drain 与分表的运行边界
+<a id="81-drain-与分表的运行边界"></a>
 
-每次 drain 先取得本轮队列数量边界，再按 batchSize 轮流 poll。并发生产可能影响实际观察到的边界，但本轮不会为了追上持续追加而无限循环。取出一个 batch 后按物理表分组，每组经同一 execute/error/retry 路径写入。
+### 8.1 Drain and partition boundaries
 
-例如同一批有昨天与今天的事件，会得到两个物理表 INSERT；它们独立成功或失败，不构成跨表事务。close 先阻止继续插入，再排空剩余日志，避免“有限周期处理”被误解为停机也只处理一个 batch。
+Each drain first observes a finite queue-count boundary, then polls by batchSize. Concurrent production can affect that observation, but the round never loops forever to catch up. Group each drained batch by physical table and execute each group through the same execute/error/retry path.
 
-分表字段在接纳时校验，但排队期间不会冻结 Java 对象。接纳后篡改分表值仍可能在保存时造成错误或写错表，这也是禁止修改已提交日志的原因。
+A batch containing yesterday's and today's events yields two independent table INSERTs, not a cross-table transaction. close stops insertion then drains all remaining logs; bounded periodic work does not limit shutdown to one batch.
 
-### 8.2 扩展实现时需要保留的边界
+Partition values are validated at admission but Java objects are not frozen. Later mutation may fail or misroute persistence, hence the prohibition on changing submitted logs.
 
-扩展 EntityMapper 时，以 EntityMeta 区分实体，保证加载失败不会返回不存在，明确批量部分成功与 DELETE_INSERT 语义，并保留异常原因。新增存储类型前应同时补标准中的可观察差异和本 Java 规范的映射规则。
+<a id="82-扩展实现时需要保留的边界"></a>
 
-新增 codec 不应把 DEFAULT 复杂对象悄悄变成 JSON，也不应丢失字段 Type 的泛型信息。新增日志后端、日志 Schema 管理、缓存容量、失败回灌或严格缓冲交换协议，都属于尚未实现的扩展，不能通过添加一个配置示例就声称已支持。
+### 8.2 Boundaries for extensions
 
+Custom EntityMapper distinguishes EntityMeta, never turns load failure into absence, defines partial-success/DELETE_INSERT semantics, and preserves causes. New backends update observable standard differences and Java mapping rules together.
 
-## 9. 异常与验证
+New codecs must not silently turn DEFAULT complex objects into JSON or discard generic Type information. New log backends, log Schema maintenance, capacity settings, failed-batch reinsertion, and strict buffer exchange are unimplemented extensions; a configuration example cannot claim support.
 
-DataLoadException：存储加载或加载结果非法。DataOperationException：未初始化、已关闭、组未加载、非法变更序列。DataSaveException：close 发现最终保存失败。启动配置/元数据错误通常为 IllegalArgumentException，Schema/数据库错误保留底层异常。共享失败码见 [Core](OGBS-Core-1.0.md#data-常量)。
+<a id="9-异常与验证"></a>
 
-已验证：Repository/缓冲契约测试、H2 MySQL 模式上的真实 JDBC 查询与事务、SQL 映射/Schema 生成、BSON CodecRegistry 编解码及 Mapper 调用契约。H2 的 Schema 测试使用信息表适配桩，不能等同 MySQL 实机验证；Mongo 测试使用记录型 MongoAccess，不能等同服务器验证。
+## 9. Exceptions and validation
 
-实机测试 [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) 由 OGBS_DATA_MYSQL_URL / OGBS_DATA_MONGO_URI 启用；默认跳过。未配置上述环境变量时不运行实机测试，当前尚未验证真实 MySQL/MongoDB 服务器、生产性能或长时间故障恢复。
+DataLoadException: storage load/invalid loaded results. DataOperationException: uninitialized/closed/unloaded group/illegal sequence. DataSaveException: final save failure discovered by close. Startup configuration/metadata errors generally use IllegalArgumentException; Schema/database errors retain underlying exceptions. Shared codes: [Core](OGBS-Core-1.0.md#data-constants).
 
+Verified: Repository/buffer contracts, real JDBC queries/transactions on H2 MySQL mode, SQL mapping/Schema generation, BSON CodecRegistry encoding/decoding, Mapper invocation contracts. H2 Schema tests use an information-table adaptation stub, not real MySQL validation. Mongo tests use recording MongoAccess, not server validation.
 
-### 9.1 错误扩展接口
+[DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) enables real services through OGBS_DATA_MYSQL_URL / OGBS_DATA_MONGO_URI; skipped by default. Without these variables, real-service tests do not run. Actual MySQL/MongoDB servers, production performance, and prolonged recovery remain unverified.
+
+<a id="91-错误扩展接口"></a>
+
+### 9.1 Error extension interfaces
 
 ```java
 public record DataFailure(
@@ -366,25 +400,26 @@ public interface DataErrorHandler {
 }
 ```
 
-DataOperation 包括 INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT。这里的 operation 表示实际失败的持久化意图，未必等于最后一次 Repository 方法名，例如 DELETE 后 INSERT 合并后报告 DELETE_INSERT。attempt 从 1 开始；重试成功不会再调用最终错误 Handler。
+DataOperation includes INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT. It is actual persistence intent, not necessarily the last Repository method: DELETE then INSERT reports DELETE_INSERT. attempt starts at 1; successful retry does not invoke the final error Handler.
 
-异常诊断保留底层 cause。策略可据 MysqlException 的 sqlState/vendorCode 或 Mongo 驱动异常自行判断，框架不内置可重试错误清单。错误码的数值仍以 Core 为唯一来源，不在这里重新分配。
+Retain underlying causes. Policies may inspect MysqlException sqlState/vendorCode or Mongo exceptions; no built-in retryable list. Core alone allocates error numbers.
 
-### 9.2 易错契约的测试定位
+<a id="92-易错契约的测试定位"></a>
 
-| 契约 | 测试类与方法 |
+### 9.2 Tests for error-prone contracts
+
+| Contract | Test class and method |
 | --- | --- |
-| insert/delete 不提前 SELECT，加载错误不负缓存 | DataContractTest.negativeCacheDeleteAndInsertNeverSelect / loadFailuresAreNotNegativeCached |
-| 必须先加载组且返回同一 Map | DataContractTest.groupsRequireExplicitLoadAndReturnSameMap |
-| 按数据库主键删除组内实体 | DataContractTest.loadedGroupDeletesByDatabaseId |
-| 合法/非法合并矩阵 | DataContractTest.legalMergeTable / illegalMergeTable |
-| 非法 INSERT 不替换缓存对象 | DataContractTest.illegalInsertDoesNotReplaceCachedEntity |
-| 阶段顺序、batch 切分、不跨缓冲合并 | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossBuffers |
-| 重试可选、次数有限、失败后继续处理 | DataContractTest.retryIsOptInBoundedAndKeepsBatchContext / finalFailureAndHandlerFailureDoNotStopLaterBatchesAndCloseReportsIt |
-| 关闭等待当前 pipeline 并处理下一缓冲 | DataContractTest.closeWaitsForActivePipelineAndFlushesNextBuffer |
-| 错误回调中关闭不死锁 | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
-| 日志分表、关闭 drain、不初始化 Schema | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization |
-| 日志失败使用同一 Handler 且继续后续分区 | LogContractTest.logFailuresReachSameHandlerAndDoNotBlockLaterPartitions |
+| No preflight SELECT for insert/delete; no negative caching of failure | DataContractTest.negativeCacheDeleteAndInsertNeverSelect / loadFailuresAreNotNegativeCached |
+| Explicit group loading and original Map | DataContractTest.groupsRequireExplicitLoadAndReturnSameMap |
+| Group entity deletion by database primary key | DataContractTest.loadedGroupDeletesByDatabaseId |
+| Legal/illegal merge matrix | DataContractTest.legalMergeTable / illegalMergeTable |
+| Illegal INSERT preserves cached object | DataContractTest.illegalInsertDoesNotReplaceCachedEntity |
+| Phase order, batch splitting, no cross-buffer merge | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossBuffers |
+| Opt-in bounded retry, continue after failure | DataContractTest.retryIsOptInBoundedAndKeepsBatchContext / finalFailureAndHandlerFailureDoNotStopLaterBatchesAndCloseReportsIt |
+| Closure awaits active pipeline and next buffer | DataContractTest.closeWaitsForActivePipelineAndFlushesNextBuffer |
+| Callback closure rejected without deadlock | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
+| Log partition/drain without Schema initialization | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization |
+| Same log error Handler, continue later partitions | LogContractTest.logFailuresReachSameHandlerAndDoNotBlockLaterPartitions |
 
-这些入口不能证明固定 100ms 宽限期在任意线程暂停下安全，也不能替代真实数据库的故障与兼容性验证。涉及这类保证的新增需求应增加相应实现及验证，而不是扩大现有测试结论。
-
+These tests do not prove arbitrary-pause safety of 100ms grace or replace real database failure/compatibility tests. New guarantees require implementation and verification, not broader claims about existing tests.

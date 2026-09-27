@@ -1,99 +1,126 @@
-# 项目协作规则
+<a id="项目协作规则"></a>
 
-本文件适用于 mana3 整个仓库。后续处理框架需求、设计意见、问题修复和优化时，必须主动判断它们属于哪一层约定，并同步维护对应文档；不要求用户每次指定文档位置。
+# Project Collaboration Rules
 
-## 项目基线
+**[English](AGENTS.md)** | [简体中文](AGENTS.zh-CN.md)
 
-- OGBS = Open Game Backend Specification，规范入口为 [OGBS 文档索引](docs/ogbs/README.md)。
-- Java 实现使用 JDK 25，Maven groupId 为 `cn.managame`，包名为 `cn.managame.*`，源码目录为 `cn/managame/`。
-- 类按职责划分子包，公开 API 与内部实现分开。是否拆成 Maven 模块由独立发布、依赖边界和实际需求决定，不为每个子包机械创建 artifact。
-- Java Network 的连接接口与 Netty 实现在 `game-network` 内统一发布，按 connection、connector、error、netty 分包；属性直接使用 Netty AttributeKey，NetworkServer/NetworkClient 与包级内部实现位于 netty，不再保留自定义 attribute 或 Acceptor/Connector 抽象。
-- Java RPC 按 node、message、call、transport、error、netty 分包；保留内部类的包级封装，不为拆包而扩大公共 API。
-- Java RPC 的 Netty 编解码与适配位于 `game-rpc` 的 `cn.managame.rpc.netty` 包，与 RPC 核心在同一 artifact 发布。
-- Java Data 在 `game-data` 内统一发布，包含 Repository、MySQL/MongoDB 适配和 MySQL 日志；语义规范与 Java 开发规范 分层维护。未实现、未验证或尚在讨论的能力必须明确标注状态。
+This file applies to the entire mana3 repository. For framework requirements, design feedback, fixes, and optimizations, proactively identify the appropriate contract layer and update its documentation. The user need not specify the document location each time.
 
-## 每个组件必须配套两层规范
+<a id="项目基线"></a>
 
-每个游戏服务器框架组件（包括 game-core、game-network、game-runtime、game-data、game-rpc 以及未来新增组件）都必须维护两份独立的规范正文：
+## Project baseline
 
-1. **标准规范（Specification）**：语言无关的职责、模型、可观察行为、顺序、生命周期、所有权、错误、取消、时间与兼容性。
-2. **Java 开发规范（Java Development Specification）**：承接标准的 Java 公开类型/API、默认配置、异常形式、包与 Maven 依赖、线程和资源机制、内部实现约束、扩展接入及验证要求。
+- OGBS = Open Game Backend Specification. Start at the [OGBS documentation index](docs/ogbs/README.md).
+- Java uses JDK 25, Maven groupId `cn.managame`, packages `cn.managame.*`, and source directories under `cn/managame/`.
+- Organize subpackages by responsibility and separate public APIs from internal implementation. Create Maven modules for independent releases, dependency boundaries, or actual requirements, not mechanically for every subpackage.
+- Java Network publishes connection interfaces and Netty implementation together in `game-network`, organized into connection, connector, error, and netty. Attributes use Netty AttributeKey directly. NetworkServer/NetworkClient and package-private implementation live in netty; do not retain custom attribute or Acceptor/Connector abstractions.
+- Java RPC uses node, message, call, transport, error, and netty packages. Preserve package-private internals; do not expand public APIs merely to split packages.
+- Java RPC Netty codecs and integration live in `cn.managame.rpc.netty` inside `game-rpc`, published in the same artifact as the RPC core.
+- Java Data publishes repositories, MySQL/MongoDB adapters, and MySQL logs in one `game-data` artifact. Keep semantic and Java development specifications separate. Clearly label unimplemented, unverified, and undecided capabilities.
 
-两份文档必须互相链接，并同时列入 docs/ogbs/README.md、项目 README 和组件 README。不能用一份 API 列表、模块 README 或聊天记录代替 Java 开发规范；也不能在通用标准中混入仅限 Java 的实现要求。共享 Core 同样遵守两层分离。
+<a id="每个组件必须配套两层规范"></a>
 
-路径统一为 docs/ogbs/OGBS-<Component>-1.0.md 和 docs/ogbs/OGBS-<Component>-Java-25-Specification-1.0.md。在已有文档上维护唯一版本，不另建重复正文。
+## Every component requires two specification layers
 
-新增组件或修改公开契约时，代码、两层规范、示例和相关测试应在同一次任务中同步完成。尚未实现的组件也需要两份设计规范，但必须标注待实现，不能声明已提供或已验证。纯内部优化按下文归属规则处理，无契约变化时不要求机械改写规范。
-## 规范详细程度与设计记忆
+Every framework component, including game-core, game-network, game-runtime, game-data, game-rpc, and future components, must maintain two distinct specification documents:
 
-规范应足以让未参与聊天的维护者继续实现和评审，不能只列条款或方法签名。每个涉及公开行为的设计应按适用范围写清：
+1. **Specification**: language-independent responsibilities, models, observable behavior, ordering, lifecycle, ownership, errors, cancellation, time, and compatibility.
+2. **Java Development Specification**: Java public types/APIs, defaults, exceptions, packages and Maven dependencies, threading and resource mechanisms, internal constraints, extension integration, and validation requirements implementing the standard.
 
-- 前置条件、输入/输出、正常流程及可观察顺序。
-- 拒绝、异常、取消、关闭和并发竞争时的结果；结果是否意味着已经执行或持久化。
-- 对象与资源所有权、线程/上下文、默认值及容量/时间边界。
-- 至少一个能说明易错边界的具体例子，以及对应的源码/验证入口。
-- 已确认的取舍、采用理由和重新评估的触发条件；未实现、未验证、非目标与待决定事项分别标明。
+Both documents must link to each other and appear in docs/ogbs/README.md, the project README, and the component README. An API list, module README, or chat transcript cannot replace a Java development specification. Do not mix Java-only requirements into the general standard. Shared Core follows the same separation.
 
-已确认规则以现有条款 ID 和正文作为后续工作的基线。补充细节时只讨论真正新增或与基线冲突的部分，不要求用户重新确认全部组件设计。旧聊天提议被替代后不得作为新需求恢复；已有设计被用户明确改变时，同步改正文、理由、示例、实现及相关验证。
+Use docs/ogbs/OGBS-<Component>-1.0.md and docs/ogbs/OGBS-<Component>-Java-25-Specification-1.0.md. Maintain one contract with English and Chinese texts in the existing documents, not competing design versions.
 
-理由和流程说明放在相应规范章节，不另建平行版 Spec。理由解释条款，不自行增加 MUST；不能把尚未确定的可选方案写成已生效要求。文档长度不是完整性指标，实际边界和失败路径才是。
+When adding a component or changing a public contract, update code, both specification layers, examples, and relevant tests in the same task. Unimplemented components also need both design documents, clearly marked as pending implementation; do not claim availability or verification. Follow the ownership rules below for internal-only optimizations; unchanged contracts do not require mechanical specification edits.
 
+<a id="规范详细程度与设计记忆"></a>
 
-## 自主判断文档归属
+## Specification depth and design memory
 
-先判断“其他语言实现是否也必须遵守这项要求”，再判断“是否影响可观察行为或互操作”。按下表决定归属，不必仅为文档分类向用户再次确认。
+Specifications must enable maintainers unfamiliar with the chat to continue implementation and review. Lists of clauses or method signatures are insufficient. For each public behavior, document as applicable:
 
-| 变更性质 | 应更新的位置 |
+- Preconditions, inputs/outputs, normal flow, and observable ordering.
+- Rejection, exception, cancellation, shutdown, and race outcomes; whether results imply execution or persistence.
+- Object/resource ownership, threads/contexts, defaults, and capacity/time boundaries.
+- At least one concrete example of an easily misunderstood boundary, with source and validation entry points.
+- Confirmed tradeoffs, rationale, and reconsideration triggers. Distinguish unimplemented, unverified, out-of-scope, and undecided items.
+
+Use existing confirmed clause IDs and text as the baseline. Discuss only new details or conflicts, without asking the user to reconfirm entire component designs. Do not revive chat proposals superseded by later conclusions. When the user explicitly changes a design, update the rules, rationale, examples, code, and validation together.
+
+Keep rationale and flow explanations in the relevant specification sections, not parallel Specs. Rationale explains clauses and does not independently add MUST requirements. Do not present undecided options as active requirements. Length does not establish completeness; real boundaries and failure paths do.
+
+<a id="自主判断文档归属"></a>
+
+## Decide documentation ownership autonomously
+
+First ask whether other language implementations must obey the requirement, then whether observable behavior or interoperability is affected. Use this table; do not ask the user merely to classify documentation.
+
+| Change | Update |
 | --- | --- |
-| 与语言无关的组件职责、数据模型、顺序、生命周期、所有权、背压、错误、取消、时间或兼容性语义 | 对应组件的 OGBS Specification |
-| Java 公共类型、方法签名、注解、异常形式、默认配置、线程机制、Netty 接入、Maven 依赖或包结构 | 对应组件的 Java 开发规范 / 实现标准 |
-| 通用行为变化，同时需要 Java 开发规范 或实现承接 | 同时更新 Specification 和 Java 实现标准，并保持两层一致 |
-| 跨进程字段、字节序、长度、标识、编码或协议版本 | RPC Wire Profile；必要时同步相关组件规范和 Java 编解码说明 |
-| 多组件共享 Metadata、错误码或共享约定 | OGBS Core 的对应章节；组件文档引用它，不重复定义 |
-| 不改变公开契约的内部重构、算法替换或性能优化 | 修改实现及必要测试；只有产生值得长期维护的实现约定时才更新 Java 文档 |
-| 模块组合、构建、使用入口或目录调整 | 同步架构总览、README、依赖图和相关链接 |
+| Language-independent responsibilities, models, ordering, lifecycle, ownership, backpressure, errors, cancellation, time, compatibility | The component's OGBS Specification |
+| Java public types, signatures, annotations, exceptions, defaults, threading, Netty integration, Maven dependencies, packages | The component's Java development / implementation specification |
+| General behavior changes needing Java implementation support | Both layers, consistently |
+| Cross-process fields, byte order, lengths, identifiers, encoding, protocol versions | RPC Wire Profile; related component and Java codec documentation when needed |
+| Shared Metadata, error codes, or conventions | The relevant OGBS Core section; component documents reference it |
+| Internal refactoring, algorithm replacement, optimization without public contract changes | Code and necessary tests; Java documentation only for durable implementation conventions |
+| Module composition, build/usage entry points, directories | Architecture overview, READMEs, dependency diagrams, links |
 
-例如：
+Examples:
 
-- “同 Route 必须串行”属于 Runtime Specification；“使用 ScopedValue 绑定上下文”属于 Java 实现标准。
-- “改业务时间不自动重排任务”属于 Runtime Specification；`GameTime.setClock(Clock)` 的签名属于 Java 实现标准。
-- “RPC Netty 代码放在 game-rpc 中发布”属于 Java 模块布局，不能据此要求其他语言实现依赖 Netty。
-- “减少分配但行为不变”通常是实现优化；如果改变队列容量、拒绝行为或回调顺序，就必须重新审视契约及文档归属。
+- “Same-Route execution must be serial” belongs in the Runtime Specification; “bind contexts using ScopedValue” belongs in the Java implementation specification.
+- “Changing business time does not automatically reschedule tasks” belongs in the Runtime Specification; `GameTime.setClock(Clock)` belongs in the Java implementation specification.
+- Publishing RPC Netty code in game-rpc is a Java layout decision, not a requirement for other languages to depend on Netty.
+- Reducing allocations without changing behavior is usually an implementation optimization. Changes to queue capacity, rejection, or callback order require revisiting contracts and documentation ownership.
 
-不要把某个 Java 实现技巧提升成跨语言要求。也不要把通用行为只写在 Java 文档里，导致其他实现缺少约束。
+Do not elevate Java techniques into cross-language requirements. Do not document general behavior only in Java documents, leaving other implementations unconstrained.
 
-## 文档位置与单一来源
+<a id="文档位置与单一来源"></a>
 
-| 内容 | 文档 |
+## Document locations and single source of truth
+
+| Content | Document |
 | --- | --- |
-| Network 语义 | [OGBS Network Specification](docs/ogbs/OGBS-Network-1.0.md) |
-| Network Java 实现 | [Network Java 开发规范](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) |
-| RPC 语义 | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.md) |
-| RPC Java 实现 | [RPC Java 开发规范](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md) |
-| Runtime 语义 | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) |
-| Runtime Java 实现 | [Runtime Java 开发规范](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
-| Data 语义 | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) |
-| Data Java 实现 | [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
-| Metadata 与共享错误码标准 | [OGBS Core](docs/ogbs/OGBS-Core-1.0.md) |
-| Core Java 开发 | [Core Java 开发规范](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md) |
-| RPC 字节布局 | [RPC Wire Profile](docs/rpc-wire.md) |
-| 组件组合与构建入口 | [架构总览](docs/architecture.md)、[项目 README](README.md) |
+| Network semantics | [OGBS Network Specification](docs/ogbs/OGBS-Network-1.0.md) |
+| Network Java implementation | [Network Java Development Specification](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) |
+| RPC semantics | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.md) |
+| RPC Java implementation | [RPC Java Development Specification](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md) |
+| Runtime semantics | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) |
+| Runtime Java implementation | [Runtime Java Development Specification](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
+| Data semantics | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) |
+| Data Java implementation | [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
+| Shared Metadata and error-code standard | [OGBS Core](docs/ogbs/OGBS-Core-1.0.md) |
+| Core Java development | [Core Java Development Specification](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md) |
+| RPC byte layout | [RPC Wire Profile](docs/rpc-wire.md) |
+| Component composition and build entry points | [Architecture overview](docs/architecture.md), [Project README](README.md) |
 
-同一规则维护一个主要定义位置，其他文档引用它。Core 标准与 Java 开发规范已分离，修改时分别维护共享语义和 Java 绑定。不要创建平行版本的规范来回避修改现有文档。
+Maintain one primary definition per rule and reference it elsewhere. Core's standard and Java development specification are separate: maintain shared semantics and Java bindings in their respective documents. Do not create parallel specifications to avoid editing existing ones.
 
-## 处理后续需求的流程
+<a id="处理后续需求的流程"></a>
 
-1. 读取涉及组件的规范、语言实现标准和相关代码，核对用户当前要求与已确定的最新结论。引用聊天中被后续结论取代的方案不得继续沿用。
-2. 自主判断涉及的文档层次。已明确要求的修改直接落实；探索性意见先评估，不把未确定的提议写成已经生效的 MUST。
-3. 用户明确改变既有设计时，同步修改受影响的规则、实现、示例和测试。发现实现违反现有契约时优先修正实现，不为掩盖缺陷而反向修改规范。
-4. 真正影响业务行为、兼容性或范围且无法从上下文判断的歧义，简要说明后再澄清；文档归属、常规实现细节和可推断的选择自行处理。
-5. 移除失效表述，修正交叉引用、源码链接、模块依赖及示例。说明默认值、失败路径、边界与兼容性影响，避免只记录理想成功流程。
-6. 验证后简要报告实现结果、文档归属和验证结论。没有实际完成的工作不得写成已实现或已验证。
+## Workflow for subsequent requirements
 
-## 验证要求
+1. Read the affected component's standard, language implementation specification, and code. Compare the request with the latest confirmed conclusions; do not use superseded chat proposals.
+2. Decide documentation layers autonomously. Implement explicit requests directly; evaluate exploratory suggestions before making them active MUST requirements.
+3. For explicit design changes, update affected rules, code, examples, and tests. Fix code that violates an existing contract instead of rewriting the specification to hide the defect.
+4. Briefly explain and clarify only unresolved ambiguities materially affecting business behavior, compatibility, or scope. Decide document ownership, routine details, and inferable choices yourself.
+5. Remove obsolete wording and repair cross-references, source links, dependencies, and examples. Explain defaults, failure paths, boundaries, and compatibility effects, not just successful flows.
+6. After validation, briefly report results, documentation ownership, and verification. Never label unfinished work as implemented or verified.
 
-- 行为变化使用能验证契约的测试，关注顺序、拒绝、异常、关闭及并发边界；不为机械改名编写只复述实现的测试。
-- 涉及包迁移、模块合并、Maven 依赖或跨组件接入时，从仓库根目录运行 `mvn clean verify`，避免旧 class 文件掩盖问题。
-- 局部实现修改可先运行相关模块及依赖测试，再按受影响范围执行必要的集成验证。
-- 仅文档修改检查命名、内容一致性和本地链接；修改完整可运行示例时验证示例可编译、可运行，无须因此反复运行无关测试。
+<a id="验证要求"></a>
 
+## Validation requirements
+
+- Test behavioral contracts, focusing on ordering, rejection, exceptions, shutdown, and concurrency boundaries. Do not test mechanical renames by restating implementation.
+- For package moves, module merges, Maven dependencies, or cross-component integration, run `mvn clean verify` from the root to prevent stale class files from hiding issues.
+- For local implementation changes, test the module and dependencies first, then integration appropriate to the impact.
+- For documentation-only changes, check naming, consistency, and local links. If complete runnable examples change, verify compilation and execution without repeatedly running unrelated tests.
+
+<a id="双语文档"></a>
+
+## Bilingual documentation
+
+- Every repository document requires complete English and Simplified Chinese versions. The existing unsuffixed `.md` path is the default English entry; its Chinese counterpart uses `.zh-CN.md` in the same directory, including README and AGENTS.
+- Put an English / Simplified Chinese language switch near the top. Link to matching-language documents within each language. Keep source-code and external links unchanged.
+- Both languages express the same contract, not separate designs. Update both in the same task, preserving clause IDs, API names, defaults, constraints, examples, failure paths, and implementation/validation status.
+- English-first display does not permit semantic changes or removal of Chinese detail. Resolve translation discrepancies against confirmed design and code, then fix both texts.
+- When adding or renaming documents/headings, check pairs, switches, local files, and section anchors. Preserve compatibility anchors for existing inbound links when needed.

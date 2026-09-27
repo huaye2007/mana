@@ -1,78 +1,91 @@
-# OGBS 1.0 规范文档索引
+<a id="ogbs-10-规范文档索引"></a>
 
-**OGBS = Open Game Backend Specification**（开放游戏后端规范）。
+# OGBS 1.0 Specification Index
 
-每个组件必须同时具有一份**标准规范**和一份**Java 开发规范**。下表是唯一规范入口；两层文档共同约束 Java 实现，不能仅凭 API 签名满足合规要求。
+**[English](README.md)** | [简体中文](README.zh-CN.md)
 
-| 组件 | 标准规范（语言无关） | Java 25 开发规范 | 当前实现状态 |
+**OGBS = Open Game Backend Specification**.
+
+Every component requires both a **language-independent specification** and a **Java Development Specification**. This table is the canonical entry point. Both layers constrain Java implementations; signatures alone do not establish conformance.
+
+| Component | Language-independent specification | Java 25 development specification | Implementation status |
 | --- | --- | --- | --- |
-| game-core | [Core Specification](OGBS-Core-1.0.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.md) | 已实现；共享 Metadata 与错误码 |
-| game-runtime | [Runtime Specification](OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.md) | 已实现；Route、Context、Handler、Event、Timer/Cron |
-| game-data | [Data Specification](OGBS-Data-1.0.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.md) | 已实现；真实 MySQL/MongoDB 验证需配置环境 |
-| game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | 已实现；TCP/TLS/WS/WSS |
-| game-rpc | [RPC Specification](OGBS-RPC-1.0.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.md) | 已实现；内部 TCP、多 Slot、调用、心跳/重连 |
+| game-core | [Core Specification](OGBS-Core-1.0.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.md) | Implemented; shared Metadata and error codes |
+| game-runtime | [Runtime Specification](OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.md) | Implemented; Route, Context, Handler, Event, Timer/Cron |
+| game-data | [Data Specification](OGBS-Data-1.0.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.md) | Implemented; real MySQL/MongoDB validation requires configured services |
+| game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS |
+| game-rpc | [RPC Specification](OGBS-RPC-1.0.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.md) | Implemented; internal TCP, multiple Slots, calls, heartbeat/reconnection |
 
-规范版本为 1.0，当前处于仓库草案阶段；Java 模块版本为 1.0.0-SNAPSHOT，基线 JDK 25。规范存在不代表所有能力均已实现或验证，各文档的状态与边界必须据实维护。
+Specifications are version 1.0 repository drafts; Java modules are 1.0.0-SNAPSHOT on JDK 25. A specification's existence does not establish implementation or validation of every capability. Maintain status and limits accurately.
 
-## 两层规范的职责
+<a id="两层规范的职责"></a>
 
-| 文档 | 必须覆盖的内容 |
+## Responsibilities of the two layers
+
+| Document | Required coverage |
 | --- | --- |
-| 标准规范 | 职责与非目标、数据模型、可观察行为、顺序、生命周期、所有权、背压、错误/取消/时间、兼容性和合规检查 |
-| Java 开发规范 | 对应标准、模块/包/依赖、公共 API、默认配置和参数边界、异常形式、线程/资源机制、实现约束、扩展接入、示例与测试/未验证范围 |
-| Wire Profile | 跨进程字段、标识、字节序、长度、编码和协议版本 |
-| 架构与 README | 组件组合、使用入口、构建方式和上述规范链接，不重复定义契约 |
+| Standard specification | Responsibilities/non-goals, data model, observable behavior, order, lifecycle, ownership, backpressure, errors/cancellation/time, compatibility, conformance |
+| Java development specification | Corresponding standard, module/package/dependencies, public APIs, defaults/bounds, exceptions, thread/resource mechanisms, implementation constraints, extensions, examples/tests/unverified scope |
+| Wire Profile | Cross-process fields, identifiers, byte order, lengths, encoding, version |
+| Architecture and README | Composition, entry points, build instructions, specification links; no duplicated contracts |
 
-Java 开发规范包含 API，但不止是 API 参考。语言相关实现方式不能提升为其他语言必须遵守的要求；通用行为也不能只写在 Java 文档中。
+Java development specifications include APIs but are more than API references. Java-specific techniques must not become obligations for other languages; shared behavior must not exist only in Java documents.
 
-MUST / 必须表示合规要求；MUST NOT / 不得表示禁止行为；SHOULD / 应表示可说明理由的推荐；MAY / 可以表示可选能力。条款 ID 用于审查与验证映射，不是运行时错误码。
+MUST indicates a conformance requirement; MUST NOT a prohibition; SHOULD a recommendation permitting justified exceptions; MAY an optional capability. Clause IDs support review/test mapping and are not runtime error codes.
 
-共享 Metadata 和错误码以 Core 标准为单一来源。RPC 字节格式以 [RPC Wire Profile](../rpc-wire.md) 为单一来源；[架构总览](../architecture.md) 解释组件组合，[项目 README](../../README.md) 提供构建入口。
+Core is the sole source for shared Metadata and errors. [RPC Wire Profile](../rpc-wire.md) owns RPC bytes. [Architecture](../architecture.md) explains composition; [project README](../../README.md) provides build entry points.
 
-## 维护与交付规则
+<a id="维护与交付规则"></a>
 
-1. 新增组件时成对创建标准规范和 Java 开发规范，并加入本索引及项目/模块 README。
-2. 通用行为变化同步两层；仅 Java API、依赖、线程或配置变化更新 Java 开发规范；内部优化没有契约变化时不机械改写标准。
-3. 规范与实现不符时修正实现；明确改变设计时同步规则、代码、示例与测试，不为掩盖缺陷反向修改标准。
-4. 文档必须说明默认值、边界、失败路径、兼容性影响及实现/验证状态，不只写理想成功流程。
-5. 更新同一份正文，移除旧结论与失效链接，不保留平行规范。原 Java API 文档已统一迁移到 Java-25-Specification 文件名。
-6. 仅文档修改检查配对、命名、内容分层与本地链接；代码变化按受影响契约测试，模块调整从根运行 mvn clean verify。
+## Maintenance and delivery rules
 
-具体协作规则见 [AGENTS.md](../../AGENTS.md)。完整可运行示例必须实际编译和运行后才标注已验证。
+1. New components need paired standard/Java specifications linked here and in project/module READMEs.
+2. Shared behavior changes update both layers. Java-only APIs, dependencies, threads, or configuration update the Java specification. Internal optimization without contract changes does not mechanically rewrite standards.
+3. Fix implementation deviations. Explicit design changes synchronize rules, code, examples, and tests; never rewrite standards to hide defects.
+4. Explain defaults, limits, failure paths, compatibility, and implementation/validation status, not only successful flows.
+5. Maintain one semantic text in complete English and Chinese versions; remove superseded conclusions/dead links without competing specifications. Former Java API documents use Java-25-Specification filenames.
+6. Documentation-only changes check pairs, naming, layering, and local links. Code changes test affected contracts; module changes run root mvn clean verify.
 
-## 继续设计时从哪里开始
+See [AGENTS.md](../../AGENTS.md) for collaboration rules. Mark complete runnable examples verified only after actually compiling and running them.
 
-以下导航对应现有正文中的详细流程，不建立新的规范副本。先读标准条款确定行为，再读 Java 章节确定实现；未参与历史聊天的维护者也应能据此继续工作。
+<a id="继续设计时从哪里开始"></a>
 
-| 需要补充的细节 | 标准中的基线 | Java 中的实现入口 |
+## Where to continue design work
+
+The following links point into existing detailed flows, without creating extra specification copies. Read standard clauses for behavior, then Java chapters for implementation. Maintainers should not need historical chat participation.
+
+| Detail | Standard baseline | Java implementation entry |
 | --- | --- | --- |
-| Route、内联、排队、容量 | [Runtime §2–3](OGBS-Runtime-1.0.md#2-route-模型) | [Runtime §7](OGBS-Runtime-Java-25-Specification-1.0.md#7-routeexecutor) |
-| Context、Handler、事件、跨 Route 回调 | [Runtime §5–8](OGBS-Runtime-1.0.md#5-context) | [Runtime §4–9](OGBS-Runtime-Java-25-Specification-1.0.md#4-context-与作用域) |
-| 改钟、Timer 取消、Cron 重排 | [Runtime §9](OGBS-Runtime-1.0.md#9-gametimetimer-与-cron) | [Runtime §10](OGBS-Runtime-Java-25-Specification-1.0.md#10-gametimetimer-与-cron) |
-| Repository 身份、缓存、返回 Map | [Data §2–5](OGBS-Data-1.0.md#2-身份) | [Data §2–4](OGBS-Data-Java-25-Specification-1.0.md#2-repository-api) |
-| 合并、重试、错误 Handler、最终关闭 | [Data §6–7](OGBS-Data-1.0.md#6-写回与合并) | [Data §5](OGBS-Data-Java-25-Specification-1.0.md#5-写回实现与适用边界) |
-| MySQL/Mongo/日志分表 | [Data §8–9](OGBS-Data-1.0.md#8-存储适配语义) | [Data §6–8](OGBS-Data-Java-25-Specification-1.0.md#6-mysql-映射) |
-| 建连、成功/取消竞争、资源归属 | [Network §2、6](OGBS-Network-1.0.md#2-连接建立) | [Network §3–4、7](OGBS-Network-Java-25-Specification-1.0.md#3-server) |
-| 发送接纳、背压、消息引用、错误回调 | [Network §3–5](OGBS-Network-1.0.md#3-读写接纳与背压) | [Network §2、6](OGBS-Network-Java-25-Specification-1.0.md#2-connection-与-handler) |
-| WebSocket、pipeline、握手超时 | [Network §7](OGBS-Network-1.0.md#7-binary-websocket-profile) | [Network §5–6](OGBS-Network-Java-25-Specification-1.0.md#5-配置快照与握手参数) |
+| Route, inline execution, queues, capacity | [Runtime §2–3](OGBS-Runtime-1.0.md#2-route-model) | [Runtime §7](OGBS-Runtime-Java-25-Specification-1.0.md#7-routeexecutor) |
+| Context, Handler, events, cross-Route callbacks | [Runtime §5–8](OGBS-Runtime-1.0.md#5-context) | [Runtime §4–9](OGBS-Runtime-Java-25-Specification-1.0.md#4-context-and-scope) |
+| Clock changes, Timer cancellation, Cron rescheduling | [Runtime §9](OGBS-Runtime-1.0.md#9-gametime-timer-and-cron) | [Runtime §10](OGBS-Runtime-Java-25-Specification-1.0.md#10-gametime-timer-and-cron) |
+| Repository identity, cache, returned Map | [Data §2–5](OGBS-Data-1.0.md#2-identity) | [Data §2–4](OGBS-Data-Java-25-Specification-1.0.md#2-repository-api) |
+| Coalescing, retries, error Handler, final closure | [Data §6–7](OGBS-Data-1.0.md#6-write-back-and-coalescing) | [Data §5](OGBS-Data-Java-25-Specification-1.0.md#5-write-back-implementation-and-limits) |
+| MySQL/Mongo/log partitioning | [Data §8–9](OGBS-Data-1.0.md#8-storage-adapter-semantics) | [Data §6–8](OGBS-Data-Java-25-Specification-1.0.md#6-mysql-mapping) |
+| Establishment, success/cancellation, resources | [Network §2,6](OGBS-Network-1.0.md#2-connection-establishment) | [Network §3–4,7](OGBS-Network-Java-25-Specification-1.0.md#3-server) |
+| Send acceptance, backpressure, references, errors | [Network §3–5](OGBS-Network-1.0.md#3-reads-writes-acceptance-and-backpressure) | [Network §2,6](OGBS-Network-Java-25-Specification-1.0.md#2-connection-and-handler) |
+| WebSocket, pipeline, handshake timeout | [Network §7](OGBS-Network-1.0.md#7-binary-websocket-profile) | [Network §5–6](OGBS-Network-Java-25-Specification-1.0.md#5-configuration-snapshots-and-handshake-parameters) |
 
-### 已确认设计如何延续
+<a id="已确认设计如何延续"></a>
 
-各标准 Spec 的“已确认设计取舍”表记录采用理由和重新评估条件。规则本身仍以相应条款为准，解释性时间线和例子帮助理解，不引入另一套契约。未来补一项细节时应注明受影响的条款和 Java 章节，直接沿用未受影响的基线。
+### Continuing confirmed designs
 
-| 变更情况 | 处理方式 |
+Each standard's confirmed-tradeoffs table records rationale and revisit triggers. Clauses remain authoritative; timelines/examples explain them without creating another contract. New details identify affected clauses/Java sections and preserve unaffected baselines.
+
+| Change | Handling |
 | --- | --- |
-| 只是补充已有规则的例子、原因、失败解释 | 更新原章节，不重新讨论已确认选择 |
-| 新增能力且不改变既有行为 | 明确新增范围、参数、失败与验证要求 |
-| 与既有条款冲突 | 说明冲突与影响，再落实用户明确选择的设计 |
-| 实现违反已确定规则 | 修正实现并验证，不能把缺陷改写成设计 |
-| 尚未选择方案 | 标为待决定，不伪装成已实现或 MUST |
-| 已实现但没有相应环境验证 | 保留未验证说明，不用文档补全代替测试 |
+| Add examples/rationale/failure explanation | Update original section; do not reopen confirmed choices |
+| Add capability without changing existing behavior | State scope, parameters, failures, validation |
+| Conflict with an existing clause | Explain conflict/impact, then implement the user's explicit choice |
+| Implementation violates confirmed rules | Fix and test; do not redefine defects as design |
+| No option selected yet | Mark undecided, not implemented or MUST |
+| Implemented without environmental validation | Retain unverified status; prose does not replace tests |
 
-详细规范应包括前置条件、完整流程、结果含义、失败/关闭/竞争边界、所有权、默认值、例子、理由与验证入口。Java 技巧和已知实现限制留在 Java 文档；跨语言可观察行为留在标准中。
+Detailed specifications include prerequisites, full flow, result meaning, failure/closure/races, ownership, defaults, examples, rationale, and verification entry points. Java techniques/limitations belong in Java documents; cross-language observable behavior belongs in standards.
 
+<a id="组件组合"></a>
 
-## 组件组合
+## Component composition
 
 ```mermaid
 flowchart LR
@@ -80,15 +93,17 @@ flowchart LR
     C --> D[game-data]
     C --> R[game-rpc]
     N[game-network] --> R
-    RT --> A[应用接入层]
+    RT --> A[Application integration]
     D --> A
     R --> A
 ```
 
-箭头由被依赖组件指向使用方。当前根构建包含 Core、Runtime、Data、Network、RPC；game-examples 与自动 RPC→Runtime 接入尚未实现。Network 和 Runtime 相互独立，应用接入层负责业务编解码、身份校验、Context 构造、回复及 Route 调度。
+Arrows run from dependency to consumer. The root build includes Core, Runtime, Data, Network, and RPC. game-examples and automatic RPC→Runtime integration are unimplemented. Network and Runtime are independent; application integration owns business codecs, identity validation, Context creation, replies, and Route scheduling.
 
-## 版本与验证边界
+<a id="版本与验证边界"></a>
 
-已使用的 Metadata Key 编码和错误码含义不得随意改变；破坏 Wire 的变更须使用新协议版本或明确的新 Profile。历史聊天附件未导入仓库，不据此声称与旧附件的字节格式兼容。
+## Version and validation boundaries
 
-各规范列出对应源码与测试。单元/集成测试通过不等于生产容量认证，跨语言互操作、公网/native transport、实机数据库与故障恢复须分别报告验证状态。
+Do not casually change used Metadata key encodings or error meanings. Breaking Wire changes require a new protocol version or explicit new Profile. Historical chat attachments are not imported; no byte compatibility with them is claimed.
+
+Each specification links sources/tests. Unit/integration success is not production-capacity certification. Report cross-language interoperability, public-network/native transport, real databases, and failure recovery separately.
