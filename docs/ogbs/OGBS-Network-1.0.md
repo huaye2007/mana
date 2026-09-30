@@ -29,13 +29,19 @@ Other language implementations need not use Netty, Java generics, EventLoop, or 
 | WebSocket | TCP and WebSocket Upgrade |
 | WSS | TCP, TLS, and WebSocket Upgrade |
 
+TLS, when configured, protects the byte stream below application protocols: inbound decryption precedes HTTP/WebSocket or business decoding, and outbound encryption follows their encoding. Connection delivery waits for the configured TLS handshake and peer verification. A secure endpoint must not silently fall back to plaintext when TLS configuration is missing; bindings define configuration and validation mechanisms.
+
 **N-EST-02** Each valid attempt has exactly one terminal result: success or failure. Failure, cancellation, timeout, and success races have one winner. Failure must not produce that connection's business lifecycle callbacks. Closure after success must not reclassify establishment as failed.
 
 **N-EST-03** Successful delivery order: create Connection → onConnected → successful connection result. An exception from onConnected goes to onException without reversing transport success. Closing inside onConnected may deliver an already closed or closing Connection as success.
 
+Business messages arriving immediately after protocol establishment must also be delivered after onConnected; internal completion-notification scheduling must not lose these valid messages. For example, a server may send its first message inside onConnected, while its peer still receives its own onConnected before onMessage.
+
 **N-EST-04** Establishment must terminate through failure or timeout; bindings specify timeout configuration and stage boundaries. Interrupting a synchronous wait must cancel unfinished work and release its underlying connection, leaving no unclaimed successful connection.
 
-**N-EST-05** Each connect is independent. Concurrent attempts and multiple connections to the same target are allowed. Client temporarily tracks unfinished attempts, not business connections.
+Implementations specify handshake deadline starting points, whether TLS time is included, and the relationship to TCP connect timeouts; no additional framework timeout-configuration API is required. Expiry closes the undelivered underlying connection without onConnected. Successful handshakes deliver immediately without waiting for the deadline.
+
+**N-EST-05** Each connect is independent. Concurrent attempts and multiple connections to the same target are allowed. Server/Client maintain neither connection collections nor unfinished-attempt registries. Per-connection processing delivers messages and lifecycle events to the application handler.
 
 <a id="21-四种建立流程"></a>
 
@@ -140,11 +146,15 @@ Different connections may concurrently use the same handler. Data bound in onCon
 
 **N-LIFE-02** close is nonblocking and idempotent, initiating underlying closure without guaranteeing accepted-message drain. isActive reflects actual underlying availability and need not become false before close returns. onDisconnected follows actual inactivity.
 
+Before onDisconnected, deliver complete inbound messages produced while finalizing input already received, according to the binding's decoding and ownership rules. For example, an end-of-input decoder may emit its final message after the transport becomes inactive; onMessage precedes onDisconnected even though isActive is already false. This does not guarantee delivery of incomplete/invalid messages or draining of accepted outbound writes.
+
 **N-LIFE-03** Exceptions from onConnected, onMessage, onEvent, and onDisconnected go to onException. Failure of onException receives final diagnostics only: no recursion or automatic Network closure.
 
 **N-LIFE-04** If onDisconnected cleanup throws, one onException may immediately follow. No application callbacks occur after cleanup ends. Closure carries no framework CloseCause/ReasonCode; applications keep their own reason.
 
 **N-LIFE-05** Transport consumes TLS/WS establishment events; they are not ordinary onEvent notifications. Pre-establishment failures go to the Client result or Server diagnostics, never onException(Connection, cause).
+
+Diagnostics distinguish recognizable peer disconnection and protocol rejection from unknown or programming errors, avoiding repeated error stacks for common establishment failures. Bindings define classification and log levels; this does not change failure results, resource cleanup or established-connection exception callbacks.
 
 <a id="41-回调失败的具体走向"></a>
 
@@ -161,6 +171,7 @@ onException throws
 → no recursive onException
 
 Underlying connection becomes inactive
+→ finalize received input and deliver any complete final messages
 → onDisconnected
 → report one onException if cleanup throws
 → lifecycle ends; late errors receive diagnostics only
@@ -196,11 +207,11 @@ Inbound borrowing and outbound transfer are independent contracts. Writing a mes
 
 **N-SERVER-01** Server start is synchronous; successful return means listening. Failure throws a binding-specific operation exception and releases owned resources. A Server starts only once; failure or closure requires a new instance to start again.
 
-**N-SERVER-02** localAddress returns the actual listening address, supporting dynamic ports. Idempotent close stops accepts and releases owned infrastructure. Cancel undelivered establishment attempts so they cannot become new connections after accepts stop.
+**N-SERVER-02** localAddress returns the actual listening address, supporting dynamic ports. Idempotent close stops accepts and releases owned infrastructure. It does not enumerate accepted channels. An establishment callback that observes the closed endpoint rejects delivery and closes its own channel; a delivery that already passed the open-endpoint check may complete concurrently with close.
 
-**N-CLIENT-01** Client close rejects new attempts and cancels unfinished ones, eventually waking synchronous waiters or reporting asynchronous failure. Attempts already claimed by success still report success.
+**N-CLIENT-01** Client close rejects new attempts and releases owned infrastructure without enumerating unfinished attempts. Existing attempts finish independently through their transport result, timeout, channel closure or synchronous-wait interruption. A readiness callback observing the closed Client reports failure rather than delivering a Connection. An attempt that passed the open-endpoint check may still claim success against its own failure/cancellation; claimed success remains success.
 
-**N-RESOURCE-01** Bindings distinguish owned and borrowed resources. Never close external resources. Server/Client do not maintain delivered connections as a business collection. Shutting down owned execution resources may invalidate them; when resources are borrowed, higher layers close successful connections separately.
+**N-RESOURCE-01** Bindings distinguish owned and borrowed resources. Never close external resources. Server/Client keep no cross-connection collection, including during establishment. Higher layers own delivered connections and any indexing or batch closure; owned execution-resource shutdown may also close associated connections.
 
 <a id="61-资源所有权矩阵"></a>
 
@@ -209,14 +220,14 @@ Inbound borrowing and outbound transfer are independent contracts. Writing a mes
 | Resource | Creator/provider | Closure responsibility |
 | --- | --- | --- |
 | Server listening endpoint | Server | Server.close |
-| Undelivered establishment attempt | Server / Client | Reclaim on failure, cancellation, or owner closure |
+| Undelivered establishment attempt | Its own connection operation | Reclaim on transport failure, timeout, channel closure, wait cancellation or rejection when it observes endpoint closure |
 | Framework-created execution infrastructure | Server / Client | Reclaim when its owner closes |
 | Injected execution infrastructure | Application | Application, never Network |
 | Delivered Connection | Held by higher layer after delivery | Higher layer chooses lifetime; owned infrastructure shutdown also invalidates it |
 
-Client may connect sequentially/concurrently to several targets. Successful attempts leave the pending set without moving to a permanent ConnectionManager. Player/node/session lookup belongs to higher-level mappings with disconnection cleanup.
+Client may connect sequentially/concurrently to several targets. Each operation keeps only its own completion state. Player/node/session lookup belongs to higher-level mappings with disconnection cleanup.
 
-With borrowed resources, Server closure stops listening and Client closure stops new connections; neither automatically closes every delivered connection. With owned resources, shutdown also closes associated channels as a resource lifecycle consequence, not business connection management.
+With borrowed resources, Server closure stops listening and Client closure stops new attempts; neither actively closes established channels nor immediately cancels handshakes in progress. For example, a silent TLS peer remains subject to its handshake deadline after endpoint close; a later successful handshake is rejected if delivery observes the closed endpoint. Callers needing immediate resource-wide shutdown close resources they own. With owned resources, shutdown closes associated channels through the underlying runtime.
 
 <a id="62-关闭方法不能互相替代"></a>
 
@@ -235,6 +246,8 @@ Network does not await business responses, drain all sends, or gracefully stop R
 **N-WS-03** Maximum message size constrains both individual frame payloads and aggregate messages. Bindings specify a default. HTTP Upgrade content and business message limits are separate.
 
 **N-WS-04** Match the full Server endpoint path exactly, excluding query. /game differs from /game/ and /game/child. No wildcards, route parameters, or automatic normalization.
+
+**N-WS-05** V1 servers select no WebSocket subprotocol and add no separate business handshake. A client requiring a subprotocol fails establishment without onConnected if the server returns no matching selection. Results are local: the server may already have sent the Upgrade and completed its own establishment before receiving client closure. A subprotocol is not login, authentication or RPC readiness.
 
 <a id="71-消息边界与端点示例"></a>
 

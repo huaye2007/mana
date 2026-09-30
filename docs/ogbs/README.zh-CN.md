@@ -82,12 +82,14 @@ flowchart LR
     C --> D[game-data]
     C --> R[game-rpc]
     N[game-network] --> R
+    N --> E[game-example]
+    R --> E
     RT --> A[应用接入层]
     D --> A
     R --> A
 ```
 
-箭头由被依赖组件指向使用方。当前根构建包含 Core、Runtime、Data、Network、RPC；game-examples 与自动 RPC→Runtime 接入尚未实现。Network 和 Runtime 相互独立，应用接入层负责业务编解码、身份校验、Context 构造、回复及 Route 调度。
+箭头由被依赖组件指向使用方。当前根构建包含 Core、Runtime、Data、Network、RPC 和 [game-example](../../game-example/README.zh-CN.md)。game-example 中的 Network/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。自动 RPC→Runtime 接入与 Data 示例尚未实现。Network 和 Runtime 相互独立，应用接入层负责业务编解码、身份校验、Context 构造、回复及 Route 调度。
 
 ## 版本与验证边界
 

@@ -78,6 +78,31 @@ class RpcIntegrationTest extends RpcTestSupport {
         }
     }
 
+    @Test void oldBusinessReplyAfterPeerRecreationCannotCompleteNewCall() throws Exception {
+        Probe pa = new Probe(), pb = new Probe();
+        try (RpcNode a = node(1, pa); RpcNode b = node(2, pb)) {
+            a.addPeer(2, b.localAddress(), 1);
+            await(() -> a.peers.get(2).hasCandidate());
+            a.call(2, new RpcRequest(101, null), value -> {});
+            Request old = take(pb.requests);
+            a.removePeer(2);
+            assertEquals(PEER_REMOVED, take(pa.failures));
+            await(() -> !b.peers.containsKey(1));
+            a.addPeer(2, b.localAddress(), 1);
+            await(() -> a.peers.get(2).hasCandidate());
+            a.call(2, new RpcRequest(202, null), value -> {});
+            Request fresh = take(pb.requests);
+            assertNotEquals(old.id(), fresh.id());
+            assertEquals(RpcSendStatus.ACCEPTED, b.reply(1, old.slot(), old.route(),
+                    new RpcResponse(old.id(), 0, null, Unpooled.wrappedBuffer(new byte[] {1}))));
+            assertEquals(RpcSendStatus.ACCEPTED, b.reply(1, fresh.slot(), fresh.route(),
+                    new RpcResponse(fresh.id(), 0, null, Unpooled.wrappedBuffer(new byte[] {2}))));
+            Result result = take(pa.responses);
+            assertEquals(202, result.command()); assertEquals(fresh.id(), result.id());
+            assertArrayEquals(new byte[] {2}, result.body());
+            assertTrue(pa.responses.isEmpty()); assertTrue(pa.failures.isEmpty());
+        }
+    }
     @Test void retriesInitialConnectionFailureThenConnects() throws Exception {
         Probe pa = new Probe(), pb = new Probe();
         java.net.InetSocketAddress address;

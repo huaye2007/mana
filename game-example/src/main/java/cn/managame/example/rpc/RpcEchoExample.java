@@ -1,4 +1,4 @@
-package cn.managame.rpc.example;
+package cn.managame.example.rpc;
 
 import cn.managame.rpc.call.*;
 import cn.managame.rpc.message.*;
@@ -21,7 +21,7 @@ public final class RpcEchoExample {
         try (RpcNode server = RpcNode.builder().nodeId(1).bindAddress(new InetSocketAddress("127.0.0.1", 0))
                     .handler(serverHandler).build();
              RpcNode client = RpcNode.builder().nodeId(2).bindAddress(new InetSocketAddress("127.0.0.1", 0))
-                    .handler(clientHandler).build()) {
+                    .handler(clientHandler).maxPendingCalls(1024).build()) {
             serverHandler.node = server;
             server.start();
             client.start();

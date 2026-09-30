@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ConnectRaceTest extends NetworkTestSupport {
-    @Test void closeCancelsPendingHandshakeExactlyOnceOnEventLoop() throws Exception {
+    @Test void externalClientCloseLeavesHandshakeToChannelOutcome() throws Exception {
         Probe probe = new Probe();
         var group = new NioEventLoopGroup(1);
         AtomicReference<Channel> channel = new AtomicReference<>();
@@ -36,6 +36,10 @@ class ConnectRaceTest extends NetworkTestSupport {
             });
             assertTrue(active.await(5, TimeUnit.SECONDS));
             client.close();
+            channel.get().eventLoop().submit(() -> {}).sync();
+            assertTrue(channel.get().isActive(), "Borrowed-group channels are not closed by Client.close");
+            assertFalse(outcome.isDone(), "Close does not traverse unfinished attempts");
+            channel.get().close().sync();
             assertInstanceOf(IllegalStateException.class, get(outcome));
             channel.get().closeFuture().sync();
             channel.get().eventLoop().submit(() -> {}).sync();
@@ -108,7 +112,7 @@ class ConnectRaceTest extends NetworkTestSupport {
         }
     }
 
-    @Test void serverCloseCancelsHandshakeButKeepsEstablishedExternalConnections() throws Exception {
+    @Test void externalServerCloseKeepsChannelsAndRejectsLateHandshake() throws Exception {
         var boss = new NioEventLoopGroup(1);
         var worker = new NioEventLoopGroup(1);
         Probe serverProbe = new Probe();
@@ -123,12 +127,19 @@ class ConnectRaceTest extends NetworkTestSupport {
             Connection established = client.connect(uri);
             Channel establishedChannel = take(accepted);
             Connection remote = take(serverProbe.connected);
-            raw.connect(server.localAddress());
+            Connection handshaking = raw.connect(server.localAddress());
             Channel handshakingChannel = take(accepted);
             handshakingChannel.eventLoop().submit(() -> {}).sync();
 
             server.close();
-            handshakingChannel.closeFuture().sync();
+            worker.submit(() -> {}).sync();
+            assertTrue(handshakingChannel.isActive(), "No registry traversal on Server.close");
+            assertTrue(establishedChannel.isActive());
+            assertEquals(WriteStatus.ACCEPTED, handshaking.write(io.netty.buffer.Unpooled.copiedBuffer(
+                    "GET /game HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                    + "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+                    java.nio.charset.StandardCharsets.US_ASCII)));
+            assertTrue(handshakingChannel.closeFuture().await(5, TimeUnit.SECONDS));
             take(rawProbe.disconnected);
             worker.submit(() -> {}).sync();
             assertFalse(boss.isShuttingDown());
@@ -187,4 +198,151 @@ class ConnectRaceTest extends NetworkTestSupport {
             shutdown(boss);
         }
     }
+
+    @Test void externalClientRejectsReadinessAfterClosure() throws Exception {
+        var group = new NioEventLoopGroup(1);
+        Probe probe = new Probe();
+        CountDownLatch initializing = new CountDownLatch(1), resume = new CountDownLatch(1);
+        CompletableFuture<Throwable> failure = new CompletableFuture<>();
+        AtomicInteger outcomes = new AtomicInteger();
+        try (var server = NetworkServer.builder().bindAddress(LOCAL).handler(new Probe()).build();
+             var client = NetworkClient.builder().eventLoopGroup(group).handler(probe).pipeline(p -> {
+                 initializing.countDown();
+                 try {
+                     if (!resume.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Initialization not released");
+                 } catch (InterruptedException e) {
+                     Thread.currentThread().interrupt();
+                     throw new IllegalStateException(e);
+                 }
+             }).build()) {
+            server.start();
+            client.connectAsync(server.localAddress(), new ConnectCallback() {
+                public void onSuccess(Connection c) {
+                    outcomes.incrementAndGet(); c.close();
+                    failure.completeExceptionally(new AssertionError("Late success"));
+                }
+                public void onFailure(Throwable cause) { outcomes.incrementAndGet(); failure.complete(cause); }
+            });
+            assertTrue(initializing.await(5, TimeUnit.SECONDS));
+            client.close();
+            assertFalse(failure.isDone());
+            assertFalse(group.isShuttingDown());
+            resume.countDown();
+            assertInstanceOf(IllegalStateException.class, get(failure));
+            group.submit(() -> {}).sync();
+            assertEquals(1, outcomes.get());
+            assertEquals(0, probe.connections.get());
+            assertEquals(0, probe.disconnects.get());
+        } finally {
+            resume.countDown();
+            shutdown(group);
+        }
+    }
+
+
+    @Test void interruptDuringOnConnectedClosesUndeliverableConnection() throws Exception {
+        CountDownLatch callbackEntered = new CountDownLatch(1), resume = new CountDownLatch(1);
+        CompletableFuture<Boolean> interrupted = new CompletableFuture<>();
+        Probe probe = new Probe() {
+            public void onConnected(Connection connection) {
+                super.onConnected(connection);
+                callbackEntered.countDown();
+                try {
+                    if (!resume.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Callback not released");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+            }
+        };
+        try (var server = NetworkServer.builder().bindAddress(LOCAL).handler(new Probe()).build();
+             var client = NetworkClient.builder().handler(probe).build()) {
+            server.start();
+            Thread waiter = Thread.ofPlatform().start(() -> {
+                try { client.connect(server.localAddress()); interrupted.complete(false); }
+                catch (NetworkException error) { interrupted.complete(Thread.currentThread().isInterrupted()); }
+                catch (Throwable error) { interrupted.completeExceptionally(error); }
+            });
+            try {
+                assertTrue(callbackEntered.await(5, TimeUnit.SECONDS));
+                waiter.interrupt();
+                assertTrue(get(interrupted), "Interrupt must reclaim even after success was claimed");
+            } finally {
+                resume.countDown();
+                waiter.join(5000);
+            }
+            assertFalse(waiter.isAlive());
+            Connection delivered = take(probe.connected);
+            assertSame(delivered, take(probe.disconnected));
+            assertFalse(delivered.isActive());
+            assertEquals(1, probe.connections.get());
+            assertEquals(1, probe.disconnects.get());
+            assertTrue(probe.errors.isEmpty());
+        } finally { resume.countDown(); }
+    }
+
+    @Test void terminatedExecutorReportsFailureOnCallingThread() {
+        var group = new NioEventLoopGroup(1);
+        AtomicInteger outcomes = new AtomicInteger();
+        AtomicReference<Thread> notified = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Probe probe = new Probe();
+        try (var client = NetworkClient.builder().eventLoopGroup(group).handler(probe).build()) {
+            shutdown(group);
+            client.connectAsync(LOCAL, new ConnectCallback() {
+                public void onSuccess(Connection connection) { outcomes.addAndGet(100); connection.close(); }
+                public void onFailure(Throwable cause) {
+                    failure.set(cause);
+                    outcomes.incrementAndGet();
+                    notified.set(Thread.currentThread());
+                }
+            });
+            assertEquals(1, outcomes.get());
+            assertSame(Thread.currentThread(), notified.get());
+            assertInstanceOf(NetworkException.class, failure.get());
+            assertInstanceOf(RejectedExecutionException.class, failure.get().getCause());
+            assertThrows(NetworkException.class, () -> client.connect(LOCAL));
+            assertEquals(0, probe.connections.get());
+        } finally { shutdown(group); }
+    }
+
+    @Test void interruptBeforeChannelCreationClosesLateChannel() throws Exception {
+        var group = new NioEventLoopGroup(1);
+        CountDownLatch creating = new CountDownLatch(1), resume = new CountDownLatch(1);
+        CompletableFuture<Channel> created = new CompletableFuture<>();
+        CompletableFuture<Boolean> interrupted = new CompletableFuture<>();
+        Probe probe = new Probe();
+        try (var client = NetworkClient.builder().eventLoopGroup(group).handler(probe).channelFactory(() -> {
+            creating.countDown();
+            try {
+                if (!resume.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Factory not released");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+            Channel channel = new io.netty.channel.socket.nio.NioSocketChannel();
+            created.complete(channel);
+            return channel;
+        }).build()) {
+            Thread waiter = Thread.ofPlatform().start(() -> {
+                try { client.connect(LOCAL); interrupted.complete(false); }
+                catch (NetworkException cause) { interrupted.complete(Thread.currentThread().isInterrupted()); }
+                catch (Throwable cause) { interrupted.completeExceptionally(cause); }
+            });
+            try {
+                assertTrue(creating.await(5, TimeUnit.SECONDS));
+                waiter.interrupt();
+                assertTrue(get(interrupted));
+            } finally { resume.countDown(); waiter.join(5000); }
+            assertFalse(waiter.isAlive());
+            Channel channel = get(created);
+            assertTrue(channel.closeFuture().await(5, TimeUnit.SECONDS));
+            group.submit(() -> {}).sync();
+            assertFalse(channel.isOpen());
+            assertEquals(0, probe.connections.get());
+            assertEquals(0, probe.disconnects.get());
+            assertTrue(probe.errors.isEmpty());
+        } finally { resume.countDown(); shutdown(group); }
+    }
+
 }

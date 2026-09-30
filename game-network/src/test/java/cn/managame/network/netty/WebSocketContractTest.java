@@ -92,7 +92,7 @@ class WebSocketContractTest extends NetworkTestSupport {
         headers.set("X-Token", "changed");
         options.headers().set("X-Token", "also changed");
         try (var server = NetworkServer.builder().bindAddress(LOCAL).webSocket("/game").handler(new Probe()).pipeline(p ->
-                p.addAfter("managame-http-aggregate", "headers", new ChannelInboundHandlerAdapter() {
+                p.addAfter("network-http-aggregate", "headers", new ChannelInboundHandlerAdapter() {
                     public void channelRead(ChannelHandlerContext ctx, Object m) {
                         if (m instanceof HttpRequest request && request.headers().contains("X-Token"))
                             headersSeen.add(request.headers().get("X-Token"));
@@ -108,22 +108,6 @@ class WebSocketContractTest extends NetworkTestSupport {
             assertEquals(1, probe.connections.get());
             assertThrows(NetworkException.class, () -> client.connect(uri(server, "/game"),
                     WebSocketConnectOptions.of(new DefaultHttpHeaders(), "unsupported-subprotocol")));
-        }
-    }
-
-    @Test void tlsFailureNeverCreatesConnectionAndWsIgnoresClientSsl() throws Exception {
-        Probe probe = new Probe();
-        try (var server = NetworkServer.builder().bindAddress(LOCAL).webSocket("/game").sslContext(serverTls).handler(new Probe()).build();
-             var client = NetworkClient.builder().webSocket().handler(probe).build()) {
-            server.start();
-            URI target = URI.create(uri(server, "/game").toString().replace("ws:", "wss:"));
-            assertThrows(NetworkException.class, () -> client.connect(target), "Default TLS must reject an untrusted certificate");
-            assertEquals(0, probe.connections.get()); assertEquals(0, probe.disconnects.get()); assertTrue(probe.errors.isEmpty());
-        }
-        try (var server = NetworkServer.builder().bindAddress(LOCAL).webSocket("/game").handler(new Probe()).build();
-             var client = NetworkClient.builder().webSocket().sslContext(clientTls).handler(probe).build()) {
-            server.start(); client.connect(uri(server, "/game")).close();
-            assertEquals(1, probe.connections.get());
         }
     }
 

@@ -14,6 +14,8 @@ Maven: `cn.managame:game-network:1.0.0-SNAPSHOT`. JDK 25 without preview. Root P
 
 ## 1. Package structure
 
+This binding is a thin Netty facade. Native pipeline handlers remain the extension mechanism; ConnectionHandler receives decoded messages and lifecycle events. Do not add endpoint-owned connection registries or batch connection management to support shutdown. The closure contract below makes this ownership boundary explicit.
+
 | Package | Public API |
 | --- | --- |
 | cn.managame.network.connection | Connection, ConnectionHandler, WriteStatus |
@@ -21,9 +23,9 @@ Maven: `cn.managame:game-network:1.0.0-SNAPSHOT`. JDK 25 without preview. Root P
 | cn.managame.network.error | NetworkException |
 | cn.managame.network.netty | NetworkServer, NetworkServerBuilder, NetworkClient, NetworkClientBuilder |
 
-NettyConnection, ConnectAttempt, NetworkChannelInitializer, ConnectionLifecycle, ChannelTransport, ConnectionEstablishment, TlsTransport, WebSocketTransport, ConnectionHandlerAdapter, and WS payload adapters remain package-private in netty. Server/Client entries share their implementation package to avoid exposing internal collaboration types merely for package separation.
+NettyConnection, NetworkChannelInitializer, WebSocketTransport, ConnectionHandlerAdapter, and WS payload adapters remain package-private in netty. Server/Client entries share their implementation package to avoid exposing internal collaboration types merely for package separation.
 
-There is no attribute package or custom ConnectionKey: use Netty AttributeKey. Concrete NetworkServer/NetworkClient replace Acceptor/Connector. Module entry and runnable examples: [game-network](../../game-network/README.md).
+There is no attribute package or custom ConnectionKey: use Netty AttributeKey. Concrete NetworkServer/NetworkClient replace Acceptor/Connector. Module entry: [game-network](../../game-network/README.md). Runnable examples and their execution tests live in [game-example](../../game-example/README.md), under cn.managame.example.network, outside the game-network artifact. Example users must update their imports and module dependency; no old-package alias is retained. Component contract tests remain in game-network.
 
 <a id="2-connection-与-handler"></a>
 
@@ -108,7 +110,6 @@ Complete builder configuration:
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | Append repeatedly |
 | webSocket(String path) | Enable WS; maximum message 1 MiB |
 | webSocket(String path, int maxMessageSize) | Positive maximum message size |
-| sslContext(SslContext) | Server context required; enables TLS TCP / WSS |
 | bossGroup(EventLoopGroup) | Create NioEventLoopGroup(1) by default |
 | workerGroup(EventLoopGroup) | Create standard NioEventLoopGroup() by default |
 | channelFactory(ChannelFactory&lt;? extends ServerChannel&gt;) | NioServerSocketChannel::new |
@@ -138,7 +139,7 @@ public interface ConnectCallback {
 }
 ```
 
-A Client can connect to several targets or repeatedly to one target. Sync/async share ConnectAttempt and a single CAS success/failure arbitration. Claim success before onConnected; deliver the final success callback afterward. Callback exceptions only log, producing neither a second result nor ConnectionHandler.onException.
+A Client can connect to several targets or repeatedly to one target. Sync/async share the same native Promise-based connection flow. Claim success before onConnected; deliver the final success callback afterward. Callback exceptions only log, producing neither a second result nor ConnectionHandler.onException.
 
 Synchronous connect from any EventLoop of that Client immediately throws IllegalStateException. Interrupted waits restore the interrupt flag, cancel the attempt, close the Channel, and throw NetworkException. Even if success just won, close the connection the synchronous caller cannot receive.
 
@@ -149,7 +150,6 @@ Valid asynchronous attempt callbacks run on the selected Netty EventLoop. Pre-at
 | handler(ConnectionHandler) | Required |
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | Append in registration order |
 | webSocket() / webSocket(int maxMessageSize) | WS mode; default 1 MiB |
-| sslContext(SslContext) | Client context required |
 | eventLoopGroup(EventLoopGroup) | Create standard NioEventLoopGroup() by default |
 | channelFactory(ChannelFactory&lt;? extends Channel&gt;) | NioSocketChannel::new |
 | option(ChannelOption&lt;T&gt;, T) | Native Bootstrap option |
@@ -157,32 +157,37 @@ Valid asynchronous attempt callbacks run on the selected Netty EventLoop. Pre-at
 
 TCP accepts only SocketAddress and WS only URI; mode mismatch throws IllegalStateException. URI requires a valid host and ws/wss scheme, with default ports 80/443. Reject user-info, fragment, port 0, and out-of-range ports.
 
-ws:// does not enable TLS even with a configured SslContext. wss:// uses the custom context or a lazily created default JDK client context. Default trust comes from the JVM and TLS enables hostname verification. A configured context enables TLS TCP, requiring InetSocketAddress for the hostname. Server does not generate certificates/contexts.
+TLS is configured only through native pipeline handlers; there is no sslContext(...) builder method or automatically created client context. After all pipeline configurers run, exactly one SslHandler may be present and it must be the first handler. wss:// requires it; ws:// rejects it instead of silently ignoring TLS. TCP uses TLS when that handler is present. The caller configures trust, certificates, client/server mode, peer host/port, hostname verification and handshake timeouts. See [native TLS configuration](#native-tls-configuration).
 
 <a id="41-connectattempt-的完成协议"></a>
 
-### 4.1 ConnectAttempt completion protocol
+<a id="41-connectattempt-completion-protocol"></a>
 
-Internal one-shot ConnectAttempt holds the selected EventLoop, completion CAS, Channel, successful Connection/failure cause, synchronous latch, and optional callback. Shared sync/async coordination avoids divergent semantics.
+### 4.1 Native connection result
+
+NetworkClient uses one native Netty Promise<Connection> per call for the result, cancellation and synchronous await. It creates the Bootstrap and Channel on the selected EventLoop, serializing initialization and readiness/failure handling. Custom channel factories therefore run on that EventLoop and must not block it. There is no result-wrapper class, separate completion CAS, cancellation marker or attached-Channel field.
+
+The Promise uses ImmediateEventExecutor so cleanup and notification listeners still execute when the channel executor has terminated. This creates no worker thread. Result listeners explicitly dispatch ConnectCallback to the selected EventLoop; rejected dispatch falls back to the current thread. A channel-bound Promise alone could lose these notifications when its executor rejects listener execution.
 
 ```text
-Create attempt and add to pending
-→ create/attach Channel
+Create an independent Promise (no endpoint registry)
+→ run Bootstrap on the selected EventLoop
 → transport completes with application pipeline assembled
-→ claimSuccess CAS
+→ check the result is unfinished and Client/channel are open
+→ claim delivery with Promise.setUncancellable()
 → create Connection and invoke onConnected
-→ store success, remove from pending, wake waiter/invoke onSuccess
+→ store success and wake waiter/invoke onSuccess
 ```
 
-A winning failure CAS stores the cause, marks cancellation, closes the attached Channel, removes pending, and notifies the result. If cancellation precedes Channel attachment, attach checks cancellation and closes it, preventing resource escape.
+Failure uses Promise.tryFailure; interrupted waiting uses Promise.cancel(false). A result listener closes the Bootstrap channel for failure/cancellation. If a channel is created after cancellation, adding the listener to the completed Promise still closes it; initialization also rejects a completed result before business delivery. No endpoint registration/removal callback is needed.
 
-Claiming success deliberately precedes onConnected. Otherwise Client.close could report failure after business code had received the Connection. Once claimed, onConnected exceptions go only to ConnectionHandler.onException, never ConnectCallback.onFailure.
+After checking isDone, setUncancellable arbitrates only against the waiting thread cancellation. It is not a general success/failure lock: Netty still allows tryFailure on an uncancellable Promise. Initialization, channel readiness and transport failure handling are serialized on the EventLoop; no other thread may independently fail a successfully claimed result. onConnected runs before setSuccess. Its exceptions go only to ConnectionHandler.onException, and closing inside it cannot produce ConnectCallback.onFailure.
 
 <a id="42-中断和回调线程例外"></a>
 
 ### 4.2 Interruption and callback thread exceptions
 
-An interrupted synchronous await closes the attached Channel even if success was just claimed: the caller exits exceptionally and cannot take the success value. Restore the interrupt flag and throw NetworkException without manufacturing a second asynchronous result.
+An interrupted synchronous await first cancels the Promise. If cancellation wins, the channel cleanup listener reclaims the underlying channel, including late creation. If success was already claimed, cancellation cannot win; an additional listener closes the successful Connection after onConnected returns. For example, interrupting a waiter while onConnected is blocked returns NetworkException immediately with the interrupt flag restored; releasing the callback then closes its undeliverable Connection. This produces no second result.
 
 Normal asynchronous results use the selected EventLoop; pre-attempt validation failure calls onFailure on the caller thread. A terminated borrowed EventLoop that rejects notification requires one current-thread fallback. Higher layers therefore cannot assume onFailure always has a Channel EventLoop context or unconditionally call synchronous connect/close inside callbacks.
 
@@ -192,9 +197,9 @@ ConnectCallback failures receive diagnostics only, not ConnectionHandler.onExcep
 
 ## 5. Configuration snapshots and handshake parameters
 
-Builders permit repeated build. Each instance snapshots handler, pipeline list, options, and transport settings. Without external groups, instances create separate resources; supplied groups are explicitly shared. Snapshots do not deeply copy handler, SslContext, or lambda-captured state. Builders are not concurrent configurators.
+Builders permit repeated build. Each instance snapshots handler, pipeline list, options, and transport settings. Without external groups, instances create separate resources; supplied groups are explicitly shared. Snapshots do not deeply copy handler or lambda-captured state (including captured SslContext). Builders are not concurrent configurators.
 
-Null handler/pipeline/group/factory/option/value arguments are rejected immediately. Missing required configuration at build throws IllegalStateException; invalid paths, nonpositive sizes, and wrong SSL context modes throw IllegalArgumentException.
+Null handler/pipeline/group/factory/option/value arguments are rejected immediately. Missing required configuration at build throws IllegalStateException; invalid paths and nonpositive sizes throw IllegalArgumentException.
 
 ```java
 public final class WebSocketConnectOptions {
@@ -207,40 +212,42 @@ public final class WebSocketConnectOptions {
 }
 ```
 
-Copy HttpHeaders at construction and return a fresh copy from headers(). Defaults are empty headers and null subprotocol; options can safely serve several connects. Server does not negotiate subprotocols by default; a client requesting one fails if the server omits it. Advanced servers may configure native Netty WebSocket handlers through the pipeline; no Auth/Router/HTTP API is added.
+Copy HttpHeaders at construction and return a fresh copy from headers(). Defaults are empty headers and null subprotocol; options can safely serve several connects. Servers do not negotiate subprotocols or expose a subprotocol builder setting. Clients retain per-connect WebSocketConnectOptions for external WS services. A required subprotocol without a matching response fails client establishment; the server may already have completed Upgrade before receiving closure, so the two local results are not a transaction. Native handlers can inspect HTTP Upgrade in pipeline(...); no Auth/Router/HTTP API is added.
 
 <a id="51-快照的深度和可复用范围"></a>
 
 ### 5.1 Snapshot depth and reuse
 
-Changing builder options or appending pipelines after build affects only later builds, never existing Server/Client configuration. Handler, SslContext, and captured objects remain shared references; snapshot does not copy their mutable internals.
+Changing builder options or appending pipelines after build affects only later builds, never existing Server/Client configuration. Handler and captured objects remain shared references; snapshot does not copy their mutable internals.
 
 Each Channel invokes configurers to create its codecs. Create non-Sharable decoders inside the configurer instead of adding one external instance to every connection. Applications verify @Sharable and concurrency safety when sharing handlers.
 
 WebSocketConnectOptions separately copies headers. Changing either original headers or a headers() result does not change the options. This enables independent attempts to reuse them, without implying that Server interprets or authenticates the headers.
+
+WebSocket handshake timeouts use native Netty defaults directly, with no separate builder setting or framework default constant. Configure TLS timeouts through native SslHandler. The earlier server-subprotocol and custom WS-timeout builder entries are removed; callers must remove those calls and recompile.
 
 <a id="6-pipeline-与超时"></a>
 
 ## 6. Pipeline and timeouts
 
 ```text
-TCP: [SslHandler / TLS handshake observer] → ConnectionLifecycle → user pipeline → ConnectionHandler adapter
-WS:  [SslHandler / TLS handshake observer] → HTTP codec / HTTP aggregator / WS protocol / frame aggregator
-     → WS handshake observer → ConnectionLifecycle → binary decoder/encoder → user pipeline → ConnectionHandler adapter
+TCP: [caller SslHandler] → user pipeline → ConnectionHandler adapter
+WS:  [caller SslHandler] → HTTP codec / HTTP aggregator / WS protocol / frame aggregator
+     → WS handshake observer → binary decoder/encoder → user pipeline → ConnectionHandler adapter
 ```
 
 Run configurers anew per Channel, in registration order for pipeline(a).pipeline(b). Create separate non-Sharable codecs. Outbound processing traverses user encoders in reverse, then wraps ByteBuf as BinaryWebSocketFrame. Inbound aggregation retains content while the Netty decoder releases the original frame.
 
-Protocol-specific observers consume TLS/WS events. ConnectionLifecycle precedes user handlers and observes actual inactivity; the business message/error adapter is last. TCP includes no business framing. IdleStateHandler events reach onEvent using native types. Custom asynchronous handlers maintain propagation and ordering; do not delete/reorder internal `managame-*` handlers or fabricate lifecycle/handshake events.
+The WS observer bounds the server establishment deadline and forwards the native successful handshake event. The terminal ConnectionHandlerAdapter handles TLS/WS completion events directly and delivers business callbacks; it exposes no intermediate readiness Future. Its temporary closeFuture listener handles pre-delivery closure even before inactive reaches the tail. TCP includes no business framing. IdleStateHandler events reach onEvent using native types. Custom asynchronous handlers maintain propagation and ordering; do not delete/reorder internal `network-*` handlers or fabricate lifecycle/handshake events.
 
-Internal names support native insertion, such as HTTP Upgrade validation after `managame-http-aggregate` and TLS configuration on `managame-tls`. Use sslContext(...) for TLS to participate in establishment semantics; manually inserting SslHandler is not auto-detected.
+Internal handler names use the component-based network- prefix, independent of the project name or Java package. Reserve these names for framework handlers; user handlers must have distinct names because Netty rejects duplicates. This replaces the former managame- prefix without aliases: callers using addBefore/addAfter/get by name must migrate. Handler order, events and wire behavior are unchanged. Internal names support native insertion, such as HTTP Upgrade validation after `network-http-aggregate`. TLS has a caller-chosen handler name: use `pipeline.addFirst("ssl", ...)` during initialization. The assembler discovers that SslHandler and waits for its handshakeFuture; TLS handshake events never reach ConnectionHandler.onEvent.
 
 | Parameter | Current default and configuration |
 | --- | --- |
 | TCP connect | Netty CONNECT_TIMEOUT_MILLIS, 30 seconds; option |
 | TLS handshake | SslHandler default 10 seconds; native pipeline handler |
-| WS client handshake | WebSocketClientProtocolHandler default 10 seconds |
-| WS server establishment | At most 10 seconds from Channel active, including silent/no-Upgrade peers; EventLoop timer canceled on success/closure |
+| WS client handshake | Native WebSocketClientProtocolConfig default, currently 10 seconds; timer starts when channelActive initiates the handshake, including time waiting for TLS |
+| WS server establishment | Read the native WebSocketServerProtocolConfig default deadline, currently 10 seconds; from channelActive through silent-peer waiting, TLS and Upgrade; cancel timer on success/closure |
 | HTTP Upgrade body | HttpObjectAggregator 64 KiB, independent of business messages |
 | Binary WebSocket message | 1 MiB for frame payload and aggregate; builder-adjustable |
 | NIO / socket options | Netty defaults; native option / childOption |
@@ -251,20 +258,19 @@ Reject Text with close code 1003. Oversized frames/aggregates and WS violations 
 
 ### 6.1 Assembly timing and event direction
 
-NetworkChannelInitializer adds transport handlers, ConnectionLifecycle, payload adapters, user configurers, and finally ConnectionHandlerAdapter during Channel initialization. Only after assembly succeeds does it mark initialization complete. Connection creation requires that marker, channel activation, every registered handshake prerequisite, and the owner's success claim. Configurers can configure assembled native handlers before handshake completion; assembly and connection delivery remain distinct.
+NetworkChannelInitializer.configure adds the write-error entry, optional WebSocket protocol/payload handlers, then runs user configurers. Configurers add SslHandler first, ahead of all existing handlers. The assembler validates its placement and WS URI scheme, adds the terminal adapter, supplies the configured SslHandler and WS mode to it, and marks initialization complete. Delivery requires successful assembly, activation reaching the adapter, all configured handshakes and endpoint admission. Handler construction order does not determine byte-processing order; final pipeline position does.
 
 Inbound events generally run head to tail; writes tail to head. Main internal order (brackets optional):
 
 ```text
-managame-write-errors
-→ [managame-tls → managame-tls-handshake]
-→ [managame-http → managame-http-aggregate
-   → server managame-websocket-path → managame-websocket
-   → managame-websocket-aggregate → managame-websocket-handshake]
-→ managame-transport
-→ [managame-binary-in → managame-binary-out]
+[caller SslHandler]
+→ network-write-errors
+→ [network-http → network-http-aggregate
+   → server network-websocket-path → network-websocket
+   → network-websocket-aggregate → network-websocket-handshake]
+→ [network-binary-in → network-binary-out]
 → user codecs/event handler
-→ managame-connection
+→ network-connection
 ```
 
 For WS, user encoders create ByteBuf, binary-out wraps BinaryWebSocketFrame, then WS/TLS encodes it. TCP adds neither binary adaptation nor a business length header.
@@ -279,27 +285,30 @@ Native addBefore/addAfter insertion must preserve handshake, lifecycle, and rele
 
 ### 6.2 Internal responsibilities and extension boundaries
 
-NetworkPipeline and TransportGate have been removed. Assembly order and lifecycle coordination remain necessary, but neither component interprets concrete protocol events or infers endpoint roles from nullable arguments.
+Netty implements TLS/WS protocols; the adapter directly connects completion events to business delivery. There is no generic Transport, separate establishment protocol or lifecycle coordinator.
 
 | Internal component | Responsibility |
 | --- | --- |
-| NetworkServer / NetworkClient | Select explicit server/client transport factories; own listening, pending attempts, resource closure, and admission |
-| [NetworkChannelInitializer](../../game-network/src/main/java/cn/managame/network/netty/NetworkChannelInitializer.java) | Assemble shared stages in order; mark initialization complete only after every configurer succeeds |
-| [ChannelTransport](../../game-network/src/main/java/cn/managame/network/netty/ChannelTransport.java) | Internal protocol/payload assembly boundary: `addProtocolHandlers` adds protocol handlers and registers handshake prerequisites; `addPayloadHandlers` adds payload adapters after the lifecycle handler. Plain TCP requires no extra handshake |
-| [TlsTransport](../../game-network/src/main/java/cn/managame/network/netty/TlsTransport.java) / [WebSocketTransport](../../game-network/src/main/java/cn/managame/network/netty/WebSocketTransport.java) | Own protocol handlers, handshake event translation, protocol-specific deadlines/rejection, and payload adaptation; TLS wraps TCP or WS |
-| [ConnectionLifecycle](../../game-network/src/main/java/cn/managame/network/netty/ConnectionLifecycle.java) | Coordinate initialization, activation, handshake prerequisites, one terminal establishment outcome, actual disconnect, and application error forwarding |
-| [ConnectionEstablishment](../../game-network/src/main/java/cn/managame/network/netty/ConnectionEstablishment.java) | Owner-specific success claim/result/cleanup; ConnectAttempt implements client completion, Server supplies admission and pending removal |
-| ConnectionHandlerAdapter | Create NettyConnection, invoke application callbacks, release borrowed messages, and isolate callback errors |
+| NetworkServer / NetworkClient | Configure listening/connection creation and owned EventLoopGroups; supply the open-endpoint check. Client also holds the native result Promise for each call, without a connection/attempt registry |
+| [NetworkChannelInitializer](../../game-network/src/main/java/cn/managame/network/netty/NetworkChannelInitializer.java) | Assemble handlers/configurers, validate TLS placement and URI scheme, and supply the TLS reference and WS mode to the terminal adapter |
+| [WebSocketTransport](../../game-network/src/main/java/cn/managame/network/netty/WebSocketTransport.java) | Assemble binary WS protocol/payload handlers; handle establishment deadlines and protocol rejection, forwarding native success events |
+| [ConnectionHandlerAdapter](../../game-network/src/main/java/cn/managame/network/netty/ConnectionHandlerAdapter.java) | Directly check delivery prerequisites, create Connection, invoke business handlers and complete the client result on the EventLoop; release inbound references and isolate exceptions |
 
-ConnectionLifecycle has no TLS/HTTP/WS dependency and does not inspect ConnectAttempt. Its position before user handlers ensures a decoder cannot hide actual inactivity. The terminal adapter stays after user codecs to receive decoded business messages. Combining them would lose one of these event positions or mix application decoding with transport observation.
+TCP delivers after assembly and channelActive reaching the tail. TLS checks on native SslHandshakeCompletionEvent and requires SslHandler.handshakeFuture success. WS uses the native WebSocket handshake success event; WSS requires both WS success and native TLS success. None creates an intermediate ready Promise, WS completion Promise or PromiseCombiner. Only the client retains a Promise<Connection> for the connection result; the server needs no result Promise.
 
-All prerequisites are registered during transport assembly, before initialization is marked complete. Each one-shot handshake token can complete only its own prerequisite; duplicate completion cannot satisfy another protocol. Creation requires initialization, activation, all prerequisites, and a successful owner claim. Failure/closure is terminal: late completion cannot revive a connection. Clear owner references before business delivery, retain the claimed owner locally until onConnected returns, then deliver success even if onConnected closed the connection.
+The adapter checks the endpoint-supplied BooleanSupplier and, for clients, arbitrates against waiter cancellation with result Promise.setUncancellable. In the same event-handling call it creates Connection, invokes onConnected, then completes the client success result. There is no queued Connection creation after a readiness Future completes. TLS/WS handshake events are consumed at the tail rather than reaching ConnectionHandler.onEvent. Native user handlers may observe them but must preserve their order and forward them.
 
-Server snapshots its transport composition at build time; start only creates infrastructure and binds the listener. Its private AcceptedConnection owns pending membership and the temporary close listener. A short pending lock orders success claim/removal against stopping admission: a prior success claim leaves the cancellation set, while an earlier close prevents delivery. Neither callbacks nor channel closure execute under this lock. Terminal establishment removes the temporary listener, so successful channels do not retain server cleanup ownership. Client similarly adds/removes attempts under its pending lock, reports rejection outside it, and passes the completed attempt directly to its removal callback without a self-reference array; completion clears that callback reference.
+A temporary closeFuture listener is removed on business delivery or establishment failure. It handles pre-delivery closure, including before the adapter is added. Establishment failure closes the current Channel and yields one client failure or server diagnostics without business lifecycle callbacks. After delivery, only terminal channelInactive reports disconnection. Successful native protocol completion cannot override initialization failure.
 
-For example, an additional internal stream handshake can add its own observer, register a prerequisite, and translate its protocol's completion/failure into that prerequisite or lifecycle failure. It need not add branches to ConnectionLifecycle. The observer owns its timeout and cancels it on completion/disconnect. TLS and WS follow this pattern; WS bounds silent server peers for 10 seconds from channelActive, separately from business heartbeat/read-idle policies.
+For example, when Netty defers Promise listeners to bound recursion, a handshake success event followed immediately by the first binary message must still produce onConnected → onMessage. Direct event handling removes the intermediate notification window without buffering messages or adding a connection registry. See ConnectionSetupTest.nestedHandshakeNotificationDeliversFirstMessageBeforeReturning. NetworkContractTest.firstMessagesCanBeSentInsideOnConnected verifies immediate sends by both peers over real TCP/TLS/WS/WSS.
 
-This boundary is package-private, not a new public transport registry or a promise to support UDP/QUIC. Public pipeline(...) remains for native handler/codec customization; merely adding a handler does not register an establishment prerequisite. New transports still need defined message boundaries, ownership, rejection, configuration, and contract tests. No extra Maven artifacts or public internal-access bridges are introduced.
+Netty fully implements TLS/WS; completion handling includes no RPC, login or business negotiation. Neither peer overrides the native WS handshake timeout, currently 10 seconds. The server reads that same deadline from native configuration to bound silent peers from channelActive, including TLS establishment; receiving Upgrade does not reset the total deadline. The client uses the native Netty WS handshake timer. A timeout bounds an unfinished handshake; successful handshakes deliver onConnected immediately. TCP connect and both peer TLS timeouts are independent; the first failure or expiry ends the attempt. Timers depend on EventLoop execution and are not strict wall-clock bounds when it is blocked; timeout/failure closes the channel.
+
+There is no HashSet, ChannelGroup, shared admission monitor or cross-connection cancellation list. Per-channel processing stays on its EventLoop; native Promises hold individual connection results. Server synchronizes only administrative start/close, and Client CAS makes resource closure one-shot. These administration mechanisms do not participate in message delivery or connection registration. This removes global bookkeeping, not a claim of measured throughput improvement.
+
+The terminal adapter receives user codec output before channelInactive, then calls onDisconnected once. EOF tail messages may therefore reach onMessage while Connection.isActive is false; borrowed references are still released when callbacks throw. Ordered offloaded handlers must forward reads/errors before inactive, and Netty dispatches the adapter on its Channel EventLoop. No timer bypasses that ordering. Swallowing inactive can prevent notification. A decodeLast exception emitted by Netty after inactive receives diagnostics only under the existing post-lifecycle rule.
+
+There is no generic Transport interface or TLS wrapper. WebSocket keeps concrete assembly because the binary message profile requires HTTP Upgrade, frame aggregation and payload adaptation. Native SslHandler is the only user-installed handler recognized as an establishment prerequisite. Arbitrary business handshakes do not join readiness automatically. Dynamic TLS insertion, SNI handlers that later install SslHandler, STARTTLS and multiple nested TLS handlers are outside this initialization contract; they require a separate design before support is claimed.
 
 <a id="63-写入错误的路由"></a>
 
@@ -307,15 +316,52 @@ This boundary is package-private, not a new public transport registry or a promi
 
 voidPromise avoids exposing/maintaining a completion Future per send. Its failures may originate at the pipeline head; traversing a WS protocol handler directly can trigger its default closure for ordinary outbound errors.
 
-After establishment, managame-write-errors uses ConnectionLifecycle's directly held ChannelHandlerContext to redirect these errors into the application path, preserving user pipeline/onException handling without looking up a handler by name. It neither swallows errors nor disables invalid inbound WS-frame closure. Pre-establishment errors still fail the handshake.
+After business delivery, network-write-errors uses the last protocol ChannelHandlerContext captured during assembly to forward errors after protocol handlers and through payload/user codecs to the terminal adapter. It preserves user pipeline/onException handling without looking up handlers by name or using another lifecycle controller. It neither swallows errors nor disables invalid inbound WS-frame closure. Pre-establishment errors still fail the handshake.
 
 A custom native handler may itself close Channel. Network's ordinary-error policy cannot undo that action; integrators must inspect their exceptionCaught implementations.
+
+
+<a id="native-tls-configuration"></a>
+
+### 6.4 Native TLS configuration
+
+Configure one fresh SslHandler per Channel before initialization finishes. Place it first so inbound bytes are decrypted before HTTP/WS/business decoding and outbound bytes are encrypted after encoding. TCP activation may precede TLS completion; it is not connection success. Netty may queue outbound handshake-related application writes until TLS finishes; they must not go onto the wire as plaintext.
+
+The following builder fragments assume caller-created serverContext, clientContext and ConnectionHandler handler. The client captures the intended endpoint because remoteAddress may still be null during channel initialization. A builder used for multiple targets needs a configuration strategy that supplies the correct peer identity for each connection.
+
+```java
+NetworkServer server = NetworkServer.builder()
+        .bindAddress(new InetSocketAddress(8443))
+        .pipeline(p -> p.addFirst("ssl", serverContext.newHandler(p.channel().alloc())))
+        .handler(handler)
+        .build();
+
+String host = "localhost";
+int port = 8443;
+NetworkClient client = NetworkClient.builder()
+        .pipeline(p -> {
+            SslHandler ssl = clientContext.newHandler(p.channel().alloc(), host, port);
+            var parameters = ssl.engine().getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            ssl.engine().setSSLParameters(parameters);
+            ssl.setHandshakeTimeoutMillis(10_000);
+            p.addFirst("ssl", ssl);
+        })
+        .handler(handler)
+        .build();
+```
+
+SslContext/SslHandler, InetSocketAddress and NetworkServer/NetworkClient are native Netty, JDK and game-network types respectively. The caller creates contexts with suitable keys and trust configuration; creating a client handler with a host alone is not a substitute for explicitly configuring hostname verification. No framework code changes trust settings or engine parameters. Add webSocket("/game") to the server and webSocket() to the client, then use wss://localhost:8443/game for WSS; both endpoints still explicitly add TLS.
+
+A missing handler for wss://, TLS with ws://, multiple SslHandlers, or an SslHandler placed after another handler is a pipeline configuration error. The client reports NetworkException retaining IllegalArgumentException as its cause; the server diagnoses and closes the affected accepted channel. Handshake failure/timeout creates no Connection and produces no business onException/onDisconnected. Owned-group shutdown closes unfinished handshakes; borrowed-group handshakes continue to their next result or timeout and then reject delivery if the endpoint is closed. See NativeTlsTest and NetworkContractTest.roundTripAndOrderedWrites.
+
+This replaces sslContext(...) and implicit WSS context creation. The migration is source-incompatible for callers of that method; replace it with explicit pipeline configuration. The onConnected-after-handshake contract is unchanged.
 
 <a id="7-资源与关闭"></a>
 
 ## 7. Resources and closure
 
-Server closes the listening Channel, cancels undelivered handshakes, then shuts down owned boss/worker groups. Client rejects new attempts, cancels pending, then shuts down its owned group. Successful connections are not a business collection; owned group shutdown naturally closes associated Channels, while applications separately close successful connections on external groups.
+Server marks itself closed, closes the listener and shuts down owned boss/worker groups. Client marks itself closed and shuts down its owned group. Neither traverses connections or attempts. Owned-group shutdown naturally closes associated Channels. With borrowed groups, existing channels remain caller-owned; unfinished operations settle through their next result, native timeout or channel closure.
 
 Callers always manage external groups and SslContext. No automatic Epoll/KQueue detection. Native transport requires matching group and channelFactory.
 
@@ -342,9 +388,9 @@ Run synchronous infrastructure operations outside related EventLoops. Connection
 
 ### 7.2 Closure intersecting successful delivery
 
-Client.close cancels unfinished attempts but preserves already claimed success. Subsequent owned-group shutdown may invalidate that successful Connection; handle its normal lifecycle.
+An open-endpoint check is the admission point for a ready connection. If close is observed first, Server rejects that channel and Client reports IllegalStateException. Delivery that has already passed this check may finish concurrently with close; the client still arbitrates against interruption/transport failure using its native Promise. Owned-group shutdown may invalidate a successfully delivered Connection, which follows normal disconnect handling.
 
-With external groups, Client closure does not traverse successful connections. Higher layers wanting batch closure must hold and explicitly close that batch. Internal pending exists only during establishment and is not a connection inventory.
+With external groups, close returns without waiting for or cancelling handshakes. For example, Client.close while a TLS peer is silent leaves its Channel active until native handshake timeout or caller-driven closure; the eventual callback sees closed and reports failure once. Do not disable native timeouts and then rely on endpoint close as a cancellation mechanism. An outstanding TCP connect that fails before readiness may instead report NetworkException. Applications needing a batch shutdown manage their own connections/resources.
 
 <a id="8-失败与兼容性"></a>
 
@@ -354,7 +400,7 @@ With external groups, Client closure does not traverse successful connections. H
 | --- | --- |
 | Invalid arguments, missing required configuration, lifecycle misuse | Java argument/state exceptions above; async entries call onFailure except null callback |
 | bind/connect/TLS/WS/pipeline initialization failure | NetworkException preserving cause |
-| Client close cancels pending | IllegalStateException |
+| Readiness or pre-connect check observes closed Client | IllegalStateException; no immediate notification guarantee for an already in-flight borrowed-group operation |
 | Established Decoder/I/O/Handler error | Original Throwable → onException |
 | onException / ConnectCallback throws | Final System.Logger diagnostics |
 | INACTIVE / NOT_WRITABLE | WriteStatus; caller keeps ownership |
@@ -369,17 +415,34 @@ New codecs must preserve three-state write acceptance and ownership. New transpo
 
 Heartbeats, IdleStateHandler, custom HTTP Upgrade checks, and authentication use native Netty integration or higher-layer composition; there is no separate framework DSL. A unified capability first needs observable behavior and resource responsibilities, then changes to both specifications. Convenience alone does not justify default reconnection, automatic closure, or business send queues.
 
-Runnable entry: [NetworkEchoExample](../../game-network/src/main/java/cn/managame/network/example/NetworkEchoExample.java) and its test below. Diagrams, reference-count explanations, and tables here explain design; they are not standalone runnable programs.
+Runnable entry: [NetworkEchoExample](../../game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) and its test below. Diagrams, reference-count explanations, and tables here explain design; they are not standalone runnable programs.
+
+### 8.2 Establishment and late-error logging
+
+NetworkSupport uses the System.Logger named cn.managame.network. Classify server establishment failures and late transport exceptions after the business lifecycle ends as follows. Client establishment failures still go to the connection result without an additional duplicate framework error log.
+
+| Type | Diagnostics |
+| --- | --- |
+| ClosedChannelException, SocketException, PrematureChannelClosureException | DEBUG disconnect summary |
+| SSLException, WebSocketHandshakeException, CorruptedFrameException, TooLongFrameException | DEBUG protocol-rejection summary |
+| Other exceptions, including initialization/configuration and unknown errors | ERROR with the original Throwable and stack |
+
+Unwrap at most 8 DecoderException layers for classification; never treat every DecoderException as normal invalid input. For example, DecoderException wrapping IllegalArgumentException remains ERROR. These are type-based categories, not proof of the root cause of each disconnection. DEBUG summaries contain only context, reason category, remote address and exception type, without a Throwable, exception message, peer headers or body. Skip summary formatting when DEBUG is disabled. At the default INFO level these recognizable establishment failures produce no error stacks; enable DEBUG for this logger to investigate handshake rejection.
+
+For example, a raw TCP probe disconnecting from a WS port reclaims its Channel with only a DEBUG summary; a configuration exception during pipeline initialization keeps its ERROR stack. Late TLS/WS failures follow the same classification instead of returning as ERROR after closure. Established onException routing is unchanged; exceptions thrown by user onException or ConnectCallback remain ERROR. This policy controls only the framework logger, not Netty/application logging backends, and adds no global rate-limit state. Source: [NetworkSupport](../../game-network/src/main/java/cn/managame/network/netty/NetworkSupport.java); validation: EstablishmentLoggingTest.
 
 <a id="9-验证与边界"></a>
 
 ## 9. Validation and limits
 
+- [EstablishmentLoggingTest](../../game-network/src/test/java/cn/managame/network/netty/EstablishmentLoggingTest.java): stackless DEBUG summaries for disconnect/rejection, silence at INFO, original stacks for unknown errors and late TLS-error classification.
 - [NetworkContractTest](../../game-network/src/test/java/cn/managame/network/netty/NetworkContractTest.java): real TCP/TLS/WS/WSS, write order, lifecycle, backpressure, attributes, reference counting, business exceptions, snapshots, external resources.
-- [WebSocketContractTest](../../game-network/src/test/java/cn/managame/network/netty/WebSocketContractTest.java): fragments, controls, Text/oversize rejection, exact paths, header snapshots, untrusted TLS certificates, validation.
-- [ConnectRaceTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectRaceTest.java): pending closure, interrupt restoration, concurrent completion, close inside onConnected, server closure during initialization, and separation of pending versus established connections on external groups.
-- [ConnectionLifecycleTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectionLifecycleTest.java): independent handshake prerequisites, initialization failure, late completion after failure/closure, owner cancellation, transport-independent write-error routing, and silent WS timeout/cancellation.
-- [NetworkEchoExampleTest](../../game-network/src/test/java/cn/managame/network/example/NetworkEchoExampleTest.java): compile/run the complete example.
+- [WebSocketContractTest](../../game-network/src/test/java/cn/managame/network/netty/WebSocketContractTest.java): fragments, controls, Text/oversize rejection, exact paths, header snapshots and validation.
+- [ConnectRaceTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectRaceTest.java): independent result races, interruption, closure inside onConnected, late readiness rejection, and external-group channels surviving endpoint close until their own outcome.
+- [ConnectionSetupTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectionSetupTest.java): handlerAdded failure, write-error routing past WS policy, server silent-peer deadline/cancellation using the native default, and native client timeout for silent Upgrade.
+- [NativeTlsTest](../../game-network/src/test/java/cn/managame/network/netty/NativeTlsTest.java): explicit TLS placement/count, URI consistency, trust and hostname failures, handshake timeout/cancellation, TLS success without WS Upgrade success, and plaintext rejection before HTTP processing.
+- [DisconnectOrderingTest](../../game-network/src/test/java/cn/managame/network/netty/DisconnectOrderingTest.java): EOF tail delivery before disconnect, borrowed-reference release on callback failure, tail output followed by decodeLast failure, duplicate disconnect suppression, and ordered offloaded decoding on a real TCP connection.
+- [NetworkEchoExampleTest](../../game-example/src/test/java/cn/managame/example/network/NetworkEchoExampleTest.java): compile/run the complete example in game-example; run mvn -pl game-example -am test.
 
 Run `mvn -pl game-network -am test` for module tests and `mvn clean verify` for the repository. Tests generate temporary certificates with the current JDK keytool, limit Netty default threads to 2, and force the Windows JDK Selector wakeup pipe to TCP using a test-only unusable unixdomain.tmpdir to avoid intermittent AF_UNIX connect failure. Production code does not change JVM properties.
 
@@ -392,16 +455,34 @@ Public-network/native-transport/production-capacity certification and cross-lang
 | Contract | Test class and method |
 | --- | --- |
 | Four transports and ordered writes | NetworkContractTest.roundTripAndOrderedWrites |
+| Both peers send immediately inside onConnected over all four transports | NetworkContractTest.firstMessagesCanBeSentInsideOnConnected |
 | Rejection ownership, backpressure, send failure | NetworkContractTest.ownershipBackpressureAndOutboundFailure |
 | Handler exceptions, ordinary events, inbound retain | NetworkContractTest.handlerExceptionsEventsAndRetain |
 | onConnected before success; callback failure cannot create a second result | NetworkContractTest.asyncSuccessRunsAfterConnectedAndCallbackFailureIsNotConnectFailure |
 | Borrowed groups stay open; no blocking own EventLoop | NetworkContractTest.externalGroupsKeepEstablishedConnectionsAndRejectBlockingCalls |
 | Snapshots and per-Channel pipeline order | NetworkContractTest.snapshotsAndPerChannelPipelineOrder |
-| Ordinary outbound errors do not auto-close either TCP/WS peer | NetworkContractTest.outboundFailuresDoNotAutoCloseEitherPeer |
-| Server closure cancels pending handshakes but preserves successful connections on external groups | ConnectRaceTest.serverCloseCancelsHandshakeButKeepsEstablishedExternalConnections |
+| Ordinary outbound errors do not auto-close TCP/TLS/WS/WSS peers | NetworkContractTest.outboundFailuresDoNotAutoCloseEitherPeer |
+| External Server close preserves established/handshaking channels and rejects later delivery | ConnectRaceTest.externalServerCloseKeepsChannelsAndRejectsLateHandshake |
 | Server closure during initialization prevents late delivery | ConnectRaceTest.serverCloseDuringInitializationPreventsLateDelivery |
-| Pending closure notifies once | ConnectRaceTest.closeCancelsPendingHandshakeExactlyOnceOnEventLoop |
+| EOF tail delivery, reference ownership, decodeLast failure, and ordered offloaded disconnect | DisconnectOrderingTest |
+| External Client close does not traverse attempts; subsequent channel outcome reports once | ConnectRaceTest.externalClientCloseLeavesHandshakeToChannelOutcome / externalClientRejectsReadinessAfterClosure |
+| Handshake and first-message ordering during nested Promise notifications | ConnectionSetupTest.nestedHandshakeNotificationDeliversFirstMessageBeforeReturning |
 | Interrupted wait reclaims resources and restores flag | ConnectRaceTest.interruptCancelsHandshakeAndRestoresFlag |
+| Interrupt after success claim; fallback after executor termination; late Channel creation | ConnectRaceTest.interruptDuringOnConnectedClosesUndeliverableConnection / terminatedExecutorReportsFailureOnCallingThread / interruptBeforeChannelCreationClosesLateChannel |
 | Success/close race and close inside onConnected | ConnectRaceTest.successAndCloseRaceHasOneOutcomePerAttempt / onConnectedCloseStillReportsSuccessfulConnect |
 
-These methods are regression entry points. Revisit relevant contracts when changing timing, ownership transfer, pipeline order, or CAS claim points. A working TCP echo alone does not prove all Network behavior.
+These methods are regression entry points. Revisit relevant contracts when changing timing, ownership transfer, pipeline order, or success claim points. A working TCP echo alone does not prove all Network behavior.
+
+<a id="92-突发连接与资源规模"></a>
+
+### 9.2 Connection bursts and resource scale
+
+A NetworkClient is a reusable connection factory, not one physical connection. Concurrent connectAsync calls use independent results and channels; there is no client-wide connection lock or single-target restriction. Each client built without eventLoopGroup(...) immediately constructs a separate NioEventLoopGroup. Netty 4.1.135.Final normally configures twice the available processor count, unless overridden by io.netty.eventLoopThreads. Worker threads start on demand, but group construction already allocates per-loop selectors and queues. Creating many default clients therefore multiplies infrastructure resources even before all their loops run. Reuse one client for compatible configuration or explicitly share an application-owned group among clients requiring different handlers/pipelines. Client.close does not shut down a borrowed group or close its channels; the application closes its connections and eventually the group. Sources: [NetworkClient](../../game-network/src/main/java/cn/managame/network/netty/NetworkClient.java) and [NetworkClientBuilder](../../game-network/src/main/java/cn/managame/network/netty/NetworkClientBuilder.java). Ownership regression: NetworkContractTest.externalGroupsKeepEstablishedConnectionsAndRejectBlockingCalls.
+
+Connection admission has no framework concurrency limit, pacing, or bounded waiting queue. Each off-loop connectAsync call submits a task to the selected EventLoop. The default Netty event-loop pending-task limit is Integer.MAX_VALUE; submitting faster than processing can accumulate tasks and later create many sockets/handshakes. Channel writability regulates established outbound writes, not connection creation. Burst control belongs to the application admission layer under the existing no-registry contract. Small-loop concurrency alone does not bound the number of pending attempts or connections.
+
+CONNECT_TIMEOUT_MILLIS applies to the socket connect stage, not elapsed time from the public call. It does not include an earlier wait for the submitted task to run, blocking name resolution, or the full TLS/WS establishment and application onConnected callback. Event-loop scheduling can also delay timeout delivery. For example, a 50ms socket timeout cannot finish an attempt while its connect task waits behind 250ms of other loop work. connectAsync returns void and exposes no per-attempt cancellation handle; a borrowed-group Client.close does not supply batch cancellation. The current implementation uses Bootstrap's default JDK-based blocking name resolver for unresolved addresses; WS URIs create unresolved addresses, so uncached/slow DNS may block the selected loop and other channels using it. Already-resolved TCP addresses avoid this resolution step. Native socket timeout and TLS/WS deadlines remain separate as specified in §6. Sources: NetworkClient.validate/startConnect and §4's result flow. This describes current implementation limits, not an added total-deadline or resolver API.
+
+Pipeline initialization, ConnectionHandler callbacks, and normal ConnectCallback delivery run on EventLoops. Heavy onConnected work delays both client success notification and other connections on that loop. Keep them short and dispatch application work using its own bounded execution mechanism. Share a reusable TLS context and create a fresh SslHandler per channel as in §6; context/key-store construction inside each pipeline configurer adds avoidable handshake-path cost. Server option(SO_BACKLOG, ...) can adjust the listener backlog, while worker groups, socket resources, CPU, and application processing remain separate limits. Backlog and timeout values need deployment measurements, not a universal higher default.
+
+Current repository regression tests cover small concurrent races and all four transports; they are not a repeatable capacity benchmark. A local no-payload burst can verify independent callbacks and cleanup without establishing TLS/WSS capacity, business throughput, public-network behavior, or sustained churn limits. Capacity validation should separately vary reused clients versus shared-group clients, connection count/rate, TCP/TLS/WS/WSS, slow handshakes, rejection and close races. Record success/failure counts, callback uniqueness, establishment percentiles, event-loop delay, heap/direct-memory use, threads, sockets and post-close reclamation. Any future per-attempt cancellation, total deadline, resolver customization, or connection-admission capability remains a proposed extension; select its observable behavior and ownership before changing public APIs or the standard.

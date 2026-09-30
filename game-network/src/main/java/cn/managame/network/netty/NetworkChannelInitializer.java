@@ -1,44 +1,55 @@
 package cn.managame.network.netty;
 
-import cn.managame.network.connection.ConnectionHandler;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
+import io.netty.handler.ssl.SslHandler;
 import java.util.List;
 import java.util.function.Consumer;
-import java.util.function.Function;
 
-/** Defines assembly order only. Transports own protocol details, owners own admission. */
-final class NetworkChannelInitializer extends ChannelInitializer<Channel> {
-    static final String LIFECYCLE = "managame-transport";
-    static final String HANDLER = "managame-connection";
-    private final ConnectionHandler handler;
-    private final List<Consumer<ChannelPipeline>> configurers;
-    private final ChannelTransport transport;
-    private final Function<Channel, ConnectionEstablishment> establishmentFactory;
+/** Shared pipeline assembly using native TLS/WebSocket handlers. */
+final class NetworkChannelInitializer {
+    static final String HANDLER = "network-connection";
 
-    NetworkChannelInitializer(ConnectionHandler handler, List<Consumer<ChannelPipeline>> configurers,
-                              ChannelTransport transport,
-                              Function<Channel, ConnectionEstablishment> establishmentFactory) {
-        this.handler = handler;
-        this.configurers = List.copyOf(configurers);
-        this.transport = transport;
-        this.establishmentFactory = establishmentFactory;
-    }
+    private NetworkChannelInitializer() {}
 
-    @Override protected void initChannel(Channel channel) {
-        ConnectionLifecycle lifecycle = new ConnectionLifecycle(channel, handler, establishmentFactory.apply(channel));
+    static void configure(Channel channel, List<Consumer<ChannelPipeline>> configurers,
+                          WebSocketTransport webSocket, ConnectionHandlerAdapter adapter) {
         try {
             ChannelPipeline pipeline = channel.pipeline();
-            pipeline.addLast("managame-write-errors", lifecycle.writeErrors());
-            transport.addProtocolHandlers(pipeline, lifecycle);
-            pipeline.addLast(LIFECYCLE, lifecycle);
-            transport.addPayloadHandlers(pipeline);
+            WriteErrors writeErrors = new WriteErrors(adapter);
+            pipeline.addLast("network-write-errors", writeErrors);
+            if (webSocket != null) webSocket.addProtocolHandlers(pipeline);
+            // The last protocol context is stable; errors resume through payload/user codecs.
+            writeErrors.applicationStart = pipeline.lastContext();
+            if (webSocket != null) webSocket.addPayloadHandlers(pipeline);
             for (var configurer : configurers) configurer.accept(pipeline);
-            pipeline.addLast(HANDLER, lifecycle.adapter());
-            lifecycle.initialized();
+
+            SslHandler ssl = pipeline.get(SslHandler.class);
+            if (ssl != null) {
+                if (pipeline.first() != ssl
+                        || pipeline.toMap().values().stream().filter(SslHandler.class::isInstance).count() != 1)
+                    throw new IllegalArgumentException("Configure exactly one SslHandler using pipeline.addFirst");
+            }
+            if (webSocket != null) webSocket.verifyScheme(ssl != null);
+            pipeline.addLast(HANDLER, adapter);
+            adapter.initialized(ssl, webSocket != null);
         } catch (Throwable cause) {
-            lifecycle.fail(cause);
+            adapter.failEstablishment(cause);
+        }
+    }
+
+    /** Ordinary void-promise write failures bypass protocol-specific automatic close policies. */
+    private static final class WriteErrors extends ChannelInboundHandlerAdapter {
+        private final ConnectionHandlerAdapter adapter;
+        private ChannelHandlerContext applicationStart;
+
+        WriteErrors(ConnectionHandlerAdapter adapter) { this.adapter = adapter; }
+
+        @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            if (adapter.hasConnection()) applicationStart.fireExceptionCaught(cause);
+            else ctx.fireExceptionCaught(cause);
         }
     }
 }

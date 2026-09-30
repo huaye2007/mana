@@ -73,6 +73,8 @@ Fixed overhead including type, excluding prefix: 28 bytes. requestId=0 means Not
 
 Fixed overhead including type, excluding prefix: 11 bytes. 0 means success; 1..9999 are reserved for framework errors; 10000..2147483647 are business errors. Core defines all numbers. Every valid response reaches unified RpcHandler; RPC does not translate remote errorCode into local onFail.
 
+Peer recreation within one local Node no longer resets ID allocation; see R-CALL-04 in the RPC Specification. This continuity changes no field, byte order or version. Wire v1 has no Node-incarnation field; full-wrap late replies and saved replies across local Node replacement require the documented deployment/application boundary.
+
 Read nonzero requestId first and claim PendingCall completion. Drop the rest of unmatched late/duplicate frames without parsing errorCode/Metadata. For matched responses, validate the remainder; corruption reports PROTOCOL_ERROR and closes the connection without losing completion notification.
 
 ## Metadata

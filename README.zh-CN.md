@@ -9,21 +9,20 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | 模块 | 职责 |
 | --- | --- |
 | game-core | 共享 Metadata、类型化 MetadataKey、统一框架错误码 |
-| game-network | Connection / ConnectionHandler / NetworkServer / NetworkClient，以及 TCP / TLS / 二进制 WebSocket / WSS 的 Netty 实现 |
+| game-network | Connection / ConnectionHandler / NetworkServer / NetworkClient；TCP / 二进制 WebSocket，通过原生 SslHandler 配置 TLS / WSS |
 | game-rpc | RpcNode、主动/被动 Peer、固定 Slot、握手、心跳、重连、call / notify / reply，以及 Netty Wire 编解码 |
 | game-runtime | Route 执行、Context、Handler、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
-| game-examples（规划，当前目录不存在） | RPC → Runtime 网络集成示例、DataMemoryDemo 与集成验证 |
+| [game-example](game-example/README.zh-CN.md) | Network、RPC 可运行示例与示例执行测试 |
 
 依赖方向：
 
 ```text
 game-core ──────→ game-runtime
+    ├──────────→ game-data
     └──────────→ game-rpc ←──── game-network
-                     ↓
-               game-examples ← game-runtime
-                    ↑
-               game-data ← game-core
+                     ↓              ↓
+                  game-example ←────┘
 ```
 
 game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。Runtime 不依赖 RPC、网络、Spring 或业务序列化。
@@ -42,7 +41,7 @@ Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包
 | game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java 开发规范](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) |
 | game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.zh-CN.md) | [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md) |
 
-game-data 已提供 Single/Group 缓存与异步写回、MySQL/JDBC、MongoDB 适配及 MySQL 追加日志，依赖 game-core；未来 game-examples 将依赖 game-data。详见 [模块入口](game-data/README.zh-CN.md)、[Data 语义规范](docs/ogbs/OGBS-Data-1.0.zh-CN.md) 和 [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。实机数据库验证状态见模块文档。
+game-data 已提供 Single/Group 缓存与异步写回、MySQL/JDBC、MongoDB 适配及 MySQL 追加日志，依赖 game-core；game-example 在实现可运行 Data 示例时再添加 game-data 依赖。详见 [模块入口](game-data/README.zh-CN.md)、[Data 语义规范](docs/ogbs/OGBS-Data-1.0.zh-CN.md) 和 [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。实机数据库验证状态见模块文档。
 
 共享 Metadata 与错误码见 [OGBS Core](docs/ogbs/OGBS-Core-1.0.zh-CN.md)，字节布局见 [RPC Wire Profile](docs/rpc-wire.zh-CN.md)。
 
@@ -55,9 +54,9 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data。game-examples 和 RPC→Runtime 自动接入仍属规划；RPC 模块内已有独立可运行 TCP 示例。
+当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data、game-example。独立可运行示例及其执行测试统一放在 game-example 的 `cn.managame.example.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-example -am test 验证示例。RPC→Runtime 集成和 DataMemoryDemo 尚未实现。
 
-在 IDE 运行 [NetworkEchoExample](game-network/src/main/java/cn/managame/network/example/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
+在 IDE 运行 [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 
 Network 测试覆盖 TCP/TLS/WS/WSS、顺序、引用计数、异常、背压、握手失败及关闭/中断竞争。临时证书由当前 JDK keytool 创建。Windows Network 测试让 JDK Selector 唤醒管道回退到 TCP，并限定默认 Netty 线程数；生产框架不修改 JVM 属性。数据库实机验证状态见 Data 模块文档。
 ## Runtime 包结构与业务时间
@@ -113,9 +112,11 @@ try (GameRuntime runtime = GameRuntimeBuilder.builder()
 
 Network 的公开入口为 cn.managame.network.netty.NetworkServer 与 NetworkClient，业务通过 ConnectionHandler 接收生命周期、消息、事件与异常。普通发送失败交给 onException，由业务决定是否关闭；write 的三种结果只表达接纳状态。
 
+game-network 是 Netty 的薄封装：用户添加原生 pipeline handler，通过 ConnectionHandler 接收消息。组件不保存连接或未完成尝试集合，连接索引、会话、重连及批量关闭属于上层。
+
 完整用法与资源所有权见 [Network 模块](game-network/README.zh-CN.md) 和 [Network Java 开发规范](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md)。
 
-RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot、主动/被动 Peer 与 call/notify/reply。运行 [RpcEchoExample](game-rpc/src/main/java/cn/managame/rpc/example/RpcEchoExample.java) 可看到 hello game-rpc。RpcHandler 统一处理消息、远端错误与应用解码；RPC→Runtime 自动接入尚未实现。
+RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot、主动/被动 Peer 与 call/notify/reply。运行 [RpcEchoExample](game-example/src/main/java/cn/managame/example/rpc/RpcEchoExample.java) 可看到 hello game-rpc。RpcHandler 统一处理消息、远端错误与应用解码；RPC→Runtime 自动接入尚未实现。
 ## 约定与当前边界
 
 - 没有预置业务 RouteDomain。每个已注册 Domain 必须且只能绑定一个 RouteExecutor；允许多个 Domain 共享执行器。

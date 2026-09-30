@@ -3,7 +3,6 @@ package cn.managame.network.netty;
 import cn.managame.network.connection.ConnectionHandler;
 import io.netty.channel.*;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.ssl.SslContext;
 import java.net.SocketAddress;
 import java.util.*;
 import java.util.function.Consumer;
@@ -15,7 +14,6 @@ public final class NetworkServerBuilder {
     final List<Consumer<ChannelPipeline>> pipelines = new ArrayList<>();
     String path;
     int maxMessageSize = DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE;
-    SslContext ssl;
     EventLoopGroup boss, worker;
     ChannelFactory<? extends ServerChannel> factory = NioServerSocketChannel::new;
     final Map<ChannelOption<?>, Object> options = new LinkedHashMap<>(), childOptions = new LinkedHashMap<>();
@@ -29,10 +27,6 @@ public final class NetworkServerBuilder {
         this.path = NetworkSupport.path(path);
         this.maxMessageSize = NetworkSupport.messageSize(maxMessageSize);
         return this;
-    }
-    public NetworkServerBuilder sslContext(SslContext ssl) {
-        if (!Objects.requireNonNull(ssl).isServer()) throw new IllegalArgumentException("Server requires a server SslContext");
-        this.ssl = ssl; return this;
     }
     public NetworkServerBuilder bossGroup(EventLoopGroup group) { boss = Objects.requireNonNull(group); return this; }
     public NetworkServerBuilder workerGroup(EventLoopGroup group) { worker = Objects.requireNonNull(group); return this; }

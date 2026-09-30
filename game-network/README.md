@@ -14,6 +14,8 @@ Component behavior and Java implementation are maintained separately in these sp
 
 JDK 25 + Netty connections for TCP, TLS TCP, binary WebSocket, and WSS, published together as `cn.managame:game-network`.
 
+A thin Netty facade: configure native handlers through pipeline(...), then receive decoded messages, events and lifecycle callbacks in your ConnectionHandler. Applications own connection indexing, sessions, reconnect and batch shutdown.
+
 See the [Network Specification](../docs/ogbs/OGBS-Network-1.0.md) for semantics and the [Java Development Specification](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) for full signatures, defaults, and lifecycle.
 
 <a id="最小服务端"></a>
@@ -48,7 +50,9 @@ server.start();
 
 Without a decoder, TCP delivers byte-stream fragments. Register framing, codecs, and IdleStateHandler through pipeline(...); ChannelOption configures Netty directly.
 
-For a WebSocket server, add `.webSocket("/game")`. Build a client with `NetworkClient.builder().webSocket().handler(handler).build()`, then call `client.connect(URI.create("ws://localhost:9000/game"))`. A TLS server supplies sslContext; a WSS client may use the default JVM trust store.
+For a WebSocket server, add `.webSocket("/game")`. Build a client with `NetworkClient.builder().webSocket().handler(handler).build()`, then call `client.connect(URI.create("ws://localhost:9000/game"))`. For TLS, explicitly add a native SslHandler with `pipeline(p -> p.addFirst("ssl", ...))` on both endpoints. WSS requires this configuration; no default TLS context is created. The caller configures trust and hostname verification. See [native TLS examples](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md#native-tls-configuration).
+
+WS/WSS handshake timeouts use native Netty defaults, currently 10 seconds; successful handshakes notify onConnected immediately. Servers do not negotiate subprotocols, and builders expose no additional WS timeout/subprotocol settings. Recognizable establishment disconnections and protocol rejections produce DEBUG summaries; unknown/configuration errors retain ERROR stacks. See the [Java specification](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) for complete boundaries.
 
 <a id="包与所有权"></a>
 
@@ -59,11 +63,13 @@ For a WebSocket server, add `.webSocket("/game")`. Build a client with `NetworkC
 - error: NetworkException.
 - netty: Server/Client, builders, package-private implementation.
 
-Internal assembly separates NetworkChannelInitializer, protocol-specific TlsTransport/WebSocketTransport, and protocol-independent ConnectionLifecycle. These remain package-private; public Builder and pipeline(...) usage is unchanged. See Java specification §6 for ownership and extension boundaries.
+NetworkChannelInitializer assembles the pipeline; TLS is caller-configured and WebSocketTransport supplies the binary WS profile. ConnectionHandlerAdapter directly handles native TLS/WS completion events, checks endpoint admission, invokes onConnected, then completes the client result. There is no intermediate readiness Promise or combined handshake result. The terminal adapter also preserves final decoded messages before disconnection. Client uses one native Promise per connection result; neither endpoint stores connections or unfinished attempts. These remain package-private. The old sslContext(...) builder method is removed; use pipeline(...) instead. See Java specification §6.
 
 ConnectionHandler.onMessage borrows its message; the framework releases it afterward. ACCEPTED transfers write ownership to Netty; INACTIVE/NOT_WRITABLE do not. Attributes use Netty AttributeKey directly; there is no separate attribute package.
 
 Server/Client close only EventLoopGroups they created. Applications close external groups and own established connections. Synchronous start/connect/close must not block their own EventLoop; use Connection.close() for individual connections inside callbacks.
+
+Server/Client close stop entry points and release only owned EventLoopGroups; they never enumerate channels. With external groups, an unfinished handshake completes or times out independently and rejects delivery if it then observes the closed endpoint. Existing Connections remain application-owned. See the specification for a delivery already racing with close.
 
 <a id="运行与验证"></a>
 
@@ -74,6 +80,6 @@ mvn -pl game-network -am test
 mvn clean verify
 ```
 
-Run [NetworkEchoExample](src/main/java/cn/managame/network/example/NetworkEchoExample.java) in an IDE. It uses a random port, length framing, and plain strings, and releases all connection and network resources.
+Runnable examples and their execution tests are maintained in [game-example](../game-example/README.md); game-network publishes only framework code. Run [NetworkEchoExample](../game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) in an IDE. It uses a random port, length framing, and plain strings, and releases all connection and network resources.
 
 Tests cover TCP/TLS/WS/WSS, handshake failure, reference counts, backpressure, shutdown, and interruption races. They create temporary certificates and require no external services. Public-network deployment, native transport, and production capacity are unverified.

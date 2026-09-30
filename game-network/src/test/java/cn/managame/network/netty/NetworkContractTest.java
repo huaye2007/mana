@@ -30,10 +30,15 @@ class NetworkContractTest extends NetworkTestSupport {
         var sb = NetworkServer.builder().bindAddress(LOCAL).handler(serverProbe).pipeline(INTS);
         var cb = NetworkClient.builder().handler(clientProbe).pipeline(INTS);
         if (ws) { sb.webSocket("/game"); cb.webSocket(); }
-        if (tls) { sb.sslContext(serverTls); cb.sslContext(clientTls); }
+        AtomicInteger port = new AtomicInteger();
+        if (tls) {
+            sb.pipeline(p -> p.addFirst("ssl", serverTls.newHandler(p.channel().alloc())));
+            cb.pipeline(p -> p.addFirst("ssl", clientSsl(clientTls, p.channel(), "127.0.0.1", port.get())));
+        }
         try (var server = sb.build(); var client = cb.build()) {
             assertNull(server.localAddress());
             server.start();
+            port.set(((InetSocketAddress) server.localAddress()).getPort());
             assertThrows(IllegalStateException.class, server::start);
             URI uri = URI.create((tls ? "wss" : "ws") + "://127.0.0.1:"
                     + ((InetSocketAddress) server.localAddress()).getPort() + "/game?token=123");
@@ -54,6 +59,60 @@ class NetworkContractTest extends NetworkTestSupport {
             assertFalse(c.isActive());
             assertEquals(1, clientProbe.disconnects.get());
             assertTrue(clientProbe.errors.isEmpty(), clientProbe.errors.toString());
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"tcp", "tls", "ws", "wss"})
+    void firstMessagesCanBeSentInsideOnConnected(String transport) throws Exception {
+        boolean ws = transport.contains("ws"), tls = transport.equals("tls") || transport.equals("wss");
+        Probe serverProbe = new Probe() {
+            public void onConnected(Connection c) {
+                super.onConnected(c);
+                assertEquals(WriteStatus.ACCEPTED, c.write(11));
+            }
+        };
+        List<String> order = new CopyOnWriteArrayList<>();
+        Probe clientProbe = new Probe() {
+            public void onConnected(Connection c) {
+                order.add("connected");
+                super.onConnected(c);
+                assertEquals(WriteStatus.ACCEPTED, c.write(22));
+            }
+            public void onMessage(Connection c, Object message) {
+                order.add("message");
+                super.onMessage(c, message);
+            }
+        };
+        var sb = NetworkServer.builder().bindAddress(LOCAL).handler(serverProbe).pipeline(INTS);
+        var cb = NetworkClient.builder().handler(clientProbe).pipeline(INTS);
+        if (ws) { sb.webSocket("/game"); cb.webSocket(); }
+        AtomicInteger port = new AtomicInteger();
+        if (tls) {
+            sb.pipeline(p -> p.addFirst("ssl", serverTls.newHandler(p.channel().alloc())));
+            cb.pipeline(p -> p.addFirst("ssl", clientSsl(clientTls, p.channel(), "127.0.0.1", port.get())));
+        }
+        try (var server = sb.build(); var client = cb.build()) {
+            server.start();
+            port.set(((InetSocketAddress) server.localAddress()).getPort());
+            CompletableFuture<Connection> result = new CompletableFuture<>();
+            ConnectCallback callback = new ConnectCallback() {
+                public void onSuccess(Connection c) { order.add("success"); result.complete(c); }
+                public void onFailure(Throwable cause) { result.completeExceptionally(cause); }
+            };
+            if (ws) client.connectAsync(URI.create((tls ? "wss" : "ws")
+                    + "://127.0.0.1:" + port.get() + "/game"), callback);
+            else client.connectAsync(server.localAddress(), callback);
+            Connection connection = get(result);
+            assertEquals(11, take(clientProbe.messages));
+            assertEquals(22, take(serverProbe.messages));
+            assertEquals("connected", order.getFirst());
+            assertEquals(1, Collections.frequency(order, "success"));
+            assertEquals(1, Collections.frequency(order, "message"));
+            assertTrue(clientProbe.errors.isEmpty());
+            assertTrue(serverProbe.errors.isEmpty());
+            assertTrue(clientProbe.events.isEmpty());
+            assertTrue(serverProbe.events.isEmpty());
+            connection.close();
         }
     }
 
@@ -202,8 +261,9 @@ class NetworkContractTest extends NetworkTestSupport {
         }
     }
 
-    @ParameterizedTest @ValueSource(booleans = {false, true})
-    void outboundFailuresDoNotAutoCloseEitherPeer(boolean ws) throws Exception {
+    @ParameterizedTest @ValueSource(strings = {"tcp", "tls", "ws", "wss"})
+    void outboundFailuresDoNotAutoCloseEitherPeer(String transport) throws Exception {
+        boolean ws = transport.contains("ws"), tls = transport.equals("tls") || transport.equals("wss");
         Probe left = new Probe(), right = new Probe();
         java.util.function.Consumer<ChannelPipeline> encoder = p -> p.addLast(new MessageToByteEncoder<String>() {
             protected void encode(ChannelHandlerContext ctx, String message, ByteBuf out) {
@@ -213,9 +273,16 @@ class NetworkContractTest extends NetworkTestSupport {
         var sb = NetworkServer.builder().bindAddress(LOCAL).handler(left).pipeline(INTS).pipeline(encoder);
         var cb = NetworkClient.builder().handler(right).pipeline(INTS).pipeline(encoder);
         if (ws) { sb.webSocket("/game"); cb.webSocket(); }
+        AtomicInteger port = new AtomicInteger();
+        if (tls) {
+            sb.pipeline(p -> p.addFirst("ssl", serverTls.newHandler(p.channel().alloc())));
+            cb.pipeline(p -> p.addFirst("ssl", clientSsl(clientTls, p.channel(), "127.0.0.1", port.get())));
+        }
         try (var server = sb.build(); var client = cb.build()) {
             server.start();
-            Connection c = ws ? client.connect(WebSocketContractTest.uri(server, "/game")) : client.connect(server.localAddress());
+            port.set(((InetSocketAddress) server.localAddress()).getPort());
+            URI uri = URI.create((tls ? "wss" : "ws") + "://127.0.0.1:" + port.get() + "/game");
+            Connection c = ws ? client.connect(uri) : client.connect(server.localAddress());
             Connection s = take(left.connected);
             assertEquals(WriteStatus.ACCEPTED, c.write("bad"));
             assertInstanceOf(EncoderException.class, take(right.errors));
@@ -230,11 +297,28 @@ class NetworkContractTest extends NetworkTestSupport {
         }
     }
     static EmbeddedChannel embedded(Probe probe, java.util.function.Consumer<ChannelPipeline> configurer) {
-        return new EmbeddedChannel(new NetworkChannelInitializer(probe, List.of(configurer),
-                ChannelTransport.TCP, ch -> new ConnectionEstablishment() {
-                    public boolean claimSuccess() { return true; }
-                    public void success(Connection connection) {}
-                    public void networkFailure(Throwable cause) { NetworkSupport.log("Test establishment failed", cause); }
-                }));
+        return new EmbeddedChannel(initializer(probe, configurer));
+    }
+
+    @Test void nativeHandlerAddedFailureRejectsClientEstablishment() throws Exception {
+        Probe probe = new Probe();
+        try (var server = NetworkServer.builder().bindAddress(LOCAL).handler(new Probe()).build();
+             var client = NetworkClient.builder().handler(probe).pipeline(p -> p.addLast(
+                     new ChannelInboundHandlerAdapter() {
+                         @Override public void handlerAdded(ChannelHandlerContext ctx) {
+                             throw new IllegalArgumentException("handlerAdded");
+                         }
+                     })).build()) {
+            server.start();
+            CompletableFuture<Connection> result = new CompletableFuture<>();
+            client.connectAsync(server.localAddress(), new ConnectCallback() {
+                public void onSuccess(Connection connection) { result.complete(connection); }
+                public void onFailure(Throwable cause) { result.completeExceptionally(cause); }
+            });
+            ExecutionException failure = assertThrows(ExecutionException.class, () -> get(result));
+            assertInstanceOf(NetworkException.class, failure.getCause());
+            assertEquals(0, probe.connections.get());
+            assertEquals(0, probe.disconnects.get());
+        }
     }
 }

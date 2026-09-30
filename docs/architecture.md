@@ -28,7 +28,7 @@ The root `cn.managame.runtime` package contains only GameRuntime and GameRuntime
 
 All Runtime configuration enters through batch Builder methods. build collects and validates it, compiles MethodHandles, freezes registries, and then starts scheduling resources. Validation failure does not take ownership of supplied executors. After success, Runtime calls close once for each unique RouteExecutor.
 
-NetworkServer/NetworkClient create NIO EventLoopGroups by default and synchronously close owned resources. Explicitly supplied groups are not closed by the framework. Server starts synchronously and only once; Client.close cancels unfinished connection attempts. Established Connections belong to the upper layer; Server/Client.close does not actively close successful connections on external groups. See both Network specifications for details.
+NetworkServer/NetworkClient create NIO EventLoopGroups by default and synchronously release only owned resources. Server starts once and close stops its listener; Client close rejects new attempts. Neither entry keeps a connection or unfinished-attempt collection. On external groups, established channels remain caller-owned and handshakes continue to their own result/timeout; readiness observing endpoint closure is rejected. See both Network specifications for race and ownership details.
 
 RPC Node creates and synchronously closes its NetworkServer, NetworkClient, NIO groups, timer wheel, all connections, and PendingCalls. Its Builder does not accept application-owned Network instances or EventLoopGroups.
 
@@ -44,9 +44,9 @@ write checks active/writable and calls writeAndFlush directly. ACCEPTED transfer
 
 Inbound ReferenceCounted messages are borrowed during onMessage and released on return or exception; asynchronous retention or echo requires retain. Attributes use Netty AttributeKey directly, without additional shutdown freeze/clear rules.
 
-Pipeline order is transport handlers → binary adapter (WS) → user codecs/handlers → ConnectionHandler adapter. NetworkChannelInitializer defines assembly order; TlsTransport/WebSocketTransport consume their own handshake events, while ConnectionLifecycle coordinates protocol-independent establishment and disconnection. The send-exception entry prevents Netty's WS protocol handler from interpreting ordinary encoding failures as connection closure. Advanced users configure ChannelPipeline, ChannelOption, EventLoopGroup, ChannelFactory, and SslContext directly.
+Pipeline order is caller-provided SslHandler (optional, first) → write-error entry → HTTP/WS handlers and binary adapters (if enabled) → user codecs/handlers → ConnectionHandler adapter. NetworkChannelInitializer assembles concrete handlers without a generic Transport interface or TLS wrapper. The terminal adapter directly connects native TLS/WS completion events, endpoint checks and onConnected, without intermediate readiness/WS Promises or PromiseCombiner; Client only uses a native Promise for its connection result. There is no connection registry, ChannelGroup or collection lock; Channel-local processing forwards messages to the supplied ConnectionHandler. TLS contexts, certificates and hostname verification are configured by the caller through pipeline(...); WSS requires explicit TLS. See the Network Java specification for placement and failure rules.
 
-NetworkEchoExample demonstrates Network; RpcEchoExample demonstrates two RPC nodes. Automatic RPC→Runtime integration is not implemented.
+[game-example](../game-example/README.md) collects standalone runnable examples and their execution tests in `cn.managame.example.<component>`. NetworkEchoExample demonstrates Network; RpcEchoExample demonstrates two RPC nodes. The module depends on game-network and game-rpc; framework modules never depend on examples or publish example classes. Add dependencies for other components only when their examples exist. These are application demonstrations of existing contracts, not a new framework component or specification layer. Automatic RPC→Runtime integration is not implemented.
 
 ## RPC
 
@@ -56,7 +56,7 @@ addPeer registers active peers with a fixed number of slots. A valid inbound han
 
 call/notify start at the unsigned remainder of nonzero routeKey, or round-robin for zero. reply first tries the actual source slot, then falls back by routeKey. Nothing is resent after the first ACCEPTED. requestId matches calls only within a Peer; responses may return through any slot.
 
-Each Node has one HashedWheelTimer for call timeouts, handshake timeouts, and fixed reconnect delays; connection IdleStateHandler handles heartbeats. Disconnection does not immediately fail admitted calls. All valid remote error responses go to onResponse; local availability, timeout, and lifecycle races go to onFail. Core defines error-code ranges without high-bit wrapping.
+Each Node has one HashedWheelTimer for call timeouts, handshake timeouts, and base-plus-jitter reconnect delays; connection IdleStateHandler handles heartbeats. Call IDs remain continuous across Peer recreation within the Node, and Node-wide call admission bounds pending calls and completion handlers. Timeout failures run on owned virtual threads, outside the timer. Peer connection indexes avoid repeated global shutdown scans. Disconnection does not immediately fail admitted calls. All valid remote error responses go to onResponse; local availability, timeout, and lifecycle races go to onFail. Core defines error-code ranges without high-bit wrapping.
 
 Outbound ByteBuf bodies are consumed after argument/lifecycle validation and copied into one contiguous frame. Inbound bodies are borrowed within callbacks and need retain/copy for cross-thread use. Messages are read-only records; IDs are assigned internally during encoding, without a public requestId setter.
 
@@ -117,7 +117,7 @@ Spring scanning, Protobuf generation, cross-node Router, and game business logic
 
 ## Data composition and ownership
 
-game-data depends on game-core and uses annotation/key/meta/mapper/codec/error/mysql/mongo packages. Repositories and package-private write-behind implementation live in cn.managame.data. MySQL/MongoDB and the cache core publish in one artifact; Mongo Driver is optional. game-examples is unimplemented; database-free Data tests live in game-data.
+game-data depends on game-core and uses annotation/key/meta/mapper/codec/error/mysql/mongo packages. Repositories and package-private write-behind implementation live in cn.managame.data. MySQL/MongoDB and the cache core publish in one artifact; Mongo Driver is optional. Runnable Data examples are unimplemented; database-free Data contract tests remain in game-data.
 
 Data does not depend on Runtime or RPC; applications may access it serially on existing Routes. Cache misses in get/getGroup synchronously access storage, so callers must account for database latency on Route execution threads. Same-Route ordering does not give background serializers an atomic multi-field snapshot; applications still own entity visibility.
 

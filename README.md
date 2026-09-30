@@ -9,21 +9,20 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | Module | Responsibility |
 | --- | --- |
 | game-core | Shared Metadata, typed MetadataKey, common framework error codes |
-| game-network | Connection / ConnectionHandler / NetworkServer / NetworkClient and Netty TCP / TLS / binary WebSocket / WSS implementations |
+| game-network | Connection / ConnectionHandler / NetworkServer / NetworkClient; TCP / binary WebSocket, with TLS / WSS configured through native SslHandler |
 | game-rpc | RpcNode, active/passive peers, fixed slots, handshakes, heartbeats, reconnects, call / notify / reply, and Netty wire codecs |
 | game-runtime | Route execution, Context, Handler, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
-| game-examples (planned; directory not present) | RPC → Runtime network examples, DataMemoryDemo, integration validation |
+| [game-example](game-example/README.md) | Runnable Network and RPC examples and their execution tests |
 
 Dependency direction:
 
 ```text
 game-core ──────→ game-runtime
+    ├──────────→ game-data
     └──────────→ game-rpc ←──── game-network
-                     ↓
-               game-examples ← game-runtime
-                    ↑
-               game-data ← game-core
+                     ↓              ↓
+                  game-example ←────┘
 ```
 
 game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. Runtime does not depend on RPC, networking, Spring, or business serialization.
@@ -44,7 +43,7 @@ Every framework component requires a standard specification and a Java developme
 | game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
 | game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) | [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
 
-game-data provides Single/Group caches, asynchronous write-behind, MySQL/JDBC and MongoDB adapters, and append-only MySQL logs. It depends on game-core; future game-examples will depend on game-data. See the [module entry](game-data/README.md), [Data semantics](docs/ogbs/OGBS-Data-1.0.md), and [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md). Live database validation status is in the module documentation.
+game-data provides Single/Group caches, asynchronous write-behind, MySQL/JDBC and MongoDB adapters, and append-only MySQL logs. It depends on game-core; game-example will add a game-data dependency when runnable Data examples are implemented. See the [module entry](game-data/README.md), [Data semantics](docs/ogbs/OGBS-Data-1.0.md), and [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md). Live database validation status is in the module documentation.
 
 See [OGBS Core](docs/ogbs/OGBS-Core-1.0.md) for shared Metadata and error codes, and the [RPC Wire Profile](docs/rpc-wire.md) for byte layout.
 
@@ -59,9 +58,9 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-The root build includes game-core, game-network, game-rpc, game-runtime, and game-data. game-examples and automatic RPC→Runtime integration remain planned; RPC already has an independently runnable TCP example.
+The root build includes game-core, game-network, game-rpc, game-runtime, game-data, and game-example. All standalone runnable examples and their execution tests live in game-example, under `cn.managame.example.<component>`; framework artifacts contain no example classes. Run mvn -pl game-example -am test to validate the examples. RPC→Runtime integration and DataMemoryDemo remain unimplemented.
 
-Run [NetworkEchoExample](game-network/src/main/java/cn/managame/network/example/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
+Run [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 
 Network tests cover TCP/TLS/WS/WSS, ordering, reference counts, exceptions, backpressure, handshake failure, and shutdown/interruption races. The current JDK's keytool creates temporary certificates. Windows tests force the JDK Selector wakeup pipe to fall back to TCP and limit Netty's default thread count; production code does not change JVM properties. See Data documentation for live database verification.
 
@@ -124,9 +123,11 @@ The integration layer decodes messages and creates Context. Default Context impl
 
 Network's public entry points are cn.managame.network.netty.NetworkServer and NetworkClient. ConnectionHandler receives lifecycle, message, event, and exception callbacks. Ordinary send failures go to onException, and applications decide whether to close. The three write statuses describe admission only.
 
+game-network is a thin Netty facade: users extend the pipeline with native handlers and receive messages through ConnectionHandler. It keeps no connection or unfinished-attempt collection; indexing, sessions, reconnect and batch closure belong to upper layers.
+
 See the [Network module](game-network/README.md) and [Network Java Development Specification](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) for complete usage and ownership.
 
-RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple slots, active/passive peers, and call/notify/reply. Run [RpcEchoExample](game-rpc/src/main/java/cn/managame/rpc/example/RpcEchoExample.java) to print hello game-rpc. RpcHandler centrally handles messages, remote errors, and application decoding; automatic RPC→Runtime integration is not implemented.
+RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple slots, active/passive peers, and call/notify/reply. Run [RpcEchoExample](game-example/src/main/java/cn/managame/example/rpc/RpcEchoExample.java) to print hello game-rpc. RpcHandler centrally handles messages, remote errors, and application decoding; automatic RPC→Runtime integration is not implemented.
 
 <a id="约定与当前边界"></a>
 

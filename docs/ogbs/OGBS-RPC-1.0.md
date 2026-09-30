@@ -25,7 +25,7 @@ It does not interpret business bodies or provide protocol registration, Runtime 
 | nodeId | Nonzero uint32 node identifier |
 | RpcPeer | One directly communicating remote relationship |
 | ConnectionSlot | Fixed logical connection position within a Peer |
-| requestId | Peer-local uint32 call identifier; 0 means Notify |
+| requestId | uint32 call identifier matched within a Peer; 0 means Notify |
 | routeKey | uint64 affinity value; 0 means no affinity; not a Runtime Route |
 | businessIdType / businessId | uint8 / uint64 business identity; type=0 means unspecified |
 | PendingCall | Correlation ID, completion notification, and timeout for one local call |
@@ -88,7 +88,7 @@ Slots are transport details. Source Slot is only a reply hint, never part of bus
 
 **R-SEND-03** ACCEPTED means local network acceptance, not delivery/execution. Never resend an accepted business frame after asynchronous write failure, disconnection, or timeout. Reconnection restores channels only.
 
-**R-SEND-04** notify/reply return only ACCEPTED, PEER_NOT_FOUND, or UNAVAILABLE. Backpressure and no READY connection both mean UNAVAILABLE; no waiting queue. call reports corresponding runtime failures through unified local failure notification.
+**R-SEND-04** notify/reply return only ACCEPTED, PEER_NOT_FOUND, or UNAVAILABLE. Backpressure and no READY connection both mean UNAVAILABLE; no waiting queue. call additionally has a finite, binding-configured Node-wide admission limit covering encoding, pending calls, and their unfinished completion notifications. Exhaustion releases the owned body and reports local UNAVAILABLE immediately without encoding, sending, waiting, or retry. This limit does not reject notify/reply.
 
 Example: routeKey chooses slot2 but fallback sends through slot3. reply prefers slot3; if unavailable, fallback starts at slot2. A new connection in the source Slot can carry the reply; no original physical connection is retained.
 
@@ -102,9 +102,9 @@ Affinity does not guarantee global business ordering across connections. Applica
 
 **R-CALL-02** Register PendingCall after successful encoding but before the first network send to avoid losing fast responses. Recheck Peer/Node validity after registration. If every send fails, remove it and report failure.
 
-**R-CALL-03** Response, timeout, removal, closure, and send failure compete for one completion right; notify at most once. Remove PendingCall and cancel timeout before invoking the unified handler. Handler failure cannot restore or recomplete it.
+**R-CALL-03** Response, timeout, removal, closure, and send failure compete for one completion right; notify at most once. Remove PendingCall and cancel timeout before invoking the unified handler. Handler failure cannot restore or recomplete it. Retain the admission reservation until its completion handler returns, including exceptional return; synchronous encoding/collision/write exceptions also release their reservation. Timeout business notifications must execute outside the shared maintenance timer so one slow notification cannot block other call/handshake deadlines or reconnection tasks. Notifications for different calls have no total-order guarantee.
 
-**R-CALL-04** Peer-local requestId increments with uint32 wrap, skipping 0. Gaps are allowed; no Slot/Node/time encoding. An occupied ID fails synchronously without replacing the old call or scanning for another ID. Deployments must keep call lifetime far below a full wrap period; extreme responses delayed beyond a full wrap cannot be distinguished.
+**R-CALL-04** requestId increments with uint32 wrap, skipping 0. Gaps are allowed; no Slot/Node/time encoding. Within one local Node lifetime, explicit removal or passive Peer reclamation must not reset allocation and immediately reuse old call IDs upon same-remote Peer recreation. Matching remains Peer-scoped; a binding may allocate IDs Node-wide. An occupied ID fails synchronously without replacing the old call or scanning for another ID. Deployments must keep unresolved remote response lifetime far below a full allocation wrap period; extreme responses delayed beyond a full wrap cannot be distinguished. Wire v1 has no Node-incarnation field and does not guarantee rejection of saved old business replies after replacing/restarting the local Node instance; such protection needs application epoch validation or a separately versioned protocol.
 
 **R-CALL-05** Drop the remaining unmatched Response frame without notification or creating a call; a nonzero requestId must be readable. After a match, malformed remaining data must fail the claimed call with PROTOCOL_ERROR and close the connection; removal must not lose notification.
 
@@ -120,7 +120,9 @@ Affinity does not guarantee global business ordering across connections. Applica
 
 **R-TIME-03** removePeer first removes current topology, then terminates sessions, reconnection, and unfinished calls. Missing Peer is an idempotent no-op. Recreation starts an independent lifetime without migrating old calls.
 
-**R-TIME-04** Node explicitly moves NEW → RUNNING via start, then finally CLOSED; startup failure also terminates the instance. close accepts NEW, is idempotent, and forms a synchronous barrier: reject new operations immediately and finish accepted RPC operations, outstanding calls, connections, listening, and owned maintenance resources before return. Concurrent close waits for the same cleanup. Separately submitted application tasks are excluded. Synchronous close is prohibited in contexts that would wait for themselves; see Java constraints.
+Example: A calls B with command 101; after removal/recreation, A calls command 202 with a later ID. B can still reply to its saved command 101 over the replacement connection, but A drops that unmatched old ID and completes command 202 only from its own response. See the [Java repair validation](OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险).
+
+**R-TIME-04** Node explicitly moves NEW → RUNNING via start, then finally CLOSED; startup failure also terminates the instance. close accepts NEW, is idempotent, and forms a synchronous barrier: reject new operations immediately and finish accepted RPC operations, outstanding calls, connections, listening, owned maintenance resources, and owned completion notifications before return. Concurrent close waits for the same cleanup. Separately submitted application tasks are excluded. Synchronous close is prohibited in contexts that would wait for themselves; see Java constraints.
 
 **R-TIME-05** add/remove/call/notify/reply require RUNNING. Already-closed entry is a lifecycle error. An admitted call racing closure/removal may receive NODE_CLOSED/PEER_REMOVED or the winning response/timeout.
 
@@ -132,7 +134,9 @@ Affinity does not guarantee global business ordering across connections. Applica
 
 **R-LIVE-02** Read Idle threshold closes the connection. Failure to accept Heartbeat, including backpressure, also closes it. Ignore idle events during handshake; independent handshake timeout applies.
 
-**R-LIVE-03** addPeer immediately connects empty Slots. After connection/handshake failure or established disconnection, retry after a fixed delay. One recovery chain per Slot covers delay, connect, and handshake; Slots are independent. Old tasks become invalid after removal/closure. No exponential backoff, jitter, retry maximum, or business resend.
+**R-LIVE-03** addPeer immediately connects empty Slots. After connection/handshake failure or established disconnection, retry after a positive base delay plus a fresh uniformly sampled additive delay in [0, configured jitter]. Bindings define defaults and time granularity; zero jitter preserves fixed-delay behavior. One recovery chain per Slot covers delay, connect, and handshake; Slots are independent. Old tasks become invalid after removal/closure. No exponential backoff, retry maximum, or business resend. Jitter spreads attempts but does not impose a global connection-attempt rate limit.
+
+Java implementation status: a follow-up review reproduced a recovery-stop/unbind race that can leave an active Peer with an empty Slot and no maintained recovery chain. This remains an implementation defect, not an exception to R-LIVE-03. See [follow-up validation](OGBS-RPC-Java-25-Specification-1.0.md#92-后续审阅与扩展候选).
 
 <a id="10-错误边界"></a>
 
@@ -161,7 +165,7 @@ Automatic HANDLER_ERROR includes no exception text, stack trace, or Metadata. Co
 | Peer-level completion, no business retries | Cross-Slot replies without duplicate execution | A new explicit idempotent/reliable delivery protocol |
 | Passive creation/cleanup | Bidirectional communication with one-sided configuration | Separate node authorization/topology needs |
 | Unified application handler | RPC does not own business codecs/Runtime | Dedicated external integration module needed |
-| Fixed reconnect delay | Simple predictable internal recovery | Production-scale tests show reconnect-storm control needed |
+| Base reconnect delay with bounded jitter | Spread simultaneous recovery while retaining a configurable minimum; zero restores fixed delay | Measurements require global attempt admission or exponential backoff |
 
 Java tests: [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java), [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java), [RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java). Implementation, defaults, and examples are in the Java specification.
 

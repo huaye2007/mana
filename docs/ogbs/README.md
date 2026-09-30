@@ -93,12 +93,14 @@ flowchart LR
     C --> D[game-data]
     C --> R[game-rpc]
     N[game-network] --> R
+    N --> E[game-example]
+    R --> E
     RT --> A[Application integration]
     D --> A
     R --> A
 ```
 
-Arrows run from dependency to consumer. The root build includes Core, Runtime, Data, Network, and RPC. game-examples and automatic RPC→Runtime integration are unimplemented. Network and Runtime are independent; application integration owns business codecs, identity validation, Context creation, replies, and Route scheduling.
+Arrows run from dependency to consumer. The root build includes Core, Runtime, Data, Network, RPC, and [game-example](../../game-example/README.md). game-example contains Network/RPC application examples under their existing specification pairs, not a separate framework component. Automatic RPC→Runtime integration and Data examples are unimplemented. Network and Runtime are independent; application integration owns business codecs, identity validation, Context creation, replies, and Route scheduling.
 
 <a id="版本与验证边界"></a>
 

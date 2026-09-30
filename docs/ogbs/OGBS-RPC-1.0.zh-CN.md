@@ -21,7 +21,7 @@ RPC 用于内部服务器节点的直接通信，提供 call、notify、reply、
 | nodeId | 非零 uint32 节点标识 |
 | RpcPeer | 与本节点直接通信的一个远端关系 |
 | ConnectionSlot | Peer 内固定逻辑连接位置 |
-| requestId | Peer 内 uint32 调用标识；0 为 Notify |
+| requestId | 在 Peer 内匹配的 uint32 调用标识；0 为 Notify |
 | routeKey | uint64 亲和性值；0 无亲和性；不是 Runtime Route |
 | businessIdType / businessId | uint8 / uint64 业务身份；type=0 未指定 |
 | PendingCall | 一次本地 call 的关联 ID、完成通知及超时 |
@@ -76,7 +76,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-SEND-03** ACCEPTED 只表示本地网络接纳，不保证交付/执行。接纳后即使发生异步写失败、断线或超时，也不得补发该业务帧。重连只恢复通道。
 
-**R-SEND-04** notify/reply 仅返回 ACCEPTED、PEER_NOT_FOUND、UNAVAILABLE。背压和无 READY 统一为 UNAVAILABLE；不排队等待连接。call 的对应运行期失败经统一本地失败通知交付。
+**R-SEND-04** notify/reply 只返回 ACCEPTED、PEER_NOT_FOUND、UNAVAILABLE。背压、无 READY 连接均归为 UNAVAILABLE，不排队等待。call 另有语言绑定配置的有限 Node 级接纳上限，覆盖编码、在途调用及尚未返回的完成通知。容量耗尽时释放已接管 body，立即交付本地 UNAVAILABLE，不编码、不发送、不等待、不重试。此上限不拒绝 notify/reply。
 
 例：routeKey 指向 slot2，但 Request 由 slot3 回退发送。正常 reply 优先 slot3；slot3 不可用后再从 routeKey 指向的 slot2 开始回退。来源 Slot 上的新连接可以承接回复，不保存原物理连接。
 
@@ -88,9 +88,9 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-CALL-02** 编码成功后、首次网络发送前注册 PendingCall，防止极快响应丢失。注册后重新检查 Peer/Node 有效性。全部发送失败必须撤销并报告失败。
 
-**R-CALL-03** 响应、超时、移除、关闭和发送失败争夺同一完成权，每次调用至多通知一次。交给统一响应处理器之前，必须移除 PendingCall 并取消超时；处理器异常不能重新完成或恢复调用。
+**R-CALL-03** 响应、超时、移除、关闭和发送失败争夺同一完成权，每次调用至多通知一次。交给统一响应处理器之前，必须移除 PendingCall 并取消超时；处理器异常不能重新完成或恢复调用。接纳额度保持到对应完成处理器返回，异常返回同样释放；同步编码、碰撞、写入异常也释放额度。超时业务通知必须在共享维护定时器之外执行，避免单条慢通知阻塞其他调用/握手期限及重连任务。不同调用的通知不保证全局顺序。
 
-**R-CALL-04** Peer 内 requestId 递增，uint32 回绕跳过 0；允许跳号，不编码 Slot、Node 或时间。碰到仍占用的 ID 必须同步失败，不能覆盖旧调用，也不扫描寻找其他 ID。部署需保证调用寿命远小于完整回绕周期；不能识别跨完整回绕周期的极端迟到响应。
+**R-CALL-04** requestId 递增，uint32 回绕跳过 0；允许跳号，不编码 Slot、Node 或时间。同一本地 Node 生命周期内，显式删除或被动 Peer 回收不得重置分配，并在同远端 Peer 重建时立即复用旧调用 ID。匹配仍在 Peer 内完成；语言绑定可在 Node 范围分配 ID。碰到仍占用的 ID 必须同步失败，不能覆盖旧调用，也不扫描寻找其他 ID。部署需保证未完成远端回复的寿命远小于完整分配回绕周期；不能识别跨完整回绕周期的极端迟到响应。Wire v1 没有 Node 代际字段，不保证在替换/重启本地 Node 实例后拒绝保存的旧业务回复；此保护需要应用代际校验或另行版本化协议。
 
 **R-CALL-05** 未匹配的 Response 直接丢弃余下帧，不重复通知、不重新建调用；非零 requestId 必须可读。匹配后余下格式损坏时，必须以 PROTOCOL_ERROR 完成已认领调用并关闭连接，不能因已经移除而遗失通知。
 
@@ -104,7 +104,9 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-TIME-03** removePeer 先从当前拓扑移除，再终止会话、重连和未完成调用；未命中幂等。remove 后重新创建是独立生命周期，旧调用不迁移。
 
-**R-TIME-04** Node 从 NEW 显式 start 到 RUNNING，最终进入 CLOSED；启动失败也终止实例。close 允许 NEW、幂等且形成同步关闭屏障，开始即拒绝新操作，返回前终止已接纳的 RPC 操作、在途调用、连接、监听和自有维护资源。并发 close 等待同一次清理。应用另行投递的业务任务不在屏障范围内。禁止从会导致等待自身的执行上下文同步关闭，具体 Java 约束见开发规范。
+示例：A 调用 B 的 command 101；删除/重建后，以后续 ID 调用 command 202。B 仍可经替换连接回复保存的 command 101，但 A 丢弃未匹配的旧 ID，仅由对应新回复完成 command 202。详见 [Java 修复验证](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
+
+**R-TIME-04** Node 从 NEW 显式 start 到 RUNNING，最终进入 CLOSED；启动失败也终止实例。close 允许 NEW、幂等且形成同步关闭屏障，开始即拒绝新操作，返回前终止已接纳的 RPC 操作、在途调用、连接、监听、自有维护资源及自有完成通知。并发 close 等待同一次清理。应用另行投递的业务任务不在屏障范围内。禁止从会导致等待自身的执行上下文同步关闭，具体 Java 约束见开发规范。
 
 **R-TIME-05** add/remove/call/notify/reply 仅在 RUNNING 合法。调用开始时已经关闭是生命周期错误；与关闭/移除竞争的已接纳 call 可以收到 NODE_CLOSED/PEER_REMOVED，或由抢先完成的响应/超时结束。
 
@@ -114,7 +116,9 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-LIVE-02** Read Idle 达阈值关闭连接；Heartbeat 无法被网络接纳（含背压）也关闭该连接。握手期间忽略 idle 事件，由独立握手超时负责。
 
-**R-LIVE-03** addPeer 对空 Slot 立即首次连接。失败、握手失败或稳定连接断开后固定延迟重试，同 Slot 只维护一条恢复链，涵盖延迟、建连和握手；不同 Slot 独立。Peer removal/Node close 后旧任务自然失效。没有指数退避、抖动、最大重试或业务重发。
+**R-LIVE-03** addPeer 对空 Slot 立即首次连接。失败、握手失败或稳定连接断开后，等待正基础延迟与每次重新均匀抽取的 [0, 配置抖动] 附加延迟之和再重试。默认值与时间粒度由语言绑定定义；抖动为 0 保留固定延迟行为。同 Slot 只维护一条恢复链，涵盖延迟、建连和握手；不同 Slot 独立。Peer removal/Node close 后旧任务自然失效。没有指数退避、最大重试或业务重发。抖动分散尝试，但不提供全局建连速率限制。
+
+Java 实现状态：后续审阅已复现恢复停止与解绑竞争，主动 Peer 可能留下空 Slot 且没有持续恢复链。这仍是实现缺陷，不是 R-LIVE-03 的例外。详见 [后续验证](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#92-后续审阅与扩展候选)。
 
 ## 10. 错误边界
 
@@ -139,7 +143,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 | Peer 级完成与无业务重试 | 支持跨 Slot 回复，避免重复执行 | 新的明确幂等/可靠交付协议 |
 | 被动自动创建/回收 | 单边配置可双向通信 | 有独立节点授权或拓扑需求 |
 | 统一应用处理器 | RPC 不承担业务 codec/Runtime | 专用外围接入模块需求 |
-| 固定重连延迟 | 内部节点恢复行为简单确定 | 生产规模测试证明需控制重连风暴 |
+| 基础重连延迟与有界抖动 | 分散同时恢复，保留可配置最小延迟；零抖动恢复固定延迟 | 测量证明需要全局建连接纳或指数退避 |
 
 Java 验证入口：[RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java)、[RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java)、[RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java)。实现细节、默认值与示例见 Java 开发规范。
 

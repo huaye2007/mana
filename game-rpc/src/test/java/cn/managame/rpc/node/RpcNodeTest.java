@@ -171,16 +171,17 @@ class RpcNodeTest extends RpcTestSupport {
         try (RpcNode n = node(1, p)) {
             bind(n, 2, 0, 1);
             RpcPeer peer = n.peers.get(2);
-            peer.requestId.set(-1);
+            n.requestIds.set(-1);
             n.call(2, new RpcRequest(1, null), CALLBACK);
             n.call(2, new RpcRequest(1, null), CALLBACK);
             assertEquals(Set.of(-1, 1), peer.pending.keySet());
             PendingCall old = peer.pending.get(1);
-            peer.requestId.set(1);
+            n.requestIds.set(1);
             ByteBuf body = Unpooled.buffer().writeByte(9);
             assertThrows(RpcException.class, () -> n.call(2, new RpcRequest(1, body), CALLBACK));
             assertEquals(0, body.refCnt());
             assertSame(old, peer.pending.get(1));
+            assertEquals(2, n.admittedCalls.get());
             assertEquals(2, peer.pending.size());
         }
         assertEquals(2, p.failures.size());

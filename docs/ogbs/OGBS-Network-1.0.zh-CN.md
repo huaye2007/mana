@@ -25,13 +25,19 @@ Network 不理解 RPC 握手、玩家、登录、认证、Session、业务连接
 | WebSocket | TCP 与 WebSocket Upgrade |
 | WSS | TCP、TLS 与 WebSocket Upgrade |
 
+配置 TLS 时，它在应用协议之下保护字节流：入站先解密，再进行 HTTP/WebSocket 或业务解码；出站先完成相应编码，再加密。Connection 交付必须等待已配置的 TLS 握手和对端校验成功。安全端点缺少 TLS 配置时不能静默退回明文；具体绑定定义配置与校验机制。
+
 **N-EST-02** 一次有效建立尝试恰有一个最终结果：成功或失败。失败、取消、超时和成功竞争时只能有一个结果。失败不得产生该连接的业务生命周期回调。成功后关闭不得重新解释为建连失败。
 
 **N-EST-03** 成功交付顺序为：创建 Connection → onConnected → 建连成功结果。onConnected 抛异常通过 onException 报告，不改变 Transport 已成功的事实。onConnected 内关闭允许成功结果携带已关闭或正在关闭的 Connection。
 
+协议建立完成后紧接到达的业务消息，也必须在 onConnected 之后交付；实现内部的完成通知调度不得导致这些有效消息丢失。例如服务端可在 onConnected 内发送首条消息，对端仍应先收到自己的 onConnected，再收到 onMessage。
+
 **N-EST-04** 建立必须有失败及超时结束方式；具体超时、配置入口与各阶段边界由 binding 说明。同步等待中断必须取消未完成尝试并回收底层连接，不得留下无人接收的成功连接。
 
-**N-EST-05** 每次 connect 独立，允许并发以及向同一目标建立多条 Connection。Client 只临时管理未完成尝试，不充当业务连接管理器。
+实现需明确握手期限的计时起点、TLS 耗时是否计入，以及与 TCP 建连超时的关系；不要求框架提供额外的超时配置 API。超时关闭尚未交付的底层连接，不产生 onConnected。握手成功立即交付，不需要等待超时期限。
+
+**N-EST-05** 每次 connect 相互独立，允许并发尝试及同一目标的多个连接。Server/Client 不维护连接集合或未完成尝试清单；每条连接各自处理消息和生命周期事件，交给应用 handler。
 
 ### 2.1 四种建立流程
 
@@ -126,11 +132,15 @@ onConnected
 
 **N-LIFE-02** close 非阻塞且幂等，发起底层关闭，不承诺刷完已接纳消息。isActive 反映实际底层可用性，不要求 close 调用返回时立即变为 false；onDisconnected 在底层真正失效后发生。
 
+onDisconnected 之前，应按绑定实现的解码和所有权规则，交付对已收到输入进行收尾时产出的完整入站消息。例如，按输入结束分帧的 decoder 可以在传输已失效后产出最后一条消息；此时 isActive 已为 false，但 onMessage 仍先于 onDisconnected。这不保证交付不完整或非法消息，也不保证刷完已接纳的出站写入。
+
 **N-LIFE-03** onConnected、onMessage、onEvent、onDisconnected 抛异常均交给 onException。onException 自身抛异常只做最终诊断，不递归回调，不由 Network 自动关闭。
 
 **N-LIFE-04** onDisconnected 清理抛异常时，可以紧接着调用一次 onException；清理结束后不再产生应用回调。关闭不携带框架定义的 CloseCause/ReasonCode；业务自行保存原因。
 
 **N-LIFE-05** TLS/WS 建立过程事件由 Transport 消费，不作为普通 onEvent 交给应用。建立前失败由 Client 建连结果或 Server 诊断报告，不调用 onException(Connection, cause)。
+
+诊断应区分可识别的对端断开、协议拒绝与未知或程序错误，避免常见接入失败持续产生错误堆栈。具体分类和日志级别由绑定定义；这不改变失败结果、资源回收或已建立连接的异常回调。
 
 ### 4.1 回调失败的具体走向
 
@@ -145,6 +155,7 @@ onException 再抛异常
 → 不递归调用 onException
 
 底层连接失效
+→ 对已收到的输入收尾，交付其中产出的完整尾帧
 → onDisconnected
 → 若清理抛异常，报告一次 onException
 → 生命周期结束，晚到错误只做诊断
@@ -176,25 +187,25 @@ onException 再抛异常
 
 **N-SERVER-01** Server 同步 start，成功返回表示已监听；失败抛出对应语言的操作异常，回收自有资源。Server 只能启动一次，失败或关闭后不能 restart；再次启动需新建实例。
 
-**N-SERVER-02** localAddress 提供实际监听地址，支持动态端口。close 幂等，停止接入，并回收自有基础设施资源。建立中的未交付连接应取消，不能在停止接入后继续变成新连接。
+**N-SERVER-02** localAddress 提供实际监听地址，支持动态端口。close 幂等，停止接入并回收自有基础设施，不枚举接入 Channel。建连回调若观察到入口已关闭，就拒绝交付并关闭自己的 Channel；已通过入口开放检查的交付允许与 close 并发完成。
 
-**N-CLIENT-01** Client close 拒绝新的连接并取消未完成尝试，最终唤醒同步等待方或通知异步失败。已被成功一方认领的尝试仍报告成功。
+**N-CLIENT-01** Client close 拒绝新尝试并回收自有基础设施，不枚举未完成尝试。已有尝试分别由传输结果、超时、Channel 关闭或同步等待中断结束。就绪回调观察到 Client 已关闭时，报告失败而不交付 Connection。已通过入口开放检查的尝试仍可与自身失败/取消竞争认领成功；成功已认领后结果不变。
 
-**N-RESOURCE-01** binding 必须明确哪些资源自行创建、哪些借用。外部资源不得被框架关闭。已经交付的 Connection 不作为业务集合由 Server/Client 维护；关闭自有执行资源可能使它们失效，借用资源时由上层单独关闭成功连接。
+**N-RESOURCE-01** binding 必须明确哪些资源自行创建、哪些借用。外部资源不得被框架关闭。Server/Client 不保存跨连接集合，包括建立阶段。已交付连接、索引及批量关闭由上层管理；自有执行资源关闭也可能连带关闭关联连接。
 
 ### 6.1 资源所有权矩阵
 
 | 资源 | 创建/提供方 | 关闭责任 |
 | --- | --- | --- |
 | Server 监听端点 | Server | Server.close |
-| 尚未交付的建立尝试 | Server / Client | 失败、取消或所属入口关闭时回收 |
+| 尚未交付的建立尝试 | 该连接操作自身 | 传输失败、超时、Channel 关闭、等待取消，或观察到入口关闭而拒绝交付时回收 |
 | 框架自建的执行基础设施 | Server / Client | 所属对象关闭时回收 |
 | 应用注入的执行基础设施 | 应用 | 应用负责，不由 Network 关闭 |
 | 已交付的 Connection | 交付后由上层持有 | 上层决定连接生命周期；自有底层资源关闭也会使其失效 |
 
-Client 可以连续或并发 connect 多个目标。成功后从未完成集合移除，不将它转存为长期 ConnectionManager。业务若需要按玩家、节点或会话查找连接，应在上层建立映射，并处理断开清理。
+Client 可以连续或并发 connect 多个目标，每次操作仅保留自身完成状态。业务若需要按玩家、节点或会话查找连接，应在上层建立映射并处理断开清理。
 
-借用资源时，关闭 Server 停止监听，关闭 Client 停止新建连接；两者都不等于自动关闭全部已交付连接。反过来，自建执行资源关闭会连带关闭其上的连接，这属于资源生命周期，不代表框架维护了业务连接集合。
+借用资源时，Server close 停止监听、Client close 拒绝新尝试，不主动关闭已有 Channel，也不立即取消进行中的握手。例如，端点关闭后，静默 TLS 对端仍受其握手期限约束；稍后握手成功时，若交付检查观察到端点已关闭，则拒绝交付。需要立即关闭整个资源上的连接时，由调用方关闭其拥有的资源。自建执行资源关闭则通过底层运行时连带关闭关联 Channel。
 
 ### 6.2 关闭方法不能互相替代
 
@@ -212,6 +223,8 @@ Network 不自动等待业务响应完成、不刷完全部发送，也不替 RP
 **N-WS-03** 最大消息大小同时约束单帧 payload 和聚合后的完整消息。binding 必须提供明确默认值；HTTP Upgrade 内容大小与业务消息大小是不同限制。
 
 **N-WS-04** Server endpoint 按完整 path 精确匹配，query 不参与匹配。不能把 /game 当作 /game/ 或 /game/child；不提供通配符、路由参数或自动规范化。
+
+**N-WS-05** V1 服务端不选择 WebSocket 子协议，不增加独立业务握手。客户端要求子协议而服务端未返回匹配结果时，客户端建立失败且不调用 onConnected。两端结果独立：服务端可能已发送 Upgrade 并完成自身建立，随后才收到客户端关闭。子协议不是登录、鉴权或 RPC 就绪条件。
 
 ### 7.1 消息边界与端点示例
 

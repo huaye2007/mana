@@ -15,71 +15,80 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** Binary WebSocket protocol assembly, establishment events, and rejection policy. */
-final class WebSocketTransport implements ChannelTransport {
-    static final String PROTOCOL = "managame-websocket";
+final class WebSocketTransport {
+    static final String PROTOCOL = "network-websocket";
     private static final int MAX_HTTP_CONTENT = 65536;
     private final Consumer<ChannelPipeline> protocol;
     private final int maxMessageSize;
-    private final boolean server;
+    private final long handshakeTimeoutMillis;
+    private final boolean server, secure;
 
-    private WebSocketTransport(Consumer<ChannelPipeline> protocol, int maxMessageSize, boolean server) {
+    private WebSocketTransport(Consumer<ChannelPipeline> protocol, int maxMessageSize, boolean server, boolean secure, long handshakeTimeoutMillis) {
         this.protocol = protocol;
+        this.handshakeTimeoutMillis = handshakeTimeoutMillis;
         this.maxMessageSize = maxMessageSize;
         this.server = server;
+        this.secure = secure;
     }
 
-    static ChannelTransport server(String path, int maxMessageSize) {
+    static WebSocketTransport server(String path, int maxMessageSize) {
+        WebSocketServerProtocolConfig config = WebSocketServerProtocolConfig.newBuilder()
+                .websocketPath(path).checkStartsWith(true).maxFramePayloadLength(maxMessageSize)
+                .allowExtensions(false).build();
         return new WebSocketTransport(pipeline -> {
-            pipeline.addLast("managame-http", new HttpServerCodec());
-            pipeline.addLast("managame-http-aggregate", new HttpObjectAggregator(MAX_HTTP_CONTENT));
-            pipeline.addLast("managame-websocket-path", new WebSocketPathHandler(path));
-            pipeline.addLast(PROTOCOL, new WebSocketServerProtocolHandler(WebSocketServerProtocolConfig.newBuilder()
-                    .websocketPath(path).checkStartsWith(true).maxFramePayloadLength(maxMessageSize)
-                    .allowExtensions(false).build()));
-        }, maxMessageSize, true);
+            pipeline.addLast("network-http", new HttpServerCodec());
+            pipeline.addLast("network-http-aggregate", new HttpObjectAggregator(MAX_HTTP_CONTENT));
+            pipeline.addLast("network-websocket-path", new WebSocketPathHandler(path));
+            pipeline.addLast(PROTOCOL, new WebSocketServerProtocolHandler(config));
+        }, maxMessageSize, true, false, config.handshakeTimeoutMillis());
     }
 
-    static ChannelTransport client(URI uri, WebSocketConnectOptions options, int maxMessageSize) {
+    static WebSocketTransport client(URI uri, WebSocketConnectOptions options, int maxMessageSize) {
+        WebSocketClientProtocolConfig config = WebSocketClientProtocolConfig.newBuilder()
+                .webSocketUri(uri).customHeaders(options.headers()).subprotocol(options.subprotocol())
+                .maxFramePayloadLength(maxMessageSize).allowExtensions(false).build();
         return new WebSocketTransport(pipeline -> {
-            pipeline.addLast("managame-http", new HttpClientCodec());
-            pipeline.addLast("managame-http-aggregate", new HttpObjectAggregator(MAX_HTTP_CONTENT));
-            pipeline.addLast(PROTOCOL, new WebSocketClientProtocolHandler(WebSocketClientProtocolConfig.newBuilder()
-                    .webSocketUri(uri).customHeaders(options.headers()).subprotocol(options.subprotocol())
-                    .maxFramePayloadLength(maxMessageSize).allowExtensions(false).build()));
-        }, maxMessageSize, false);
+            pipeline.addLast("network-http", new HttpClientCodec());
+            pipeline.addLast("network-http-aggregate", new HttpObjectAggregator(MAX_HTTP_CONTENT));
+            pipeline.addLast(PROTOCOL, new WebSocketClientProtocolHandler(config));
+        }, maxMessageSize, false, "wss".equalsIgnoreCase(uri.getScheme()), config.handshakeTimeoutMillis());
     }
 
-    @Override public void addProtocolHandlers(ChannelPipeline pipeline, ConnectionLifecycle lifecycle) {
-        var handshake = lifecycle.expectHandshake();
+    void addProtocolHandlers(ChannelPipeline pipeline) {
         protocol.accept(pipeline);
-        pipeline.addLast("managame-websocket-aggregate", new WebSocketFrameAggregator(maxMessageSize));
-        pipeline.addLast("managame-websocket-handshake", new HandshakeHandler(lifecycle, handshake, server));
+        pipeline.addLast("network-websocket-aggregate", new WebSocketFrameAggregator(maxMessageSize));
+        pipeline.addLast("network-websocket-handshake", new HandshakeHandler(server, handshakeTimeoutMillis));
     }
 
-    @Override public void addPayloadHandlers(ChannelPipeline pipeline) {
-        pipeline.addLast("managame-binary-in", new WebSocketBinaryFrameDecoder());
-        pipeline.addLast("managame-binary-out", new WebSocketBinaryFrameEncoder());
+    void addPayloadHandlers(ChannelPipeline pipeline) {
+        pipeline.addLast("network-binary-in", new WebSocketBinaryFrameDecoder());
+        pipeline.addLast("network-binary-out", new WebSocketBinaryFrameEncoder());
+    }
+
+    void verifyScheme(boolean tls) {
+        if (!server && secure != tls)
+            throw new IllegalArgumentException(secure
+                    ? "wss URI requires an SslHandler at the start of the pipeline"
+                    : "ws URI cannot use an SslHandler; use wss");
     }
 
     private static final class HandshakeHandler extends ChannelInboundHandlerAdapter {
-        private final ConnectionLifecycle lifecycle;
-        private final ConnectionLifecycle.Handshake handshake;
-        private final boolean server;
         private boolean complete;
+        private final boolean server;
+        private final long handshakeTimeoutMillis;
         private ScheduledFuture<?> timeout;
 
-        HandshakeHandler(ConnectionLifecycle lifecycle, ConnectionLifecycle.Handshake handshake, boolean server) {
-            this.lifecycle = lifecycle;
-            this.handshake = handshake;
+        HandshakeHandler(boolean server, long handshakeTimeoutMillis) {
             this.server = server;
+            this.handshakeTimeoutMillis = handshakeTimeoutMillis;
         }
 
         @Override public void channelActive(ChannelHandlerContext ctx) {
             // Bound silent server-side peers that never send an HTTP Upgrade request.
             if (server && !complete) {
                 timeout = ctx.executor().schedule(() -> {
-                    if (!complete) lifecycle.fail(new WebSocketHandshakeException("WebSocket establishment timed out"));
-                }, 10, TimeUnit.SECONDS);
+                    fail(ctx, new WebSocketHandshakeException("WebSocket establishment timed out"));
+                }, handshakeTimeoutMillis, TimeUnit.MILLISECONDS);
             }
             ctx.fireChannelActive();
         }
@@ -87,24 +96,31 @@ final class WebSocketTransport implements ChannelTransport {
         @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
             if (event instanceof WebSocketServerProtocolHandler.HandshakeComplete
                     || event == WebSocketClientProtocolHandler.ClientHandshakeStateEvent.HANDSHAKE_COMPLETE) {
-                complete = true;
                 cancelTimeout();
-                handshake.succeed();
+                complete = true;
+                ctx.fireUserEventTriggered(event);
             } else if (event instanceof WebSocketServerProtocolHandler.ServerHandshakeStateEvent
                     || event instanceof WebSocketClientProtocolHandler.ClientHandshakeStateEvent) {
                 if (event == WebSocketServerProtocolHandler.ServerHandshakeStateEvent.HANDSHAKE_TIMEOUT
                         || event == WebSocketClientProtocolHandler.ClientHandshakeStateEvent.HANDSHAKE_TIMEOUT) {
                     cancelTimeout();
-                    lifecycle.fail(new WebSocketHandshakeException("WebSocket handshake timed out"));
+                    fail(ctx, new WebSocketHandshakeException("WebSocket handshake timed out"));
                 }
             } else ctx.fireUserEventTriggered(event);
         }
 
         @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             if (cause instanceof TooLongFrameException || cause instanceof CorruptedWebSocketFrameException) {
-                lifecycle.fail(cause);
+                if (!complete) ctx.fireExceptionCaught(cause);
                 ctx.close();
-            } else ctx.fireExceptionCaught(cause);
+            } else if (!complete) fail(ctx, cause);
+            else ctx.fireExceptionCaught(cause);
+        }
+
+        private void fail(ChannelHandlerContext ctx, Throwable cause) {
+            cancelTimeout();
+            ctx.fireExceptionCaught(cause);
+            ctx.close();
         }
 
         @Override public void channelInactive(ChannelHandlerContext ctx) {

@@ -20,7 +20,7 @@ Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖
 
 所有 Runtime 配置都通过批量 Builder 输入。build 收集、校验、编译 MethodHandle、冻结注册表，再启动调度资源。校验失败不接管调用方传入的执行器。成功后 Runtime 负责对每个唯一 RouteExecutor 调用一次 close。
 
-NetworkServer/NetworkClient 默认创建 NIO EventLoopGroup 并在 close 时同步关闭自有资源。显式传入的 group 不由框架关闭。Server 同步 start，只能启动一次；Client close 取消未完成建连。成功 Connection 由上层持有，外部 group 上的成功连接不因 Server/Client close 被主动关闭。详细语义见 Network 两层规范。
+NetworkServer/NetworkClient 默认创建 NIO EventLoopGroup，同步回收自有资源。Server 只能启动一次，close 停止监听；Client close 拒绝新尝试。两者不保存连接或未完成尝试集合。外部 group 的已有 Channel 由调用方管理，握手继续到自身结果/超时，就绪检查观察到入口关闭时拒绝交付；竞争与所有权详见 Network 两层规范。
 
 RPC Node 自己创建并同步关闭 NetworkServer、NetworkClient、自有 NIO groups、时间轮、全部连接与 PendingCall。其 Builder 不接受应用的 Network 实例或 EventLoopGroup。
 
@@ -36,9 +36,9 @@ write 检查 active/writable 后直接 writeAndFlush；ACCEPTED 转移所有权�
 
 入站 ReferenceCounted 在 onMessage 范围内借用，返回或异常后由框架释放；异步持有/回写需 retain。属性直接使用 Netty AttributeKey，不额外定义关闭冻结/清空规则。
 
-Pipeline 为 Transport handlers → binary adapter（WS）→ 用户 codec/handler → ConnectionHandler adapter。NetworkChannelInitializer 只确定装配顺序；TlsTransport/WebSocketTransport 各自消费握手事件，ConnectionLifecycle 协调与协议无关的建立与断开；发送异常入口避免 Netty WS protocol handler 将普通编码失败自动解释成连接关闭。高级用户直接配置 ChannelPipeline、ChannelOption、EventLoopGroup、ChannelFactory 和 SslContext。
+Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常入口 → HTTP/WS handler 与 binary adapter（启用时）→ 用户 codec/handler → ConnectionHandler adapter。NetworkChannelInitializer 装配具体 handler，不使用通用 Transport 接口或 TLS 包装。末端 adapter 直接衔接原生 TLS/WS 完成事件、入口检查与 onConnected，不创建中间就绪/WS Promise 或 PromiseCombiner；Client 仅用原生 Promise 承接建连结果。不保存连接清单，不使用 ChannelGroup 或集合锁；单 Channel 处理将消息交给传入的 ConnectionHandler。TLS context、证书和主机名校验由调用方通过 pipeline(...) 配置，WSS 必须显式配置 TLS；位置与失败规则见 Network Java 规范。
 
-Network 示例为 NetworkEchoExample，RPC 双节点示例为 RpcEchoExample；自动 RPC→Runtime 接入尚未实现。
+[game-example](../game-example/README.zh-CN.md) 统一收纳独立可运行示例及其执行测试，按 `cn.managame.example.<component>` 分包。Network 示例为 NetworkEchoExample，RPC 双节点示例为 RpcEchoExample。模块依赖 game-network 与 game-rpc；框架模块不反向依赖示例，也不发布示例类。其他组件在有实际示例时再添加依赖。示例是已有契约的应用演示，不是新的框架组件或规范层。自动 RPC→Runtime 接入尚未实现。
 ## RPC
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
@@ -47,7 +47,7 @@ Network 示例为 NetworkEchoExample，RPC 双节点示例为 RpcEchoExample；�
 
 call/notify 按非零 routeKey 的无符号余数选起点，零值 round-robin；reply 优先实际来源 Slot，再按 routeKey 回退。首个 ACCEPTED 后不重发。requestId 仅在 Peer 内匹配调用，响应可以从任意 Slot 返回。
 
-每个 Node 一个 HashedWheelTimer 负责调用超时、握手超时与固定重连延迟；连接 IdleStateHandler 负责心跳。断线不立即失败已接纳调用。远端所有合法错误响应交给 onResponse，本地可用性/超时/生命周期竞争走 onFail。错误码区间由 Core 定义，无高位封装。
+每个 Node 一个 HashedWheelTimer 负责调用超时、握手超时与基础延迟加抖动重连；连接 IdleStateHandler 负责心跳。同一 Node 内 Peer 重建保持调用 ID 连续，Node 级接纳限制在途调用和完成处理器。超时失败在时间轮之外的自有虚拟线程执行。Peer 连接索引避免关闭时反复全局扫描。断线不立即失败已接纳调用。远端所有合法错误响应交给 onResponse，本地可用性/超时/生命周期竞争走 onFail。错误码区间由 Core 定义，无高位封装。
 
 出站 ByteBuf body 经参数和生命周期校验后被消费，编码复制到单个连续 frame；入站 body 在回调内借用，需要 retain/copy 才能跨线程使用。消息使用只读 record，发送 ID 在内部编码时赋予，不公开 requestId setter。
 
@@ -104,7 +104,7 @@ Spring 扫描、Protobuf 生成、跨节点 Router 与游戏业务不属于这�
 
 ## Data 组合与所有权
 
-game-data 依赖 game-core，按 annotation/key/meta/mapper/codec/error/mysql/mongo 分包；Repository 与写回包级实现位于 cn.managame.data。MySQL/MongoDB 与缓存核心在同一 artifact 发布，Mongo Driver 为 optional 依赖。game-examples 尚未实现；Data 的无数据库测试位于 game-data。
+game-data 依赖 game-core，按 annotation/key/meta/mapper/codec/error/mysql/mongo 分包；Repository 与写回包级实现位于 cn.managame.data。MySQL/MongoDB 与缓存核心在同一 artifact 发布，Mongo Driver 为 optional 依赖。Data 可运行示例尚未实现；Data 的无数据库契约测试仍位于 game-data。
 
 Data 不依赖 Runtime 或 RPC；应用可在已有 Route 上串行业务访问。get/getGroup 缓存未命中会同步访问存储，调用方需考虑 Route 执行线程上的数据库延迟。同 Route 的顺序不意味着后台序列化线程看到了多字段原子快照；实体并发可见性仍需应用保证。
 

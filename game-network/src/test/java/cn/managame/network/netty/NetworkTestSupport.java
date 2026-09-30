@@ -52,6 +52,23 @@ abstract class NetworkTestSupport {
         serverTls = SslContextBuilder.forServer(kmf).sslProvider(SslProvider.JDK).build();
         clientTls = SslContextBuilder.forClient().trustManager(tmf).sslProvider(SslProvider.JDK).build();
     }
+    static ChannelInitializer<Channel> initializer(ConnectionHandler handler, Consumer<ChannelPipeline> configurer) {
+        return new ChannelInitializer<Channel>() {
+            protected void initChannel(Channel channel) {
+                ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(channel, handler, () -> true, null);
+                NetworkChannelInitializer.configure(channel, List.of(configurer), null, adapter);
+            }
+        };
+    }
+
+    static SslHandler clientSsl(SslContext context, Channel channel, String host, int port) {
+        SslHandler ssl = context.newHandler(channel.alloc(), host, port);
+        var parameters = ssl.engine().getSSLParameters();
+        parameters.setEndpointIdentificationAlgorithm("HTTPS");
+        ssl.engine().setSSLParameters(parameters);
+        return ssl;
+    }
+
     static <T> T take(BlockingQueue<T> queue) throws Exception {
         T value = queue.poll(5, TimeUnit.SECONDS);
         assertNotNull(value, "Timed out waiting for network event");

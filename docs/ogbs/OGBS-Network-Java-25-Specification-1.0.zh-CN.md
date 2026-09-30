@@ -12,6 +12,8 @@ Maven：`cn.managame:game-network:1.0.0-SNAPSHOT`。JDK 25，无 preview；Netty
 
 ## 1. 包结构
 
+本绑定是 Netty 的薄封装。扩展直接使用原生 pipeline handler，ConnectionHandler 接收解码后的消息和生命周期事件；不为了关闭管理增加入口持有的连接清单或批量连接管理。下文关闭契约明确承接这一所有权边界。
+
 | 包 | 公开 API |
 | --- | --- |
 | cn.managame.network.connection | Connection、ConnectionHandler、WriteStatus |
@@ -19,9 +21,9 @@ Maven：`cn.managame:game-network:1.0.0-SNAPSHOT`。JDK 25，无 preview；Netty
 | cn.managame.network.error | NetworkException |
 | cn.managame.network.netty | NetworkServer、NetworkServerBuilder、NetworkClient、NetworkClientBuilder |
 
-NettyConnection、ConnectAttempt、NetworkChannelInitializer、ConnectionLifecycle、ChannelTransport、ConnectionEstablishment、TlsTransport、WebSocketTransport、ConnectionHandlerAdapter 与 WS payload 适配均保持 netty 包级封装。Server/Client 入口与其实现同包，避免为拆包公开内部协作类型。
+NettyConnection、NetworkChannelInitializer、WebSocketTransport、ConnectionHandlerAdapter 与 WS payload 适配均保持 netty 包级封装。Server/Client 入口与其实现同包，避免为拆包公开内部协作类型。
 
-不再建立 attribute 包或自定义 ConnectionKey，直接使用 Netty AttributeKey。原 Acceptor/Connector 抽象由具体 NetworkServer/NetworkClient 替代。模块入口及可运行示例见 [game-network](../../game-network/README.zh-CN.md)。
+不再建立 attribute 包或自定义 ConnectionKey，直接使用 Netty AttributeKey。原 Acceptor/Connector 抽象由具体 NetworkServer/NetworkClient 替代。模块入口见 [game-network](../../game-network/README.zh-CN.md)。可运行示例及其执行测试位于 [game-example](../../game-example/README.zh-CN.md) 的 cn.managame.example.network 包中，不随 game-network artifact 发布。示例调用方需要更新 import 与模块依赖，不保留旧包别名。组件契约测试仍位于 game-network。
 
 ## 2. Connection 与 Handler
 
@@ -101,7 +103,6 @@ Builder 的全部配置入口：
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | 可多次追加 |
 | webSocket(String path) | 切换 WS，默认最大消息 1 MiB |
 | webSocket(String path, int maxMessageSize) | 指定正数最大消息长度 |
-| sslContext(SslContext) | 必须是服务端 context；配置后为 TLS TCP / WSS |
 | bossGroup(EventLoopGroup) | 缺省创建 NioEventLoopGroup(1) |
 | workerGroup(EventLoopGroup) | 缺省创建标准 NioEventLoopGroup() |
 | channelFactory(ChannelFactory&lt;? extends ServerChannel&gt;) | NioServerSocketChannel::new |
@@ -131,7 +132,7 @@ public interface ConnectCallback {
 }
 ```
 
-一个 Client 可连接多个目标或同一目标多次。同步/异步共用 ConnectAttempt，一次 CAS 仲裁成功与失败；成功认领发生在交付 onConnected 前，最终成功回调在 onConnected 后。callback 自身抛异常只记录日志，不转成第二次结果或 ConnectionHandler.onException。
+一个 Client 可连接多个目标或同一目标多次。同步/异步共用原生 Promise 建连流程；成功认领发生在交付 onConnected 前，最终成功回调在 onConnected 后。callback 自身抛异常只记录日志，不转成第二次结果或 ConnectionHandler.onException。
 
 同步 connect 禁止从该 Client 的任意 EventLoop 调用，立即 IllegalStateException。等待线程被中断时恢复 interrupt flag，取消尝试并关闭底层 Channel，抛 NetworkException；即使成功刚好赢得竞争，也关闭同步调用方无法取得的连接。
 
@@ -142,7 +143,6 @@ public interface ConnectCallback {
 | handler(ConnectionHandler) | 必填 |
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | 按注册顺序追加 |
 | webSocket() / webSocket(int maxMessageSize) | WS 模式；默认 1 MiB |
-| sslContext(SslContext) | 必须是客户端 context |
 | eventLoopGroup(EventLoopGroup) | 缺省创建标准 NioEventLoopGroup() |
 | channelFactory(ChannelFactory&lt;? extends Channel&gt;) | NioSocketChannel::new |
 | option(ChannelOption&lt;T&gt;, T) | 原生 Bootstrap option |
@@ -150,28 +150,33 @@ public interface ConnectCallback {
 
 TCP 模式只接受 SocketAddress；WS 模式只接受 URI，错用为 IllegalStateException。URI 必须有有效 host，scheme 为 ws/wss，端口缺省分别 80/443；拒绝 user-info、fragment、0 或超范围端口。
 
-WS 的 ws:// 即使配置 SslContext 也不启用 TLS；wss:// 使用自定义 context 或惰性创建的 JDK 默认客户端 context。默认信任库来自 JVM，TLS 启用主机名验证。TCP 配置 context 即 TLS TCP，需要 InetSocketAddress 提供主机名。Server 不自动生成 TLS 证书/context。
+TLS 只通过原生 pipeline handler 配置；不再提供 sslContext(...) Builder 方法，也不自动创建客户端 context。全部 pipeline configurer 执行完毕后，允许存在一个 SslHandler，且必须位于首位。wss:// 必须配置它；ws:// 若配置它则拒绝，不再静默忽略 TLS。TCP 存在该 handler 时使用 TLS。信任库、证书、客户端/服务端模式、目标 host/port、主机名校验及握手超时均由调用方配置，见[原生 TLS 配置](#native-tls-configuration)。
 
-### 4.1 ConnectAttempt 的完成协议
+<a id="41-connectattempt-的完成协议"></a>
 
-ConnectAttempt 是内部一次性结果协调对象，包含选定 EventLoop、完成 CAS、Channel、成功 Connection/失败 cause、同步 latch 及可选 callback。同步与异步入口共用它，避免两套建立逻辑产生不同语义。
+### 4.1 原生建连结果
+
+NetworkClient 每次调用使用一个原生 Netty Promise<Connection> 保存结果、接受取消并提供同步 await。Bootstrap 和 Channel 在选定的 EventLoop 上创建，初始化、就绪与失败处理按该线程串行执行。自定义 channelFactory 因此在该 EventLoop 上运行，不得阻塞它。不再定义结果包装类、额外完成 CAS、取消标记或附着 Channel 字段。
+
+Promise 使用 ImmediateEventExecutor，保证 Channel 执行器终止后仍执行资源回收和通知 listener，不创建工作线程。结果 listener 显式将 ConnectCallback 派发到选定 EventLoop，派发被拒绝时在当前线程兜底。若仅使用绑定 Channel 执行器的 Promise，其 listener 执行被拒绝时可能丢失这些通知。
 
 ```text
-创建尝试并加入 pending
-→ 创建/附着 Channel
+创建独立 Promise（不登记到端点集合）
+→ 在选定 EventLoop 执行 Bootstrap
 → Transport 完成，且应用 pipeline 已装配
-→ claimSuccess CAS
+→ 检查结果未完成且 Client/Channel 仍开放
+→ 通过 Promise.setUncancellable() 认领交付
 → 创建 Connection，执行 onConnected
-→ 存入成功值，移出 pending，唤醒同步等待者/调用 onSuccess
+→ 存入成功值，唤醒同步等待者/调用 onSuccess
 ```
 
-失败方 CAS 成功后保存 cause，标记取消，关闭已附着 Channel，移出 pending 并通知结果。若取消先发生、Channel 后附着，attach 会检查取消状态并关闭它，避免底层资源逃逸。
+失败使用 Promise.tryFailure，中断等待使用 Promise.cancel(false)。结果 listener 在失败/取消时关闭 Bootstrap 的 Channel；若取消后才创建 Channel，向已完成 Promise 添加 listener 仍会关闭它，初始化也会在业务交付前拒绝已完成结果。不需要端点登记/移除回调。
 
-成功 CAS 特意早于 onConnected。否则 onConnected 已把 Connection 交给业务后，Client.close 仍可能把结果改成失败。成功认领后 onConnected 抛异常只走 ConnectionHandler.onException，ConnectCallback 不得再收到 onFailure。
+先检查 isDone，再通过 setUncancellable 与等待线程的取消竞争。它不是通用成功/失败锁：Netty 仍允许对不可取消 Promise 调用 tryFailure。初始化、Channel 就绪和传输失败处理在 EventLoop 上串行执行，其他线程不得独立将已认领成功的结果改成失败。先执行 onConnected，再 setSuccess；前者抛异常只走 ConnectionHandler.onException，在其中关闭也不会触发 ConnectCallback.onFailure。
 
 ### 4.2 中断和回调线程例外
 
-同步 await 被中断时，即使成功已刚刚认领，也关闭已附着 Channel，因为同步调用者将以异常退出，无法接管成功值。恢复线程中断标记后抛 NetworkException；这不会制造第二次异步结果。
+同步 await 被中断时先取消 Promise。取消获胜后，资源回收 listener 关闭底层 Channel，包括取消后才创建的 Channel。若成功已认领，取消不能获胜；另一个 listener 在 onConnected 返回后关闭成功 Connection。例如 onConnected 阻塞期间中断等待线程，该线程立即恢复中断标记并抛 NetworkException，回调放行后再关闭无法交付给调用者的 Connection，不制造第二次结果。
 
 正常异步结果由尝试选择的 EventLoop 交付；发起前校验失败则直接在调用线程 onFailure。借用的 EventLoop 若已终止且拒绝结果通知，只能在当前线程兜底一次。因此上层不能要求 onFailure 永远具有 Channel EventLoop 上下文，更不能在回调内无条件调用同步 connect/close。
 
@@ -180,9 +185,9 @@ ConnectCallback 自身异常只做诊断，不转交 ConnectionHandler.onExcepti
 
 ## 5. 配置快照与握手参数
 
-Builder 可重复 build，每个实例快照自己的 handler、pipeline 列表、options、Transport 参数。未提供外部 group 时分别创建资源；传入 group 时显式共享。快照不深复制用户的 handler、SslContext 或 pipeline lambda 内部状态。Builder 本身不是并发配置器。
+Builder 可重复 build，每个实例快照自己的 handler、pipeline 列表、options、Transport 参数。未提供外部 group 时分别创建资源；传入 group 时显式共享。快照不深复制用户的 handler 或 pipeline lambda 内部状态。Builder 本身不是并发配置器。
 
-handler/pipeline/group/factory/option/value 等 null 参数立即拒绝。build 缺必填项为 IllegalStateException；非法 path、非正消息长度、不匹配的 SSL context 为 IllegalArgumentException。
+handler/pipeline/group/factory/option/value 等 null 参数立即拒绝。build 缺必填项为 IllegalStateException；非法 path、非正消息长度为 IllegalArgumentException。
 
 ```java
 public final class WebSocketConnectOptions {
@@ -195,37 +200,39 @@ public final class WebSocketConnectOptions {
 }
 ```
 
-构造时复制 HttpHeaders，headers() 返回新的副本。默认空 headers、null subprotocol；可重复安全用于不同 connect。服务端默认不协商子协议，客户端要求子协议而服务端未返回时握手失败。高级服务端可通过 pipeline 配置 Netty WebSocket handler，框架不增加 Auth/Router/HTTP API。
+构造时复制 HttpHeaders，headers() 返回新的副本。默认空 headers、null subprotocol；可重复安全用于不同 connect。服务端不协商子协议，也不提供子协议 Builder 配置；客户端保留每次 connect 的 WebSocketConnectOptions，以便连接外部 WS 服务。客户端要求子协议但服务端没有匹配响应时握手失败；服务端可能已经完成自己的 Upgrade，随后收到客户端关闭，两端结果不是一个事务。原生 handler 可通过 pipeline(...) 检查 HTTP Upgrade；框架不增加 Auth/Router/HTTP API。
 
 ### 5.1 快照的深度和可复用范围
 
-Builder build 后再修改 options 或添加 pipeline，只影响下次 build。它不会改动已经建好的 Server/Client 配置。handler、SslContext 和 lambda 捕获对象仍为共享引用，因此“配置快照”不意味着复制它们内部的可变状态。
+Builder build 后再修改 options 或添加 pipeline，只影响下次 build。它不会改动已经建好的 Server/Client 配置。handler 和 lambda 捕获对象仍为共享引用，因此“配置快照”不意味着复制它们内部的可变状态。
 
 每条 Channel 调用各 pipeline configurer 来创建自己的编解码器。不要在 Builder 外只创建一个非 Sharable decoder，然后重复 addLast 到所有连接；应在 configurer 内 new。当业务需要共享 handler 时，由应用确认其 @Sharable 和并发安全性。
 
 WebSocketConnectOptions 另行复制 Headers：构造后改变原 Headers，以及改变 headers() 返回值，都不会修改选项本体。这确保同一个 options 可以用于多个独立尝试；但不意味着 Server 自动理解这些 Header 或进行鉴权。
 
 
+WebSocket 握手超时直接采用 Netty 原生默认值，不提供独立 Builder 配置或框架默认常量；TLS 超时仍通过原生 SslHandler 配置。早期增加的服务端子协议及两端自定义 WS 超时入口已移除，调用方需删除相应 Builder 调用并重新编译。
+
 ## 6. Pipeline 与超时
 
 ```text
-TCP: [SslHandler / TLS handshake observer] → ConnectionLifecycle → 用户 pipeline → ConnectionHandler adapter
-WS:  [SslHandler / TLS handshake observer] → HTTP codec / HTTP aggregator / WS protocol / frame aggregator
-     → WS handshake observer → ConnectionLifecycle → binary decoder/encoder → 用户 pipeline → ConnectionHandler adapter
+TCP: [调用方 SslHandler] → 用户 pipeline → ConnectionHandler adapter
+WS:  [调用方 SslHandler] → HTTP codec / HTTP aggregator / WS protocol / frame aggregator
+     → WS handshake observer → binary decoder/encoder → 用户 pipeline → ConnectionHandler adapter
 ```
 
 每条 Channel 重新执行 configurer；多次 pipeline(a).pipeline(b) 按 a、b 执行。用户 decoder/encoder 应各自创建非 Sharable 实例。出站逆序经过用户 encoder，再由 ByteBuf 转 BinaryWebSocketFrame。入站聚合后 content.retain，原 frame 由 Netty decoder 释放。
 
-协议专用 observer 消费内部 TLS/WS 握手事件。ConnectionLifecycle 在用户 pipeline 前观察真实 inactive；业务消息/异常 adapter 在末端。TCP 字节流不内置业务 framing。用户 IdleStateHandler 的事件经 onEvent 交付，不重新定义 Idle 类型。自定义异步 handler 必须自行维护事件传播及消息顺序，不得删除/重排内部 `managame-*` handler 或伪造生命周期/握手事件。
+WS observer 管理服务端建立期限，向后传播原生握手成功事件。末端 ConnectionHandlerAdapter 直接处理 TLS/WS 完成事件并交付业务回调，不再暴露中间就绪 Future。临时 closeFuture 监听器负责交付前关闭，也覆盖 inactive 尚未到达末端的情况。TCP 字节流不内置业务 framing。用户 IdleStateHandler 的事件经 onEvent 交付，不重新定义 Idle 类型。自定义异步 handler 必须自行维护事件传播及消息顺序，不得删除/重排内部 `network-*` handler 或伪造生命周期/握手事件。
 
-内置 handler 名称可用于原生插入，例如在 `managame-http-aggregate` 后添加 HTTP Upgrade 校验；在 `managame-tls` 上配置 Netty TLS handler。必须把 TLS 交给 sslContext(...) 才纳入建立语义，手动插入 SslHandler 不触发框架自动识别。
+内部 handler 名称使用组件职责前缀 network-，不绑定项目名或 Java 包名。这些名称留给框架 handler；用户 handler 必须使用不同名称，否则 Netty 拒绝重名。该前缀替代旧 managame-，不保留别名；按名称使用 addBefore/addAfter/get 的调用方需要迁移。handler 顺序、事件与 wire 行为不变。内部名称支持原生插入，例如在 `network-http-aggregate` 后添加 HTTP Upgrade 校验。TLS handler 名称由调用方指定：初始化时使用 `pipeline.addFirst("ssl", ...)`；装配方法识别该 SslHandler 并等待其 handshakeFuture。TLS 握手事件不交给 ConnectionHandler.onEvent。
 
 | 参数 | 当前默认与入口 |
 | --- | --- |
 | TCP connect | Netty CONNECT_TIMEOUT_MILLIS，默认 30 秒；option 设置 |
 | TLS handshake | SslHandler 默认 10 秒；通过 pipeline 中原生 handler 设置 |
-| WS client handshake | Netty WebSocketClientProtocolHandler 默认 10 秒 |
-| WS server establishment | 从 Channel active 起最多 10 秒，覆盖静默/未发 Upgrade 的连接；使用 EventLoop 定时任务，成功/关闭取消 |
+| WS client handshake | Netty WebSocketClientProtocolConfig 默认值，当前 10 秒；channelActive 发起握手时启动计时，包含等待 TLS 完成的耗时 |
+| WS server establishment | 读取 Netty WebSocketServerProtocolConfig 默认期限，当前 10 秒；从 channelActive 起覆盖静默对端、TLS 与 Upgrade，成功/关闭取消定时任务 |
 | HTTP Upgrade body | HttpObjectAggregator 64 KiB，独立于业务消息 |
 | Binary WebSocket message | 1 MiB，同时约束 frame payload 和聚合长度；Builder 可调整 |
 | NIO / socket options | Netty 默认值；原生 option / childOption |
@@ -234,20 +241,19 @@ Text 用关闭码 1003 拒绝。单帧/聚合超限和 WS 协议违规关闭，�
 
 ### 6.1 装配时点与事件方向
 
-NetworkChannelInitializer 在 Channel 初始化期间依次装配 Transport handlers、ConnectionLifecycle、payload 适配、用户 configurer 和末端 ConnectionHandlerAdapter，全部成功后才标记初始化完成。Connection 创建同时要求初始化完成、Channel active、所有已注册握手前置条件完成，以及所属入口认领成功。用户可以在握手完成前配置已装配的原生 handler；流水线装配与连接交付是两个不同的时点。
+NetworkChannelInitializer.configure 添加发送异常入口、可选 WebSocket 协议及 payload handler，然后执行用户 configurer。configurer 将 SslHandler 添加到首位，排在所有已有 handler 之前。装配方法校验 TLS 位置和 WS URI scheme，添加末端 adapter，向 adapter 传入已配置的 SslHandler 和 WS 模式，最后标记初始化完成。交付要求装配成功、激活事件到达末端、全部已配置握手完成以及端点接纳成功。构造 handler 的先后不决定字节处理顺序，最终 pipeline 位置才决定。
 
 入站事件大体从头到尾传播，出站写入从尾到头传播。以下列出主要内部顺序，方括号表示可选：
 
 ```text
-managame-write-errors
-→ [managame-tls → managame-tls-handshake]
-→ [managame-http → managame-http-aggregate
-   → 服务端 managame-websocket-path → managame-websocket
-   → managame-websocket-aggregate → managame-websocket-handshake]
-→ managame-transport
-→ [managame-binary-in → managame-binary-out]
+[调用方 SslHandler]
+→ network-write-errors
+→ [network-http → network-http-aggregate
+   → 服务端 network-websocket-path → network-websocket
+   → network-websocket-aggregate → network-websocket-handshake]
+→ [network-binary-in → network-binary-out]
 → 用户编解码/事件 handler
-→ managame-connection
+→ network-connection
 ```
 
 WS 出站用户 encoder 先把业务对象变成 ByteBuf，binary-out 再包装为 BinaryWebSocketFrame，最后经过 WS/TLS 编码。TCP 不插入 binary 适配，也不提供业务消息长度头。
@@ -258,40 +264,80 @@ WS 出站用户 encoder 先把业务对象变成 ByteBuf，binary-out 再包装�
 
 ### 6.2 内部职责与扩展边界
 
-NetworkPipeline 和 TransportGate 已删除。装配顺序与生命周期协调仍是必要职责，但它们不再识别具体协议事件，也不通过参数是否为 null 推断端点角色。
+Netty 负责 TLS/WS 协议，Adapter 直接衔接完成事件与业务交付。不定义通用 Transport、独立建立协议或生命周期协调对象。
 
 | 内部组件 | 职责 |
 | --- | --- |
-| NetworkServer / NetworkClient | 显式选择服务端/客户端协议工厂；负责监听、未完成尝试、资源关闭与接纳 |
-| [NetworkChannelInitializer](../../game-network/src/main/java/cn/managame/network/netty/NetworkChannelInitializer.java) | 按顺序装配公共阶段，所有 configurer 成功后才标记初始化完成 |
-| [ChannelTransport](../../game-network/src/main/java/cn/managame/network/netty/ChannelTransport.java) | 内部协议与 payload 装配边界：`addProtocolHandlers` 添加协议 handler 并注册握手前置条件；`addPayloadHandlers` 在生命周期 handler 之后添加 payload 适配器。普通 TCP 无额外握手 |
-| [TlsTransport](../../game-network/src/main/java/cn/managame/network/netty/TlsTransport.java) / [WebSocketTransport](../../game-network/src/main/java/cn/managame/network/netty/WebSocketTransport.java) | 负责协议 handler、握手事件转换、协议专用超时/拒绝和 payload 适配；TLS 可组合 TCP 或 WS |
-| [ConnectionLifecycle](../../game-network/src/main/java/cn/managame/network/netty/ConnectionLifecycle.java) | 协调初始化、激活、握手前置条件、唯一建立结果、真实断开与应用错误转发 |
-| [ConnectionEstablishment](../../game-network/src/main/java/cn/managame/network/netty/ConnectionEstablishment.java) | 所属入口的成功认领、结果与清理；ConnectAttempt 实现客户端完成协议，Server 提供接纳与 pending 移除 |
-| ConnectionHandlerAdapter | 创建 NettyConnection、调用业务回调、释放借用消息并隔离回调异常 |
+| NetworkServer / NetworkClient | 配置监听/建连、自有 EventLoopGroup，并提供入口开放检查；Client 另持有每次调用的原生结果 Promise，不登记连接或尝试集合 |
+| [NetworkChannelInitializer](../../game-network/src/main/java/cn/managame/network/netty/NetworkChannelInitializer.java) | 装配 handler/configurer、校验 TLS 位置和 URI scheme，将 TLS 引用与 WS 模式交给末端 adapter |
+| [WebSocketTransport](../../game-network/src/main/java/cn/managame/network/netty/WebSocketTransport.java) | 装配二进制 WS 协议及 payload handler；处理建立期限和协议拒绝，向后传播原生成功事件 |
+| [ConnectionHandlerAdapter](../../game-network/src/main/java/cn/managame/network/netty/ConnectionHandlerAdapter.java) | 在 EventLoop 上直接检查交付条件、创建 Connection、调用业务 handler 并完成客户端结果；负责入站引用释放与异常隔离 |
 
-ConnectionLifecycle 不依赖 TLS/HTTP/WS，也不检查 ConnectAttempt。它位于用户 handler 前，保证 decoder 无法屏蔽真实 inactive；末端 adapter 位于用户 codec 后，接收已解码的业务消息。将两者合并会失去其中一个事件位置，或把应用解码与传输观察混在一起。
+TCP 在装配完成且 channelActive 到达末端后交付。TLS 使用原生 SslHandshakeCompletionEvent 触发检查，并检查 SslHandler.handshakeFuture 的成功状态。WS 使用原生 WebSocket 握手成功事件；WSS 同时要求 WS 成功和原生 TLS 成功。四种情况均不创建中间 ready Promise、WS 完成 Promise 或 PromiseCombiner。客户端只保留返回建连结果所需的 Promise<Connection>；服务端无需创建结果 Promise。
 
-全部握手前置条件在协议装配期间注册，早于初始化完成标记。每个一次性握手凭据只能完成自己的前置条件，重复完成不能抵消另一个协议的握手。创建连接要求初始化、激活、所有握手条件及所属入口认领成功。失败/关闭是终态，迟到完成不能复活连接。业务交付前清除所属入口引用，在局部变量中保留已认领入口，onConnected 返回后再交付成功；即使 onConnected 关闭连接，成功结果仍保持不变。
+Adapter 通过入口提供的 BooleanSupplier 检查开放状态，客户端再用结果 Promise.setUncancellable 与等待线程的取消竞争。随后在同一事件处理调用中创建 Connection、执行 onConnected，最后完成客户端成功结果；不存在“就绪 Future 成功后再排队创建 Connection”的步骤。TLS/WS 握手事件在末端消费，不交给 ConnectionHandler.onEvent。用户原生 handler 可以观察这些事件，但必须按顺序继续传播，不得吞掉。
 
-Server 在 build 时快照协议组合，start 只创建基础设施并绑定监听。私有 AcceptedConnection 负责 pending 成员关系与临时关闭监听器。成功认领及移除与停止接纳使用同一个 pending 短锁排序：成功先认领则退出取消集合，关闭先发生则禁止交付；锁内不调用业务回调，也不关闭 Channel。建立结果确定后移除临时监听器，成功 Channel 不再持有 Server 的清理归属。Client 同样在 pending 锁内增删尝试、在锁外报告拒绝，并把已完成尝试直接传给移除回调，不使用数组保存自身引用；完成时清除该回调引用。
+临时 closeFuture listener 在业务交付或建立失败时移除；它只负责建立前资源关闭，包括 adapter 尚未添加的阶段。建立失败关闭当前 Channel，客户端收到一次失败，服务端记录诊断，不触发业务生命周期。业务交付后仅由末端 channelInactive 通知断开。即使原生协议已经完成，初始化失败仍不能交付业务 Connection。
 
-例如增加一种内部流式传输握手时，由自己的 observer 注册前置条件，并把协议完成/失败转换为该条件完成或生命周期失败，无须向 ConnectionLifecycle 增加协议分支。observer 负责自己的超时，在完成/断开时取消。TLS 和 WS 采用此模式；WS 服务端从 channelActive 起以 10 秒限制静默对端，与业务心跳/读空闲策略分离。
+例如 Netty 为限制递归而延后 Promise listener 时，握手成功事件紧接第一条二进制消息仍必须按 onConnected → onMessage 交付。直接事件衔接消除了这个中间通知窗口，无需缓存消息或新增连接集合。验证入口为 ConnectionSetupTest.nestedHandshakeNotificationDeliversFirstMessageBeforeReturning；真实 TCP/TLS/WS/WSS 两端在 onConnected 内立即发送消息由 NetworkContractTest.firstMessagesCanBeSentInsideOnConnected 验证。
 
-该边界保持包级封装，不是新的公开 Transport registry，也不承诺支持 UDP/QUIC。公开 pipeline(...) 继续用于原生 handler/codec 定制；仅加入 handler 不会注册建立前置条件。新增 Transport 仍须明确消息边界、所有权、拒绝、配置与契约测试。不增加 Maven artifact，也不公开内部访问桥。
+TLS/WS 协议完全由 Netty 实现，这些完成通知不包含 RPC、登录或业务协商。两端不覆盖 Netty 的 WS 握手超时，当前原生默认值为 10 秒。服务端从原生配置读取相同期限，自 channelActive 起限制静默对端，包括 TLS 建立耗时；收到 Upgrade 不重置总期限。客户端使用 Netty 原生 WS 握手定时器。超时是未成功握手的等待上限，正常握手完成立即交付 onConnected。TCP connect 与两端 TLS 超时独立，先失败或到期者结束尝试。定时任务依赖 EventLoop 执行，不是阻塞线程下的精确墙钟上限；超时/失败关闭 Channel。
+
+不使用 HashSet、ChannelGroup、共享 admission 锁或跨连接取消清单。单连接处理留在其 EventLoop；原生 Promise 保存各自的建连结果。Server 仅在管理操作 start/close 同步，Client 用 CAS 保证资源只关闭一次；这些管理机制不参与消息交付或连接登记。该变化删除全局登记开销，不代表已经测得吞吐提升。
+
+末端 adapter 先接收用户 codec 输出，再接收 channelInactive，随后只调用一次 onDisconnected。因此 EOF 尾帧可以在 Connection.isActive 已为 false 时进入 onMessage，回调抛异常仍释放借用引用。有序异步 handler 必须先传播读取/错误，再传播 inactive，Netty 在 Channel EventLoop 上调度 adapter。不使用定时器绕过顺序；吞掉 inactive 可能导致通知无法到达。Netty 在 inactive 之后才发出的 decodeLast 异常，继续按现有生命周期结束规则仅做诊断。
+
+不提供通用 Transport 接口或 TLS 包装。WebSocket 保留具体装配，因为二进制消息 Profile 需要 HTTP Upgrade、帧聚合和 payload 适配。SslHandler 是唯一自动识别为建立前置条件的用户添加 handler；任意业务握手不会自动加入就绪判断。动态插入 TLS、之后才安装 SslHandler 的 SNI handler、STARTTLS 和多层嵌套 TLS 不属于当前初始化契约，需单独设计后才能声明支持。
 
 ### 6.3 写入错误的路由
 
 当前实现使用 voidPromise 避免每次发送暴露或维护完成 Future。void-promise 的失败可能从 pipeline 头部发出；若直接穿过 WS protocol handler，普通发送错误可能被其默认逻辑关闭连接。
 
-因此 managame-write-errors 在已建立后通过 ConnectionLifecycle 直接持有的 ChannelHandlerContext 将这类错误转到应用方向，保留用户 pipeline 和 onException 的处理机会，不再按 handler 名称查找转发目标。它不是吞掉错误，也不取消 WS 对非法入站帧的关闭规则。建立前错误仍按握手失败处理。
+因此 network-write-errors 在业务连接交付后，使用装配时保存的最后一个协议 ChannelHandlerContext，将错误从协议 handler 之后转发，经 payload/用户 codec 到达末端 adapter。保留用户 pipeline 和 onException 的处理机会，不按 handler 名称查找，也不依赖另一个生命周期控制器。它不是吞掉错误，也不取消 WS 对非法入站帧的关闭规则。建立前错误仍按握手失败处理。
 
 原生自定义 handler 自己关闭 Channel 的行为不受“Network 普通异常不自动关闭”限制。接入者必须审视自己的 exceptionCaught；框架无法撤销用户 handler 已主动发起的关闭。
 
 
+
+<a id="native-tls-configuration"></a>
+
+### 6.4 原生 TLS 配置
+
+每个 Channel 在初始化结束前配置一个新的 SslHandler，放在首位，保证入站先解密再经过 HTTP/WS/业务解码，出站先编码再加密。TCP 激活可能早于 TLS 完成，不代表连接成功。Netty 可以在 TLS 完成前排队等待发送上层握手相关数据，但不能将其以明文发送到网络。
+
+以下 Builder 片段假定调用方已创建 serverContext、clientContext 和 ConnectionHandler handler。客户端捕获目标地址，因为 Channel 初始化期间 remoteAddress 可能仍为 null。一个 Builder 用于多个目标时，配置策略需要为每条连接提供正确的对端身份。
+
+```java
+NetworkServer server = NetworkServer.builder()
+        .bindAddress(new InetSocketAddress(8443))
+        .pipeline(p -> p.addFirst("ssl", serverContext.newHandler(p.channel().alloc())))
+        .handler(handler)
+        .build();
+
+String host = "localhost";
+int port = 8443;
+NetworkClient client = NetworkClient.builder()
+        .pipeline(p -> {
+            SslHandler ssl = clientContext.newHandler(p.channel().alloc(), host, port);
+            var parameters = ssl.engine().getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            ssl.engine().setSSLParameters(parameters);
+            ssl.setHandshakeTimeoutMillis(10_000);
+            p.addFirst("ssl", ssl);
+        })
+        .handler(handler)
+        .build();
+```
+
+SslContext/SslHandler、InetSocketAddress、NetworkServer/NetworkClient 分别为 Netty、JDK、game-network 原生类型。调用方负责使用适当密钥和信任配置创建 context；创建客户端 handler 时传入 host 不能代替显式配置主机名校验。框架不修改信任设置或 engine 参数。服务端追加 webSocket("/game")、客户端追加 webSocket() 并连接 wss://localhost:8443/game 即为 WSS；两端仍需显式添加 TLS。
+
+wss:// 缺少 handler、ws:// 存在 TLS、多个 SslHandler 或 SslHandler 位于其他 handler 之后，都属于 pipeline 配置错误。客户端报告 NetworkException，cause 保留 IllegalArgumentException；服务端诊断并关闭受影响的接入 Channel。握手失败/超时不创建 Connection，不产生业务 onException/onDisconnected。自建 group 关闭会结束未完成握手；借用 group 的握手继续到后续结果或超时，届时若入口已关闭则拒绝交付。验证入口为 NativeTlsTest 与 NetworkContractTest.roundTripAndOrderedWrites。
+
+这替代原 sslContext(...) 和隐式 WSS context 创建行为。调用该方法的代码需要迁移到显式 pipeline 配置，属于源码不兼容变更；握手成功后才触发 onConnected 的契约不变。
+
 ## 7. 资源与关闭
 
-Server close 先关闭监听 Channel，再取消未交付握手，然后 shutdown 自建 boss/worker；Client close 先拒绝新尝试、取消 pending，再 shutdown 自建 group。成功连接不保存在业务集合内；自有 group shutdown 会自然关闭关联 Channel，外部 group 上已成功的 Connection 需应用单独关闭。
+Server 标记关闭、关闭监听 Channel，再 shutdown 自建 boss/worker；Client 标记关闭，再 shutdown 自建 group。两者均不遍历连接或尝试。自建 group 关闭自然会关闭关联 Channel；借用 group 时，已有 Channel 由调用方管理，未完成操作在后续结果、原生超时或 Channel 关闭时结束。
 
 外部 group、SslContext 始终由调用方管理；不自动检测 Epoll/KQueue。应用选择 native transport 时须同时提供匹配 group 与 channelFactory。
 
@@ -314,9 +360,9 @@ Server.build 不开始监听，也不启动默认 group；start 才开始同步�
 
 ### 7.2 关闭与成功交付的交叉
 
-Client.close 会取消仍未完成的尝试；成功已经认领的尝试保持成功结果。自建 group 随后 shutdown 仍可能令这个成功 Connection 失效，调用方应按普通连接生命周期处理。
+就绪连接的入口开放检查是接纳点。先观察到 close 时，Server 拒绝该 Channel，Client 报告 IllegalStateException；已经通过检查的交付允许与 close 并发完成，客户端仍以原生 Promise 与中断/传输失败仲裁。自建 group 关闭可能令已成功交付的 Connection 失效，此时按正常断开流程处理。
 
-外部 group 场景下，关闭 Client 不遍历成功 Connection。若业务要求一次性关闭一批成功连接，应由上层持有该批连接并明确调用 close。不要通过依赖 Client 内部 pending 集合来实现连接清单，它只存在于建立阶段。
+外部 group 下，close 不等待或取消握手。例如，静默 TLS 对端握手期间 Client.close，Channel 仍保持到原生握手超时或调用方主动关闭；随后回调观察到 closed，只报告一次失败。不要禁用原生超时后又依赖入口 close 取消尝试。尚未到就绪阶段的 TCP connect 若失败，也可能报告 NetworkException。需要批量关闭的业务自行管理连接和资源。
 
 
 ## 8. 失败与兼容性
@@ -325,7 +371,7 @@ Client.close 会取消仍未完成的尝试；成功已经认领的尝试保持�
 | --- | --- |
 | 非法参数、缺必填项、生命周期误用 | 上述 Java 参数/状态异常；异步入口转 onFailure（null callback 除外） |
 | bind/connect/TLS/WS/pipeline 初始化失败 | NetworkException，保留 cause |
-| Client close 取消 pending | IllegalStateException |
+| 就绪或建连前检查观察到 Client 已关闭 | IllegalStateException；借用 group 上已开始的操作不保证立即通知 |
 | 建立后 Decoder/I/O/Handler 异常 | 原始 Throwable → onException |
 | onException / ConnectCallback 自身异常 | System.Logger 最终诊断 |
 | INACTIVE / NOT_WRITABLE | WriteStatus，调用方保留所有权 |
@@ -338,16 +384,33 @@ Client.close 会取消仍未完成的尝试；成功已经认领的尝试保持�
 
 心跳、IdleStateHandler、自定义 HTTP Upgrade 检查和业务认证通过原生 Netty 接入或上层组件组合，当前没有独立框架 DSL。若要增加统一能力，应先说明可观察行为与资源责任，再同步两层 Spec；不能仅以“便于使用”为由默认加入自动重连、自动关闭或业务发送队列。
 
-可运行入口以现有 [NetworkEchoExample](../../game-network/src/main/java/cn/managame/network/example/NetworkEchoExample.java) 及下述示例测试为准。本章的流程图、引用计数说明和状态表是设计说明，不另行声明为独立可运行程序。
+可运行入口以现有 [NetworkEchoExample](../../game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) 及下述示例测试为准。本章的流程图、引用计数说明和状态表是设计说明，不另行声明为独立可运行程序。
 
+
+### 8.2 建立失败和晚到异常的日志
+
+NetworkSupport 使用名为 cn.managame.network 的 System.Logger。服务端建立失败以及业务生命周期结束后的晚到传输异常，按以下类型分类；客户端建立失败仍通过建连结果返回，不额外记录重复的框架错误日志。
+
+| 类型 | 诊断 |
+| --- | --- |
+| ClosedChannelException、SocketException、PrematureChannelClosureException | DEBUG 断开摘要 |
+| SSLException、WebSocketHandshakeException、CorruptedFrameException、TooLongFrameException | DEBUG 协议拒绝摘要 |
+| 其他异常，包括初始化/配置错误与未知异常 | ERROR，保留原始 Throwable 和堆栈 |
+
+分类最多解包 8 层 DecoderException；不能将全部 DecoderException 都当作正常输入错误。例如 DecoderException 包裹 IllegalArgumentException 仍为 ERROR。上述规则是基于异常类型的分类，不保证确定每次断开的根因。DEBUG 摘要仅包含上下文、原因分类、远端地址和异常类型，不包含 Throwable、异常消息、对端请求头或正文；未启用 DEBUG 时不构造摘要。默认 INFO 级别下，这些可识别的接入失败不输出错误堆栈；调查握手拒绝时可为此 logger 开启 DEBUG。
+
+例如原始 TCP 探测连接到 WS 端口后断开，会回收该 Channel，且只提供 DEBUG 摘要；pipeline 初始化抛出的配置异常仍保留 ERROR 堆栈。晚到的同类 TLS/WS 失败也沿用此分类，不在关闭之后重新升级为 ERROR。已建立连接的 onException 路由不变；用户 onException 或 ConnectCallback 自身抛错仍记录 ERROR。此策略仅控制框架自己的 logger，不配置 Netty/应用日志后端，也不添加全局限流状态。源码见 [NetworkSupport](../../game-network/src/main/java/cn/managame/network/netty/NetworkSupport.java)，验证见 EstablishmentLoggingTest。
 
 ## 9. 验证与边界
 
+- [EstablishmentLoggingTest](../../game-network/src/test/java/cn/managame/network/netty/EstablishmentLoggingTest.java)：正常断开与协议拒绝的无堆栈 DEBUG 摘要、INFO 下静默、未知错误保留原堆栈、晚到 TLS 异常分类。
 - [NetworkContractTest](../../game-network/src/test/java/cn/managame/network/netty/NetworkContractTest.java)：真实 TCP/TLS/WS/WSS、发送顺序、生命周期、背压、属性、引用计数、业务异常、配置快照、外部资源。
-- [WebSocketContractTest](../../game-network/src/test/java/cn/managame/network/netty/WebSocketContractTest.java)：分片、控制帧、Text/超限拒绝、精确路径、Header 快照、TLS 不可信证书、参数校验。
-- [ConnectRaceTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectRaceTest.java)：pending 关闭、中断恢复、并发完成、onConnected 内关闭、Server 初始化期间关闭，以及外部 group 上未完成与已建立连接的关闭边界。
-- [ConnectionLifecycleTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectionLifecycleTest.java)：独立握手前置条件、初始化失败、失败/关闭后的迟到完成、所属入口取消、与协议无关的发送错误路由及静默 WS 超时/取消。
-- [NetworkEchoExampleTest](../../game-network/src/test/java/cn/managame/network/example/NetworkEchoExampleTest.java)：完整示例编译运行。
+- [WebSocketContractTest](../../game-network/src/test/java/cn/managame/network/netty/WebSocketContractTest.java)：分片、控制帧、Text/超限拒绝、精确路径、Header 快照与参数校验。
+- [ConnectRaceTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectRaceTest.java)：独立结果竞争、中断、onConnected 内关闭、迟到就绪拒绝，以及外部 group 的 Channel 在入口关闭后保持到自身结果到达。
+- [ConnectionSetupTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectionSetupTest.java)：handlerAdded 失败、绕过 WS 协议策略的写入异常路由、服务端静默连接的原生默认期限及取消，以及客户端静默 Upgrade 的原生超时。
+- [NativeTlsTest](../../game-network/src/test/java/cn/managame/network/netty/NativeTlsTest.java)：显式 TLS 位置/数量、URI 一致性、信任与主机名校验失败、握手超时/取消，TLS 成功但 WS Upgrade 未成功，以及明文在进入 HTTP 处理前被拒绝。
+- [DisconnectOrderingTest](../../game-network/src/test/java/cn/managame/network/netty/DisconnectOrderingTest.java)：EOF 尾帧先于断开、回调异常时的借用引用释放、产出尾帧后 decodeLast 失败、重复断开抑制，以及真实 TCP 上的有序异步解码。
+- [NetworkEchoExampleTest](../../game-example/src/test/java/cn/managame/example/network/NetworkEchoExampleTest.java)：在 game-example 中编译运行完整示例，命令为 mvn -pl game-example -am test。
 
 `mvn -pl game-network -am test` 运行模块测试；仓库整体验证用 `mvn clean verify`。测试临时证书由当前 JDK keytool 生成；测试限定 Netty 默认线程数为 2，并在 Windows 下让 JDK Selector 唤醒管道回退到 TCP（测试专用的不可作为目录使用的 unixdomain.tmpdir，规避该环境 AF_UNIX connect 间歇失败），生产代码不修改 JVM 属性。
 
@@ -359,16 +422,34 @@ Client.close 会取消仍未完成的尝试；成功已经认领的尝试保持�
 | 契约 | 测试类与方法 |
 | --- | --- |
 | 四种 Transport 与确定顺序的写入 | NetworkContractTest.roundTripAndOrderedWrites |
+| 四种协议两端在 onConnected 内立即发送首条消息 | NetworkContractTest.firstMessagesCanBeSentInsideOnConnected |
 | 拒绝保留所有权、背压及发送失败 | NetworkContractTest.ownershipBackpressureAndOutboundFailure |
 | Handler 抛错、普通事件、入站 retain | NetworkContractTest.handlerExceptionsEventsAndRetain |
 | onConnected 先于成功回调，回调抛错不产生第二结果 | NetworkContractTest.asyncSuccessRunsAfterConnectedAndCallbackFailureIsNotConnectFailure |
 | 借用 group 不被关闭、禁止阻塞自身 EventLoop | NetworkContractTest.externalGroupsKeepEstablishedConnectionsAndRejectBlockingCalls |
 | 快照与每 Channel pipeline 顺序 | NetworkContractTest.snapshotsAndPerChannelPipelineOrder |
-| 普通出站异常不自动关闭 TCP/WS 两端 | NetworkContractTest.outboundFailuresDoNotAutoCloseEitherPeer |
-| Server 关闭取消握手，保留外部 group 上的成功连接 | ConnectRaceTest.serverCloseCancelsHandshakeButKeepsEstablishedExternalConnections |
+| 普通出站异常不自动关闭 TCP/TLS/WS/WSS 两端 | NetworkContractTest.outboundFailuresDoNotAutoCloseEitherPeer |
+| 外部 Server close 保留已建立/握手中 Channel，拒绝后续交付 | ConnectRaceTest.externalServerCloseKeepsChannelsAndRejectsLateHandshake |
 | Server 初始化期间关闭阻止迟到交付 | ConnectRaceTest.serverCloseDuringInitializationPreventsLateDelivery |
-| 关闭 pending 只通知一次 | ConnectRaceTest.closeCancelsPendingHandshakeExactlyOnceOnEventLoop |
+| EOF 尾帧、引用所有权、decodeLast 失败和有序异步断开 | DisconnectOrderingTest |
+| 外部 Client close 不遍历尝试，后续 Channel 结果只通知一次 | ConnectRaceTest.externalClientCloseLeavesHandshakeToChannelOutcome / externalClientRejectsReadinessAfterClosure |
+| 嵌套 Promise 通知中的握手和首条消息顺序 | ConnectionSetupTest.nestedHandshakeNotificationDeliversFirstMessageBeforeReturning |
 | 同步中断回收与恢复中断标记 | ConnectRaceTest.interruptCancelsHandshakeAndRestoresFlag |
+| 成功认领后的中断、执行器终止后的兜底、迟到 Channel 创建 | ConnectRaceTest.interruptDuringOnConnectedClosesUndeliverableConnection / terminatedExecutorReportsFailureOnCallingThread / interruptBeforeChannelCreationClosesLateChannel |
 | 成功与关闭竞争、onConnected 内关闭仍成功 | ConnectRaceTest.successAndCloseRaceHasOneOutcomePerAttempt / onConnectedCloseStillReportsSuccessfulConnect |
 
-测试方法是后续回归入口。修改计时、接管时点、pipeline 顺序或 CAS 认领点时，必须重新检查相关契约；不能仅以 TCP echo 正常作为全部 Network 行为正确的证据。
+测试方法是后续回归入口。修改计时、接管时点、pipeline 顺序或成功认领点时，必须重新检查相关契约；不能仅以 TCP echo 正常作为全部 Network 行为正确的证据。
+
+<a id="92-突发连接与资源规模"></a>
+
+### 9.2 突发连接与资源规模
+
+NetworkClient 是可复用的连接工厂，不代表一条物理连接。并发 connectAsync 使用独立结果与 Channel，没有客户端全局连接锁或单目标限制。未注入 eventLoopGroup(...) 的每个客户端在 build 时就创建独立 NioEventLoopGroup。Netty 4.1.135.Final 通常配置可用处理器数量的两倍，可由 io.netty.eventLoopThreads 覆盖。工作线程按需启动，但 group 构造已分配各 loop 的 Selector 与队列，因此大量默认客户端会放大基础资源，即使并非所有 loop 都已运行。配置兼容时复用同一客户端；需要不同 handler/pipeline 时，显式共享应用拥有的 group。Client.close 不关闭借用 group 或其 Channel；应用关闭自己的连接，并最终关闭 group。源码：[NetworkClient](../../game-network/src/main/java/cn/managame/network/netty/NetworkClient.java)、[NetworkClientBuilder](../../game-network/src/main/java/cn/managame/network/netty/NetworkClientBuilder.java)。所有权回归入口：NetworkContractTest.externalGroupsKeepEstablishedConnectionsAndRejectBlockingCalls。
+
+连接发起没有框架级并发上限、速率控制或有界等待队列。来自 loop 外的每次 connectAsync 都向选中 EventLoop 提交一个任务。Netty 默认事件循环待执行任务上限为 Integer.MAX_VALUE；提交速度超过处理速度时可能积累任务，随后创建大量 socket 或握手。Channel 可写性控制已建立连接的出站写入，不控制创建连接。按现有无连接注册表契约，突发控制属于应用接纳层。限制 loop 线程数本身不会限制等待中的尝试或连接数量。
+
+CONNECT_TIMEOUT_MILLIS 只覆盖 socket connect 阶段，不表示从公开调用起算的总耗时。它不覆盖前置任务排队、阻塞域名解析，也不覆盖完整 TLS/WS 建立与应用 onConnected 回调。事件循环调度也可能延迟超时交付。例如 connect 任务等待前面 250ms 的 loop 工作时，50ms 的 socket 超时不能让该尝试提前完成。connectAsync 返回 void，不暴露逐次取消句柄；借用 group 的 Client.close 也不提供批量取消。当前 Bootstrap 使用基于 JDK 的默认阻塞解析器处理未解析地址；WS URI 创建未解析地址，因此未缓存或缓慢 DNS 可能阻塞选中的 loop，影响其上的其他 Channel。已解析的 TCP 地址可避开该步骤。原生 socket 超时与 TLS/WS 期限仍按 §6 分阶段定义。源码：NetworkClient.validate/startConnect 与 §4 的结果流程。这些是当前实现边界，不代表已经添加总期限或 resolver API。
+
+pipeline 初始化、ConnectionHandler 回调及正常 ConnectCallback 交付均运行在 EventLoop。onConnected 中的重工作会延迟客户端成功通知及同 loop 其他连接。回调保持简短，应用工作通过自己的有界执行机制分发。按 §6 共享可复用 TLS context，每个 Channel 创建新 SslHandler；在每次 pipeline 配置时创建 context 或读取密钥库会增加可避免的握手路径成本。服务端 option(SO_BACKLOG, ...) 可调整监听 backlog，但 worker group、socket 资源、CPU 与应用处理仍是独立限制。backlog 和超时需要结合部署测量，不设通用更大默认值。
+
+现有仓库回归测试覆盖小规模并发竞态与四种协议，不是可重复的容量基准。本机无业务负载的突发实验可验证独立回调与清理，但不能据此认定 TLS/WSS 容量、业务吞吐、公网表现或持续短连接容量。容量验证应分别改变复用客户端与共享 group 客户端、连接数/速率、TCP/TLS/WS/WSS、慢握手、拒绝及关闭竞争；记录成功/失败、回调唯一性、建立耗时分位数、loop 延迟、堆/直接内存、线程、socket 与关闭后回收。未来逐次取消、总期限、resolver 定制或连接接纳能力仍是待评估扩展；修改公开 API 或标准前，先确定可观察行为及所有权。
