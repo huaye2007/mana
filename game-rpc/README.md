@@ -2,7 +2,7 @@
 
 **[English](README.md)** | [简体中文](README.zh-CN.md)
 
-Java 25 implementation of OGBS RPC, published as cn.managame:game-rpc. Depends on game-core and game-network. Provides internal TCP, multiple slots, active/passive peers, call/notify/reply, handshakes, heartbeats, and reconnects with bounded jitter. RPC does not depend on Runtime or business codecs.
+Java 25 implementation of OGBS RPC, published as cn.managame:game-rpc. Depends on game-core and game-network. Provides internal TCP, multiple slots, active/passive peers, call/notify/reply, handshakes, heartbeats, and fixed-delay reconnects. Current-source defects and validation gaps are documented in [Java specification section 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险). RPC does not depend on Runtime or business codecs.
 
 <a id="规范"></a>
 
@@ -23,7 +23,6 @@ try (RpcNode node = RpcNode.builder()
         .nodeId(1)
         .bindAddress(new InetSocketAddress("127.0.0.1", 9000))
         .handler(handler)
-        .maxPendingCalls(16384)
         .build()) {
     node.start();
     node.addPeer(2, new InetSocketAddress("127.0.0.1", 9001), 2);
@@ -33,7 +32,7 @@ try (RpcNode node = RpcNode.builder()
 }
 ```
 
-handler, encodedBody, and MyResponse are application-supplied objects/types. addPeer maintains connections asynchronously; immediately after registration, call may synchronously report onFail(UNAVAILABLE). It does not wait for connections or retry automatically. Calls share a Node-wide limit (default 16384), counting encoding, pending calls and running completion handlers; exhaustion reports UNAVAILABLE and consumes body. Timeout failures run on owned virtual threads so slow failure handling does not block the maintenance timer; close waits for them. Reconnect delay defaults to 1000..1250ms; reconnectJitter(Duration.ZERO) restores a fixed delay.
+handler, encodedBody, and MyResponse are application-supplied objects/types. addPeer maintains connections asynchronously; immediately after registration, call may synchronously report onFail(UNAVAILABLE). It does not wait for connections or retry automatically. Current Builder has no maxPendingCalls or reconnectJitter. Outstanding calls have no configured admission bound; timeout failures run directly on the shared maintenance timer, so slow handlers delay other deadlines and recovery. Reconnect delay defaults to a fixed 1000ms. These source limitations are recorded in the Java specification; this review changes no production behavior.
 
 Entry points are in cn.managame.rpc.node; messages in message, handlers/callbacks in call, statuses in transport, errors in error, and wire binding in netty. Peer/Slot/PendingCall remain encapsulated internally.
 
@@ -45,11 +44,11 @@ start/close are synchronous management operations and cannot run inside this Nod
 
 ## Examples and validation
 
-Runnable examples and their execution tests are maintained in [game-example](../game-example/README.md); game-rpc publishes only framework code. Run [RpcEchoExample](../game-example/src/main/java/cn/managame/example/rpc/RpcEchoExample.java) in an IDE to print hello game-rpc. It uses real local TCP and two random ports, demonstrating body retain and generic callback decoding.
+Runnable examples and their execution tests are maintained in [game-example](../game-example/README.md); game-rpc publishes only framework code. [RpcEchoExample](../game-example/src/main/java/cn/managame/example/rpc/RpcEchoExample.java) is intended to demonstrate real local TCP, two random ports, body retain and generic callback decoding. Its maxPendingCalls(1024) invocation currently does not compile against the restored Builder; runnable validation is pending.
 
 ```shell
 mvn -pl game-rpc -am test
 mvn clean verify
 ```
 
-Tests cover wire, routing, reference counts, completion races, real TCP and reconnects; game-example tests execute the example. Production capacity and cross-language interoperability are unverified. Automatic Runtime integration, service discovery, and RPC TLS/WS configuration are not provided.
+Retained tests describe wire, routing, reference counts, completion races, real TCP and reconnects, but the current RPC suite fails compilation because tests still reference removed APIs. The example also references a missing API. These entries are not a passing verification claim. Production capacity and cross-language interoperability are unverified. Automatic Runtime integration, service discovery, and RPC TLS/WS configuration are not provided.

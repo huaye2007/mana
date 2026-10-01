@@ -2,7 +2,7 @@
 
 **[English](OGBS-RPC-1.0.md)** | [简体中文](OGBS-RPC-1.0.zh-CN.md)
 
-Document type: **Language-independent specification**. Component: game-rpc. A Java reference implementation is available; production capacity and cross-language interoperability are unverified.
+Document type: **Language-independent specification**. Component: game-rpc. A Java implementation is available, with confirmed current-source deviations in Peer-recreation correlation, timeout-notification isolation and finite call admission, plus a recovery race. See the Java specification section 9.1. Production capacity and cross-language interoperability are unverified.
 
 Companions: [Java 25 specification](OGBS-RPC-Java-25-Specification-1.0.md), [RPC Wire Profile](../rpc-wire.md).
 Normative dependencies: [Network](OGBS-Network-1.0.md), [Core](OGBS-Core-1.0.md).
@@ -12,6 +12,8 @@ Normative dependencies: [Network](OGBS-Network-1.0.md), [Core](OGBS-Core-1.0.md)
 ## 1. Scope
 
 RPC provides direct communication between internal server nodes: call, notify, reply, fixed multi-connection Slots, handshakes, heartbeats, reconnection, and local call completion.
+
+The deployment baseline is a long-lived game-server service. Its RPC endpoint starts with the service, remains running during normal operation, and closes for maintenance or service exit. Routine transport failures and remote restarts are handled by connection recovery while the local endpoint remains running. Repeated local endpoint replacement, hot lifecycle switching, and a separate RPC drain protocol are outside the current baseline.
 
 It does not interpret business bodies or provide protocol registration, Runtime scheduling, discovery, routing services, durable delivery, automatic business retries, or remote cancellation. Receiving a response does not imply exactly-once execution; timeout does not undo remote execution.
 
@@ -114,13 +116,17 @@ Affinity does not guarantee global business ordering across connections. Applica
 
 ## 8. Time, lifecycle, and closure
 
+Maintenance orchestration belongs to the application: stop new business admission, finish or terminate application work under its own policy, then close RPC. An abnormal process exit may prevent close from running; synchronous close guarantees apply when that operation executes and returns. RPC cannot promise completion callbacks or resource-cleanup execution after abrupt process termination.
+
+Design rationale: startup and final closure are infrequent management paths. Keep their resource ownership and existing closure guarantees clear, while prioritizing call correlation, timeouts and transport recovery during long-running service. A slow one-time global cleanup scan is a lower-priority optimization without measured maintenance impact. This deployment clarification does not change R-TIME-04 or permit wrong responses, lost recovery, or leaking resources during ordinary operation.
+
 **R-TIME-01** Call timeout starts after network ACCEPTED using monotonic timing. A fast response can precede timeout registration; the registrar must detect completion and cancel the new timeout. Scheduling/load may delay delivery; no hard real-time guarantee.
 
 **R-TIME-02** Disconnection alone does not fail ACCEPTED PendingCalls immediately; await another Slot's response or timeout.
 
 **R-TIME-03** removePeer first removes current topology, then terminates sessions, reconnection, and unfinished calls. Missing Peer is an idempotent no-op. Recreation starts an independent lifetime without migrating old calls.
 
-Example: A calls B with command 101; after removal/recreation, A calls command 202 with a later ID. B can still reply to its saved command 101 over the replacement connection, but A drops that unmatched old ID and completes command 202 only from its own response. See the [Java repair validation](OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险).
+Example: A calls B with command 101; after removal/recreation, A calls command 202 with a later ID. B can still reply to its saved command 101 over the replacement connection, but A drops that unmatched old ID and completes command 202 only from its own response. See the [Java current-source review](OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险).
 
 **R-TIME-04** Node explicitly moves NEW → RUNNING via start, then finally CLOSED; startup failure also terminates the instance. close accepts NEW, is idempotent, and forms a synchronous barrier: reject new operations immediately and finish accepted RPC operations, outstanding calls, connections, listening, owned maintenance resources, and owned completion notifications before return. Concurrent close waits for the same cleanup. Separately submitted application tasks are excluded. Synchronous close is prohibited in contexts that would wait for themselves; see Java constraints.
 
@@ -136,7 +142,7 @@ Example: A calls B with command 101; after removal/recreation, A calls command 2
 
 **R-LIVE-03** addPeer immediately connects empty Slots. After connection/handshake failure or established disconnection, retry after a positive base delay plus a fresh uniformly sampled additive delay in [0, configured jitter]. Bindings define defaults and time granularity; zero jitter preserves fixed-delay behavior. One recovery chain per Slot covers delay, connect, and handshake; Slots are independent. Old tasks become invalid after removal/closure. No exponential backoff, retry maximum, or business resend. Jitter spreads attempts but does not impose a global connection-attempt rate limit.
 
-Java implementation status: a follow-up review reproduced a recovery-stop/unbind race that can leave an active Peer with an empty Slot and no maintained recovery chain. This remains an implementation defect, not an exception to R-LIVE-03. See [follow-up validation](OGBS-RPC-Java-25-Specification-1.0.md#92-后续审阅与扩展候选).
+Java implementation status: a follow-up review reproduced a recovery-stop/unbind race that can leave an active Peer with an empty Slot and no maintained recovery chain. This remains an implementation defect, not an exception to R-LIVE-03. See [current-source review](OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险).
 
 <a id="10-错误边界"></a>
 
@@ -169,4 +175,4 @@ Automatic HANDLER_ERROR includes no exception text, stack trace, or Metadata. Co
 
 Java tests: [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java), [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java), [RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java). Implementation, defaults, and examples are in the Java specification.
 
-Local real TCP and controlled concurrency are covered. Cross-language integration, production capacity, long-lived ID wrap, and public-network deployment remain unverified. Automatic RPC→Runtime integration, TLS/WS RPC Builder, and discovery are outside this implementation.
+The retained tests describe local real TCP and controlled concurrency coverage, but the current RPC suite cannot compile. Current diagnostic reproduction and contract deviations are recorded in the Java specification section 9.1; historical passing runs do not validate this source. Cross-language integration, production capacity, long-lived ID wrap, and public-network deployment remain unverified. Automatic RPC→Runtime integration, TLS/WS RPC Builder, and discovery are outside this implementation.

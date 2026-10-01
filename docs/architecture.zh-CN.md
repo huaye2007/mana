@@ -47,7 +47,7 @@ Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常�
 
 call/notify 按非零 routeKey 的无符号余数选起点，零值 round-robin；reply 优先实际来源 Slot，再按 routeKey 回退。首个 ACCEPTED 后不重发。requestId 仅在 Peer 内匹配调用，响应可以从任意 Slot 返回。
 
-每个 Node 一个 HashedWheelTimer 负责调用超时、握手超时与基础延迟加抖动重连；连接 IdleStateHandler 负责心跳。同一 Node 内 Peer 重建保持调用 ID 连续，Node 级接纳限制在途调用和完成处理器。超时失败在时间轮之外的自有虚拟线程执行。Peer 连接索引避免关闭时反复全局扫描。断线不立即失败已接纳调用。远端所有合法错误响应交给 onResponse，本地可用性/超时/生命周期竞争走 onFail。错误码区间由 Core 定义，无高位封装。
+每个 Node 一个 HashedWheelTimer 负责调用超时、握手超时与固定延迟重连；连接 IdleStateHandler 负责心跳。当前还原后的源码在 Peer 重建时重置调用 ID，没有配置调用接纳上限，直接在时间轮执行超时 onFail，关闭时为每个 Peer 扫描全局连接集合。已确认缺陷与验证状态见 [RPC Java 9.1](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)，此前修复声明不代表当前源码。断线不立即失败已接纳调用。远端所有合法错误响应交给 onResponse，本地可用性/超时/生命周期竞争走 onFail。错误码区间由 Core 定义，无高位封装。
 
 出站 ByteBuf body 经参数和生命周期校验后被消费，编码复制到单个连续 frame；入站 body 在回调内借用，需要 retain/copy 才能跨线程使用。消息使用只读 record，发送 ID 在内部编码时赋予，不公开 requestId setter。
 

@@ -2,7 +2,7 @@
 
 [English](OGBS-RPC-1.0.md) | **[简体中文](OGBS-RPC-1.0.zh-CN.md)**
 
-文档类型：**标准规范（语言无关）**。组件 game-rpc。Java 参考实现已提供；生产容量与跨语言互操作尚未验证。
+文档类型：**标准规范（语言无关）**。组件 game-rpc。Java 实现已提供，但当前源码在 Peer 重建关联、超时通知隔离和有限调用接纳方面存在已确认偏差，另有恢复竞态。详见 Java 规范 9.1。生产容量与跨语言互操作尚未验证。
 
 配套：[Java 25 开发规范](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)、[RPC Wire Profile](../rpc-wire.zh-CN.md)。
 规范性依赖：[Network](OGBS-Network-1.0.zh-CN.md)、[Core](OGBS-Core-1.0.zh-CN.md)。
@@ -10,6 +10,8 @@
 ## 1. 范围
 
 RPC 用于内部服务器节点的直接通信，提供 call、notify、reply、固定多连接 Slot、握手、心跳、重连与本地调用完成管理。
+
+部署基线是长期运行的游戏服务器服务：RPC 端点随服务启动，正常运行期间持续存活，在维护或服务退出时关闭。普通传输故障及远端重启通过连接恢复处理，本地端点继续运行。反复替换本地端点、生命周期热切换和独立 RPC drain 协议不属于当前基线。
 
 不解析业务 body，不提供业务协议注册、Runtime 调度、服务发现、Router、持久投递、自动业务重试或远端取消。成功收到响应不等于业务 exactly-once；超时不撤销远端执行。
 
@@ -98,13 +100,17 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 ## 8. 时间、生命周期与关闭
 
+维护流程由应用编排：停止新的业务接纳，按应用策略完成或终止业务工作，再关闭 RPC。异常进程退出可能使 close 根本无法执行；同步 close 的保证适用于该操作实际执行并返回的情况。RPC 不能保证进程被突然终止后继续交付完成回调或执行资源清理。
+
+设计理由：启动与最终关闭是低频管理路径。保持资源归属及现有关闭保证清晰，将长期运行中的调用关联、超时和连接恢复放在优先位置。没有测量到维护影响时，一次性全局清理扫描较慢属于低优先级优化。此次部署说明不改变 R-TIME-04，也不允许正常运行中错配响应、丢失恢复或泄漏资源。
+
 **R-TIME-01** call timeout 从网络 ACCEPTED 后开始，以单调时间机制计时。快速响应可以早于超时注册；注册者必须检测调用已结束并取消新建超时。调度/线程负载可延迟交付，不提供硬实时保证。
 
 **R-TIME-02** 单连接断开不立即失败已 ACCEPTED 的 PendingCall；等待其他 Slot 的响应或 timeout。
 
 **R-TIME-03** removePeer 先从当前拓扑移除，再终止会话、重连和未完成调用；未命中幂等。remove 后重新创建是独立生命周期，旧调用不迁移。
 
-示例：A 调用 B 的 command 101；删除/重建后，以后续 ID 调用 command 202。B 仍可经替换连接回复保存的 command 101，但 A 丢弃未匹配的旧 ID，仅由对应新回复完成 command 202。详见 [Java 修复验证](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
+示例：A 调用 B 的 command 101；删除/重建后，以后续 ID 调用 command 202。B 仍可经替换连接回复保存的 command 101，但 A 丢弃未匹配的旧 ID，仅由对应新回复完成 command 202。详见 [Java 当前源码审阅](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
 
 **R-TIME-04** Node 从 NEW 显式 start 到 RUNNING，最终进入 CLOSED；启动失败也终止实例。close 允许 NEW、幂等且形成同步关闭屏障，开始即拒绝新操作，返回前终止已接纳的 RPC 操作、在途调用、连接、监听、自有维护资源及自有完成通知。并发 close 等待同一次清理。应用另行投递的业务任务不在屏障范围内。禁止从会导致等待自身的执行上下文同步关闭，具体 Java 约束见开发规范。
 
@@ -118,7 +124,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-LIVE-03** addPeer 对空 Slot 立即首次连接。失败、握手失败或稳定连接断开后，等待正基础延迟与每次重新均匀抽取的 [0, 配置抖动] 附加延迟之和再重试。默认值与时间粒度由语言绑定定义；抖动为 0 保留固定延迟行为。同 Slot 只维护一条恢复链，涵盖延迟、建连和握手；不同 Slot 独立。Peer removal/Node close 后旧任务自然失效。没有指数退避、最大重试或业务重发。抖动分散尝试，但不提供全局建连速率限制。
 
-Java 实现状态：后续审阅已复现恢复停止与解绑竞争，主动 Peer 可能留下空 Slot 且没有持续恢复链。这仍是实现缺陷，不是 R-LIVE-03 的例外。详见 [后续验证](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#92-后续审阅与扩展候选)。
+Java 实现状态：后续审阅已复现恢复停止与解绑竞争，主动 Peer 可能留下空 Slot 且没有持续恢复链。这仍是实现缺陷，不是 R-LIVE-03 的例外。详见 [当前源码审阅](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
 
 ## 10. 错误边界
 
@@ -147,4 +153,4 @@ Java 实现状态：后续审阅已复现恢复停止与解绑竞争，主动 Pe
 
 Java 验证入口：[RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java)、[RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java)、[RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java)。实现细节、默认值与示例见 Java 开发规范。
 
-已覆盖本地真实 TCP 与可控并发场景；尚未验证跨语言对接、生产容量、长时间 ID 回绕和公网部署。RPC→Runtime 自动接入、TLS/WS RPC Builder、服务发现不在本实现范围。
+保留的测试描述本地真实 TCP 与可控并发覆盖，但当前 RPC 套件无法编译。当前诊断复现及契约偏差记录于 Java 规范 9.1，历史通过结果不代表当前源码已验证；尚未验证跨语言对接、生产容量、长时间 ID 回绕和公网部署。RPC→Runtime 自动接入、TLS/WS RPC Builder、服务发现不在本实现范围。
