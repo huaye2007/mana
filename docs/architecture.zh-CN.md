@@ -8,9 +8,11 @@
 
 ## Network / RPC 包边界
 
-Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖 game-network 和 game-core，已实现内部 TCP 与多 Slot 通信。Network 按 connection、connector、error、netty 分包，直接使用 Netty AttributeKey；RPC 按 node、message、call、transport、error、netty 分包。
+Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖 game-network 和 game-core，已实现内部 TCP 与多 Slot 通信。Network 按 connection、connector、error、netty 及独立 http 包组织，直接使用 Netty AttributeKey；RPC 按 node、message、call、transport、error、netty 分包。
 
 目录划分保留包级封装：Network 的 NettyConnection/NetworkChannelInitializer 留在 netty 包内，RPC 的 ConnectionSlot 留在 node 包内。调用方需要更新已迁移类型的 import。具体类型映射见 [Network Java 开发规范](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) 和 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。
+
+游戏服务器内部 HTTP 在 game-network artifact 的 cn.managame.network.http 包中独立实现。HttpServer 自行管理 ServerBootstrap、监听、生命周期和请求/响应管线，不包装 TCP/WS 的 NetworkServer，不使用 Connection/ConnectionHandler。包内公开 HttpServer/HttpServerBuilder，HttpServerTransport 保持包级封装。健康检查、管理操作、路由和序列化由应用负责。初始 Profile 仅支持 HTTP/1.1、完整请求/响应 body、Keep-Alive、可配置请求限制及入站无数据超时。pipeline(...) 在聚合之后、可选兜底之前安装原生 HTTP 扩展（默认兜底为 404），包括应用选择的鉴权、CORS 和压缩。可选外部有序执行器保持同一连接的响应顺序，包括自动协议响应；HTTP 扩展必须共享该有序上下文。不新增客户端、HTTP/2、连接注册表或业务定时器。契约见 [HTTP Profile](ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) 与 [Java 绑定](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。HttpServerExample 位于 game-example 的 cn.managame.example.network，无需新增 Maven 模块或依赖。
 
 ## Runtime 包边界
 
@@ -38,7 +40,7 @@ write 检查 active/writable 后直接 writeAndFlush；ACCEPTED 转移所有权�
 
 Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常入口 → HTTP/WS handler 与 binary adapter（启用时）→ 用户 codec/handler → ConnectionHandler adapter。NetworkChannelInitializer 装配具体 handler，不使用通用 Transport 接口或 TLS 包装。末端 adapter 直接衔接原生 TLS/WS 完成事件、入口检查与 onConnected，不创建中间就绪/WS Promise 或 PromiseCombiner；Client 仅用原生 Promise 承接建连结果。不保存连接清单，不使用 ChannelGroup 或集合锁；单 Channel 处理将消息交给传入的 ConnectionHandler。TLS context、证书和主机名校验由调用方通过 pipeline(...) 配置，WSS 必须显式配置 TLS；位置与失败规则见 Network Java 规范。
 
-[game-example](../game-example/README.zh-CN.md) 统一收纳独立可运行示例及其执行测试，按 `cn.managame.example.<component>` 分包。Network 示例为 NetworkEchoExample，RPC 双节点示例为 RpcEchoExample。模块依赖 game-network 与 game-rpc；框架模块不反向依赖示例，也不发布示例类。其他组件在有实际示例时再添加依赖。示例是已有契约的应用演示，不是新的框架组件或规范层。自动 RPC→Runtime 接入尚未实现。
+[game-example](../game-example/README.zh-CN.md) 统一收纳独立可运行示例及其执行测试，按 `cn.managame.example.<component>` 分包。Network 的 TCP 示例为 NetworkEchoExample，HTTP/1.1 示例为 HttpServerExample，RPC 双节点示例为 RpcEchoExample。模块依赖 game-network 与 game-rpc；框架模块不反向依赖示例，也不发布示例类。其他组件在有实际示例时再添加依赖。示例是已有契约的应用演示，不是新的框架组件或规范层。自动 RPC→Runtime 接入尚未实现。
 ## RPC
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。

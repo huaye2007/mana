@@ -11,7 +11,7 @@
 | game-core | [Core Specification](OGBS-Core-1.0.zh-CN.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.zh-CN.md) | 已实现；共享 Metadata 与错误码 |
 | game-runtime | [Runtime Specification](OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) | 已实现；Route、Context、Handler、Event、Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.zh-CN.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.zh-CN.md) | 已实现；真实 MySQL/MongoDB 验证需配置环境 |
-| game-network | [Network Specification](OGBS-Network-1.0.zh-CN.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) | 已实现；TCP/TLS/WS/WSS |
+| game-network | [Network Specification](OGBS-Network-1.0.zh-CN.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) | 已实现；TCP/TLS/WS/WSS 与独立 HTTP/1.1 服务端 |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.zh-CN.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) | 已实现；内部 TCP、多 Slot、调用、心跳/重连 |
 
 规范版本为 1.0，当前处于仓库草案阶段；Java 模块版本为 1.0.0-SNAPSHOT，基线 JDK 25。规范存在不代表所有能力均已实现或验证，各文档的状态与边界必须据实维护。

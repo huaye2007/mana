@@ -9,7 +9,7 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | Module | Responsibility |
 | --- | --- |
 | game-core | Shared Metadata, typed MetadataKey, common framework error codes |
-| game-network | Connection / ConnectionHandler / NetworkServer / NetworkClient; TCP / binary WebSocket, with TLS / WSS configured through native SslHandler |
+| game-network | TCP / binary WebSocket Connection APIs, native TLS / WSS, and independent HTTP/1.1 HttpServer |
 | game-rpc | RpcNode, active/passive peers, fixed slots, handshakes, heartbeats, reconnects, call / notify / reply, and Netty wire codecs |
 | game-runtime | Route execution, Context, Handler, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
@@ -61,6 +61,8 @@ mvn -pl game-network -am test
 The root build includes game-core, game-network, game-rpc, game-runtime, game-data, and game-example. All standalone runnable examples and their execution tests live in game-example, under `cn.managame.example.<component>`; framework artifacts contain no example classes. Run mvn -pl game-example -am test to validate the examples. RPC→Runtime integration and DataMemoryDemo remain unimplemented.
 
 Run [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
+
+[HttpServerExample](game-example/src/main/java/cn/managame/example/network/HttpServerExample.java) demonstrates the independent HTTP/1.1 server with application health/echo handlers and a JDK example caller. Its framework API is in cn.managame.network.http; see [the HTTP contract](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md#native-http-server-api).
 
 Network tests cover TCP/TLS/WS/WSS, ordering, reference counts, exceptions, backpressure, handshake failure, and shutdown/interruption races. The current JDK's keytool creates temporary certificates. Windows tests force the JDK Selector wakeup pipe to fall back to TCP and limit Netty's default thread count; production code does not change JVM properties. See Data documentation for live database verification.
 

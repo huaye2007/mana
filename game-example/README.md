@@ -9,11 +9,14 @@ This module demonstrates existing contracts and defines no new framework compone
 | Example | Behavior | Specification | Java Development Specification |
 | --- | --- | --- | --- |
 | [NetworkEchoExample](src/main/java/cn/managame/example/network/NetworkEchoExample.java) | Local framed TCP string echo on a dynamic port | [Network](../docs/ogbs/OGBS-Network-1.0.md) | [Network Java 25](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) |
+| [HttpServerExample](src/main/java/cn/managame/example/network/HttpServerExample.java) | Independent HTTP/1.1 health/echo server, retained request body, JDK example caller | [HTTP profile](../docs/ogbs/OGBS-Network-1.0.md#http-server-profile) | [HTTP Java binding](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md#native-http-server-api) |
 | [RpcEchoExample](src/main/java/cn/managame/example/rpc/RpcEchoExample.java) | Two local TCP nodes, call/reply, retained borrowed body, application string decoding | [RPC](../docs/ogbs/OGBS-RPC-1.0.md) | [RPC Java 25](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md) |
 
-Import the root Maven project into an IDE with JDK 25 and run either main method from game-example with its dependencies on the classpath. Expected outputs are hello game-network and hello game-rpc, respectively. Each example binds only loopback addresses with random ports, bounds its response wait to five seconds, propagates failures, and closes its owned resources through try-with-resources. These waits are demonstration bounds, not production configuration.
+Import the root Maven project into an IDE with JDK 25 and run a main method from game-example with its dependencies on the classpath. Expected outputs are hello game-network, hello HTTP/1.1 and hello game-rpc. Each example binds only loopback addresses with random ports, bounds its response wait to five seconds, propagates failures, and closes its owned resources through try-with-resources. These waits are demonstration bounds, not production configuration.
 
 The Network example exchanges immutable strings; an echo of a reference-counted buffer would instead require an independent retained send reference. The RPC example retains its borrowed inbound body before transferring it to reply; retaining the inbound reference is independent of response decoding.
+
+The HTTP example uses HttpServer directly without ConnectionHandler and opts into native HttpContentCompressor through pipeline(...). Its application selects /health and /echo, retains the borrowed echo body for the response, and uses JDK HttpClient only as a demonstration caller. [HttpServerExampleTest](src/test/java/cn/managame/example/network/HttpServerExampleTest.java) checks UTF-8 echo. The HTTP source was compiled/run separately because existing RPC test APIs and RpcEchoExample.maxPendingCalls do not match the restored RPC implementation; those unrelated mismatches currently block the standard full module/root commands below.
 
 Build and validate from the repository root:
 

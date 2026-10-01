@@ -13,7 +13,7 @@ Every component requires both a **language-independent specification** and a **J
 | game-core | [Core Specification](OGBS-Core-1.0.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.md) | Implemented; shared Metadata and error codes |
 | game-runtime | [Runtime Specification](OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.md) | Implemented; Route, Context, Handler, Event, Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.md) | Implemented; real MySQL/MongoDB validation requires configured services |
-| game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS |
+| game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS and independent HTTP/1.1 server |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.md) | Implemented; internal TCP, multiple Slots, calls, heartbeat/reconnection |
 
 Specifications are version 1.0 repository drafts; Java modules are 1.0.0-SNAPSHOT on JDK 25. A specification's existence does not establish implementation or validation of every capability. Maintain status and limits accurately.

@@ -20,10 +20,48 @@ Maven：`cn.managame:game-network:1.0.0-SNAPSHOT`。JDK 25，无 preview；Netty
 | cn.managame.network.connector | ConnectCallback、WebSocketConnectOptions |
 | cn.managame.network.error | NetworkException |
 | cn.managame.network.netty | NetworkServer、NetworkServerBuilder、NetworkClient、NetworkClientBuilder |
+| cn.managame.network.http | HttpServer、HttpServerBuilder |
 
 NettyConnection、NetworkChannelInitializer、WebSocketTransport、ConnectionHandlerAdapter 与 WS payload 适配均保持 netty 包级封装。Server/Client 入口与其实现同包，避免为拆包公开内部协作类型。
 
+内部 HTTP 保留在 game-network artifact，但使用独立的 cn.managame.network.http 包。HttpServer 自行管理 ServerBootstrap、监听、资源生命周期与请求管线，不包装 NetworkServer，不使用 Connection/ConnectionHandler。HttpServerTransport 保持包级封装；TCP/WS 类与其 Upgrade codec 不变。业务 handler 由应用负责，可运行 HTTP 示例位于 game-example 的 cn.managame.example.network。不需要新增 Maven 模块或依赖。
+
 不再建立 attribute 包或自定义 ConnectionKey，直接使用 Netty AttributeKey。原 Acceptor/Connector 抽象由具体 NetworkServer/NetworkClient 替代。模块入口见 [game-network](../../game-network/README.zh-CN.md)。可运行示例及其执行测试位于 [game-example](../../game-example/README.zh-CN.md) 的 cn.managame.example.network 包中，不随 game-network artifact 发布。示例调用方需要更新 import 与模块依赖，不保留旧包别名。组件契约测试仍位于 game-network。
+
+<a id="native-http-server-api"></a>
+
+### 1.1 独立 HTTP/1.1 服务端
+
+实现 [N-HTTP-01–08](OGBS-Network-1.0.zh-CN.md#http-server-profile)。以下 API 已提供，不新增框架 HTTP 客户端或 HTTP/2 API。直接使用原生 FullHttpRequest/FullHttpResponse，避免重复消息模型；§§2–8 的 TCP/WS API 保持独立。
+
+| 入口 | 签名或设置 | 契约 |
+| --- | --- | --- |
+| HttpServer | static HttpServerBuilder builder(); void start(); SocketAddress localAddress(); void close() | AutoCloseable；同步、一次性监听；绑定尝试前 localAddress 为 null |
+| 必需配置 | bindAddress(SocketAddress) | 必需的监听地址 |
+| 可选兜底 | handler(Function<FullHttpRequest, FullHttpResponse>) | 对扩展传下来的请求同步返回一个完整最终响应；默认空 404 |
+| 原生管线 | pipeline(Consumer<ChannelPipeline>) | 每条 Channel 按注册顺序执行配置器，位于聚合之后、兜底之前；addLast 安装 HTTP handler，addFirst 安装调用方创建的 TLS |
+| 请求限制 | maxContentLength(int); maxInitialLineLength(int); maxHeaderSize(int) | 正数字节数；默认 body 1 MiB、首行 4096 字节、请求头 8192 字节 |
+| 入站时间 | readTimeoutMillis(long) | 默认 30,000 ms；零禁用，负数拒绝；持续无入站字节则关闭 socket |
+| 业务执行 | executorGroup(EventExecutorGroup) | 可选、借用；每个执行器必须是 OrderedEventExecutor |
+| 传输资源 | bossGroup(EventLoopGroup); workerGroup(EventLoopGroup); channelFactory(ChannelFactory<? extends ServerChannel>) | 默认 NIO，自有 boss 为一个 loop，自有 worker 使用 Netty 默认大小；注入 group 均借用 |
+| 原生选项 | <T> option(ChannelOption<T>, T); <T> childOption(ChannelOption<T>, T) | 使用 Netty 校验；原生传输需要匹配的 group/factory |
+| 构建 | HttpServer build() | 上述 fluent 方法均返回 HttpServerBuilder；不可变配置快照，start 前不启动默认 group |
+
+null 参数抛 NullPointerException；非法限制或无序执行器抛 IllegalArgumentException。缺少必需字段、重复 start 或 close 后 start 抛 IllegalStateException。绑定失败包装为 NetworkException 并保留原因；尝试完成清理并保留中断。管线初始化失败关闭当前接入 Channel，由 Netty 诊断，不使已绑定监听失效。Builder 是可变装配对象，不支持并发使用；函数、配置器、context 与 group 对象在快照间共享引用。
+
+管线：可选调用方 SslHandler 在首位 → http-read-timeout（启用时）→ http-codec → http-validation → http-keep-alive → http-aggregation → 用户 HTTP handler → http-application 兜底。配置器能看到已装配的 HTTP 基础管线，使用 addLast 追加 handler；配置完成前尚无 http-application context。TLS/原始字节 handler 仍可通过 addFirst 添加。http- 名称保留给框架，扩展不得移除或重排核心 handler。HttpDecoderConfig 提供首行/请求头限制；HttpObjectAggregator 子类处理 body 上限/Expect；原生 HttpServerKeepAliveHandler 对所有响应实施考虑分帧的持久连接策略，包括扩展响应。HTTP/1.0 与 HTTP/2 返回 505，CONNECT 返回 405，Upgrade 返回 400。非法解码/Host/首行/请求头返回 400；body 超限返回 413，不支持的 Expect 返回 417。空协议错误响应后关闭，不增加 HTTP/2 协商或共享 WS 管线。
+
+默认 HTTP 处理及 addLast 扩展运行在 Channel EventLoop。executorGroup 将 HTTP 基础管线与兜底分配到每条连接的同一有序执行器。启用投递时，http-codec 之后的扩展必须使用相同 group，例如 pipeline(p -> p.addLast(group, "auth", new AuthHandler()))；不指定 group 会切回 EventLoop，使自动响应越过应用响应。初始化时拒绝 http-codec 之后不同的 context.executor()；build 拒绝 childOption(SINGLE_EVENTEXECUTOR_PER_GROUP, false)。http-codec 之前的 TLS/原始字节 handler 可运行在 EventLoop。共享函数需要支持跨连接并发，非 Sharable 原生 handler 在每次配置器调用中创建。应用选择有界执行资源并负责关闭，不隐式创建业务执行器/定时器，也不新增任意异步完成或流式 API。
+
+原生扩展所有权遵循 N-HTTP-08：转发型 ChannelInboundHandlerAdapter 调用 ctx.fireChannelRead(request)，不释放已转移引用；消费型 adapter 用完后自行释放。SimpleChannelInboundHandler 自动释放，使用它继续转发时需要 retain。原生响应器通过 ctx.writeAndFlush(FullHttpResponse) 写回，自行设置合法 Content-Length 或原生传输分帧，不再产生第二个兜底响应。KeepAlive 策略遵循请求/响应关闭要求，决定关闭后抑制后续流水线请求。框架不再释放已被扩展消费的请求。原生 CorsHandler 可以消费 OPTIONS 并生成预检响应；HttpContentCompressor 可变换兜底/原生输出并调整 wire 分帧。鉴权、路由、CORS 与压缩配置仍属于应用策略。
+
+兜底函数路径中的请求借用至函数返回。例如 echo 应返回 new DefaultFullHttpResponse(HTTP_1_1, OK, request.content().retainedDuplicate())；不 retain 就返回共享内容，会在请求自动释放时使发送引用失效。返回响应的所有权始终转交服务端，包括响应校验失败或处理期间断开。服务端选择 HTTP/1.1，移除响应 Transfer-Encoding/trailer，普通 Content-Length 根据实际 body 计算；HEAD/304 保留显式非负长度并抑制发送 body，204 去掉长度/body，205 长度为零。请求或响应包含 Connection: close 时，写回后结束连接并禁止执行后续流水线业务。发送失败关闭，不重试。handler 抛异常、返回 null/1xx 或响应分帧失败时，尝试空 500 并在 ERROR 记录原始应用异常，不发送异常详情。可识别的 I/O、解码边界与读超时异常仅产生 DEBUG 连接摘要；未知管线异常仍为 ERROR。
+
+ReadTimeoutHandler 度量入站无数据时间，包括空闲 Keep-Alive 和部分 body，不限制 handler 或请求总时长。断开不回滚或中断 handler。start/close 禁止从关联 boss/worker/HTTP 执行器调用。close 将入口标记为终止，关闭监听，并仅对自有 boss/worker 调用 shutdownGracefully(0, 5 seconds)。不使用 ChannelGroup 或连接注册表，不关闭注入的 HTTP 执行器，不等待外部业务。借用 worker 时，已有 socket 可在监听关闭后继续服务至自身超时/关闭，应用通过自有原生资源管理。重复 close 无效果，不构成并发清理屏障。
+
+已确认取舍：普通内部接口先支持 HTTP/1.1，采用独立实现，避免给 NetworkServer/ConnectionHandler 增加 HTTP 分支。明确接入要求或实测连接/响应顺序瓶颈出现时再评估 HTTP/2，单凭高 QPS 不足以判断。body 上限不限制执行队列、连接数量或响应缓冲，不宣称生产容量。内建路由、JSON、压缩、multipart 与 CORS 不在初版实现中。
+
+源码：[HttpServer](../../game-network/src/main/java/cn/managame/network/http/HttpServer.java)、[Builder](../../game-network/src/main/java/cn/managame/network/http/HttpServerBuilder.java)、[Transport](../../game-network/src/main/java/cn/managame/network/http/HttpServerTransport.java)。验证：[HttpServerTest](../../game-network/src/test/java/cn/managame/network/http/HttpServerTest.java)、[HttpServerExample](../../game-example/src/main/java/cn/managame/example/network/HttpServerExample.java)、[示例测试](../../game-example/src/test/java/cn/managame/example/network/HttpServerExampleTest.java)。测试覆盖真实 socket、chunked 入站、持久/流水线响应边界、HEAD/204/205/304、原生 TLS/明文拒绝、拒绝、执行器投递时的 100/413 顺序、所有权、handler 失败、无数据超时、资源生命周期、原生路由/鉴权拒绝/默认 404、CORS 预检、gzip 变换和扩展执行器一致性。生产容量仍未验证；全仓库验证目前被已有 RPC 测试 API 不匹配阻断，示例模块还存在已有 RpcEchoExample.maxPendingCalls 编译不匹配。这些无关错误修复前，单独编译并运行 HTTP 示例。
 
 ## 2. Connection 与 Handler
 
@@ -200,7 +238,7 @@ public final class WebSocketConnectOptions {
 }
 ```
 
-构造时复制 HttpHeaders，headers() 返回新的副本。默认空 headers、null subprotocol；可重复安全用于不同 connect。服务端不协商子协议，也不提供子协议 Builder 配置；客户端保留每次 connect 的 WebSocketConnectOptions，以便连接外部 WS 服务。客户端要求子协议但服务端没有匹配响应时握手失败；服务端可能已经完成自己的 Upgrade，随后收到客户端关闭，两端结果不是一个事务。原生 handler 可通过 pipeline(...) 检查 HTTP Upgrade；框架不增加 Auth/Router/HTTP API。
+构造时复制 HttpHeaders，headers() 返回新的副本。默认空 headers、null subprotocol；可重复安全用于不同 connect。服务端不协商子协议，也不提供子协议 Builder 配置；客户端保留每次 connect 的 WebSocketConnectOptions，以便连接外部 WS 服务。客户端要求子协议但服务端没有匹配响应时握手失败；服务端可能已经完成自己的 Upgrade，随后收到客户端关闭，两端结果不是一个事务。原生 handler 可通过 pipeline(...) 检查 HTTP Upgrade；WS Builder 不增加 Auth/Router/HTTP 服务 DSL，独立 HTTP 入口见 §1.1。
 
 ### 5.1 快照的深度和可复用范围
 
