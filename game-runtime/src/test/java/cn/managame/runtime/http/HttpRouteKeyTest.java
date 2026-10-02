@@ -13,18 +13,18 @@ import static cn.managame.runtime.http.RuntimeHttpTest.*;
 class HttpRouteKeyTest {
     @HttpHandler(domain = 1, routeKey = "playerId")
     static class Fields {
-        @HttpMethod("/default") public String get(HttpContext context) {
+        @HttpMethod(value = "/default", method = HttpRequestMethod.GET) public String get(HttpContext context) {
             assertSame(context, Contexts.current());
             assertFalse(context instanceof cn.managame.runtime.context.InvocationContext);
             return response(Long.toString(context.routeKey()));
         }
-        @HttpMethod(value = "/default", method = "POST") public String post(HttpContext context) {
+        @HttpMethod("/default") public String post(HttpContext context) {
             return response(context.routeKey() + ":" + context.request().content().toString(StandardCharsets.UTF_8));
         }
-        @HttpMethod(value = "/override", routeKey = "guildId") public String override(HttpContext context) {
+        @HttpMethod(value = "/override", method = HttpRequestMethod.GET, routeKey = "guildId") public String override(HttpContext context) {
             return response(Long.toString(context.routeKey()));
         }
-        @HttpMethod(value = "/custom", routeKeyMethod = "headerKey") public String custom(HttpContext context) {
+        @HttpMethod(value = "/custom", method = HttpRequestMethod.GET, routeKeyMethod = "headerKey") public String custom(HttpContext context) {
             return response(Long.toString(context.routeKey()));
         }
         public Long headerKey(FullHttpRequest request) {
@@ -36,8 +36,8 @@ class HttpRouteKeyTest {
     }
     @HttpHandler(domain = 1, routeKeyMethod = "headerKey")
     static class MethodDefault {
-        @HttpMethod("/method") public String get(HttpContext context) { return response(Long.toString(context.routeKey())); }
-        @HttpMethod(value = "/field", routeKey = "id") public String field(HttpContext context) { return get(context); }
+        @HttpMethod(value = "/method", method = HttpRequestMethod.GET) public String get(HttpContext context) { return response(Long.toString(context.routeKey())); }
+        @HttpMethod(value = "/field", method = HttpRequestMethod.GET, routeKey = "id") public String field(HttpContext context) { return get(context); }
         public long headerKey(FullHttpRequest request) { return Long.parseLong(request.headers().get("X-Key")); }
     }
 
@@ -152,18 +152,18 @@ class HttpRouteKeyTest {
         }
     }
 
-    @HttpHandler(domain = 1, routeKey = "id", routeKeyMethod = "key") static class Both { @HttpMethod("/bad") public void bad() {} }
-    @HttpHandler(domain = 1, routeKeyMethod = "missing") static class Missing { @HttpMethod("/bad") public void bad() {} }
-    @HttpHandler(domain = 1, routeKeyMethod = "key") static class Static { @HttpMethod("/bad") public void bad() {} public static long key(FullHttpRequest r) { return 1; } }
-    @HttpHandler(domain = 1, routeKeyMethod = "key") static class WrongType { @HttpMethod("/bad") public void bad() {} public int key(FullHttpRequest r) { return 1; } }
-    @HttpHandler(domain = 1, routeKey = "id") static class BadMethod { @HttpMethod(value = "/bad", routeKey = " ") public void bad() {} }
+    @HttpHandler(domain = 1, routeKey = "id", routeKeyMethod = "key") static class Both { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad() {} }
+    @HttpHandler(domain = 1, routeKeyMethod = "missing") static class Missing { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad() {} }
+    @HttpHandler(domain = 1, routeKeyMethod = "key") static class Static { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad() {} public static long key(FullHttpRequest r) { return 1; } }
+    @HttpHandler(domain = 1, routeKeyMethod = "key") static class WrongType { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad() {} public int key(FullHttpRequest r) { return 1; } }
+    @HttpHandler(domain = 1, routeKey = "id") static class BadMethod { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET, routeKey = " ") public void bad() {} }
     static final class CustomContext extends DefaultHttpContext {
         CustomContext(int domain, long key, FullHttpRequest request, HttpResultCallback callback) {
             super(domain, key, request, callback);
         }
     }
     @HttpHandler(domain = 1, routeKey = "id") static class Custom {
-        @HttpMethod("/custom-context") public String get(CustomContext context) {
+        @HttpMethod(value = "/custom-context", method = HttpRequestMethod.GET) public String get(CustomContext context) {
             assertSame(context, Contexts.current()); return response(Long.toString(context.routeKey()));
         }
     }

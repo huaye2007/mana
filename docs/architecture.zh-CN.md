@@ -59,7 +59,7 @@ start/close 只在管理上下文执行；关闭立即拒绝新工作，并等�
 
 Route identity 是完整的 domain + key，不是 worker/thread/executor。key=0 无效，其他 64 位值可用。Domain 为用户定义的正整数。
 
-默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 维护 FIFO mailbox，一个活跃 mailbox 由一个虚拟线程排空，空 mailbox 回收。两种实现均隔离任务异常并提供非阻塞 admission。
+默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 在 ConcurrentHashMap 持有活跃 FIFO mailbox，仅把完全空闲的 mailbox 放入 Caffeine 有界复用（默认 60 秒，缓存最大条数等于任务容量）。按 Key 的原子 Map 操作协调激活/排空，不使用执行器全局监视器。Caffeine 从 game-core 传递引入，使用共享系统过期调度。两种实现均隔离任务异常并提供非阻塞 admission。
 
 Runtime 负责 same-route inline，Executor SPI 不感知 Context。同 Route 嵌套先执行内层任务，内层返回后恢复外层 Context。不同 Runtime 实例即使 domain/key 相同也不 inline。
 
@@ -119,6 +119,6 @@ Data 采用两个缓冲与固定 100ms 宽限期，接受超长线程停顿风�
 
 ## Runtime HTTP 组合
 
-game-runtime 依赖 game-core 与 game-network，在已有 artifact 中发布 cn.managame.runtime.http。显式 HttpHandler/HttpMethod 注册编译原始方法/path 查找，显式 RouteKey 字段规则在 GET 读取 query，其他方法读取 JSON body，方法配置覆盖 Handler；也可指定 Handler 方法提取自定义 Key。HttpContextFactory 接收并保留选定 Key，可提供自定义 HTTP Context 字段，不包含框架业务身份/Metadata；无规则时由工厂选 Key。JSON 字段提取与结果编码使用 Jackson Databind 2.21.3 及传递 Core/Annotations。RuntimeHttp 接到 HttpServer.asyncHandler，与普通 Handler/Event/call 使用相同 Route 执行器和上下文路径。返回业务对象自动完成，void 方法通过 HttpResultCallback 提交对象。HttpResultCodec 默认编码 JSON，RuntimeHttp 在内部构造 Network 响应，业务结果不携带 HTTP 版本。不绑定请求 DTO 或鉴权。
+game-runtime 依赖 game-core 与 game-network，在已有 artifact 中发布 cn.managame.runtime.http。显式 HttpHandler/HttpMethod 注册编译 HttpRequestMethod 枚举/原始 path 查找，方法默认 POST，GET 需显式选择；显式 RouteKey 字段规则在 GET 读取 query，其他方法读取 JSON body，方法配置覆盖 Handler；也可指定 Handler 方法提取自定义 Key。HttpContextFactory 接收并保留选定 Key，可提供自定义 HTTP Context 字段，不包含框架业务身份/Metadata；无规则时由工厂选 Key。JSON 字段提取与结果编码使用 Jackson Databind 2.21.3 及传递 Core/Annotations。RuntimeHttp 接到 HttpServer.asyncHandler，与普通 Handler/Event/call 使用相同 Route 执行器和上下文路径。返回业务对象自动完成，void 方法通过 HttpResultCallback 提交对象。HttpResultCodec 默认编码 JSON，RuntimeHttp 在内部构造 Network 响应，业务结果不携带 HTTP 版本。不绑定请求 DTO 或鉴权。
 
 Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。跨 Route 回调恢复同一 HttpContext，但不延长请求生命周期。不增加监听器/执行器所有权：应用单独创建、启动、关闭 HttpServer，在关闭 Runtime 前安排在途完成。详见 [Runtime HTTP 语义](ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile)、[Java 绑定](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)、[RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java)。普通消息契约和独立 Network HTTP pipeline 保持原有行为，RPC 接入仍需显式实现/待完善。

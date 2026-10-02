@@ -12,6 +12,8 @@
 
 OGBS Data 的 Java 25 参考实现：Single/Group 缓存、异步批量写回、MySQL/JDBC、MongoDB，以及 MySQL 追加日志。
 
+Caffeine 3.2.3 通过 `game-core` 传递引入；Data 负责自身缓存及其生命周期。共享依赖的归属见 [Core Java 开发规范](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责)。
+
 - [语义规范](../docs/ogbs/OGBS-Data-1.0.zh-CN.md)
 - [Java 开发规范、默认配置与边界](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)
 - DataMemoryDemo 尚未落入当前仓库；内存 Mapper 用法见 [DataContractTest](src/test/java/cn/managame/data/DataContractTest.java)。

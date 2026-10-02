@@ -9,6 +9,7 @@ import cn.managame.runtime.executor.RouteExecutors;
 import cn.managame.runtime.http.HttpContext;
 import cn.managame.runtime.http.HttpHandler;
 import cn.managame.runtime.http.HttpMethod;
+import cn.managame.runtime.http.HttpRequestMethod;
 import cn.managame.runtime.route.RouteCallback;
 import cn.managame.runtime.route.RouteDomain;
 import com.fasterxml.jackson.core.JsonFactory;
@@ -71,13 +72,13 @@ public final class RuntimeHttpExample {
     public static final class Methods {
         private GameRuntime runtime;
 
-        @HttpMethod(value = "/echo", method = "POST")
+        @HttpMethod("/echo")
         public EchoResult echo(HttpContext context, FullHttpRequest request) {
             if (Contexts.current() != context) throw new IllegalStateException("Missing HTTP context");
             return new EchoResult(context.routeKey(), request.content().toString(StandardCharsets.UTF_8));
         }
 
-        @HttpMethod(value = "/lookup", routeKey = "lookupId")
+        @HttpMethod(value = "/lookup", method = HttpRequestMethod.GET, routeKey = "lookupId")
         public void lookup(HttpContext context) {
             long id = context.routeKey();
             runtime.call(2, id, () -> "player " + id, new RouteCallback<String>() {

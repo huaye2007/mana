@@ -136,11 +136,9 @@ public final class RuntimeCompiler {
                         overrideKey ? entry.routeKeyMethod() : owner.routeKeyMethod());
                 int domain = entry.domain() != 0 ? entry.domain() : owner.domain();
                 if (!domains.contains(domain)) throw invalid("Unregistered HTTP domain: " + method);
-                String path = entry.value(), verb = entry.method();
+                String path = entry.value(), verb = entry.method().name();
                 if (!path.startsWith("/") || path.indexOf('?') >= 0 || path.indexOf('#') >= 0
                         || path.chars().anyMatch(c -> c <= 32 || c == 127)) throw invalid("Invalid HTTP path: " + method);
-                io.netty.handler.codec.http.HttpMethod.valueOf(verb); // Validate native HTTP token syntax.
-                if (!verb.equals(verb.toUpperCase(Locale.ROOT)) || verb.equals("CONNECT")) throw invalid("Invalid HTTP method: " + method);
                 Class<?> contextType = null;
                 boolean requestSeen = false;
                 int[] arguments = new int[method.getParameterCount()];

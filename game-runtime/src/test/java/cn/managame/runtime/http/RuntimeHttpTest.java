@@ -90,15 +90,15 @@ class RuntimeHttpTest {
     }
 
     @HttpHandler(domain = 1) static class Methods {
-        @HttpMethod("/echo") public String echo(FullHttpRequest request, HttpContext context) {
+        @HttpMethod(value = "/echo", method = HttpRequestMethod.GET) public String echo(FullHttpRequest request, HttpContext context) {
             assertSame(context, Contexts.current()); assertSame(request, context.request());
             return request.content().toString(StandardCharsets.UTF_8);
         }
-        @HttpMethod(value = "/echo", method = "POST") public void post(HttpContext context) {
+        @HttpMethod(value = "/echo", method = HttpRequestMethod.POST) public void post(HttpContext context) {
             context.responseCallback().onResponse(response("post"));
         }
-        @HttpMethod(value = "/domain", domain = 2) public String domain(Context context) { return response(Integer.toString(context.routeDomain())); }
-        @HttpMethod("/encoded%2Fpath") public String encoded() { return response("encoded"); }
+        @HttpMethod(value = "/domain", method = HttpRequestMethod.GET, domain = 2) public String domain(Context context) { return response(Integer.toString(context.routeDomain())); }
+        @HttpMethod(value = "/encoded%2Fpath", method = HttpRequestMethod.GET) public String encoded() { return response("encoded"); }
     }
 
     @Test void exactLookupQueryExclusionMethodAllowAndDomainOverride() {
@@ -115,6 +115,44 @@ class RuntimeHttpTest {
             var encoded = dispatch(runtime, "GET", "/encoded%2Fpath"); executor.next(); assertEquals("encoded", encoded.body);
             assertEquals(400, dispatch(runtime, "GET", "http://host/echo").status);
             assertEquals(400, dispatch(runtime, "GET", "/echo#fragment").status);
+            assertTrue(executor.tasks.isEmpty());
+        }
+    }
+
+    @HttpHandler(domain = 1, routeKey = "id") static class Verbs {
+        @HttpMethod("/post-only") public String defaultPost(HttpContext context) { return result(context); }
+        @HttpMethod("/verbs") public String post(HttpContext context) { return result(context); }
+        @HttpMethod(value = "/verbs", method = HttpRequestMethod.GET) public String get(HttpContext context) { return result(context); }
+        @HttpMethod(value = "/verbs", method = HttpRequestMethod.PUT) public String put(HttpContext context) { return result(context); }
+        @HttpMethod(value = "/verbs", method = HttpRequestMethod.PATCH) public String patch(HttpContext context) { return result(context); }
+        @HttpMethod(value = "/verbs", method = HttpRequestMethod.DELETE) public String delete(HttpContext context) { return result(context); }
+        @HttpMethod(value = "/verbs", method = HttpRequestMethod.HEAD) public String head(HttpContext context) { return result(context); }
+        @HttpMethod(value = "/verbs", method = HttpRequestMethod.OPTIONS) public String options(HttpContext context) { return result(context); }
+        @HttpMethod(value = "/verbs", method = HttpRequestMethod.TRACE) public String trace(HttpContext context) { return result(context); }
+        private String result(HttpContext context) { return context.request().method().name() + ":" + context.routeKey(); }
+    }
+    @Test void defaultPostAndExplicitVerbsDispatchByExactMethodAndPreserveKeySources() {
+        var executor = new QueueExecutor();
+        try (var runtime = rawBuilder(executor).httpHandlers(List.of(new Verbs())).build()) {
+            var wrongMethod = dispatch(runtime, "GET", "/post-only?id=99");
+            assertEquals(405, wrongMethod.status); assertEquals("POST", wrongMethod.allow);
+            assertTrue(executor.tasks.isEmpty());
+            for (String path : List.of("/post-only", "/verbs")) {
+                var request = request("POST", path + "?id=99"); var result = new Result();
+                request.content().clear().writeCharSequence("{\"id\":42}", StandardCharsets.UTF_8);
+                runtime.http().dispatch(request, result); request.release(); executor.next();
+                assertEquals("POST:42", result.body); assertEquals(0, request.refCnt());
+            }
+            for (HttpRequestMethod verb : HttpRequestMethod.values()) {
+                var request = request(verb.name(), "/verbs?id=99"); var result = new Result();
+                request.content().clear().writeCharSequence("{\"id\":42}", StandardCharsets.UTF_8);
+                runtime.http().dispatch(request, result); request.release(); executor.next();
+                assertEquals(verb.name() + ":" + (verb == HttpRequestMethod.GET ? 99 : 42), result.body);
+                assertEquals(200, result.status); assertEquals(0, request.refCnt());
+            }
+            var unknown = dispatch(runtime, "PURGE", "/verbs?id=99");
+            assertEquals(405, unknown.status);
+            assertEquals("DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, TRACE", unknown.allow);
             assertTrue(executor.tasks.isEmpty());
         }
     }
@@ -183,12 +221,12 @@ class RuntimeHttpTest {
     }
 
     @HttpHandler(domain = 1) static class Failures {
-        @HttpMethod("/throw") public void broken() { throw new IllegalStateException("method bug"); }
-        @HttpMethod("/null") public String missing() { return null; }
-        @HttpMethod("/completed") public String completed(HttpContext context) {
+        @HttpMethod(value = "/throw", method = HttpRequestMethod.GET) public void broken() { throw new IllegalStateException("method bug"); }
+        @HttpMethod(value = "/null", method = HttpRequestMethod.GET) public String missing() { return null; }
+        @HttpMethod(value = "/completed", method = HttpRequestMethod.GET) public String completed(HttpContext context) {
             context.responseCallback().onResponse(response("first")); return response("duplicate");
         }
-        @HttpMethod("/late-throw") public void lateThrow(HttpContext context) {
+        @HttpMethod(value = "/late-throw", method = HttpRequestMethod.GET) public void lateThrow(HttpContext context) {
             context.responseCallback().onResponse(response("first")); throw new IllegalStateException("after completion");
         }
     }
@@ -214,7 +252,7 @@ class RuntimeHttpTest {
         GameRuntime runtime;
         HttpContext original;
         boolean eventSeen;
-        @HttpMethod("/call") public void call(SessionContext context) {
+        @HttpMethod(value = "/call", method = HttpRequestMethod.GET) public void call(SessionContext context) {
             original = context;
             assertFalse(InvocationContext.class.isInstance(context));
             runtime.eventBus().publish(new Notice(context.routeDomain(), context.routeKey(), () -> {
@@ -253,11 +291,11 @@ class RuntimeHttpTest {
         GameRuntime runtime;
         HttpContext outer;
         List<String> order = new ArrayList<>();
-        @HttpMethod("/outer") public String outer(HttpContext context) {
+        @HttpMethod(value = "/outer", method = HttpRequestMethod.GET) public String outer(HttpContext context) {
             outer = context; order.add("outer"); var nested = dispatch(runtime, "GET", "/inner");
             assertEquals("inner", nested.body); assertSame(context, Contexts.current()); order.add("restored"); return response("outer");
         }
-        @HttpMethod("/inner") public String inner(HttpContext context) {
+        @HttpMethod(value = "/inner", method = HttpRequestMethod.GET) public String inner(HttpContext context) {
             assertNotSame(outer, Contexts.current()); order.add("inner"); return response("inner");
         }
     }
@@ -276,7 +314,7 @@ class RuntimeHttpTest {
     static class Events { @EventMethod public void run(Notice event) { event.action().run(); } }
     @HttpHandler(domain = 1) static class Blocking {
         final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
-        @HttpMethod("/work") public String work(HttpContext context) throws Exception {
+        @HttpMethod(value = "/work", method = HttpRequestMethod.GET) public String work(HttpContext context) throws Exception {
             assertSame(context, Contexts.current());
             if (context.routeKey() == 1) { entered.countDown(); assertTrue(release.await(5, TimeUnit.SECONDS)); }
             return response("work");
@@ -301,25 +339,24 @@ class RuntimeHttpTest {
         }
     }
 
-    @HttpHandler(domain = 1) static class PrivateMethod { @HttpMethod("/bad") private void bad() {} }
-    @HttpHandler(domain = 1) static class StaticMethod { @HttpMethod("/bad") public static void bad() {} }
-    @HttpHandler(domain = 1) static class WrongReturn { @HttpMethod("/bad") public FullHttpResponse bad() { return null; } }
-    @HttpHandler(domain = 1) static class WrongParameter { @HttpMethod("/bad") public void bad(String text) {} }
-    @HttpHandler(domain = 1) static class InvocationParameter { @HttpMethod("/bad") public void bad(InvocationContext context) {} }
-    @HttpHandler(domain = 3) static class UnknownDomain { @HttpMethod("/bad") public void bad() {} }
-    @HttpHandler(domain = 1) static class InvalidPath { @HttpMethod("/bad?x=1") public void bad() {} }
-    @HttpHandler(domain = 1) static class LowercaseVerb { @HttpMethod(value = "/bad", method = "get") public void bad() {} }
+    @HttpHandler(domain = 1) static class PrivateMethod { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) private void bad() {} }
+    @HttpHandler(domain = 1) static class StaticMethod { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public static void bad() {} }
+    @HttpHandler(domain = 1) static class WrongReturn { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public FullHttpResponse bad() { return null; } }
+    @HttpHandler(domain = 1) static class WrongParameter { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad(String text) {} }
+    @HttpHandler(domain = 1) static class InvocationParameter { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad(InvocationContext context) {} }
+    @HttpHandler(domain = 3) static class UnknownDomain { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad() {} }
+    @HttpHandler(domain = 1) static class InvalidPath { @HttpMethod(value = "/bad?x=1", method = HttpRequestMethod.GET) public void bad() {} }
     @Test void invalidRegistrationFailsBeforeResourceOwnershipTransfers() {
         var executor = new QueueExecutor();
         for (Object handler : List.of(new Object(), new PrivateMethod(), new StaticMethod(), new WrongReturn(),
-                new WrongParameter(), new InvocationParameter(), new UnknownDomain(), new InvalidPath(), new LowercaseVerb()))
+                new WrongParameter(), new InvocationParameter(), new UnknownDomain(), new InvalidPath()))
             assertThrows(IllegalArgumentException.class, () -> builder(executor).httpHandlers(List.of(handler)).build());
         assertThrows(IllegalArgumentException.class, () -> rawBuilder(executor).httpHandlers(List.of(new Methods())).build());
         assertThrows(IllegalArgumentException.class, () -> builder(executor).httpHandlers(List.of(new Methods(), new Methods())).build());
         assertEquals(0, executor.closes);
     }
 
-    @HttpHandler(domain = 1) static class Replacement { @HttpMethod("/replacement") public String get() { return response("replacement"); } }
+    @HttpHandler(domain = 1) static class Replacement { @HttpMethod(value = "/replacement", method = HttpRequestMethod.GET) public String get() { return response("replacement"); } }
     @Test void builderReplacementFreezesHttpBindingsAndEmptyRegistryNeedsNoFactory() {
         var executor = new QueueExecutor(); var builder = builder(executor).httpHandlers(List.of(new Methods()));
         try (var first = builder.build(); var second = builder.httpHandlers(List.of(new Replacement())).build();

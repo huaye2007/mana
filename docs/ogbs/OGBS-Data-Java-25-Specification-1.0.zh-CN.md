@@ -10,7 +10,7 @@
 
 ## 1. 模块与公共入口
 
-一个 game-data artifact 内包含 Repository、Caffeine 缓存、写回、MySQL/JDBC、MongoDB 适配和日志。依赖 game-core、Caffeine 3.2.3；MongoDB Sync Driver 5.5.1 是 optional 依赖，使用 Mongo 的应用需显式添加。JDBC 依赖标准 DataSource，不绑定连接池；应用提供 MySQL JDBC Driver。
+一个 game-data artifact 内包含 Repository、Caffeine 缓存、写回、MySQL/JDBC、MongoDB 适配和日志。依赖 game-core，并按 [Core Java 规范](OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责) 传递引入共享 Caffeine；MongoDB Sync Driver 5.5.1 是 optional 依赖，使用 Mongo 的应用需显式添加。JDBC 依赖标准 DataSource，不绑定连接池；应用提供 MySQL JDBC Driver。
 
 | 包 | 职责 |
 | --- | --- |

@@ -10,7 +10,7 @@ Status: current game-core Java 25 implementation contract. This document and Cor
 
 ## 1. Module and responsibilities
 
-Maven coordinates: cn.managame:game-core:1.0.0-SNAPSHOT. Requires JDK 25 without preview features. Public types live in cn.managame.core. There are no dependencies on Network, Runtime, Data, RPC, or third-party runtime libraries, and no threads or external resources are created.
+Maven coordinates: cn.managame:game-core:1.0.0-SNAPSHOT. Requires JDK 25 without preview features. Public types live in cn.managame.core. There are no dependencies on Network, Runtime, Data, or RPC. game-core publishes the normal compile dependency `com.github.ben-manes.caffeine:caffeine:3.2.3` for shared use by dependent modules; Runtime and Data receive it transitively without separately declaring its version. See [Core POM](../../game-core/pom.xml). Core Metadata/error-code APIs create no caches, threads, or external resources. Cache users configure and own their component-specific lifecycle; the Java dependency does not add a new Core cache facade or change shared Metadata/error semantics.
 
 Public types are Metadata, MetadataKey, MetadataCodec, MetadataBuilder, MetadataKeys, Metadatas, and FrameworkErrorCodes. Metadatas' encoded container and Builder implementation remain internal; language-layer separation does not create another Maven artifact.
 

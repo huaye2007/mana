@@ -2,7 +2,7 @@
 
 **[English](README.md)** | [简体中文](README.zh-CN.md)
 
-Java 25 implementation of shared Metadata and framework error codes. Maven coordinates: cn.managame:game-core.
+Java 25 implementation of shared Metadata and framework error codes. Maven coordinates: cn.managame:game-core. It also publishes the shared Caffeine dependency for consuming components; its version and ownership boundaries are defined in the [Core Java specification](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责).
 
 <a id="规范文档"></a>
 

@@ -33,4 +33,4 @@ mvn clean verify
 
 RPC→Runtime 集成与 DataMemoryDemo 尚未实现。生产容量、公网部署与跨语言互操作仍未验证。依赖边界见 [架构概览](../docs/architecture.zh-CN.md)。
 
-[RuntimeHttpExampleTest](src/test/java/cn/managame/example/runtime/RuntimeHttpExampleTest.java) 通过真实 HttpServer 检查 UTF-8 echo 与延迟 lookup。示例分别拥有 Server 和 Runtime，Runtime 不负责关闭 Server。POST JSON 字段 playerId 与 GET query 覆盖字段 lookupId 选择 Key，均为路由输入，不证明已认证身份。默认 HttpContext 无需工厂或业务身份/Metadata。Runtime 对已接纳请求 retain 到方法执行与自动结果编码结束；方法返回 EchoResult，延迟回调提交 PlayerResult，只捕获不可变 RouteKey，不读取已释放请求。Runtime 序列化对象，业务代码不构造传输响应或 HTTP 版本。已有 RPC API 不匹配阻塞 reactor 验证期间，HTTP 示例独立编译运行。
+[RuntimeHttpExampleTest](src/test/java/cn/managame/example/runtime/RuntimeHttpExampleTest.java) 通过真实 HttpServer 检查 UTF-8 echo 与延迟 lookup。示例分别拥有 Server 和 Runtime，Runtime 不负责关闭 Server。POST /echo 使用默认方法，GET /lookup 显式使用 HttpRequestMethod.GET。POST JSON 字段 playerId 与 GET query 覆盖字段 lookupId 选择 Key，均为路由输入，不证明已认证身份。默认 HttpContext 无需工厂或业务身份/Metadata。Runtime 对已接纳请求 retain 到方法执行与自动结果编码结束；方法返回 EchoResult，延迟回调提交 PlayerResult，只捕获不可变 RouteKey，不读取已释放请求。Runtime 序列化对象，业务代码不构造传输响应或 HTTP 版本。已有 RPC API 不匹配阻塞 reactor 验证期间，HTTP 示例独立编译运行。

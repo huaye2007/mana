@@ -23,11 +23,11 @@ class HttpResultTest {
     static class Methods {
         HttpResultCallback deferred;
         final AtomicInteger serializationCalls = new AtomicInteger();
-        @HttpMethod("/dto") public PlayerResult dto() { return new PlayerResult(42, "玩家", List.of("a", "b")); }
-        @HttpMethod("/null") public Object empty() { return null; }
-        @HttpMethod("/void") public void deferred(HttpContext context) { deferred = context.responseCallback(); }
-        @HttpMethod("/bad") public Broken bad() { return new Broken(serializationCalls); }
-        @HttpMethod("/first") public Broken first(HttpContext context) {
+        @HttpMethod(value = "/dto", method = HttpRequestMethod.GET) public PlayerResult dto() { return new PlayerResult(42, "玩家", List.of("a", "b")); }
+        @HttpMethod(value = "/null", method = HttpRequestMethod.GET) public Object empty() { return null; }
+        @HttpMethod(value = "/void", method = HttpRequestMethod.GET) public void deferred(HttpContext context) { deferred = context.responseCallback(); }
+        @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public Broken bad() { return new Broken(serializationCalls); }
+        @HttpMethod(value = "/first", method = HttpRequestMethod.GET) public Broken first(HttpContext context) {
             assertTrue(context.responseCallback().onResponse(201, Map.of("ok", true)));
             return new Broken(serializationCalls); // Losing results must not be serialized.
         }
@@ -103,8 +103,8 @@ class HttpResultTest {
         assertThrows(IllegalArgumentException.class, () -> rawBuilder(executor).httpResultCodec(invalid).build());
     }
 
-    @HttpHandler(domain = 1, routeKey = "id") static class RawResponse { @HttpMethod("/raw") public FullHttpResponse raw() { return null; } }
-    @HttpHandler(domain = 1, routeKey = "id") static class Primitive { @HttpMethod("/raw") public long raw() { return 1; } }
+    @HttpHandler(domain = 1, routeKey = "id") static class RawResponse { @HttpMethod(value = "/raw", method = HttpRequestMethod.GET) public FullHttpResponse raw() { return null; } }
+    @HttpHandler(domain = 1, routeKey = "id") static class Primitive { @HttpMethod(value = "/raw", method = HttpRequestMethod.GET) public long raw() { return 1; } }
     @Test void transportAndPrimitiveReturnDeclarationsFailBuildAndDynamicTransportObjectsRemainCallerOwned() {
         var executor = new QueueExecutor();
         for (Object handler : List.of(new RawResponse(), new Primitive()))

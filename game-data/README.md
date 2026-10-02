@@ -14,6 +14,8 @@ Component behavior and Java implementation are maintained separately in these sp
 
 Java 25 reference implementation of OGBS Data: Single/Group caches, asynchronous batch write-behind, MySQL/JDBC, MongoDB, and append-only MySQL logs.
 
+Caffeine 3.2.3 is supplied transitively by `game-core`; Data owns its caches and their lifecycle. Shared dependency ownership is defined in the [Core Java development specification](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责).
+
 - [Semantic specification](../docs/ogbs/OGBS-Data-1.0.md)
 - [Java development specification, defaults, and boundaries](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md)
 - DataMemoryDemo is not in this repository; see [DataContractTest](src/test/java/cn/managame/data/DataContractTest.java) for in-memory Mapper usage.

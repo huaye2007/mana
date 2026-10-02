@@ -12,7 +12,7 @@ Status: Java 25 reference implementation, Maven `cn.managame:game-data:1.0.0-SNA
 
 ## 1. Module and public entry points
 
-One game-data artifact contains Repository, Caffeine caching, write-back, MySQL/JDBC, MongoDB adaptation, and logs. Dependencies: game-core, Caffeine 3.2.3; MongoDB Sync Driver 5.5.1 is optional and must be explicitly included by Mongo applications. JDBC uses standard DataSource without selecting a pool; applications supply the MySQL JDBC Driver.
+One game-data artifact contains Repository, Caffeine caching, write-back, MySQL/JDBC, MongoDB adaptation, and logs. Dependencies: game-core, with shared Caffeine supplied transitively as defined in the [Core Java specification](OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责); MongoDB Sync Driver 5.5.1 is optional and must be explicitly included by Mongo applications. JDBC uses standard DataSource without selecting a pool; applications supply the MySQL JDBC Driver.
 
 | Package | Responsibility |
 | --- | --- |

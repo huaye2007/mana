@@ -2,7 +2,7 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-共享 Metadata 和框架错误码的 Java 25 实现，Maven 坐标为 cn.managame:game-core。
+共享 Metadata 和框架错误码的 Java 25 实现，Maven 坐标为 cn.managame:game-core。同时为消费组件统一发布 Caffeine 依赖；版本和所有权边界见 [Core Java 规范](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责)。
 
 ## 规范文档
 

@@ -91,7 +91,7 @@ flowchart LR
     R --> A
 ```
 
-箭头由被依赖组件指向使用方。当前根构建包含 Core、Runtime、Data、Network、RPC 和 [game-example](../../game-example/README.zh-CN.md)。game-example 中的 Network/Runtime HTTP/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。自动 RPC→Runtime 接入与 Data 示例尚未实现。Runtime 为 HTTP 入口依赖 Network，支持显式 GET query/其他方法 JSON RouteKey 字段或提取方法，可选应用 HTTP Context 补充，以及返回响应或回调响应。Network 负责传输生命周期及发送，普通消息编解码/回复与 RPC 接入仍由应用负责。详见 [Runtime HTTP 语义](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 和 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
+箭头由被依赖组件指向使用方。game-core 统一发布共享 Caffeine Java 依赖，由消费组件传递引入；缓存生命周期仍由各使用组件规范定义。当前根构建包含 Core、Runtime、Data、Network、RPC 和 [game-example](../../game-example/README.zh-CN.md)。game-example 中的 Network/Runtime HTTP/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。自动 RPC→Runtime 接入与 Data 示例尚未实现。Runtime 为 HTTP 入口依赖 Network，支持显式 GET query/其他方法 JSON RouteKey 字段或提取方法，可选应用 HTTP Context 补充，以及返回响应或回调响应。Network 负责传输生命周期及发送，普通消息编解码/回复与 RPC 接入仍由应用负责。详见 [Runtime HTTP 语义](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 和 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 ## 版本与验证边界
 

@@ -8,7 +8,7 @@
 
 ## 1. 模块与职责
 
-Maven 坐标为 cn.managame:game-core:1.0.0-SNAPSHOT，要求 JDK 25，无 preview 特性。公开类型位于 cn.managame.core；不依赖 Network、Runtime、Data、RPC 或第三方运行库，不创建线程和外部资源。
+Maven 坐标为 cn.managame:game-core:1.0.0-SNAPSHOT，要求 JDK 25，无 preview 特性。公开类型位于 cn.managame.core；不依赖 Network、Runtime、Data、RPC。game-core 以普通 compile 依赖统一发布 `com.github.ben-manes.caffeine:caffeine:3.2.3`，Runtime 和 Data 通过 Core 传递引入，不单独声明版本；见 [Core POM](../../game-core/pom.xml)。Core 的 Metadata/错误码 API 不创建缓存、线程或外部资源。缓存使用方负责各自组件的配置和生命周期；Java 依赖调整不新增 Core 缓存包装 API，也不改变共享 Metadata/错误码语义。
 
 公开类型包括 Metadata、MetadataKey、MetadataCodec、MetadataBuilder、MetadataKeys、Metadatas、FrameworkErrorCodes。Metadatas 的编码容器及 Builder 实现保持内部封装，不因语言分层额外拆出 Maven artifact。
 

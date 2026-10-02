@@ -6,7 +6,8 @@ import java.lang.annotation.*;
 @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD)
 public @interface HttpMethod {
     String value();
-    String method() default "GET";
+    /** Endpoint method; defaults to POST. GET must be selected explicitly. */
+    HttpRequestMethod method() default HttpRequestMethod.POST;
     int domain() default 0;
     /** Exact query field for GET, otherwise a top-level JSON body field; empty inherits the class rule. */
     String routeKey() default "";
