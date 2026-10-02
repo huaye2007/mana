@@ -20,7 +20,9 @@ final class MysqlEntityMeta {
         if (annotation == null) throw new IllegalArgumentException("@Table required: " + entity.entityType());
         table = SqlNames.identifier(annotation.name());
         Set<Field> identity = entity.identityFields().stream().map(FieldAccessor::field).collect(Collectors.toSet());
-        fields = fields(entity.fields(), identity, json, binary);
+        boolean typedJson = entity.fields().stream().anyMatch(f -> f.isAnnotationPresent(Column.class)
+                && f.getAnnotation(Column.class).type() == ColumnType.JSON && f.getType() != String.class);
+        fields = fields(entity.fields(), identity, json, binary, typedJson ? entity.create() : null);
         Map<Field,MysqlFieldMeta> byField = new HashMap<>();
         fields.forEach(f -> byField.put(f.accessor.field(), f));
         for (Field f : identity) if (!byField.containsKey(f)) throw new IllegalArgumentException("Identity requires @Column: " + f);
@@ -47,8 +49,11 @@ final class MysqlEntityMeta {
         };
     }
     static List<MysqlFieldMeta> fields(List<Field> source, Set<Field> identity, JsonCodec json, BinaryCodec binary) {
+        return fields(source, identity, json, binary, null);
+    }
+    private static List<MysqlFieldMeta> fields(List<Field> source, Set<Field> identity, JsonCodec json, BinaryCodec binary, Object prototype) {
         List<MysqlFieldMeta> result = source.stream().filter(f -> f.isAnnotationPresent(Column.class))
-                .map(f -> new MysqlFieldMeta(f, identity.contains(f), json, binary)).toList();
+                .map(f -> new MysqlFieldMeta(f, identity.contains(f), json, binary, prototype)).toList();
         Set<String> names = new HashSet<>();
         for (var field : result) if (!names.add(field.name.toLowerCase(Locale.ROOT)))
             throw new IllegalArgumentException("Duplicate column: " + field.name);

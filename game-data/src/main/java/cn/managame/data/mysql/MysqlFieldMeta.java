@@ -15,6 +15,9 @@ final class MysqlFieldMeta {
     private final Reader reader;
 
     MysqlFieldMeta(Field field, boolean identity, JsonCodec json, BinaryCodec binary) {
+        this(field, identity, json, binary, null);
+    }
+    MysqlFieldMeta(Field field, boolean identity, JsonCodec json, BinaryCodec binary, Object prototype) {
         accessor = new FieldAccessor(field); this.identity = identity;
         Column column = field.getAnnotation(Column.class);
         name = SqlNames.identifier(column.name().isEmpty() ? SqlNames.snake(field.getName()) : column.name());
@@ -25,9 +28,12 @@ final class MysqlFieldMeta {
                 sqlType = "JSON";
                 if (t == String.class) { encoder = v -> v; reader = ResultSet::getString; }
                 else {
-                    if (json == null) throw new IllegalArgumentException("JsonCodec required: " + field);
+                    if (json == null) json = JsonCodec.defaultCodec();
                     encoder = json::encode;
-                    reader = (r, i) -> { String value = r.getString(i); return value == null ? null : json.decode(value, accessor.genericType()); };
+                    Object initialized = prototype == null ? null : accessor.get(prototype);
+                    var decoder = java.util.Objects.requireNonNull(json.decoder(accessor.genericType(),
+                            initialized == null ? null : initialized.getClass()), "JSON field decoder");
+                    reader = (r, i) -> { String value = r.getString(i); return value == null ? null : decoder.apply(value); };
                 }
             }
             case BINARY -> {

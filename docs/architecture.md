@@ -8,6 +8,10 @@ The architecture follows the repository's OGBS standards and Java development sp
 
 See the [OGBS 1.0 documentation index](ogbs/README.md) for component clauses and Java development specifications. This document describes composition; component documents and current source define specific interfaces and boundaries.
 
+## Application skeleton
+
+[game-demo](../game-demo/README.md) is a plain Spring application inheriting the repository's Java 25 baseline. It defines no new framework component. GameDemo initializes the Spring context; MysqlConfig owns the Hikari DataSource, passes it to GameDataBuilder.mysql(source), and exposes the initialized Repository returned by GameData as a Spring bean. Data closes before its application-owned pool through Bean dependencies; no second uninitialized Repository is component-scanned. Existing runnable component examples remain in game-example. Spring dependency management is local to game-demo; framework modules retain their existing dependency boundaries.
+
 <a id="network--rpc-包边界"></a>
 
 ## Network / RPC package boundaries
@@ -68,7 +72,7 @@ start/close run only in management contexts. Shutdown immediately rejects new wo
 
 Route identity is the complete domain + key, not a worker/thread/executor. key=0 is invalid; other 64-bit values are usable. Domain is an application-defined positive integer.
 
-The default platform-thread executor hashes the complete Route into stripes, each with a single thread and bounded queue; different Routes may share a stripe. The virtual-thread executor pins active FIFO mailboxes in a ConcurrentHashMap per complete Route and caches only fully idle mailboxes in Caffeine for bounded reuse (default 60 seconds, cache maximum equal to task capacity). Per-Key atomic map operations coordinate activation/draining without an executor-wide monitor. Caffeine arrives transitively through game-core and uses shared system expiration scheduling. Both isolate task exceptions and provide nonblocking admission.
+The default platform-thread executor hashes the complete Route into stripes, each with a single thread and bounded queue; different Routes may share a stripe. The virtual-thread executor pins active FIFO mailboxes in a ConcurrentHashMap per complete Route and caches only fully idle mailboxes in Caffeine for bounded reuse (default 60 seconds, cache maximum equal to task capacity). Per-Key atomic map operations coordinate activation/draining without an executor-wide monitor. Caffeine arrives transitively through game-core and uses default passive maintenance, with no expiry scheduler. Expired mailboxes cannot be reused, while physical reclamation may wait for subsequent cache activity. Both isolate task exceptions and provide nonblocking admission.
 
 Runtime implements same-route inline execution; the Executor SPI is Context-unaware. Nested same-Route work runs first and restores the outer Context on return. Different Runtime instances do not inline even when domain/key match.
 
@@ -124,7 +128,7 @@ game-data depends on game-core and uses annotation/key/meta/mapper/codec/error/m
 
 Data does not depend on Runtime or RPC; applications may access it serially on existing Routes. Cache misses in get/getGroup synchronously access storage, so callers must account for database latency on Route execution threads. Same-Route ordering does not give background serializers an atomic multi-field snapshot; applications still own entity visibility.
 
-GameDataBuilder validates repositories, identities, and mappings, initializes state schemas, then starts one persistence pipeline. Applications own DataSource/MongoClient. GameData.close stops only its own scheduler, synchronously drains write-behind/logs, and throws DataSaveException on final persistence failure. Stop business entry points and await admitted business work before closing GameData, then close database clients.
+GameDataBuilder validates repositories, identities, and mappings, initializes state schemas, then starts one persistence pipeline. Applications own DataSource/MongoClient. GameDataBuilder.mysql(DataSource) assembles the default JDBC Access/Mapper; default JSON initialization binds declared generics and concrete state initializer classes, with optional codec overrides as defined in [Data Java §6.2](ogbs/OGBS-Data-Java-25-Specification-1.0.md#default-json-field-binding). GameData.close stops only its own scheduler, synchronously drains write-behind/logs, and throws DataSaveException on final persistence failure. Stop business entry points and await admitted business work before closing GameData, then close database clients.
 
 Data uses two buffers and a fixed 100ms grace period, accepting unusually long thread-pause risk; it has no WAL or capacity backpressure. See the [Data Java Development Specification](ogbs/OGBS-Data-Java-25-Specification-1.0.md) for unverified production/live-database boundaries, [Data Specification](ogbs/OGBS-Data-1.0.md) for general behavior, and [Core](ogbs/OGBS-Core-1.0.md) for shared persistence error codes.
 

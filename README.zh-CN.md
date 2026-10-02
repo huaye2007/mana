@@ -14,6 +14,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
 | [game-example](game-example/README.zh-CN.md) | Network、Runtime HTTP、RPC 可运行示例与示例执行测试 |
+| [game-demo](game-demo/README.zh-CN.md) | Spring 应用，显式装配 MySQL DataSource 与 Data Repository |
 
 依赖方向：
 
@@ -53,7 +54,7 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data、game-example。独立可运行示例及其执行测试统一放在 game-example 的 `cn.managame.example.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-example -am test 验证示例。RPC→Runtime 集成和 DataMemoryDemo 尚未实现。
+当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data、game-example、game-demo。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-example 的 `cn.managame.example.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-example -am test 验证示例。RPC→Runtime 集成和 DataMemoryDemo 尚未实现。
 
 在 IDE 运行 [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 

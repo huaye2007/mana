@@ -25,6 +25,8 @@ mvn clean verify
 
 业务 Repository 直接继承 SingleRepository<K,E> / GroupRepository<K,E> / LogRepository<E>。使用 GameDataBuilder 注册 Class，build 后通过 GameData.repository 获取。Group 修改前先 getGroup；单 MapKey 使用字段类型，多 MapKey 使用 String 与 MapKeys.of。关闭 GameData 同步处理已接纳写入，并报告最终保存失败。
 
+MySQL 可通过 `GameDataBuilder.builder().mysql(dataSource).repositories(PlayerRepository.class).build()` 接收应用 DataSource，内部装配 Access 和 Mapper。JDBC Driver 和连接池配置仍由应用负责。JSON 列默认按字段完整类型及非 null 状态初始化实现绑定，例如 ConcurrentHashMap<Integer,Long>，不要求手动注册类型。需要覆盖时使用 `jsonCodec(...)`，也可保留显式 Mapper 构造以接入自定义 backend。详见 [JSON 类型绑定与边界](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding) 和 [MysqlBuilderTest](src/test/java/cn/managame/data/MysqlBuilderTest.java)。
+
 MySQL 使用应用提供的 DataSource/JDBC Driver；Mongo 使用应用提供的 MongoDatabase/CodecRegistry。框架不会关闭这些外部资源。Mongo driver 在 game-data 中为 optional，消费方使用 Mongo 时需显式声明 org.mongodb:mongodb-driver-sync。
 
 ## 实机测试
@@ -41,4 +43,4 @@ mvn -pl game-data -am test "-Dtest=DatabaseIntegrationTest" -Dsurefire.failIfNoS
 
 MySQL 使用专门的可丢弃测试数据库：测试创建并删除 ogbs_data_probe 表，检测到已有同名表会拒绝运行。Mongo 创建随机 ogbs_data_test_* 数据库并在结束后删除。不要指向生产库。
 
-本次根目录 `mvn clean verify` 已通过；game-data 的 38 项本地测试通过，2 项实机测试按环境条件跳过。H2、映射桩和 BSON 测试已通过；真实 MySQL/MongoDB 测试因未配置对应环境变量而跳过。固定 100ms 双缓冲宽限期接受超长线程停顿风险，缓存 TTL 必须远大于写回延迟；这些约束及重试部分成功风险见 Java 开发规范 文档。
+最新 `mvn -pl game-data -am clean verify` 已通过；game-data 的 45 项本地测试通过，2 项实机测试按环境条件跳过。根目录 `mvn clean verify` 仍被既有 RPC 测试引用已删除 API 的编译错误阻断。H2、映射桩和 BSON 测试已通过；真实 MySQL/MongoDB 测试因未配置对应环境变量而跳过。固定 100ms 双缓冲宽限期接受超长线程停顿风险，缓存 TTL 必须远大于写回延迟；这些约束及重试部分成功风险见 Java 开发规范 文档。

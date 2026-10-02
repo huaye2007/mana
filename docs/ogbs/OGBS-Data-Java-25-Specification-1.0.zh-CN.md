@@ -10,14 +10,14 @@
 
 ## 1. 模块与公共入口
 
-一个 game-data artifact 内包含 Repository、Caffeine 缓存、写回、MySQL/JDBC、MongoDB 适配和日志。依赖 game-core，并按 [Core Java 规范](OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责) 传递引入共享 Caffeine；MongoDB Sync Driver 5.5.1 是 optional 依赖，使用 Mongo 的应用需显式添加。JDBC 依赖标准 DataSource，不绑定连接池；应用提供 MySQL JDBC Driver。
+一个 game-data artifact 内包含 Repository、Caffeine 缓存、写回、MySQL/JDBC、MongoDB 适配和日志。依赖 game-core，并按 [Core Java 规范](OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责) 传递引入共享 Caffeine；MongoDB Sync Driver 5.5.1 是 optional 依赖，使用 Mongo 的应用需显式添加。JDBC 接收应用提供的 DataSource，不绑定连接池；应用提供 MySQL JDBC Driver。默认 JSON 编解码依赖 Jackson Databind 2.21.3，与 Runtime 使用相同版本。
 
 | 包 | 职责 |
 | --- | --- |
 | cn.managame.data | GameData、GameDataBuilder、三种 Repository；包级 PendingBuffer/WriteBehindManager |
 | annotation / key | 身份字段注解、GroupKey、MapKeys |
 | meta / mapper | 面向存储 SPI 的身份元数据、VarHandle 字段访问、EntityMapper |
-| codec / error | JSON/BINARY 编码接口、异常、失败上下文、重试及错误回调 |
+| codec / error | JSON/BINARY 编码接口、内部默认 Jackson 编解码、异常、失败上下文、重试及错误回调 |
 | mysql | SQL 注解、MysqlAccess、JdbcMysqlAccess、MysqlEntityMapper、日志映射 |
 | mongo | BSON 注解、MongoAccess、DriverMongoAccess、MongoEntityMapper |
 
@@ -93,11 +93,10 @@ Group.getGroup 先验证 GroupKey 的分量数量和类型，再加载整组。L
 ## 3. 构建与生命周期
 
 ```java
-MysqlAccess access = new JdbcMysqlAccess(dataSource);
-MysqlEntityMapper mapper = new MysqlEntityMapper(access, jsonCodec, binaryCodec);
 try (GameData data = GameDataBuilder.builder()
-        .repositories(mapper, PlayerRepository.class, TaskRepository.class)
-        .logRepositories(access, ActionLogRepository.class)
+        .mysql(dataSource)
+        .repositories(PlayerRepository.class, TaskRepository.class)
+        .logRepositories(ActionLogRepository.class)
         .cacheExpire(Duration.ofMinutes(30))
         .flushInterval(Duration.ofSeconds(1))
         .batchSize(500)
@@ -109,7 +108,7 @@ try (GameData data = GameDataBuilder.builder()
 }
 ```
 
-示例中的 DataSource、业务类、codec 和失败归档/重试函数由应用提供。DataMemoryDemo 尚未落入当前仓库；无需外部数据库的内存 Mapper/Repository 用法见 [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java)。
+DataSource、业务类和失败归档/重试函数由应用提供；常见 JSON 字段不需要配置 codec。只有希望改变默认格式或具体类型构造行为时才实现 JsonCodec。DataMemoryDemo 尚未落入当前仓库；无需外部数据库的内存 Mapper/Repository 用法见 [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java)。
 
 | 配置 | 默认 | 校验/含义 |
 | --- | --- | --- |
@@ -120,9 +119,12 @@ try (GameData data = GameDataBuilder.builder()
 | retryPolicy | 总是 false | 默认执行一次，无内建 SQLState/Mongo 错误分类 |
 | errorHandler | System.Logger | 最终失败诊断；业务负责归档失败数据 |
 | partitionZone | UTC | 显式 ZoneId，可配置 Asia/Shanghai |
-| logCodecs(json,binary) | 均为 null | 日志复杂字段编码；状态字段 codec 在 MysqlEntityMapper 构造时传入 |
+| mysql(DataSource) | 未配置 | 借用 DataSource，为无 backend 参数的 Repository 注册建立 JdbcMysqlAccess/MysqlEntityMapper |
+| jsonCodec(JsonCodec) | 默认 Jackson | 无 backend 参数的 MySQL 状态及未覆盖的日志；null 拒绝 |
+| binaryCodec(BinaryCodec) | 无 | 同上；复杂 BINARY 仍需提供 codec，null 拒绝 |
+| logCodecs(json,binary) | 继承上述配置 | 只覆盖日志；显式 null JSON 使用默认值，null Binary 表示无 codec |
 
-repositories/logRepositories 也接受 List<Class<?>>。先校验 Repository 泛型、身份元数据和日志映射；随后状态 Mapper.initialize 编译各自存储映射并执行 Schema 初始化，再装配缓存并启动一个保存线程。Schema DDL 不承诺整体回滚，后续初始化失败时此前新增字段/表可能已存在；不会因此接管/关闭应用资源。
+repositories/logRepositories 也接受 List<Class<?>>。不带 backend 的注册在 build 时解析到 mysql(DataSource)，因此设置与注册顺序无关；缺少 DataSource 时 build 抛 IllegalArgumentException，mysql(null) 抛 NullPointerException。mysql 多次设置时使用最后的 DataSource，不创建或接管连接池。原 repositories(EntityMapper,...) 和 logRepositories(MysqlAccess,...) 保留，显式 backend 不受 mysql 配置影响；显式 Mapper 的 codec 仍由其构造参数控制。先校验 Repository 泛型、身份元数据和日志映射；随后状态 Mapper.initialize 编译各自存储映射并执行 Schema 初始化，再装配缓存并启动一个保存线程。Schema DDL 不承诺整体回滚，后续初始化失败时此前新增字段/表可能已存在；不会因此接管/关闭应用资源。
 
 GameData 只关闭自己的调度资源，不关闭 DataSource、MongoClient 或外部 Mapper。close 可同步等待数据库操作；不要从 Mapper、RetryPolicy、DataErrorHandler 回调内调用 close，框架同步拒绝以避免死锁。关闭后所有 Repository 访问均拒绝。
 
@@ -269,7 +271,7 @@ Table.name 必填，只有 @Column 字段持久化，身份字段缺少 @Column 
 | char / String | CHAR(1) / VARCHAR(255) | '' |
 | byte[] | BLOB | 无 |
 
-包装类型相同映射；primitive 与身份列 NOT NULL，其余可 null。读取 SQL NULL 到 primitive 报加载错误。TEXT 仅 String；JSON 的 String 是原始 JSON 文本，其他类型需要 JsonCodec；BINARY 的 byte[] 原样传递，其他类型需要 BinaryCodec。null 不调用 codec。DEFAULT 不接受复杂对象。
+包装类型相同映射；primitive 与身份列 NOT NULL，其余可 null。读取 SQL NULL 到 primitive 报加载错误。TEXT 仅 String；JSON 的 String 是原始 JSON 文本，其他类型自动使用默认 JsonCodec，传入自定义 codec 可覆盖；BINARY 的 byte[] 原样传递，其他类型需要 BinaryCodec。null 不调用 codec。DEFAULT 不接受复杂对象。
 
 `Column.defaultValue` 为受信任的 SQL 表达式，原样用于 DDL、不自动加引号。JSON/BINARY/TEXT 不自动推断默认值。JsonCodec/BinaryCodec 的 decode 接收 java.lang.reflect.Type 并返回 Object，保留 List<Item> 等泛型信息。
 
@@ -299,6 +301,18 @@ JdbcMysqlAccess 是数据库访问边界，不负责 Repository 变更合并和�
 Schema 初始化属于保守增量维护：发现缺表/缺列/显式索引时补齐，发现明显冲突则失败。不支持的迁移由部署工具负责；不能因初始化成功就推断已有 VARCHAR 长度、默认值或 nullable 均与 Java 声明完全一致。
 
 
+<a id="default-json-field-binding"></a>
+
+### 6.2 默认 JSON 字段类型绑定
+
+JsonCodec.defaultCodec() 返回配置固定的共享默认 Jackson codec。JsonCodec.decoder(Type) 在初始化时绑定解码器；decoder(Type, Class<?> initializedType) 还接收状态字段初始实现类，或 null。已有只实现 encode/decode 的自定义 codec 通过默认方法保持源码兼容，可覆盖任一 decoder 方法决定表示。MysqlEntityMapper(access) 和 null JSON codec 自动使用默认值，日志映射也相同。logCodecs 只覆盖日志；jsonCodec/binaryCodec 配置 Builder 的隐式 MySQL Mapper 及未覆盖的日志默认值。
+
+包含非 String JSON 列的状态映射会在初始化时调用一次实体无参构造，读取字段初始化结果。默认解码按完整字段 Type 与非 null 初始实现类特化 Jackson JavaType，每个字段复用一个 ObjectReader。Map<Integer,Long> 初始化为 new ConcurrentHashMap<>() 时，加载后仍为 ConcurrentHashMap<Integer,Long>；ArrayList/LinkedHashSet 初始化实现同样保留。原型及其可变字段值不会保留为已加载实体或共享集合默认值。构造与初始化代码应稳定，不能获取外部资源。仅顶层持久化 JSON 字段提供初始化实现类，不递归发现任意运行期子类型。日志映射不构造原型，不要求日志无参构造。
+
+初始值为 null 时使用声明 Type 和 Jackson 通常的容器实现。raw/擦除类型无法恢复缺失泛型。默认 codec 可读取私有字段；普通 POJO/record 与嵌套声明集合按 Jackson 构造规则支持。JDK 内部不可变包装、抽象类、特殊构造及应用特定多态可能需要自定义 codec。默认解码检查初始化类型，发生实现替换时明确拒绝，不静默更换；不承诺保持任意对象身份或集合比较器/配置。非法输入和多余 JSON token 抛带原因的 IllegalArgumentException，Repository 加载包装为 DataLoadException 且不建立负缓存；编码失败走既有保存/重试/错误处理流程。SQL null 不调用 codec，String JSON 原样传递。默认不启用类型自动识别。JSON 格式迁移及既有存储兼容由应用负责。
+
+源码及验证：[MysqlFieldMeta](../../game-data/src/main/java/cn/managame/data/mysql/MysqlFieldMeta.java)、[MysqlMappingTest](../../game-data/src/test/java/cn/managame/data/mysql/MysqlMappingTest.java)、[MysqlBuilderTest](../../game-data/src/test/java/cn/managame/data/MysqlBuilderTest.java)。测试覆盖启动字段绑定、泛型数字键/值、初始化容器类型、嵌套私有对象、自定义覆盖、DataSource 借用关闭、写入/日志以及修正非法 JSON 后重新加载。Builder 测试用 H2 适配 MySQL 元数据查询，并以 CLOB 保存 JSON，验证框架行为，不代表真实 MySQL JSON/DDL 集成验证。\
+\
 ## 7. MongoDB 映射
 
 Collection.name 必填，只有 @Field 持久化。普通字段名默认 snake_case；Id 固定 _id，配置成其他名字初始化失败。只接受简单 ASCII 存储名称。MongoIndex.fields 使用数据库字段名，全部升序；不支持 TTL/text/geo/partial 等高级索引。

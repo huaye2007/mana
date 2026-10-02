@@ -12,14 +12,14 @@ Status: Java 25 reference implementation, Maven `cn.managame:game-data:1.0.0-SNA
 
 ## 1. Module and public entry points
 
-One game-data artifact contains Repository, Caffeine caching, write-back, MySQL/JDBC, MongoDB adaptation, and logs. Dependencies: game-core, with shared Caffeine supplied transitively as defined in the [Core Java specification](OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责); MongoDB Sync Driver 5.5.1 is optional and must be explicitly included by Mongo applications. JDBC uses standard DataSource without selecting a pool; applications supply the MySQL JDBC Driver.
+One game-data artifact contains Repository, Caffeine caching, write-back, MySQL/JDBC, MongoDB adaptation, and logs. Dependencies: game-core, with shared Caffeine supplied transitively as defined in the [Core Java specification](OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责); MongoDB Sync Driver 5.5.1 is optional and must be explicitly included by Mongo applications. JDBC accepts an application-provided DataSource without selecting a pool; applications supply the MySQL JDBC Driver. Default JSON encoding depends on Jackson Databind 2.21.3, matching Runtime's version.
 
 | Package | Responsibility |
 | --- | --- |
 | cn.managame.data | GameData, GameDataBuilder, three repositories; package-private PendingBuffer/WriteBehindManager |
 | annotation / key | Identity annotations, GroupKey, MapKeys |
 | meta / mapper | Storage-SPI identity metadata, VarHandle access, EntityMapper |
-| codec / error | JSON/BINARY interfaces, exceptions, failure context, retries/error callbacks |
+| codec / error | JSON/BINARY interfaces, internal default Jackson codec, exceptions, failure context, retries/error callbacks |
 | mysql | SQL annotations, MysqlAccess, JdbcMysqlAccess, MysqlEntityMapper, log mapping |
 | mongo | BSON annotations, MongoAccess, DriverMongoAccess, MongoEntityMapper |
 
@@ -100,11 +100,10 @@ Record before cache mutation so invalid merges cannot replace the cached referen
 ## 3. Build and lifecycle
 
 ```java
-MysqlAccess access = new JdbcMysqlAccess(dataSource);
-MysqlEntityMapper mapper = new MysqlEntityMapper(access, jsonCodec, binaryCodec);
 try (GameData data = GameDataBuilder.builder()
-        .repositories(mapper, PlayerRepository.class, TaskRepository.class)
-        .logRepositories(access, ActionLogRepository.class)
+        .mysql(dataSource)
+        .repositories(PlayerRepository.class, TaskRepository.class)
+        .logRepositories(ActionLogRepository.class)
         .cacheExpire(Duration.ofMinutes(30))
         .flushInterval(Duration.ofSeconds(1))
         .batchSize(500)
@@ -116,7 +115,7 @@ try (GameData data = GameDataBuilder.builder()
 }
 ```
 
-Applications provide DataSource, business classes, codecs, and archive/retry functions. DataMemoryDemo is not in the repository; database-free Mapper/Repository usage is in [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
+Applications provide DataSource, business classes, and archive/retry functions; ordinary JSON fields require no codec configuration. Implement JsonCodec only when replacing default formatting or type construction. DataMemoryDemo is not in the repository; database-free Mapper/Repository usage is in [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
 
 | Configuration | Default | Validation/meaning |
 | --- | --- | --- |
@@ -127,9 +126,12 @@ Applications provide DataSource, business classes, codecs, and archive/retry fun
 | retryPolicy | Always false | One execution by default; no built-in SQLState/Mongo classification |
 | errorHandler | System.Logger | Final-failure diagnostics; application archives failed data |
 | partitionZone | UTC | Explicit ZoneId; configurable, e.g. Asia/Shanghai |
-| logCodecs(json,binary) | Both null | Complex log-field codecs; state codecs supplied to MysqlEntityMapper |
+| mysql(DataSource) | Unconfigured | Borrows the DataSource; assembles JdbcMysqlAccess/MysqlEntityMapper for backend-free Repository registration |
+| jsonCodec(JsonCodec) | Default Jackson | Implicit MySQL state and logs without a log-specific override; null rejected |
+| binaryCodec(BinaryCodec) | None | Same scope; complex BINARY still requires a codec, null rejected |
+| logCodecs(json,binary) | Inherit the above | Overrides logs only; explicit null JSON selects default, null Binary means no codec |
 
-repositories/logRepositories also accept List<Class<?>>. Validate repository generics, identity metadata, and log mapping first; state Mapper.initialize then compiles backend mappings and initializes Schema; assemble caches and start one persistence thread. Schema DDL has no aggregate rollback: earlier additions may survive later initialization failure. External resources are not taken over or closed.
+repositories/logRepositories also accept List<Class<?>>. Backend-free registrations resolve mysql(DataSource) at build, independent of setter/registration order. Missing DataSource rejects build with IllegalArgumentException; mysql(null) throws NullPointerException. Repeated mysql configuration uses the last DataSource without creating or owning a pool. Existing repositories(EntityMapper,...) and logRepositories(MysqlAccess,...) remain available and ignore the default MySQL configuration; explicit Mappers retain their constructor-supplied codecs. Validate repository generics, identity metadata, and log mapping first; state Mapper.initialize then compiles backend mappings and initializes Schema; assemble caches and start one persistence thread. Schema DDL has no aggregate rollback: earlier additions may survive later initialization failure. External resources are not taken over or closed.
 
 GameData closes only its scheduler, not DataSource, MongoClient, or external Mapper. close may wait on database operations. Calling it from Mapper, RetryPolicy, or DataErrorHandler callbacks is synchronously rejected to avoid deadlock. All Repository access rejects after closure.
 
@@ -291,7 +293,7 @@ Table.name is required. Only @Column persists; missing it on identity fields fai
 | char / String | CHAR(1) / VARCHAR(255) | '' |
 | byte[] | BLOB | None |
 
-Wrappers map identically. Primitives/identity columns are NOT NULL; others nullable. SQL NULL into primitive is a load error. TEXT accepts only String. JSON String is raw JSON; other types require JsonCodec. BINARY byte[] passes through; other types require BinaryCodec. Null bypasses codecs. DEFAULT rejects complex objects.
+Wrappers map identically. Primitives/identity columns are NOT NULL; others nullable. SQL NULL into primitive is a load error. TEXT accepts only String. JSON String is raw JSON; other types automatically use the default JsonCodec, replaceable with a custom codec. BINARY byte[] passes through; other types require BinaryCodec. Null bypasses codecs. DEFAULT rejects complex objects.
 
 `Column.defaultValue` is a trusted raw SQL DDL expression without automatic quoting. JSON/BINARY/TEXT infer no defaults. JsonCodec/BinaryCodec.decode receives java.lang.reflect.Type and returns Object, preserving generics such as List<Item>.
 
@@ -321,6 +323,18 @@ Initialization fixes column order, VarHandles, value encoders, SQL templates, an
 JdbcMysqlAccess is the database boundary, not coalescing/retry policy. Do not retain MysqlTransaction for asynchronous work; it is thread/scope-bound. Transactions cover their callback, not all flush work or multiple repositories automatically.
 
 Schema maintenance conservatively adds missing tables/columns/explicit indexes and rejects obvious conflicts. Deployment tools handle unsupported migrations. Successful initialization does not prove existing VARCHAR lengths/defaults/nullable exactly match Java declarations.
+
+<a id="default-json-field-binding"></a>
+
+### 6.2 Default JSON field type binding
+
+JsonCodec.defaultCodec() returns the shared, immutable default Jackson configuration. JsonCodec.decoder(Type) binds a decoder during initialization; decoder(Type, Class<?> initializedType) additionally receives the state initializer's implementation class, or null. Existing custom codecs implementing encode/decode remain source compatible through default methods; they may override either decoder method and decide their representation. MysqlEntityMapper(access) and a null JSON codec use the default, as do log mappings. logCodecs overrides only logs; jsonCodec/binaryCodec configure the Builder's implicit MySQL Mapper and inherited log defaults.
+
+For state mappings containing non-String JSON columns, initialization constructs one temporary entity using its no-argument constructor and observes those field values. Default decoding specializes Jackson's JavaType from the complete field Type and non-null initializer class, then reuses an ObjectReader per field. Map<Integer,Long> initialized with new ConcurrentHashMap<>() therefore remains ConcurrentHashMap<Integer,Long>; ArrayList/LinkedHashSet initializers are similarly preserved. The prototype and its mutable values are not retained as loaded entities or shared collection defaults. Constructors and initializers must be deterministic and must not acquire external resources. Only top-level mapped JSON fields provide initializer classes; this is not recursive runtime subtype discovery. Log mapping constructs no prototype and does not require a no-arg log constructor.
+
+Null initial values use the declared Type and Jackson's normal container implementation. Erased/raw types cannot recover missing generics. Private fields are visible to the default codec; ordinary POJOs/records and nested declared collections are supported according to Jackson's constructors. JDK internal immutable wrappers, abstract classes, unusual constructors, and application-specific polymorphism may require custom codecs. Default decoding checks the initializer type and rejects a substituted implementation rather than silently changing it. It does not preserve arbitrary object identity or collection comparator/configuration beyond the type. Malformed input and trailing JSON tokens throw IllegalArgumentException with the cause; Repository load wraps it as DataLoadException without negative caching. Encoding failures use the existing save/retry/error path. SQL null bypasses the codec; String JSON remains raw text. Default typing is not enabled. JSON migration and existing stored payload compatibility remain the application's responsibility.
+
+Source and validation: [MysqlFieldMeta](../../game-data/src/main/java/cn/managame/data/mysql/MysqlFieldMeta.java), [MysqlMappingTest](../../game-data/src/test/java/cn/managame/data/mysql/MysqlMappingTest.java), and [MysqlBuilderTest](../../game-data/src/test/java/cn/managame/data/MysqlBuilderTest.java). Tests cover startup field binding, generic numeric keys/values, initializer container types, nested private objects, custom override, borrowed DataSource closure, writes/logs, and retrying a load after invalid JSON is corrected. H2 adapts MySQL metadata and stores JSON as CLOB in Builder tests; this verifies framework behavior, not native MySQL JSON/DDL integration.
 
 <a id="7-mongodb-映射"></a>
 

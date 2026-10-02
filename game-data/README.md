@@ -27,6 +27,8 @@ mvn clean verify
 
 Business repositories directly extend SingleRepository<K,E> / GroupRepository<K,E> / LogRepository<E>. Register Class objects with GameDataBuilder and obtain them through GameData.repository after build. Call getGroup before modifying a Group. A single MapKey uses its field type; multiple MapKeys use String and MapKeys.of. GameData.close synchronously processes admitted writes and reports final persistence failures.
 
+MySQL accepts an application-supplied DataSource through `GameDataBuilder.builder().mysql(dataSource).repositories(PlayerRepository.class).build()`, internally assembling Access and Mapper. JDBC Driver and pool configuration remain application responsibilities. JSON columns use default Jackson field-type binding, including a non-null state initializer's implementation (for example ConcurrentHashMap<Integer,Long>), without manual type registration. Use `jsonCodec(...)` to override or retain explicit Mapper constructors for custom backends. See [JSON binding and limits](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md#default-json-field-binding) and [MysqlBuilderTest](src/test/java/cn/managame/data/MysqlBuilderTest.java).
+
 MySQL uses application-supplied DataSource/JDBC Driver; Mongo uses application-supplied MongoDatabase/CodecRegistry. The framework does not close these external resources. The Mongo driver is optional in game-data; consumers using Mongo must explicitly declare org.mongodb:mongodb-driver-sync.
 
 <a id="实机测试"></a>
@@ -45,4 +47,4 @@ mvn -pl game-data -am test "-Dtest=DatabaseIntegrationTest" -Dsurefire.failIfNoS
 
 Use a dedicated disposable MySQL test database. The test creates and drops ogbs_data_probe and refuses to run if it already exists. Mongo creates a random ogbs_data_test_* database and drops it afterward. Do not use production databases.
 
-The recorded root `mvn clean verify` passed: game-data's 38 local tests passed and 2 live tests were skipped according to environment conditions. H2, mapping-stub, and BSON tests passed; real MySQL/MongoDB tests were skipped because their environment variables were not configured. The fixed 100ms double-buffer grace period accepts unusually long thread-pause risk; cache TTL must be much longer than write-behind latency. See the Java specification for these constraints and partial-success retry risks.
+The latest `mvn -pl game-data -am clean verify` passed: 45 local Data tests passed and 2 live tests were skipped according to environment conditions. Root `mvn clean verify` remains blocked by existing RPC tests referring to removed APIs. H2, mapping-stub, and BSON tests passed; real MySQL/MongoDB tests were skipped because their environment variables were not configured. The fixed 100ms double-buffer grace period accepts unusually long thread-pause risk; cache TTL must be much longer than write-behind latency. See the Java specification for these constraints and partial-success retry risks.

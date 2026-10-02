@@ -64,19 +64,35 @@ class VirtualThreadRouteExecutorTest {
         }
     }
 
-    @Test void automaticExpiryPreservesRunningWorkAndNeedsNoFurtherSubmissions() throws Exception {
+    @Test void expiredIdleMailboxIsNotReusedOnNextSubmission() throws Exception {
+        var time = new AtomicLong();
+        try (var executor = new VirtualThreadRouteExecutor(2, Duration.ofMinutes(1), time::get)) {
+            var first = new CountDownLatch(1);
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, first::countDown));
+            assertTrue(first.await(5, TimeUnit.SECONDS)); Object original = awaitCached(executor);
+            // No explicit cleanup: activation must reject the expired cached mailbox.
+            time.set(TimeUnit.MINUTES.toNanos(1));
+            var second = new CountDownLatch(1);
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, second::countDown));
+            assertTrue(second.await(5, TimeUnit.SECONDS)); assertNotSame(original, awaitCached(executor));
+        }
+    }
+
+    @Test void idleExpiryPreservesRunningWorkAndQueuedOrder() throws Exception {
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var done = new CountDownLatch(2);
-        var order = new CopyOnWriteArrayList<Integer>();
-        try (var executor = new VirtualThreadRouteExecutor(2, Duration.ofMillis(20))) {
+        var order = new CopyOnWriteArrayList<Integer>(); var time = new AtomicLong();
+        try (var executor = new VirtualThreadRouteExecutor(2, Duration.ofMinutes(1), time::get)) {
             try {
                 executor.tryExecute(1, 42, () -> {
                     entered.countDown(); awaitRelease(release); order.add(1); done.countDown();
                 });
-                assertTrue(entered.await(5, TimeUnit.SECONDS)); Thread.sleep(80);
+                assertTrue(entered.await(5, TimeUnit.SECONDS)); time.set(TimeUnit.MINUTES.toNanos(2));
+                idle(executor).cleanUp();
                 assertEquals(1, active(executor).size()); assertEquals(0, idle(executor).estimatedSize());
                 assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, () -> { order.add(2); done.countDown(); }));
-                release.countDown(); assertTrue(done.await(5, TimeUnit.SECONDS)); awaitEmpty(executor);
+                release.countDown(); assertTrue(done.await(5, TimeUnit.SECONDS)); awaitCached(executor);
                 assertEquals(List.of(1, 2), order);
+                time.addAndGet(TimeUnit.MINUTES.toNanos(1)); idle(executor).cleanUp(); awaitEmpty(executor);
             } finally { release.countDown(); }
         }
     }

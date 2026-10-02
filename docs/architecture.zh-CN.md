@@ -6,6 +6,10 @@
 
 分组件条款及 Java 开发规范 见 [OGBS 1.0 文档索引](ogbs/README.zh-CN.md)。本文保留组合视角，具体接口与边界以对应组件文档及当前源码为准。
 
+## 应用骨架
+
+[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context；MysqlConfig 持有 Hikari DataSource，传给 GameDataBuilder.mysql(source)，并将 GameData 返回的已初始化 Repository 暴露为 Spring Bean。Bean 依赖保证 Data 先于应用连接池关闭，不再扫描创建第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。Spring 依赖管理仅在 game-demo 内配置，框架模块保持既有依赖边界。
+
 ## Network / RPC 包边界
 
 Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖 game-network 和 game-core，已实现内部 TCP 与多 Slot 通信。Network 按 connection、connector、error、netty 及独立 http 包组织，直接使用 Netty AttributeKey；RPC 按 node、message、call、transport、error、netty 分包。
@@ -59,7 +63,7 @@ start/close 只在管理上下文执行；关闭立即拒绝新工作，并等�
 
 Route identity 是完整的 domain + key，不是 worker/thread/executor。key=0 无效，其他 64 位值可用。Domain 为用户定义的正整数。
 
-默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 在 ConcurrentHashMap 持有活跃 FIFO mailbox，仅把完全空闲的 mailbox 放入 Caffeine 有界复用（默认 60 秒，缓存最大条数等于任务容量）。按 Key 的原子 Map 操作协调激活/排空，不使用执行器全局监视器。Caffeine 从 game-core 传递引入，使用共享系统过期调度。两种实现均隔离任务异常并提供非阻塞 admission。
+默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 在 ConcurrentHashMap 持有活跃 FIFO mailbox，仅把完全空闲的 mailbox 放入 Caffeine 有界复用（默认 60 秒，缓存最大条数等于任务容量）。按 Key 的原子 Map 操作协调激活/排空，不使用执行器全局监视器。Caffeine 从 game-core 传递引入，使用默认被动维护，不配置过期调度器。过期 mailbox 不可复用，物理回收可等待后续缓存访问。两种实现均隔离任务异常并提供非阻塞 admission。
 
 Runtime 负责 same-route inline，Executor SPI 不感知 Context。同 Route 嵌套先执行内层任务，内层返回后恢复外层 Context。不同 Runtime 实例即使 domain/key 相同也不 inline。
 
@@ -111,7 +115,7 @@ game-data 依赖 game-core，按 annotation/key/meta/mapper/codec/error/mysql/mo
 
 Data 不依赖 Runtime 或 RPC；应用可在已有 Route 上串行业务访问。get/getGroup 缓存未命中会同步访问存储，调用方需考虑 Route 执行线程上的数据库延迟。同 Route 的顺序不意味着后台序列化线程看到了多字段原子快照；实体并发可见性仍需应用保证。
 
-GameDataBuilder 校验 Repository/身份及映射、执行状态 Schema 初始化，再启动一条保存流水线。DataSource、MongoClient 由应用持有；GameData.close 只停止自己的调度并同步排空写回/日志，最终保存失败抛 DataSaveException。停服先停止业务入口并等待已接纳业务，再关闭 GameData，最后关闭数据库客户端。
+GameDataBuilder 校验 Repository/身份及映射、执行状态 Schema 初始化，再启动一条保存流水线。DataSource、MongoClient 由应用持有；GameDataBuilder.mysql(DataSource) 装配默认 JDBC Access/Mapper，默认 JSON 初始化绑定声明泛型和状态初始化实现类，可覆盖 codec，具体约定见 [Data Java §6.2](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding)；GameData.close 只停止自己的调度并同步排空写回/日志，最终保存失败抛 DataSaveException。停服先停止业务入口并等待已接纳业务，再关闭 GameData，最后关闭数据库客户端。
 
 Data 采用两个缓冲与固定 100ms 宽限期，接受超长线程停顿风险；没有 WAL 或容量背压。所有未验证的生产及实机边界见 [Data Java 开发规范](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。通用行为见 [Data Specification](ogbs/OGBS-Data-1.0.zh-CN.md)，共享保存错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
 

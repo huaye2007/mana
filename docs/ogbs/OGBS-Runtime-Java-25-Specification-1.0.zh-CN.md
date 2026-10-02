@@ -345,11 +345,11 @@ VirtualThreadRouteExecutor(capacity=100) 则计算所有 Route 的未完成任�
 
 消费者完成最后一个动作并发现无排队任务时，在同一 Key 操作中先把空 Mailbox 交给 Caffeine，再移除活跃映射。下次激活原子取走缓存 Mailbox，或创建新 Mailbox，并启动唯一虚拟线程消费者。任务异常记录日志，finally 释放容量并继续排空。消费者启动失败会移除新任务、回滚容量预留，然后传播失败。
 
-Caffeine 从 game-core 传递引入，依赖及版本归属见 [Core Java 规范](OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责)。私有缓存使用 maximumSize(capacity)、expireAfterWrite(idleTimeout)、单调经过时间和 Scheduler.systemScheduler()。每次重新进入空闲都重置期限。到期/容量淘汰只丧失复用机会，不丢失活跃任务。调度维护有节流，物理清理可能更晚，不提供精确释放截止时间。系统调度和 Caffeine 默认维护执行器为共享资源；Runtime 不为每个执行器创建过期线程，维护不执行业务动作。GameTime 调整不影响空闲时间。
+Caffeine 从 game-core 传递引入，依赖及版本归属见 [Core Java 规范](OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责)。私有缓存使用 maximumSize(capacity)、expireAfterWrite(idleTimeout) 和单调经过时间，采用 Caffeine 默认被动维护，不配置 Scheduler。每次重新进入空闲都重置期限。即使尚未物理回收，激活时也不能取到已过期 Mailbox。后续缓存写入及部分读取触发维护，使用 Caffeine 默认执行器；Runtime 不增加过期定时器或清理线程，维护不执行业务动作。没有后续缓存访问时，过期条目可能继续占用内存，直到后续维护或关闭，不承诺释放截止时间。例如停止流量后 Mailbox 过期，下一次向该 Route 提交会创建新 Mailbox，而不会复用过期实例。到期/容量淘汰只丧失复用机会，不丢失活跃任务。GameTime 调整不影响空闲时间。
 
 一个 AtomicLong 同时保存关闭位和全部任务预留，包括等待 Key 协调或消费者启动的提交、排队及执行中任务。容量 CAS 与关闭是原子的：关闭前预留成功的提交可完成接纳并执行，后续提交返回 CLOSED。close 不等待业务完成，会清空空闲缓存，确保晚到空闲写入不会在关闭后保留，并让已接纳活跃工作排空，最终空 Mailbox 不再缓存。
 
-已确认取舍是保留有界空闲缓存，避免短请求波次间反复创建队列，并把活跃队列单独持有，防止缓存策略破坏 RT-ROUTE-02/03。独立空闲条数配置需有实际需求再增加；生产吞吐和 GC 容量尚未压测。源码：[VirtualThreadRouteExecutor](../../game-runtime/src/main/java/cn/managame/runtime/executor/VirtualThreadRouteExecutor.java)。验证：[VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java) 覆盖期限重置、无新流量时自动清理、长任务、容量淘汰、异常恢复、过期/提交并发、原子容量及关闭/排空；[RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) 覆盖执行器公共契约。
+已确认取舍是保留有界空闲缓存，避免短请求波次间反复创建队列，并把活跃队列单独持有，防止缓存策略破坏 RT-ROUTE-02/03。独立空闲条数配置需有实际需求再增加；生产吞吐和 GC 容量尚未压测。源码：[VirtualThreadRouteExecutor](../../game-runtime/src/main/java/cn/managame/runtime/executor/VirtualThreadRouteExecutor.java)。验证：[VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java) 覆盖期限重置、后续提交不复用过期 Mailbox、长任务、容量淘汰、异常恢复、过期/提交并发、原子容量及关闭/排空；[RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) 覆盖执行器公共契约。
 
 
 ## 8. 跨 Route 调用与回调

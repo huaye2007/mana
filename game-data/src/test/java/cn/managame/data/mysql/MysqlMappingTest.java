@@ -97,7 +97,7 @@ class MysqlMappingTest {
             public Object decode(String value,Type type) { types.add(type); return List.of("x"); }
         };
         var meta = new EntityMeta(Complex.class,EntityMeta.Kind.SINGLE);
-        assertThrows(IllegalArgumentException.class, () -> new MysqlEntityMeta(meta,null,null));
+        assertDoesNotThrow(() -> new MysqlEntityMeta(meta,null,null));
         var mapping = new MysqlEntityMeta(meta,json,null);
         var value = new Complex(); value.id=1; value.data=List.of("x"); value.raw="{\"a\":1}"; value.bytes=new byte[]{1,2};
         var args = MysqlEntityMeta.arguments(mapping.fields,value);
@@ -110,5 +110,33 @@ class MysqlMappingTest {
         row(r -> { field.read(value,r,1); return null; },"[\"x\"]");
         assertInstanceOf(ParameterizedType.class,types.getFirst());
         assertEquals(String.class,((ParameterizedType)types.getFirst()).getActualTypeArguments()[0]);
+    }
+
+    static class Role { private long id; private List<Integer> levels; }
+    @Table(name="json_users")
+    static class JsonUser extends Base {
+        @Column(type=ColumnType.JSON) private Map<Integer,Long> serverRoleIdMap = new java.util.concurrent.ConcurrentHashMap<>();
+        @Column(type=ColumnType.JSON) private Map<Long,List<Role>> roles;
+        @Column(type=ColumnType.JSON) private List<Long> ids = new ArrayList<>();
+        @Column(type=ColumnType.JSON) private Set<Integer> levels = new LinkedHashSet<>();
+    }
+    @Test void defaultJsonBindsMapKeysValuesAndNestedPrivateObjectsAtInitialization() {
+        var mapping = new MysqlEntityMeta(new EntityMeta(JsonUser.class,EntityMeta.Kind.SINGLE),null,null);
+        var original = new JsonUser(); original.id=1; original.serverRoleIdMap=Map.of(2,3L);
+        var role = new Role(); role.id=4; role.levels=List.of(5,6); original.roles=Map.of(7L,List.of(role));
+        original.ids.add(8L); original.levels.add(9);
+        var loaded = new JsonUser();
+        for (var field : mapping.fields) if (!field.identity)
+            row(r -> { field.read(loaded,r,1); return null; },field.encode(original));
+        assertEquals(Map.of(2,3L),loaded.serverRoleIdMap);
+        assertInstanceOf(java.util.concurrent.ConcurrentHashMap.class,loaded.serverRoleIdMap);
+        assertInstanceOf(Integer.class,loaded.serverRoleIdMap.keySet().iterator().next());
+        assertInstanceOf(Long.class,loaded.serverRoleIdMap.get(2));
+        Role decoded=loaded.roles.get(7L).getFirst(); assertEquals(4,decoded.id); assertEquals(List.of(5,6),decoded.levels);
+        assertInstanceOf(ArrayList.class,loaded.ids); assertEquals(List.of(8L),loaded.ids);
+        assertInstanceOf(LinkedHashSet.class,loaded.levels); assertEquals(Set.of(9),loaded.levels);
+        var field=mapping.fields.stream().filter(f->f.name.equals("server_role_id_map")).findFirst().orElseThrow();
+        assertThrows(IllegalArgumentException.class,()->row(r->{ field.read(loaded,r,1); return null; },"{broken"));
+        assertThrows(IllegalArgumentException.class,()->row(r->{ field.read(loaded,r,1); return null; },"{} {}"));
     }
 }

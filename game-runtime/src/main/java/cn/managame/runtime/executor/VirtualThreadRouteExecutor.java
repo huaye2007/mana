@@ -2,7 +2,6 @@ package cn.managame.runtime.executor;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.Scheduler;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Objects;
@@ -35,7 +34,7 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
         if (idleNanos <= 0) throw new IllegalArgumentException("idleTimeout must be positive");
         this.capacity = capacity;
         idleMailboxes = Caffeine.newBuilder().maximumSize(capacity).expireAfterWrite(idleNanos, TimeUnit.NANOSECONDS)
-                .ticker(ticker::getAsLong).scheduler(Scheduler.systemScheduler()).build();
+                .ticker(ticker::getAsLong).build();
     }
 
     public RouteExecuteStatus tryExecute(int domain, long key, Runnable task) {

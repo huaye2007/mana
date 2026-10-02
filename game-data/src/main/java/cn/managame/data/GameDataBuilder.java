@@ -8,6 +8,7 @@ import cn.managame.data.mysql.*;
 import java.lang.reflect.*;
 import java.time.*;
 import java.util.*;
+import javax.sql.DataSource;
 
 public final class GameDataBuilder {
     private record Binding(Object backend, Class<?> type, boolean log) {}
@@ -18,11 +19,26 @@ public final class GameDataBuilder {
     private ZoneId partitionZone = ZoneOffset.UTC;
     private JsonCodec jsonCodec;
     private BinaryCodec binaryCodec;
+    private JsonCodec logJsonCodec;
+    private BinaryCodec logBinaryCodec;
+    private boolean logCodecsConfigured;
+    private DataSource mysqlSource;
     private DataErrorHandler errorHandler = f -> System.getLogger("cn.managame.data")
             .log(System.Logger.Level.ERROR, f.operation() + " failed for " + f.entityType(), f.cause());
     private RetryPolicy retryPolicy = f -> false;
     private GameDataBuilder() {}
     public static GameDataBuilder builder() { return new GameDataBuilder(); }
+    public GameDataBuilder mysql(DataSource source) { mysqlSource = Objects.requireNonNull(source); return this; }
+    public GameDataBuilder repositories(List<Class<?>> types) {
+        for (Class<?> type : types) bindings.add(new Binding(null, type, false)); return this;
+    }
+    public GameDataBuilder repositories(Class<?>... types) { return repositories(List.of(types)); }
+    public GameDataBuilder logRepositories(List<Class<?>> types) {
+        for (Class<?> type : types) bindings.add(new Binding(null, type, true)); return this;
+    }
+    public GameDataBuilder logRepositories(Class<?>... types) { return logRepositories(List.of(types)); }
+    public GameDataBuilder jsonCodec(JsonCodec value) { jsonCodec = Objects.requireNonNull(value); return this; }
+    public GameDataBuilder binaryCodec(BinaryCodec value) { binaryCodec = Objects.requireNonNull(value); return this; }
     public GameDataBuilder repositories(EntityMapper mapper, List<Class<?>> types) {
         Objects.requireNonNull(mapper); for (Class<?> type : types) bindings.add(new Binding(mapper, type, false)); return this;
     }
@@ -38,7 +54,9 @@ public final class GameDataBuilder {
     public GameDataBuilder retryPolicy(RetryPolicy value) { retryPolicy = Objects.requireNonNull(value); return this; }
     public GameDataBuilder errorHandler(DataErrorHandler value) { errorHandler = Objects.requireNonNull(value); return this; }
     public GameDataBuilder partitionZone(ZoneId value) { partitionZone = Objects.requireNonNull(value); return this; }
-    public GameDataBuilder logCodecs(JsonCodec json, BinaryCodec binary) { jsonCodec = json; binaryCodec = binary; return this; }
+    public GameDataBuilder logCodecs(JsonCodec json, BinaryCodec binary) {
+        logJsonCodec = json; logBinaryCodec = binary; logCodecsConfigured = true; return this;
+    }
     private static Duration positive(Duration value) {
         if (value.isNegative() || value.isZero()) throw new IllegalArgumentException("Duration must be positive");
         value.toNanos(); return value;
@@ -49,7 +67,14 @@ public final class GameDataBuilder {
         Map<EntityMeta,EntityMapper> mappers = new LinkedHashMap<>();
         Set<Class<?>> stateTypes = new HashSet<>();
         List<Prepared> prepared = new ArrayList<>();
-        for (Binding binding : bindings) {
+        MysqlAccess mysqlAccess = mysqlSource == null ? null : new JdbcMysqlAccess(mysqlSource);
+        EntityMapper mysqlMapper = mysqlAccess == null ? null : new MysqlEntityMapper(mysqlAccess, jsonCodec, binaryCodec);
+        for (Binding configured : bindings) {
+            Binding binding = configured;
+            if (binding.backend() == null) {
+                if (mysqlAccess == null) throw new IllegalArgumentException("mysql(DataSource) required for implicit repository bindings");
+                binding = new Binding(binding.log() ? mysqlAccess : mysqlMapper, binding.type(), binding.log());
+            }
             Class<?> type = Objects.requireNonNull(binding.type());
             if (!(type.getGenericSuperclass() instanceof ParameterizedType parent))
                 throw new IllegalArgumentException("Repository must directly extend a parameterized repository base: " + type);
@@ -64,7 +89,9 @@ public final class GameDataBuilder {
             if (repositories.putIfAbsent(type, repository) != null) throw new IllegalArgumentException("Duplicate repository: " + type);
             if (binding.log()) {
                 prepared.add(new Prepared(binding, repository, null,
-                        new MysqlLogWriter(entity, (MysqlAccess) binding.backend(), jsonCodec, binaryCodec, partitionZone)));
+                        new MysqlLogWriter(entity, (MysqlAccess) binding.backend(),
+                                logCodecsConfigured ? logJsonCodec : jsonCodec,
+                                logCodecsConfigured ? logBinaryCodec : binaryCodec, partitionZone)));
             } else {
                 if (!stateTypes.add(entity)) throw new IllegalArgumentException("Duplicate state entity registration: " + entity);
                 EntityMeta meta = new EntityMeta(entity, single ? EntityMeta.Kind.SINGLE : EntityMeta.Kind.GROUP);

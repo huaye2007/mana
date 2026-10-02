@@ -61,7 +61,7 @@ SystemCron 是应用定义的 Cron 类。cancel 停止后续周期；reschedule 
 
 ## 虚拟线程 Route 队列
 
-ConcurrentHashMap 持有活跃队列，按完整 Domain/Key 串行业务，不使用执行器全局 synchronized 监视器。只有完全执行结束的空队列进入 Caffeine 空闲缓存，默认复用 60 秒，保留条数上限等于任务容量。可用 `new VirtualThreadRouteExecutor(65_536, Duration.ofMinutes(2))` 配置其他期限。容量压力可提前淘汰空闲队列，不淘汰活跃工作。过期使用共享系统调度，无新流量也会维护，不保证物理清理精确截止时间。Caffeine 由 game-core 提供。详见 [完整默认值与生命周期](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#route-mailbox-lifecycle) 和 [行为测试](src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java)。
+ConcurrentHashMap 持有活跃队列，按完整 Domain/Key 串行业务，不使用执行器全局 synchronized 监视器。只有完全执行结束的空队列进入 Caffeine 空闲缓存，默认复用 60 秒，保留条数上限等于任务容量。可用 `new VirtualThreadRouteExecutor(65_536, Duration.ofMinutes(2))` 配置其他期限。容量压力可提前淘汰空闲队列，不淘汰活跃工作。过期采用 Caffeine 默认被动维护，由后续写入及部分读取触发。过期队列不可复用；没有后续缓存访问时，物理移除可延迟到后续维护或关闭。不配置过期调度器。Caffeine 由 game-core 提供。详见 [完整默认值与生命周期](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#route-mailbox-lifecycle) 和 [行为测试](src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java)。
 
 ## 文档与验证
 
