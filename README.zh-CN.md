@@ -14,7 +14,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
 | [game-example](game-example/README.zh-CN.md) | Network、Runtime HTTP、RPC 可运行示例与示例执行测试 |
-| [game-demo](game-demo/README.zh-CN.md) | Spring 应用，显式装配 MySQL DataSource 与 Data Repository |
+| [game-demo](game-demo/README.zh-CN.md) | Spring 应用，装配 MySQL Data Repository 与 GamePacket TCP 回传监听器 |
 
 依赖方向：
 

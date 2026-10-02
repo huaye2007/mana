@@ -14,7 +14,7 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | game-runtime | Route execution, Context, Handler, HTTP annotations/dispatch, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
 | [game-example](game-example/README.md) | Runnable Network, Runtime HTTP, and RPC examples and their execution tests |
-| [game-demo](game-demo/README.md) | Spring application with explicit MySQL DataSource and Data repository wiring |
+| [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories and a GamePacket TCP echo listener |
 
 Dependency direction:
 
