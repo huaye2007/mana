@@ -20,6 +20,13 @@ import cn.managame.runtime.route.RouteDomain;
 import cn.managame.runtime.route.RouteKeyBinding;
 import cn.managame.runtime.time.GameTime;
 import cn.managame.runtime.timer.Cron;
+import cn.managame.runtime.http.HttpHandler;
+import cn.managame.runtime.http.HttpMethod;
+import cn.managame.runtime.http.HttpContext;
+import cn.managame.runtime.http.HttpContextFactory;
+import cn.managame.runtime.http.DefaultHttpContext;
+import cn.managame.runtime.http.HttpResultCodec;
+import io.netty.handler.codec.http.FullHttpRequest;
 
 import java.lang.invoke.*;
 import java.lang.reflect.*;
@@ -32,6 +39,7 @@ public final class RuntimeCompiler {
     public static GameRuntime build(List<RouteDomain> domains, List<RouteExecutorBinding> executors,
             List<ProtocolProvider> providers, List<RouteKeyBinding<?>> keys,
             List<Object> handlers, List<Object> events, List<Object> crons,
+            List<Object> httpHandlers, HttpContextFactory httpContexts, HttpResultCodec httpResults,
             ZoneId cronZone, RuntimeErrorHandler errors) {
         Set<Integer> ids = new HashSet<>();
         for (var d : domains) if (!ids.add(d.id())) throw invalid("Duplicate domain " + d.id());
@@ -101,19 +109,93 @@ public final class RuntimeCompiler {
             if (!cronKeys.add(cronKey)) throw invalid("Duplicate cron " + cronKey);
             compiledCrons.add(new CronBinding(cronKey, cron.domain(), cron.routeKey(), schedule, bind(target, m)));
         }
+        Map<HttpEndpoint, HttpBinding> compiledHttp = compileHttp(httpHandlers, ids);
+        if (httpContexts == null && compiledHttp.values().stream().anyMatch(binding -> binding.routeKey() == null))
+            throw invalid("HTTP endpoints without a RouteKey rule require httpContextFactory");
+        if (httpContexts == null && compiledHttp.values().stream().anyMatch(binding -> binding.contextType() != null
+                && !binding.contextType().isAssignableFrom(DefaultHttpContext.class)))
+            throw invalid("Custom HTTP contexts require httpContextFactory");
         return new DefaultGameRuntime(Map.copyOf(routes), registry, Map.copyOf(routeKeys),
-            Map.copyOf(compiled), Map.copyOf(compiledEvents), List.copyOf(compiledCrons), errors);
+            Map.copyOf(compiled), Map.copyOf(compiledEvents), List.copyOf(compiledCrons),
+            Map.copyOf(compiledHttp), httpContexts, httpResults, errors);
+    }
+
+    private static Map<HttpEndpoint, HttpBinding> compileHttp(List<Object> handlers, Set<Integer> domains) {
+        Map<HttpEndpoint, HttpBinding> bindings = new HashMap<>();
+        for (Object target : handlers) {
+            HttpHandler owner = target.getClass().getAnnotation(HttpHandler.class);
+            if (owner == null) throw invalid("Missing @HttpHandler: " + target.getClass());
+            validateHttpKey(owner.routeKey(), owner.routeKeyMethod());
+            for (Method method : methods(target)) {
+                HttpMethod entry = method.getAnnotation(HttpMethod.class);
+                if (entry == null) continue;
+                validateHttp(method);
+                validateHttpKey(entry.routeKey(), entry.routeKeyMethod());
+                boolean overrideKey = !entry.routeKey().isEmpty() || !entry.routeKeyMethod().isEmpty();
+                HttpRouteKey key = compileHttpKey(target, overrideKey ? entry.routeKey() : owner.routeKey(),
+                        overrideKey ? entry.routeKeyMethod() : owner.routeKeyMethod());
+                int domain = entry.domain() != 0 ? entry.domain() : owner.domain();
+                if (!domains.contains(domain)) throw invalid("Unregistered HTTP domain: " + method);
+                String path = entry.value(), verb = entry.method();
+                if (!path.startsWith("/") || path.indexOf('?') >= 0 || path.indexOf('#') >= 0
+                        || path.chars().anyMatch(c -> c <= 32 || c == 127)) throw invalid("Invalid HTTP path: " + method);
+                io.netty.handler.codec.http.HttpMethod.valueOf(verb); // Validate native HTTP token syntax.
+                if (!verb.equals(verb.toUpperCase(Locale.ROOT)) || verb.equals("CONNECT")) throw invalid("Invalid HTTP method: " + method);
+                Class<?> contextType = null;
+                boolean requestSeen = false;
+                int[] arguments = new int[method.getParameterCount()];
+                for (int i = 0; i < arguments.length; i++) {
+                    Class<?> type = method.getParameterTypes()[i];
+                    if (type == FullHttpRequest.class && !requestSeen) { requestSeen = true; arguments[i] = 1; }
+                    else if (contextType == null && Context.class.isAssignableFrom(type)
+                            && (type.isAssignableFrom(HttpContext.class) || HttpContext.class.isAssignableFrom(type))) {
+                        contextType = type; arguments[i] = 0;
+                    } else throw invalid("Invalid HTTP parameters: " + method);
+                }
+                MethodHandle handle = bind(target, method);
+                boolean returnsResult = method.getReturnType() != void.class;
+                if (!returnsResult) handle = MethodHandles.filterReturnValue(handle, MethodHandles.constant(Object.class, null));
+                handle = handle.asType(MethodType.genericMethodType(arguments.length));
+                handle = MethodHandles.permuteArguments(handle, MethodType.methodType(Object.class, Object.class, Object.class), arguments);
+                if (bindings.putIfAbsent(new HttpEndpoint(verb, path), new HttpBinding(domain, contextType, returnsResult, handle, key)) != null)
+                    throw invalid("Duplicate HTTP method/path: " + verb + " " + path);
+            }
+        }
+        return bindings;
+    }
+    private static void validateHttpKey(String field, String method) {
+        if ((!field.isEmpty() && field.isBlank()) || (!method.isEmpty() && method.isBlank())
+                || (!field.isEmpty() && !method.isEmpty())) throw invalid("HTTP RouteKey requires one field or method");
+    }
+    private static HttpRouteKey compileHttpKey(Object target, String field, String name) {
+        if (!field.isEmpty()) return HttpRouteKey.field(field);
+        if (name.isEmpty()) return null;
+        try {
+            Method method = target.getClass().getMethod(name, FullHttpRequest.class);
+            if (Modifier.isStatic(method.getModifiers()) || method.isVarArgs()
+                    || (method.getReturnType() != long.class && method.getReturnType() != Long.class))
+                throw invalid("Expected public instance long/Long RouteKey method: " + method);
+            MethodHandle handle = bind(target, method).asType(MethodType.methodType(long.class, Object.class));
+            return request -> (long) handle.invokeExact((Object) request);
+        } catch (NoSuchMethodException cause) { throw invalid("Missing public HTTP RouteKey method: " + name); }
     }
     private static Set<Method> methods(Object target) {
         // Detect invalid private/static annotated methods instead of silently ignoring them.
         for (Class<?> type = target.getClass(); type != Object.class; type = type.getSuperclass())
             for (Method m : type.getDeclaredMethods())
                 if (m.isAnnotationPresent(HandlerMethod.class) || m.isAnnotationPresent(EventMethod.class) || m.isAnnotationPresent(Cron.class)) validate(m);
+                else if (m.isAnnotationPresent(HttpMethod.class)) validateHttp(m);
         return new LinkedHashSet<>(Arrays.asList(target.getClass().getMethods()));
     }
     private static void validate(Method m) {
         if (!Modifier.isPublic(m.getModifiers()) || Modifier.isStatic(m.getModifiers()) || m.getReturnType() != void.class || m.isVarArgs())
             throw invalid("Expected public instance void method: " + m);
+    }
+    private static void validateHttp(Method m) {
+        if (!Modifier.isPublic(m.getModifiers()) || Modifier.isStatic(m.getModifiers()) || m.isVarArgs()
+                || (m.getReturnType().isPrimitive() && m.getReturnType() != void.class)
+                || io.netty.handler.codec.http.HttpObject.class.isAssignableFrom(m.getReturnType()))
+            throw invalid("Expected public instance HTTP method returning void or a business object: " + m);
     }
     private static MethodHandle bind(Object target, Method method) {
         try { return MethodHandles.privateLookupIn(method.getDeclaringClass(), MethodHandles.lookup()).unreflect(method).bindTo(target); }
@@ -122,6 +204,10 @@ public final class RuntimeCompiler {
     private static IllegalArgumentException invalid(String message) { return new IllegalArgumentException(message); }
     record HandlerBinding(int domain, Class<?> contextType, MethodHandle handle) {
         void invoke(Object context, Object message) throws Throwable { handle.invokeExact(context, message); }
+    }
+    record HttpEndpoint(String method, String path) {}
+    record HttpBinding(int domain, Class<?> contextType, boolean returnsResult, MethodHandle handle, HttpRouteKey routeKey) {
+        Object invoke(Object context, Object request) throws Throwable { return handle.invokeExact(context, request); }
     }
     record EventBinding(int order, MethodHandle handle) {
         void invoke(Object event) throws Throwable { handle.invokeExact(event); }

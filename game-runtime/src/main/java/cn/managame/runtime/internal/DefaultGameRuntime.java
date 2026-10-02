@@ -21,6 +21,9 @@ import cn.managame.runtime.route.RouteKeyBinding;
 import cn.managame.runtime.route.RouteKeyRegistry;
 import cn.managame.runtime.timer.CronScheduler;
 import cn.managame.runtime.timer.RuntimeTimer;
+import cn.managame.runtime.http.HttpDispatcher;
+import cn.managame.runtime.http.HttpContextFactory;
+import cn.managame.runtime.http.HttpResultCodec;
 
 import cn.managame.core.*;
 import static cn.managame.core.FrameworkErrorCodes.*;
@@ -37,11 +40,16 @@ final class DefaultGameRuntime implements GameRuntime {
     private final RuntimeErrorHandler errors;
     private final RuntimeTimers timers;
     private final DefaultCronScheduler crons;
+    private final HttpDispatcher http;
     private final AtomicBoolean closed = new AtomicBoolean();
     DefaultGameRuntime(Map<Integer, RouteExecutor> routes, ProtocolRegistry protocols,
         Map<Class<?>, RouteKeyBinding<?>> keys, Map<Class<?>, HandlerBinding> handlers,
-        Map<Class<?>, List<EventBinding>> events, List<CronBinding> crons, RuntimeErrorHandler errors) {
+        Map<Class<?>, List<EventBinding>> events, List<CronBinding> crons,
+        Map<HttpEndpoint, HttpBinding> httpHandlers, HttpContextFactory httpContexts, HttpResultCodec httpResults, RuntimeErrorHandler errors) {
         this.routes=routes; this.protocols=protocols; this.keys=keys; this.handlers=handlers; this.events=events; this.errors=errors;
+        http = new RuntimeHttp(httpHandlers, httpContexts, httpResults, closed::get,
+                (context, action) -> submit(context, action, false),
+                (context, cause) -> report(RUNTIME_EXECUTION_ERROR, context, cause));
         timers = new RuntimeTimers(this::validate, (context, action) -> submit(context, action, false),
             error -> report(error.errorCode(), error.context(), error.cause()));
         this.crons = new DefaultCronScheduler(crons, timers,
@@ -58,6 +66,7 @@ final class DefaultGameRuntime implements GameRuntime {
     public EventBus eventBus() { return this::publish; }
     public RuntimeTimer timer() { return timers; }
     public CronScheduler cron() { return crons; }
+    public HttpDispatcher http() { return http; }
     private void validate(int domain, long key) {
         if (closed.get()) throw failure(RUNTIME_CLOSED);
         if (!routes.containsKey(domain)) throw failure(ROUTE_DOMAIN_MISMATCH);

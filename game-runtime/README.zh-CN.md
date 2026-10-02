@@ -22,6 +22,7 @@ cn.managame.runtime
 ├── executor                         RouteExecutor SPI、绑定、平台/虚拟线程实现
 ├── protocol                         协议描述、注册及 Req → Res 关联
 ├── handler                          Handler 注解
+├── http                             HTTP 注解、HttpContext、Route 分发器
 ├── event                            本地 Event、EventBus 及注解
 ├── timer                            一次性 Timer、Cron 注解及管理接口
 ├── time                             可替换的业务墙钟 GameTime
@@ -67,3 +68,13 @@ SystemCron 是应用定义的 Cron 类。cancel 停止后续周期；reschedule 
 - RPC / Runtime 完整集成示例尚未实现，当前接入示例见 Java 开发规范。
 
 根目录运行 `mvn -pl game-runtime -am test`；拆包后的完整接入验证运行 `mvn clean verify`。
+
+<a id="runtime-http"></a>
+
+## HTTP 业务入口
+
+`cn.managame.runtime.http` 在 game-runtime artifact 中提供 `@HttpHandler`、`@HttpMethod`、`HttpContext`、`DefaultHttpContext`、`HttpContextFactory`、`HttpResultCallback`、`HttpResultCodec`、`HttpDispatcher`。HttpContext 继承基础 Context，包含 Route、请求及结果回调，不含业务身份/Metadata 字段。依赖 game-network，与 Handler/Event/call 共用 Domain/RouteKey 执行器。
+
+通过 `httpHandlers(...)` 注册实例，在 @HttpHandler/@HttpMethod 设置 `routeKey="playerId"`，GET 从 query 取字段，其他方法从 JSON body 顶层字段提取；方法配置覆盖类规则。也可设置 routeKeyMethod 指向 Handler 提取方法。可选的四参数 `httpContextFactory(domain, key, request, callback)` 保留选定 Key，可增加应用自定义 HTTP Context 字段；无规则时必须提供工厂选 Key。通过 `HttpServer.builder().asyncHandler(runtime.http()::dispatch)` 接入。public 方法返回业务 DTO/对象或 void，延迟完成使用 `context.responseCallback().onResponse(dto)`。Runtime 默认编码 JSON，在内部创建传输响应，业务结果不携带 HTTP 版本；通过 `httpResultCodec(...)` 自定义结果编码。按原始方法/path 精确匹配，不自动绑定请求 DTO 或推导玩家 ID。请求只借用到方法返回；延迟完成响应不会延长请求生命周期。
+
+运行 [RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 查看注解 echo 和跨 Route 延迟响应。详见 [HTTP 语义](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 与 [Java API、失败及所有权](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。

@@ -12,11 +12,11 @@ Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖
 
 目录划分保留包级封装：Network 的 NettyConnection/NetworkChannelInitializer 留在 netty 包内，RPC 的 ConnectionSlot 留在 node 包内。调用方需要更新已迁移类型的 import。具体类型映射见 [Network Java 开发规范](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) 和 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。
 
-游戏服务器内部 HTTP 在 game-network artifact 的 cn.managame.network.http 包中独立实现。HttpServer 自行管理 ServerBootstrap、监听、生命周期和请求/响应管线，不包装 TCP/WS 的 NetworkServer，不使用 Connection/ConnectionHandler。包内公开 HttpServer/HttpServerBuilder，HttpServerTransport 保持包级封装。健康检查、管理操作、路由和序列化由应用负责。初始 Profile 仅支持 HTTP/1.1、完整请求/响应 body、Keep-Alive、可配置请求限制及入站无数据超时。pipeline(...) 在聚合之后、可选兜底之前安装原生 HTTP 扩展（默认兜底为 404），包括应用选择的鉴权、CORS 和压缩。可选外部有序执行器保持同一连接的响应顺序，包括自动协议响应；HTTP 扩展必须共享该有序上下文。不新增客户端、HTTP/2、连接注册表或业务定时器。契约见 [HTTP Profile](ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) 与 [Java 绑定](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。HttpServerExample 位于 game-example 的 cn.managame.example.network，无需新增 Maven 模块或依赖。
+游戏服务器内部 HTTP 在 game-network artifact 的 cn.managame.network.http 包中独立实现。HttpServer 自行管理 ServerBootstrap、监听、生命周期和请求/响应管线，不包装 TCP/WS 的 NetworkServer，不使用 Connection/ConnectionHandler。包内公开 HttpServer/HttpServerBuilder/HttpResponseCallback，HttpServerTransport 保持包级封装。健康检查、管理操作、路由和序列化由应用负责。初始 Profile 仅支持 HTTP/1.1、完整请求/响应 body、Keep-Alive、可配置请求限制及入站无数据超时。pipeline(...) 在聚合之后、可选兜底之前安装原生 HTTP 扩展（默认兜底为 404），包括应用选择的鉴权、CORS 和压缩。同步 handler 与 asyncHandler 回调共享逐连接顺序：等待响应会延迟后续请求处理及自动协议响应，不阻塞传输线程。可选外部有序执行器与 HTTP 扩展共享该上下文；异步使用请求需要独立所有权，晚到/重复回调响应释放。不新增客户端、HTTP/2、连接注册表或业务定时器。契约见 [HTTP Profile](ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) 与 [Java 绑定](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。HttpServerExample 位于 game-example 的 cn.managame.example.network，无需新增 Maven 模块或依赖。
 
 ## Runtime 包边界
 
-根包 `cn.managame.runtime` 只保留 GameRuntime 和 GameRuntimeBuilder。公开 API 按 context、route、executor、protocol、handler、event、timer、time、error 拆分；编译与运行期装配放在 internal。Builder 负责配置收集，RuntimeCompiler 负责注册校验与方法编译，RuntimeTimers 负责一次性延迟，DefaultCronScheduler 负责周期管理。目录与迁移说明见 [game-runtime](../game-runtime/README.zh-CN.md)。
+根包 `cn.managame.runtime` 只保留 GameRuntime 和 GameRuntimeBuilder。公开 API 按 context、route、executor、protocol、handler、http、event、timer、time、error 拆分；编译与运行期装配放在 internal。Builder 负责配置收集，RuntimeCompiler 负责注册校验与方法编译，RuntimeTimers 负责一次性延迟，DefaultCronScheduler 负责周期管理。目录与迁移说明见 [game-runtime](../game-runtime/README.zh-CN.md)。
 
 ## 配置与所有权
 
@@ -40,7 +40,7 @@ write 检查 active/writable 后直接 writeAndFlush；ACCEPTED 转移所有权�
 
 Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常入口 → HTTP/WS handler 与 binary adapter（启用时）→ 用户 codec/handler → ConnectionHandler adapter。NetworkChannelInitializer 装配具体 handler，不使用通用 Transport 接口或 TLS 包装。末端 adapter 直接衔接原生 TLS/WS 完成事件、入口检查与 onConnected，不创建中间就绪/WS Promise 或 PromiseCombiner；Client 仅用原生 Promise 承接建连结果。不保存连接清单，不使用 ChannelGroup 或集合锁；单 Channel 处理将消息交给传入的 ConnectionHandler。TLS context、证书和主机名校验由调用方通过 pipeline(...) 配置，WSS 必须显式配置 TLS；位置与失败规则见 Network Java 规范。
 
-[game-example](../game-example/README.zh-CN.md) 统一收纳独立可运行示例及其执行测试，按 `cn.managame.example.<component>` 分包。Network 的 TCP 示例为 NetworkEchoExample，HTTP/1.1 示例为 HttpServerExample，RPC 双节点示例为 RpcEchoExample。模块依赖 game-network 与 game-rpc；框架模块不反向依赖示例，也不发布示例类。其他组件在有实际示例时再添加依赖。示例是已有契约的应用演示，不是新的框架组件或规范层。自动 RPC→Runtime 接入尚未实现。
+[game-example](../game-example/README.zh-CN.md) 统一收纳独立可运行示例及其执行测试，按 `cn.managame.example.<component>` 分包。Network 的 TCP 示例为 NetworkEchoExample，HTTP/1.1 同步示例为 HttpServerExample，异步回调示例为 HttpAsyncServerExample，RPC 双节点示例为 RpcEchoExample。模块依赖 game-network、game-runtime 与 game-rpc；框架模块不反向依赖示例，也不发布示例类。其他组件在有实际示例时再添加依赖。示例是已有契约的应用演示，不是新的框架组件或规范层。自动 RPC→Runtime 接入尚未实现。
 ## RPC
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
@@ -68,6 +68,7 @@ Contexts 使用 Java 25 ScopedValue，且只在真正执行任务时绑定。无
 | 执行入口 | Context | 继承调用身份与 Metadata |
 | --- | --- | --- |
 | dispatch | 调用方创建的 HandlerContext | 接入方明确提供 |
+| HTTP dispatch | 默认或工厂创建的 HttpContext | 不隐式提供业务身份/Metadata |
 | Event | DefaultEventContext | 从当前同 Runtime InvocationContext 继承 |
 | Timer/Cron | DefaultTimerContext | 不继承 |
 | call action | DefaultRouteCallContext | 从来源 InvocationContext 继承 |
@@ -113,3 +114,11 @@ Data 不依赖 Runtime 或 RPC；应用可在已有 Route 上串行业务访问�
 GameDataBuilder 校验 Repository/身份及映射、执行状态 Schema 初始化，再启动一条保存流水线。DataSource、MongoClient 由应用持有；GameData.close 只停止自己的调度并同步排空写回/日志，最终保存失败抛 DataSaveException。停服先停止业务入口并等待已接纳业务，再关闭 GameData，最后关闭数据库客户端。
 
 Data 采用两个缓冲与固定 100ms 宽限期，接受超长线程停顿风险；没有 WAL 或容量背压。所有未验证的生产及实机边界见 [Data Java 开发规范](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。通用行为见 [Data Specification](ogbs/OGBS-Data-1.0.zh-CN.md)，共享保存错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
+
+<a id="runtime-http-integration"></a>
+
+## Runtime HTTP 组合
+
+game-runtime 依赖 game-core 与 game-network，在已有 artifact 中发布 cn.managame.runtime.http。显式 HttpHandler/HttpMethod 注册编译原始方法/path 查找，显式 RouteKey 字段规则在 GET 读取 query，其他方法读取 JSON body，方法配置覆盖 Handler；也可指定 Handler 方法提取自定义 Key。HttpContextFactory 接收并保留选定 Key，可提供自定义 HTTP Context 字段，不包含框架业务身份/Metadata；无规则时由工厂选 Key。JSON 字段提取与结果编码使用 Jackson Databind 2.21.3 及传递 Core/Annotations。RuntimeHttp 接到 HttpServer.asyncHandler，与普通 Handler/Event/call 使用相同 Route 执行器和上下文路径。返回业务对象自动完成，void 方法通过 HttpResultCallback 提交对象。HttpResultCodec 默认编码 JSON，RuntimeHttp 在内部构造 Network 响应，业务结果不携带 HTTP 版本。不绑定请求 DTO 或鉴权。
+
+Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。跨 Route 回调恢复同一 HttpContext，但不延长请求生命周期。不增加监听器/执行器所有权：应用单独创建、启动、关闭 HttpServer，在关闭 Runtime 前安排在途完成。详见 [Runtime HTTP 语义](ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile)、[Java 绑定](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)、[RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java)。普通消息契约和独立 Network HTTP pipeline 保持原有行为，RPC 接入仍需显式实现/待完善。

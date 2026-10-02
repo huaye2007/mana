@@ -10,13 +10,14 @@
 
 ## 1. 模块与主 API
 
-Maven 坐标为 `cn.managame:game-runtime:1.0.0-SNAPSHOT`，入口包名 `cn.managame.runtime`，按职责分为子包，依赖 `game-core`，要求 Java 25。
+Maven 坐标为 `cn.managame:game-runtime:1.0.0-SNAPSHOT`，入口包名 `cn.managame.runtime`，按职责分为子包，依赖 `game-core`、`game-network` 和用于 HTTP 结果编码与 JSON Key 提取的 Jackson Databind 2.21.3（传递依赖 Core/Annotations），要求 Java 25。HTTP 是该 artifact 内的子包，直接使用 Netty HTTP 类型，不新增 Maven 模块。Runtime 不依赖 RPC。
 
 以下代码块列出接口签名；类型以源码为准。
 
 ```java
 public interface GameRuntime extends AutoCloseable {
     void dispatch(HandlerContext context);
+    HttpDispatcher http();
     <T> void call(int routeDomain, long routeKey,
                   Supplier<T> action, RouteCallback<T> callback);
     EventBus eventBus();
@@ -33,7 +34,7 @@ public interface RouteCallback<T> {
 }
 ```
 
-没有独立 start 阶段、动态注册 API 或公开的任意 Runnable 分发入口。build 成功后可使用；外部网络回调需由接入层构造 HandlerContext 后 dispatch。
+没有独立 start 阶段、动态注册 API 或公开的任意 Runnable 分发入口。build 成功后可使用；普通网络消息需由接入层构造 HandlerContext 后 dispatch。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入，见 [§13](#runtime-http-api)。
 
 公开 API 的包划分：
 
@@ -45,6 +46,7 @@ public interface RouteCallback<T> {
 | cn.managame.runtime.executor | Executor SPI、绑定与官方实现 |
 | cn.managame.runtime.protocol | 协议描述、注册、请求响应关联 |
 | cn.managame.runtime.handler | Handler 注解 |
+| cn.managame.runtime.http | HttpHandler、HttpMethod、HttpDispatcher、HttpContext、DefaultHttpContext、HttpContextFactory、HttpResultCallback、HttpResultCodec |
 | cn.managame.runtime.event | Event、EventBus、事件注解 |
 | cn.managame.runtime.timer | RuntimeTimer、TimerRef、Cron、CronScheduler |
 | cn.managame.runtime.time | GameTime |
@@ -62,6 +64,9 @@ GameRuntimeBuilder.builder()
     .protocols(Iterable<? extends ProtocolProvider>)
     .routeKeys(Iterable<RouteKeyBinding<?>>)
     .handlers(Iterable<?>)
+    .httpHandlers(Iterable<?>)
+    .httpContextFactory(HttpContextFactory)
+    .httpResultCodec(HttpResultCodec)
     .eventHandlers(Iterable<?>)
     .cronHandlers(Iterable<?>)
     .errorHandler(RuntimeErrorHandler)
@@ -73,13 +78,13 @@ GameRuntimeBuilder.builder()
 
 `RouteDomain.of(int id, String name)` 要求 id > 0、name 非 null。`RouteExecutorBinding.of(executor, int... domains)` 必须绑定至少一个 Domain。构建要求每个已注册 Domain 恰好绑定一个 Executor，不允许绑定未知 Domain。
 
-构建时解析注解并编译 MethodHandle；注册表在成功后固定。没有 classpath 扫描，实例由调用方显式提供。注解方法必须 public、实例方法、返回 void、非 varargs。错误配置通常抛出 IllegalArgumentException，null 输入可能抛出 NullPointerException。
+构建时解析注解并编译 MethodHandle；注册表在成功后固定。没有 classpath 扫描，实例由调用方显式提供。Handler/Event/Cron 方法必须 public、实例方法、返回 void、非 varargs；HTTP 方法还可返回普通业务对象，拒绝传输响应类型和基本类型返回声明。错误配置通常抛出 IllegalArgumentException，null 输入可能抛出 NullPointerException。
 
 构建失败不自动关闭调用方提供的 Executor；成功后 Runtime 负责关闭。不要把生命周期独立的 Runtime 绑定到同一个可关闭 Executor，除非明确实现了外部所有权适配。
 
 ### 2.1 构建阶段应完成什么
 
-构建不是把对象列表保存下来等第一次消息再解析。实现需要在返回可用实例前，编译 Domain/Executor 绑定、协议与响应关系、Key 提取器、Handler/Event/Cron 方法和 Cron 表达式。重复或无法解析的定义在启动时拒绝，不能让同一部署因为消息到达顺序不同而选择不同 Handler。
+构建不是把对象列表保存下来等第一次消息再解析。实现需要在返回可用实例前，编译 Domain/Executor 绑定、协议与响应关系、Key 提取器、Handler/Event/Cron 与 HTTP 方法和 Cron 表达式。重复或无法解析的定义在启动时拒绝，不能让同一部署因为消息到达顺序不同而选择不同 Handler。
 
 ```text
 应用显式创建业务对象和 Executor
@@ -175,6 +180,11 @@ interface HandlerContext extends InvocationContext { Object message(); }
 interface EventContext extends InvocationContext { Event event(); }
 interface TimerContext extends Context {}
 interface RouteCallContext extends InvocationContext {}
+// cn.managame.runtime.http；完整契约见第 13 节
+interface HttpContext extends Context {
+    FullHttpRequest request();
+    HttpResultCallback responseCallback();
+}
 ```
 
 Metadata 位于 `cn.managame.core`。默认实现的构造器：
@@ -527,3 +537,68 @@ close 幂等：停止调度器，按对象身份对 Executor 去重并分别关�
 | 改钟不自动重排 | CronSchedulerTest.changingGameClockNeedsExplicitRescheduleAndDoesNotChangeDynamicTimer |
 | 排队旧代失效、运行旧代不能覆盖新调度 | CronSchedulerTest.cancellationAndRescheduleInvalidateAlreadyQueuedGenerations / rescheduleDuringExecutionCannotBeUndoneByOldCompletion |
 | 共享 Executor 只关闭一次、错误回调隔离 | RuntimeTest.sharedExecutorClosesOnceAndErrorHandlerCannotEscape |
+<a id="runtime-http-api"></a>
+
+## 13. HTTP 注解与 Route 接入
+
+本绑定在 game-runtime 内实现 [RT-HTTP-01–08](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile)。Network 的 [HttpResponseCallback](OGBS-Network-Java-25-Specification-1.0.zh-CN.md#http-async-response) 是适配器的传输边界，业务通过 HttpResultCallback 提交普通对象。不使用 CompletionStage，不另建业务执行器。
+
+### 13.1 注册、Context 与公开类型
+
+`GameRuntime.http()` 返回冻结的 HttpDispatcher，其 `void dispatch(FullHttpRequest, cn.managame.network.http.HttpResponseCallback)` 借用请求，通过 `HttpServerBuilder.asyncHandler(runtime.http()::dispatch)` 接入。业务对象不实现这个传输回调。Builder 的 `httpHandlers(Iterable<?>)` 复制/替换注册，默认空；`httpContextFactory(HttpContextFactory)` 拒绝 null。未配置 Key 规则、或要求与 DefaultHttpContext 不兼容的自定义 Context 的入口必须有工厂，其他入口可使用默认 Context。空注册在未关闭时返回 404，无需工厂。
+
+`@HttpHandler` 是可继承的运行期类型注解，提供 `int domain() default 0`；`@HttpMethod` 是运行期方法注解，提供必填 `String value()`（原始路径）、`String method() default "GET"`、`int domain() default 0`。两者 routeKey/routeKeyMethod 默认和覆盖规则见 §13.4。非零方法 Domain 覆盖类 Domain，最终 Domain 必须已注册，每个传入目标必须有 @HttpHandler。方法必须 public、实例方法、非 varargs，返回 void 或业务结果的引用类型。基本类型返回声明、实现 Netty HttpObject 的类型（包括 FullHttpResponse）在构建时拒绝；包装数字、record、POJO、map、list、string 都是普通结果对象。参数仍为零到两个，至多一个精确 FullHttpRequest 和一个兼容的 Context/HttpContext 或自定义 HttpContext 子类型，顺序不限。HttpContext 不属于 InvocationContext，因此拒绝 InvocationContext 参数。不绑定 DTO 请求，不自动展开 future。错误签名、不兼容默认 Context、缺失必需工厂、重复入口或未知 Domain 均在执行器所有权转移前构建失败。Handler/Event/Cron 仍要求 void。
+
+路径以 `/` 开头，不含 query/fragment/空格/控制字符，原始文本大小写敏感精确匹配；方法是大写原生 token，拒绝 CONNECT。匹配只移除 query，不解码：`/player?id=42` 匹配 `/player`，`/player/`、`/%70layer` 不匹配。不自动提供 HEAD→GET、OPTIONS、classpath 扫描或流式方法 API。
+
+`HttpContext extends Context` 在 routeDomain()/routeKey() 上增加 `FullHttpRequest request()` 和 **`HttpResultCallback responseCallback()`**，不定义 businessIdType()、businessId() 或 metadata()。可扩展的 `DefaultHttpContext extends DefaultContext` 仅有 `(int domain, long key, FullHttpRequest, HttpResultCallback)` 构造器，请求/回调不得为 null。应用可在自定义 HttpContext 子类型增加会话/鉴权字段，Runtime 不推导或复制这些字段到 EventContext/RouteCallContext。普通 HTTP 来源的目标 Context 使用身份 0/0 和空 Metadata；回调恢复同一原始 HTTP 实例。这沿用已有基础 Context 规则，不增加 HTTP 专属身份传播。
+
+函数式 `HttpContextFactory.create(int domain, long routeKey, FullHttpRequest request, HttpResultCallback callback)` 在接入线程、Route 接纳前运行，不绑定新 Context。保留选定 Domain/Key、原样请求/结果回调，返回兼容 Context。routeKey 为零（无注解规则）时由工厂确定非零 Key。回调是 Runtime 的完成门控；不得释放借用请求，额外 retain 引用属于应用。工厂可 `callback.onResponse(401, errorObject)` 后返回 null，跳过业务。不隐式信任身份、不鉴权 header、不查询 RouteKeyRegistry、不继承提交者 Context。
+
+### 13.2 对象完成、编码、错误与所有权
+
+`HttpResultCallback` 提供 `boolean onResponse(Object result)`（默认状态 200）、`boolean onResponse(int statusCode, Object result)`、`boolean onFail(Throwable cause)`。状态码必须 200..599；非法状态抛 IllegalArgumentException，null 失败原因抛 NullPointerException，均不抢占完成。null 结果有效，默认编码为 JSON `null`。void 返回不自动回复，方法需立即或稍后显式完成；对象返回自动完成，包含 null。不增加 Runtime 截止时间或隐式重试。
+
+Builder 的 `httpResultCodec(HttpResultCodec)` 选择非 null codec。默认 `HttpResultCodec.json()` 使用 ObjectMapper 默认配置创建独立 ObjectWriter：UTF-8 JSON、`application/json; charset=UTF-8`，不自动发现模块。支持的 bean/record/collection 遵循 Jackson 配置，不承诺任意对象都可序列化；不支持的属性、getter 异常或编码失败作为服务端失败完成。自定义 codec 可使用应用序列化器/模块，函数式 `byte[] encode(Object result) throws Exception` 返回独立所有权的非 null byte[]，`String contentType()` 默认 JSON。构建在启动资源前捕获并用原生 header 校验验证非空白 Content-Type。codec 实例被保留、不深拷贝；encode 必须能跨 Route/回调线程并发，传出的数组不得再修改。codec 签名不包含 ObjectMapper/Netty/HTTP 版本类型。
+
+原子门控先抢占完成再编码。仅获胜结果在调用线程同步编码；失败竞争对象忽略、不编码、不转移资源。调用方仍拥有普通对象，编码期间必须稳定；外部回调使用不可变 DTO/快照，不使用可变 Route 状态。编码器不保留对象以便返回后延迟序列化。方法自动结果在同一 Route 任务内编码，不增加队列/执行器。适配器从字节与媒体类型创建自有传输响应；实际 framing/version/HEAD/204/304 规范化及发送由 Network 负责。数字状态与对象结果不携带协议版本。Runtime 当前仅服务 HTTP/1.1，其他传输 Profile 尚未实现。
+
+编码异常或 null 编码字节报告 RUNTIME_EXECUTION_ERROR，并且只调用一次 Network 失败回调，当前 Profile 尝试 500/关闭。异步编码失败即使方法已返回，也报告原始 HTTP Context；兼容 Context 建立前的工厂完成使用所选 Domain/Key 0 诊断。通过 Object 动态返回传输对象、或提交 Netty HttpObject/ReferenceCounted 值也会失败完成；不支持的引用计数参数不被消费，仍由调用方负责。业务回调不接收/消费 FullHttpResponse/ByteBuf。完成布尔值反映首次传输完成接纳，不代表序列化成功、对端收到或持久化。断连后尚未完成的获胜回调可能先编码，再由传输层拒绝/丢弃字节；重复结果不编码。
+
+| 边界 | HTTP 结果 | Runtime/业务行为 |
+| --- | --- | --- |
+| Runtime 已关闭 | 匹配前 503 | 方法不执行 |
+| 非 origin-form 或 fragment | 400 | 方法不执行 |
+| 缺失路径/错误方法 | 404 / 405，排序后的 Allow | 工厂/方法不执行 |
+| 提取/工厂输入非法或零 Key | 400 | 方法不执行；非法提取跳过工厂 |
+| 工厂显式完成 | 编码对象响应或失败 | 方法不执行 |
+| 不兼容工厂结果或其他提取/工厂异常 | onFail，Network 500/关闭 | RUNTIME_EXECUTION_ERROR，所选 Domain/Key 0 |
+| 过载/执行器关闭或提交与关闭竞争 | 503 | 方法不执行；释放 retain 请求 |
+| 方法异常 | 未完成时 onFail | RUNTIME_EXECUTION_ERROR，不重试 |
+| 获胜结果编码失败 | Network 失败回调 | RUNTIME_EXECUTION_ERROR，不重试/回滚 |
+| 对象返回 null | 默认 200、JSON null | 正常完成 |
+| void 返回 | 等待显式完成/关闭 | 不自动生成结果 |
+
+dispatcher 参数 null 时在 retain/完成前抛异常。RuntimeErrorHandler 异常沿用隔离日志。业务失败可返回应用 DTO/状态，不必作为框架异常。Network 传输规范化与 codec 分离，错误响应不暴露异常详情。
+
+Runtime 在 Route 提交前 retain 请求，业务调用及自动结果编码结束后释放，拒绝则立即释放。使用 Handler/Event/call 相同的 Route 执行器/Context 路径，同 Domain/Key 串行、嵌套可内联。后续 call 回调恢复原始 HttpContext，不重新获取请求引用；返回前复制请求数据，或在每条异步/接纳失败路径管理独立 retain 引用。断连不取消已接纳业务。Runtime.close 拒绝新入口、由执行器排空已接纳工作，不关闭 HttpServer、不等待延迟完成。回调接纳失败可能让响应无法结束；停机前安排在途完成。
+
+### 13.3 示例、兼容性与验证
+
+[RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 在 POST `/echo` 返回应用 EchoResult record，在 GET `/lookup` 的跨 Route 回调提交 PlayerResult。POST body 字段 playerId 是类 Key 默认，GET query 字段 lookupId 覆盖它。示例无需工厂，使用默认 HttpContext 并读取 routeKey()；这些 Key 仅作路由输入，不证明已认证身份。业务方法不构造 FullHttpResponse 或 HTTP 版本。[执行测试](../../game-example/src/test/java/cn/managame/example/runtime/RuntimeHttpExampleTest.java) 通过真实 HttpServer 验证 UTF-8 DTO 结果。
+
+源码：[公开 HTTP 包](../../game-runtime/src/main/java/cn/managame/runtime/http)、[RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java)、[RuntimeHttp](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeHttp.java)。测试：[RuntimeHttpTest](../../game-runtime/src/test/java/cn/managame/runtime/http/RuntimeHttpTest.java)、[HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java)、[HttpResultTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpResultTest.java)，覆盖注册（含拒绝 InvocationContext 参数）、工厂、HTTP 发起 Event/call 的默认身份、自定义 HTTP Context 原实例恢复、共用 Route 顺序、query/body 规则、所有权、延迟完成、DTO/null/自定义 codec、完成竞争及编码失败。依赖变更需根 `mvn clean verify`，定向验证用 `mvn -pl game-runtime -am test`。已有 RPC 测试/示例引用已移除 API，当前阻塞根验证；HTTP 示例单独编译执行。生产容量及所有断连竞争未验证，其他 HTTP 版本尚未实现。
+
+Runtime 依赖 game-core、game-network、Jackson Databind，不新增 artifact/RPC 依赖；自定义 GameRuntime 实现需实现 http()。未注册 HTTP 的既有 Builder 可继续使用。HttpContextFactory 现在第二参数为选定 long routeKey、第四参数为 HttpResultCallback；原三参数/网络回调工厂需迁移。移除 DefaultHttpContext 的身份/Metadata 构造参数及 HTTP businessIdType()/businessId()/metadata() 访问，改用 Route 访问器或应用明确定义的 Context 字段。接收 InvocationContext 的 HTTP 方法改为 Context/HttpContext 或自定义 HttpContext 子类型。普通 InvocationContext 传播规则不变。原 FullHttpResponse 返回方法改为 DTO/void，回调响应改为业务对象。该显式契约变化使响应值独立于 HTTP 版本，不保留不兼容的原生响应 API。
+
+### 13.4 RouteKey 字段与方法规则
+
+@HttpHandler 和 @HttpMethod 都增加 `String routeKey() default ""` 与 `String routeKeyMethod() default ""`。方法级非空配置整体替换类规则，字段与方法之间切换也如此；两者都空则继承。任一层不得同时配置非空字段和方法，纯空白值在构建时拒绝。不隐式推导字段或 Java getter 名。两层均无规则时由工厂提供 Key；有规则则先提取，可选工厂必须保留该 Key。不提供工厂时 DefaultHttpContext 提供 Route、请求及结果回调，不含身份/Metadata。自定义 HttpContext 子类型仍需由兼容工厂提供。
+
+`routeKey = "playerId"` 在 GET 中通过 Netty QueryStringDecoder 按 UTF-8 解码 query，要求大小写敏感的精确字段名只有一个值；解码后重复也拒绝。值必须是可选负号加 ASCII 数字、可解析为非零 long；加号、空白、小数、指数、溢出拒绝。其他方法读取 ByteBuf 可读区域中一个严格 UTF-8 JSON 对象的顶层属性，不回退 query。接受整数 number token 或十进制整数字符串。浮点/指数 token、null/布尔/数组/对象字段、缺失字段、任意位置的重复 JSON 属性、非法 JSON、额外尾部值、非法 UTF-8、溢出和零都返回 400。属性名按字面匹配，点号不是嵌套路径表达式。Content-Type 不选择来源或解析器，配置字段的非 GET 请求不论该 header 都期待 JSON；应用在 pipeline 决定媒体策略。
+
+包级 HttpRouteKey 使用 Jackson Core 流式 JsonFactory，启用严格重复检测并禁用字符集探测（UTF-8）。完整校验对象后才接纳 Key，在 duplicate() 上使用不释放引用的 ByteBufInputStream，不改变原始 indices/refCnt，不反序列化业务 DTO。Jackson 2.21.3 默认嵌套深度 1000、number 长度 1000、string 长度 20,000,000、字段名长度 50,000，不额外设置总文档/token 限制。约束违反返回 400，Network 仍限制完整 body 与 URI；query 解码在 Network URI 限制内不额外截断参数数量。提取不新增 Runtime 业务线程或第二个队列。
+
+`routeKeyMethod = "playerKey"` 在注册的 Handler 对象上精确绑定 public 实例方法 `long playerKey(FullHttpRequest request)` 或返回 Long 的对应方法。构建时一次编译 MethodHandle；缺失/private/static、错误参数/返回类型或 varargs 在构建时拒绝。不推导无参 getter 或任意反射表达式。方法在接入线程、工厂/接纳前运行，借用请求，不得访问 Route 所有的状态，可被并发调用，实例字段不因此串行。IllegalArgumentException 映射 400，其他异常或 null Long 报告 RUNTIME_EXECUTION_ERROR 并 onFail；返回零映射 400。后续需要请求数据时自行获取独立所有权。
+
+例如 `@HttpHandler(domain=1, routeKey="playerId")` 配合 `@HttpMethod(value="/guild", method="POST", routeKey="guildId")` 从 body 选择 guildId，GET 版本从 query 选择 guildId。自定义 `routeKeyMethod="playerKey"` 替换类字段规则并调用声明的提取方法。失败不尝试其他规则，也不允许工厂修改选定 Key。[HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java) 覆盖两个覆盖方向、来源隔离、完整 JSON 校验、非法 UTF-8、精确 64 位边界、buffer indices/refCnt 保留、工厂 Key 保留、提取/注册失败。更新后的可运行 [RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 通过真实 HttpServer 演示 body/query 提取。

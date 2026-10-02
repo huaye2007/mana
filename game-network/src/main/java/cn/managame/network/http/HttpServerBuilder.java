@@ -9,6 +9,7 @@ import java.net.SocketAddress;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.BiConsumer;
 
 /** HTTP/1.1 server configuration; supplied groups remain caller-owned. */
 public final class HttpServerBuilder {
@@ -18,8 +19,8 @@ public final class HttpServerBuilder {
     public static final long DEFAULT_READ_TIMEOUT_MILLIS = 30_000;
 
     SocketAddress address;
-    Function<FullHttpRequest, FullHttpResponse> handler = request ->
-            new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_FOUND);
+    BiConsumer<FullHttpRequest, HttpResponseCallback> handler = (request, callback) ->
+            callback.onResponse(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_FOUND));
     final List<Consumer<ChannelPipeline>> pipelines = new ArrayList<>();
     EventLoopGroup boss, worker;
     EventExecutorGroup executor;
@@ -35,6 +36,14 @@ public final class HttpServerBuilder {
     public HttpServerBuilder bindAddress(SocketAddress address) { this.address = Objects.requireNonNull(address); return this; }
     /** Optional fallback; requests are borrowed until return and returned response ownership transfers. Default: empty 404. */
     public HttpServerBuilder handler(Function<FullHttpRequest, FullHttpResponse> handler) {
+        Objects.requireNonNull(handler);
+        this.handler = (request, callback) -> callback.onResponse(handler.apply(request)); return this;
+    }
+    /**
+     * Optional asynchronous fallback. Requests are borrowed until this callback returns; retain/copy
+     * before asynchronous use. The callback may be completed on any thread. Last handler/asyncHandler wins.
+     */
+    public HttpServerBuilder asyncHandler(BiConsumer<FullHttpRequest, HttpResponseCallback> handler) {
         this.handler = Objects.requireNonNull(handler); return this;
     }
     /** Runs after HTTP aggregation and before the fallback. Add native handlers with addLast; use addFirst for TLS. */

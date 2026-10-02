@@ -7,6 +7,7 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.cors.CorsConfigBuilder;
 import io.netty.handler.codec.http.cors.CorsHandler;
@@ -269,13 +270,16 @@ class HttpServerTest {
         for (String failure : List.of("throw", "null", "informational")) {
             AtomicReference<FullHttpRequest> borrowed = new AtomicReference<>();
             AtomicReference<FullHttpResponse> transferred = new AtomicReference<>();
-            try (var server = HttpServer.builder().bindAddress(LOCAL).handler(request -> {
+            AtomicReference<Channel> channel = new AtomicReference<>();
+            try (var server = HttpServer.builder().bindAddress(LOCAL).pipeline(p -> channel.set(p.channel())).handler(request -> {
                 borrowed.set(request);
                 if (failure.equals("throw")) throw new IllegalStateException("test handler failure");
                 if (failure.equals("null")) return null;
                 var response = response(HttpResponseStatus.CONTINUE, "invalid"); transferred.set(response); return response;
             }).build()) {
                 server.start(); assertRejected(server, "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\n\r\nx", 500);
+                // Receiving the failure response/EOF does not prove the borrowed callback scope has returned.
+                channel.get().eventLoop().submit(() -> {}).get(5, TimeUnit.SECONDS);
                 assertEquals(0, borrowed.get().refCnt());
                 if (transferred.get() != null) assertEquals(0, transferred.get().refCnt());
             }
@@ -394,6 +398,236 @@ class HttpServerTest {
                     .handler(request -> response(HttpResponseStatus.OK, "ok")).executorGroup(executor)
                     .childOption(ChannelOption.SINGLE_EVENTEXECUTOR_PER_GROUP, false).build());
         } finally { executor.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly(); }
+    }
+
+    @Test void asyncCompletionDoesNotBlockTransportAndUsesIndependentResponseOwnership() throws Exception {
+        var business = Executors.newSingleThreadExecutor();
+        CountDownLatch entered = new CountDownLatch(1), finish = new CountDownLatch(1);
+        AtomicReference<FullHttpRequest> borrowed = new AtomicReference<>();
+        AtomicReference<FullHttpResponse> transferred = new AtomicReference<>();
+        AtomicReference<Channel> channel = new AtomicReference<>();
+        try (var server = HttpServer.builder().bindAddress(LOCAL).pipeline(p -> channel.set(p.channel()))
+                .asyncHandler((request, callback) -> {
+                    borrowed.set(request);
+                    var body = request.content().copy();
+                    business.execute(() -> {
+                        try {
+                            entered.countDown();
+                            assertTrue(finish.await(5, TimeUnit.SECONDS));
+                            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, body);
+                            transferred.set(response);
+                            assertTrue(callback.onResponse(response));
+                        } catch (InterruptedException e) { body.release(); callback.onFail(e); }
+                    });
+                }).build()) {
+            server.start();
+            try (var wire = new Wire(server)) {
+                wire.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\n\r\nabc");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                channel.get().eventLoop().submit(() -> {}).get(5, TimeUnit.SECONDS);
+                assertEquals(0, borrowed.get().refCnt(), "The callback scope does not extend request ownership");
+                finish.countDown();
+                assertEquals("abc", wire.reply(false).body());
+                channel.get().eventLoop().submit(() -> {}).get(5, TimeUnit.SECONDS);
+                assertEquals(0, transferred.get().refCnt());
+            }
+        } finally { finish.countDown(); business.shutdownNow(); }
+    }
+
+    @Test void asyncFirstResponsePrecedesContinueAndProtocolRejections() throws Exception {
+        for (String next : List.of("continue", "oversize", "expectation", "invalid")) {
+            var executor = new DefaultEventExecutorGroup(1);
+            AtomicReference<HttpResponseCallback> first = new AtomicReference<>();
+            AtomicInteger calls = new AtomicInteger();
+            CountDownLatch entered = new CountDownLatch(1);
+            try (var server = HttpServer.builder().bindAddress(LOCAL).executorGroup(executor).maxContentLength(4)
+                    .asyncHandler((request, callback) -> {
+                        calls.incrementAndGet();
+                        if (request.uri().equals("/first")) { first.set(callback); entered.countDown(); }
+                        else callback.onResponse(response(HttpResponseStatus.OK, "second"));
+                    }).build()) {
+                server.start();
+                try (var wire = new Wire(server)) {
+                    String second = switch (next) {
+                        case "continue" -> "POST /second HTTP/1.1\r\nHost: a\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+                        case "oversize" -> "POST /second HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nabcde";
+                        case "expectation" -> "POST /second HTTP/1.1\r\nHost: a\r\nExpect: unsupported\r\nContent-Length: 3\r\n\r\n";
+                        default -> "GET /second HTTP/1.1\r\n\r\n";
+                    };
+                    wire.send(request("GET", "/first") + second);
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    wire.socket.setSoTimeout(150);
+                    assertThrows(SocketTimeoutException.class, wire.input::read, next);
+                    assertEquals(1, calls.get());
+                    assertTrue(first.get().onResponse(response(HttpResponseStatus.OK, "first")));
+                    wire.socket.setSoTimeout(5000);
+                    assertEquals("first", wire.reply(false).body());
+                    if (next.equals("continue")) {
+                        assertEquals(100, wire.reply(false).status());
+                        wire.send("abc"); assertEquals("second", wire.reply(false).body());
+                        assertEquals(2, calls.get());
+                    } else {
+                        assertEquals(switch (next) { case "oversize" -> 413; case "expectation" -> 417; default -> 400; }, wire.reply(false).status());
+                        assertEquals(-1, wire.input.read()); assertEquals(1, calls.get());
+                    }
+                }
+            } finally { executor.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync(); }
+        }
+    }
+
+    @Test void asyncPipelinedBusinessWaitsForFirstCompletionAndOtherConnectionsProgress() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        AtomicReference<HttpResponseCallback> first = new AtomicReference<>();
+        List<String> calls = new CopyOnWriteArrayList<>();
+        try (var server = HttpServer.builder().bindAddress(LOCAL).asyncHandler((request, callback) -> {
+            calls.add(request.uri());
+            if (request.uri().equals("/first")) { first.set(callback); entered.countDown(); }
+            else callback.onResponse(response(HttpResponseStatus.OK, request.uri()));
+        }).build()) {
+            server.start();
+            try (var wire = new Wire(server); var other = new Wire(server)) {
+                wire.send(request("GET", "/first") + request("GET", "/second"));
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                other.send(request("GET", "/other")); assertEquals("/other", other.reply(false).body());
+                assertEquals(List.of("/first", "/other"), calls);
+                first.get().onResponse(response(HttpResponseStatus.OK, "first"));
+                assertEquals("first", wire.reply(false).body()); assertEquals("/second", wire.reply(false).body());
+                wire.send(request("GET", "/third")); assertEquals("/third", wire.reply(false).body());
+            }
+        }
+    }
+
+    @Test void asyncCompletionRaceHasOneWinnerAndConsumesEveryResponseReference() throws Exception {
+        AtomicReference<HttpResponseCallback> callback = new AtomicReference<>();
+        CountDownLatch entered = new CountDownLatch(1), race = new CountDownLatch(1);
+        var workers = Executors.newFixedThreadPool(2);
+        try (var server = HttpServer.builder().bindAddress(LOCAL).asyncHandler((request, result) -> {
+            callback.set(result); entered.countDown();
+        }).build()) {
+            server.start();
+            try (var wire = new Wire(server)) {
+                wire.send(request("GET", "/")); assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var a = response(HttpResponseStatus.OK, "a"); var b = response(HttpResponseStatus.OK, "b");
+                var first = workers.submit(() -> { race.await(); return callback.get().onResponse(a); });
+                var second = workers.submit(() -> { race.await(); return callback.get().onResponse(b); });
+                race.countDown();
+                assertNotEquals(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS));
+                assertTrue(Set.of("a", "b").contains(wire.reply(false).body()));
+                assertFalse(callback.get().onFail(new IllegalStateException("late failure")));
+                assertEquals(0, a.refCnt()); assertEquals(0, b.refCnt());
+            }
+        } finally { race.countDown(); workers.shutdownNow(); }
+    }
+
+    @Test void asyncFailureClosesAndNeverDispatchesLaterPipelinedRequest() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<HttpResponseCallback> callback = new AtomicReference<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        try (var server = HttpServer.builder().bindAddress(LOCAL).asyncHandler((request, result) -> {
+            calls.incrementAndGet(); callback.set(result); entered.countDown();
+        }).build()) {
+            server.start();
+            try (var wire = new Wire(server)) {
+                wire.send(request("GET", "/first") + request("GET", "/second"));
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertTrue(callback.get().onFail(new IllegalStateException("async test failure")));
+                assertEquals(500, wire.reply(false).status()); assertEquals(-1, wire.input.read());
+                var late = response(HttpResponseStatus.OK, "late");
+                assertFalse(callback.get().onResponse(late)); assertEquals(0, late.refCnt());
+                assertEquals(1, calls.get());
+            }
+        }
+    }
+
+    @Test void lateAsyncCompletionAfterOwnedShutdownReleasesResponseAndDoesNotCancelBusiness() throws Exception {
+        AtomicReference<HttpResponseCallback> callback = new AtomicReference<>();
+        AtomicReference<FullHttpRequest> borrowed = new AtomicReference<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        try (var server = HttpServer.builder().bindAddress(LOCAL).asyncHandler((request, result) -> {
+            borrowed.set(request); callback.set(result); entered.countDown();
+        }).build()) {
+            server.start();
+            try (var wire = new Wire(server)) {
+                wire.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\n\r\nx");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                server.close();
+                assertEquals(0, borrowed.get().refCnt());
+                var late = response(HttpResponseStatus.OK, "late");
+                assertTrue(callback.get().onResponse(late)); assertEquals(0, late.refCnt());
+                assertEquals(-1, wire.input.read());
+            }
+        }
+    }
+
+    @Test void asyncReadTimeoutClosesWithoutCompletingApplicationCallback() throws Exception {
+        AtomicReference<HttpResponseCallback> callback = new AtomicReference<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        try (var server = HttpServer.builder().bindAddress(LOCAL).readTimeoutMillis(150)
+                .asyncHandler((request, result) -> { callback.set(result); entered.countDown(); }).build()) {
+            server.start();
+            try (var wire = new Wire(server)) {
+                wire.send(request("GET", "/")); assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(-1, wire.input.read());
+                var late = response(HttpResponseStatus.OK, "late");
+                assertTrue(callback.get().onResponse(late)); assertEquals(0, late.refCnt());
+            }
+        }
+    }
+
+    @Test void synchronousAndAsynchronousHandlerSettingsReplaceEachOther() throws Exception {
+        var builder = HttpServer.builder().bindAddress(LOCAL)
+                .handler(request -> response(HttpResponseStatus.OK, "sync"));
+        try (var sync = builder.build();
+             var async = builder.asyncHandler((request, callback) -> callback.onResponse(response(HttpResponseStatus.OK, "async"))).build();
+             var replacement = builder.handler(request -> response(HttpResponseStatus.OK, "replacement")).build()) {
+            for (var server : List.of(sync, async, replacement)) server.start();
+            try (var a = new Wire(sync); var b = new Wire(async); var c = new Wire(replacement)) {
+                a.send(request("GET", "/")); b.send(request("GET", "/")); c.send(request("GET", "/"));
+                assertEquals("sync", a.reply(false).body()); assertEquals("async", b.reply(false).body());
+                assertEquals("replacement", c.reply(false).body());
+            }
+        }
+    }
+
+    @Test void bufferedRequestsCannotBeOvertakenByInputArrivingDuringCompletion() {
+        List<String> calls = new ArrayList<>();
+        AtomicReference<HttpResponseCallback> first = new AtomicReference<>();
+        var channel = new EmbeddedChannel();
+        HttpServerTransport.configure(channel.pipeline(), null, (request, callback) -> {
+            calls.add(request.uri());
+            if (request.uri().equals("/first")) first.set(callback);
+            else callback.onResponse(response(HttpResponseStatus.OK, request.uri()));
+        }, 1024, 4096, 8192, List.of());
+        try {
+            channel.writeInbound(Unpooled.copiedBuffer(request("GET", "/first") + request("GET", "/second"), StandardCharsets.US_ASCII));
+            channel.eventLoop().execute(() -> {
+                first.get().onResponse(response(HttpResponseStatus.OK, "first"));
+                // New input arrives before the scheduled advancement of previously buffered input.
+                channel.pipeline().fireChannelRead(Unpooled.copiedBuffer(request("GET", "/third"), StandardCharsets.US_ASCII));
+            });
+            channel.runPendingTasks();
+            assertEquals(List.of("/first", "/second", "/third"), calls);
+        } finally { channel.finishAndReleaseAll(); }
+    }
+
+    @Test void closingWhileAsyncResponseIsPendingReleasesBufferedRequestContent() {
+        AtomicReference<HttpResponseCallback> callback = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        var channel = new EmbeddedChannel();
+        HttpServerTransport.configure(channel.pipeline(), null, (request, result) -> {
+            callback.set(result); calls.incrementAndGet();
+        }, 1024, 4096, 8192, List.of());
+        var input = Unpooled.copiedBuffer(request("GET", "/first")
+                + "POST /second HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\n\r\nabc", StandardCharsets.US_ASCII);
+        try {
+            channel.writeInbound(input);
+            assertEquals(1, calls.get());
+            channel.close(); channel.runPendingTasks();
+            assertEquals(0, input.refCnt(), "All buffered content must be released on disconnection");
+            var late = response(HttpResponseStatus.OK, "late");
+            assertTrue(callback.get().onResponse(late)); assertEquals(0, late.refCnt());
+            assertEquals(1, calls.get());
+        } finally { channel.finishAndReleaseAll(); }
     }
 
     private static String request(String method, String path) { return method + " " + path + " HTTP/1.1\r\nHost: local\r\n\r\n"; }

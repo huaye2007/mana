@@ -9,9 +9,9 @@
 | 组件 | 标准规范（语言无关） | Java 25 开发规范 | 当前实现状态 |
 | --- | --- | --- | --- |
 | game-core | [Core Specification](OGBS-Core-1.0.zh-CN.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.zh-CN.md) | 已实现；共享 Metadata 与错误码 |
-| game-runtime | [Runtime Specification](OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) | 已实现；Route、Context、Handler、Event、Timer/Cron |
+| game-runtime | [Runtime Specification](OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) | 已实现；Route、Context、Handler、HTTP 注解/分发/对象结果、Event、Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.zh-CN.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.zh-CN.md) | 已实现；真实 MySQL/MongoDB 验证需配置环境 |
-| game-network | [Network Specification](OGBS-Network-1.0.zh-CN.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) | 已实现；TCP/TLS/WS/WSS 与独立 HTTP/1.1 服务端 |
+| game-network | [Network Specification](OGBS-Network-1.0.zh-CN.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) | 已实现；TCP/TLS/WS/WSS 与独立 HTTP/1.1 服务端（同步/回调响应） |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.zh-CN.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) | 已实现；内部 TCP、多 Slot、调用、心跳/重连 |
 
 规范版本为 1.0，当前处于仓库草案阶段；Java 模块版本为 1.0.0-SNAPSHOT，基线 JDK 25。规范存在不代表所有能力均已实现或验证，各文档的状态与边界必须据实维护。
@@ -82,6 +82,8 @@ flowchart LR
     C --> D[game-data]
     C --> R[game-rpc]
     N[game-network] --> R
+    N --> RT
+    RT --> E
     N --> E[game-example]
     R --> E
     RT --> A[应用接入层]
@@ -89,7 +91,7 @@ flowchart LR
     R --> A
 ```
 
-箭头由被依赖组件指向使用方。当前根构建包含 Core、Runtime、Data、Network、RPC 和 [game-example](../../game-example/README.zh-CN.md)。game-example 中的 Network/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。自动 RPC→Runtime 接入与 Data 示例尚未实现。Network 和 Runtime 相互独立，应用接入层负责业务编解码、身份校验、Context 构造、回复及 Route 调度。
+箭头由被依赖组件指向使用方。当前根构建包含 Core、Runtime、Data、Network、RPC 和 [game-example](../../game-example/README.zh-CN.md)。game-example 中的 Network/Runtime HTTP/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。自动 RPC→Runtime 接入与 Data 示例尚未实现。Runtime 为 HTTP 入口依赖 Network，支持显式 GET query/其他方法 JSON RouteKey 字段或提取方法，可选应用 HTTP Context 补充，以及返回响应或回调响应。Network 负责传输生命周期及发送，普通消息编解码/回复与 RPC 接入仍由应用负责。详见 [Runtime HTTP 语义](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 和 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 ## 版本与验证边界
 

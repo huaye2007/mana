@@ -7,6 +7,7 @@ import cn.managame.runtime.route.RouteCallback;
 import cn.managame.runtime.route.RouteKeyRegistry;
 import cn.managame.runtime.timer.CronScheduler;
 import cn.managame.runtime.timer.RuntimeTimer;
+import cn.managame.runtime.http.HttpDispatcher;
 
 import java.util.function.Supplier;
 public interface GameRuntime extends AutoCloseable {
@@ -17,5 +18,6 @@ public interface GameRuntime extends AutoCloseable {
     CronScheduler cron();
     ProtocolRegistry protocols();
     RouteKeyRegistry routeKeys();
+    HttpDispatcher http();
     void close();
 }

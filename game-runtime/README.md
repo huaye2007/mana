@@ -26,6 +26,7 @@ cn.managame.runtime
 ├── executor                         RouteExecutor SPI, bindings, platform/virtual threads
 ├── protocol                         Protocol descriptions, registration, Req → Res mapping
 ├── handler                          Handler annotations
+├── http                             HTTP annotations, HTTP contexts, Route dispatcher
 ├── event                            Local Event, EventBus, annotations
 ├── timer                            One-shot Timer, Cron annotations, management interfaces
 ├── time                             Replaceable business wall clock: GameTime
@@ -75,3 +76,13 @@ SystemCron is an application-defined class. cancel stops future cycles; reschedu
 - A complete RPC / Runtime integration example is not implemented; current integration examples are in the Java specification.
 
 Run `mvn -pl game-runtime -am test` from the root. After package changes, run `mvn clean verify` for full integration validation.
+
+<a id="runtime-http"></a>
+
+## HTTP business entry
+
+`cn.managame.runtime.http` supplies `@HttpHandler`, `@HttpMethod`, `HttpContext`, `DefaultHttpContext`, `HttpContextFactory`, `HttpResultCallback`, `HttpResultCodec`, and `HttpDispatcher` in the game-runtime artifact. HttpContext extends the base Context with Route, request, and result callback; it has no business identity/Metadata fields. It depends on game-network and uses the same Domain/RouteKey executors as Handler/Event/call.
+
+Register instances with `httpHandlers(...)`. Set `routeKey="playerId"` on @HttpHandler/@HttpMethod to select a GET query field or a top-level JSON body field for other methods; method configuration overrides the class rule. Alternatively set routeKeyMethod to a Handler extraction method. An optional four-argument `httpContextFactory(domain, key, request, callback)` preserves the selected Key and may add application-specific HTTP context fields; without a rule, the factory is required to select Key. Connect `HttpServer.builder().asyncHandler(runtime.http()::dispatch)`. A public method returns a business DTO/object or void; deferred completion uses `context.responseCallback().onResponse(dto)`. Runtime encodes JSON by default and creates the transport response internally, without an HTTP version in the business result. `httpResultCodec(...)` customizes result encoding. Paths match raw method/path exactly; no automatic request DTO binding or player-ID inference is provided. The request is borrowed until method return; deferred response completion does not extend its lifetime.
+
+Run [RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) for annotated echo and a deferred cross-Route response. See [HTTP semantics](../docs/ogbs/OGBS-Runtime-1.0.md#runtime-http-profile) and [Java API, failures, and ownership](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).

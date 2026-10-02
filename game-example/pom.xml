@@ -4,6 +4,7 @@
   <artifactId>game-example</artifactId>
   <dependencies>
     <dependency><groupId>cn.managame</groupId><artifactId>game-network</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>cn.managame</groupId><artifactId>game-runtime</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>game-rpc</artifactId><version>${project.version}</version></dependency>
   </dependencies>
 </project>

@@ -11,21 +11,20 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | game-core | Shared Metadata, typed MetadataKey, common framework error codes |
 | game-network | TCP / binary WebSocket Connection APIs, native TLS / WSS, and independent HTTP/1.1 HttpServer |
 | game-rpc | RpcNode, active/passive peers, fixed slots, handshakes, heartbeats, reconnects, call / notify / reply, and Netty wire codecs |
-| game-runtime | Route execution, Context, Handler, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
+| game-runtime | Route execution, Context, Handler, HTTP annotations/dispatch, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
-| [game-example](game-example/README.md) | Runnable Network and RPC examples and their execution tests |
+| [game-example](game-example/README.md) | Runnable Network, Runtime HTTP, and RPC examples and their execution tests |
 
 Dependency direction:
 
 ```text
-game-core ──────→ game-runtime
-    ├──────────→ game-data
-    └──────────→ game-rpc ←──── game-network
-                     ↓              ↓
-                  game-example ←────┘
+game-core ──────→ game-data
+    ├──────────→ game-runtime ←──── game-network
+    └──────────→ game-rpc     ←──── game-network
+game-network / game-runtime / game-rpc ───→ game-example
 ```
 
-game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. Runtime does not depend on RPC, networking, Spring, or business serialization.
+game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. Runtime depends on game-core and game-network for HTTP annotations and Route integration; it does not depend on RPC, Spring, or business serialization.
 
 Network and RPC each publish one Maven artifact, with responsibility-based subpackages. Start at [game-network](game-network/README.md) and [game-rpc](game-rpc/README.md).
 
@@ -62,7 +61,7 @@ The root build includes game-core, game-network, game-rpc, game-runtime, game-da
 
 Run [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 
-[HttpServerExample](game-example/src/main/java/cn/managame/example/network/HttpServerExample.java) demonstrates the independent HTTP/1.1 server with application health/echo handlers and a JDK example caller. Its framework API is in cn.managame.network.http; see [the HTTP contract](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md#native-http-server-api).
+[HttpServerExample](game-example/src/main/java/cn/managame/example/network/HttpServerExample.java) demonstrates the independent HTTP/1.1 server with application health/echo handlers and a JDK example caller. [HttpAsyncServerExample](game-example/src/main/java/cn/managame/example/network/HttpAsyncServerExample.java) demonstrates asyncHandler and HttpResponseCallback completion on an application-owned executor. The framework API is in cn.managame.network.http; see [the HTTP contract](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md#native-http-server-api).
 
 Network tests cover TCP/TLS/WS/WSS, ordering, reference counts, exceptions, backpressure, handshake failure, and shutdown/interruption races. The current JDK's keytool creates temporary certificates. Windows tests force the JDK Selector wakeup pipe to fall back to TCP and limit Netty's default thread count; production code does not change JVM properties. See Data documentation for live database verification.
 
@@ -70,7 +69,7 @@ Network tests cover TCP/TLS/WS/WSS, ordering, reference counts, exceptions, back
 
 ## Runtime packages and business time
 
-The [game-runtime module](game-runtime/README.md) separates context, route, executor, protocol, handler, event, timer, time, error, and internal responsibilities. Only GameRuntime / GameRuntimeBuilder remain in the root package; update imports to the corresponding subpackages.
+The [game-runtime module](game-runtime/README.md) separates context, route, executor, protocol, handler, http, event, timer, time, error, and internal responsibilities. Only GameRuntime / GameRuntimeBuilder remain in the root package; update imports to the corresponding subpackages.
 
 ```java
 import cn.managame.runtime.time.GameTime;
@@ -147,3 +146,13 @@ RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple s
 - Core, Network, RPC, Runtime, and Data implementations/tests are available. RPC has real TCP/reconnect tests; automatic Runtime integration remains pending, and production capacity benchmarks are not done. Spring auto-configuration, protocol generation, service discovery, Router, and business codecs are peripheral integrations.
 
 See [Architecture and execution contracts](docs/architecture.md) and the [repository RPC Wire Profile](docs/rpc-wire.md).
+
+<a id="runtime-http"></a>
+
+## HTTP business entry
+
+`cn.managame.runtime.http` supplies `@HttpHandler`, `@HttpMethod`, `HttpContext`, `DefaultHttpContext`, `HttpContextFactory`, `HttpResultCallback`, `HttpResultCodec`, and `HttpDispatcher` in the game-runtime artifact. HttpContext extends the base Context with Route, request, and result callback; it has no business identity/Metadata fields. It depends on game-network and uses the same Domain/RouteKey executors as Handler/Event/call.
+
+Register instances with `httpHandlers(...)`. Set `routeKey="playerId"` on @HttpHandler/@HttpMethod to select a GET query field or a top-level JSON body field for other methods; method configuration overrides the class rule. Alternatively set routeKeyMethod to a Handler extraction method. An optional four-argument `httpContextFactory(domain, key, request, callback)` preserves the selected Key and may add application-specific HTTP context fields; without a rule, the factory is required to select Key. Connect `HttpServer.builder().asyncHandler(runtime.http()::dispatch)`. A public method returns a business DTO/object or void; deferred completion uses `context.responseCallback().onResponse(dto)`. Runtime encodes JSON by default and creates the transport response internally, without an HTTP version in the business result. `httpResultCodec(...)` customizes result encoding. Paths match raw method/path exactly; no automatic request DTO binding or player-ID inference is provided. The request is borrowed until method return; deferred response completion does not extend its lifetime.
+
+Run [RuntimeHttpExample](game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) for annotated echo and a deferred cross-Route response. See [HTTP semantics](docs/ogbs/OGBS-Runtime-1.0.md#runtime-http-profile) and [Java API, failures, and ownership](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).

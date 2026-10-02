@@ -20,7 +20,7 @@ Maven：`cn.managame:game-network:1.0.0-SNAPSHOT`。JDK 25，无 preview；Netty
 | cn.managame.network.connector | ConnectCallback、WebSocketConnectOptions |
 | cn.managame.network.error | NetworkException |
 | cn.managame.network.netty | NetworkServer、NetworkServerBuilder、NetworkClient、NetworkClientBuilder |
-| cn.managame.network.http | HttpServer、HttpServerBuilder |
+| cn.managame.network.http | HttpServer、HttpServerBuilder、HttpResponseCallback |
 
 NettyConnection、NetworkChannelInitializer、WebSocketTransport、ConnectionHandlerAdapter 与 WS payload 适配均保持 netty 包级封装。Server/Client 入口与其实现同包，避免为拆包公开内部协作类型。
 
@@ -39,6 +39,8 @@ NettyConnection、NetworkChannelInitializer、WebSocketTransport、ConnectionHan
 | HttpServer | static HttpServerBuilder builder(); void start(); SocketAddress localAddress(); void close() | AutoCloseable；同步、一次性监听；绑定尝试前 localAddress 为 null |
 | 必需配置 | bindAddress(SocketAddress) | 必需的监听地址 |
 | 可选兜底 | handler(Function<FullHttpRequest, FullHttpResponse>) | 对扩展传下来的请求同步返回一个完整最终响应；默认空 404 |
+| 异步兜底 | asyncHandler(BiConsumer<FullHttpRequest, HttpResponseCallback>) | 接收请求专属回调，可从任意线程完成；最后一次 handler/asyncHandler 设置替换前者 |
+| 完成回调 | HttpResponseCallback: boolean onResponse(FullHttpResponse); boolean onFail(Throwable) | 线程安全、仅一个获胜者；每次非 null 响应提交消费一个独立拥有的引用，包括重复/晚到完成 |
 | 原生管线 | pipeline(Consumer<ChannelPipeline>) | 每条 Channel 按注册顺序执行配置器，位于聚合之后、兜底之前；addLast 安装 HTTP handler，addFirst 安装调用方创建的 TLS |
 | 请求限制 | maxContentLength(int); maxInitialLineLength(int); maxHeaderSize(int) | 正数字节数；默认 body 1 MiB、首行 4096 字节、请求头 8192 字节 |
 | 入站时间 | readTimeoutMillis(long) | 默认 30,000 ms；零禁用，负数拒绝；持续无入站字节则关闭 socket |
@@ -51,7 +53,7 @@ null 参数抛 NullPointerException；非法限制或无序执行器抛 IllegalA
 
 管线：可选调用方 SslHandler 在首位 → http-read-timeout（启用时）→ http-codec → http-validation → http-keep-alive → http-aggregation → 用户 HTTP handler → http-application 兜底。配置器能看到已装配的 HTTP 基础管线，使用 addLast 追加 handler；配置完成前尚无 http-application context。TLS/原始字节 handler 仍可通过 addFirst 添加。http- 名称保留给框架，扩展不得移除或重排核心 handler。HttpDecoderConfig 提供首行/请求头限制；HttpObjectAggregator 子类处理 body 上限/Expect；原生 HttpServerKeepAliveHandler 对所有响应实施考虑分帧的持久连接策略，包括扩展响应。HTTP/1.0 与 HTTP/2 返回 505，CONNECT 返回 405，Upgrade 返回 400。非法解码/Host/首行/请求头返回 400；body 超限返回 413，不支持的 Expect 返回 417。空协议错误响应后关闭，不增加 HTTP/2 协商或共享 WS 管线。
 
-默认 HTTP 处理及 addLast 扩展运行在 Channel EventLoop。executorGroup 将 HTTP 基础管线与兜底分配到每条连接的同一有序执行器。启用投递时，http-codec 之后的扩展必须使用相同 group，例如 pipeline(p -> p.addLast(group, "auth", new AuthHandler()))；不指定 group 会切回 EventLoop，使自动响应越过应用响应。初始化时拒绝 http-codec 之后不同的 context.executor()；build 拒绝 childOption(SINGLE_EVENTEXECUTOR_PER_GROUP, false)。http-codec 之前的 TLS/原始字节 handler 可运行在 EventLoop。共享函数需要支持跨连接并发，非 Sharable 原生 handler 在每次配置器调用中创建。应用选择有界执行资源并负责关闭，不隐式创建业务执行器/定时器，也不新增任意异步完成或流式 API。
+默认 HTTP 处理及 addLast 扩展运行在 Channel EventLoop。executorGroup 将 HTTP 基础管线与兜底分配到每条连接的同一有序执行器。启用投递时，http-codec 之后的扩展必须使用相同 group，例如 pipeline(p -> p.addLast(group, "auth", new AuthHandler()))；不指定 group 会切回 EventLoop，破坏顺序协调。初始化时拒绝 http-codec 之后不同的 context.executor()；build 拒绝 childOption(SINGLE_EVENTEXECUTOR_PER_GROUP, false)。http-codec 之前的 TLS/原始字节 handler 可运行在 EventLoop。共享函数需要支持跨连接并发，非 Sharable 原生 handler 在每次配置器调用中创建。应用选择有界执行资源并负责关闭，不隐式创建业务执行器/定时器。异步兜底通过下述显式回调完成，不引入 CompletionStage、Future 或流式响应 API。
 
 原生扩展所有权遵循 N-HTTP-08：转发型 ChannelInboundHandlerAdapter 调用 ctx.fireChannelRead(request)，不释放已转移引用；消费型 adapter 用完后自行释放。SimpleChannelInboundHandler 自动释放，使用它继续转发时需要 retain。原生响应器通过 ctx.writeAndFlush(FullHttpResponse) 写回，自行设置合法 Content-Length 或原生传输分帧，不再产生第二个兜底响应。KeepAlive 策略遵循请求/响应关闭要求，决定关闭后抑制后续流水线请求。框架不再释放已被扩展消费的请求。原生 CorsHandler 可以消费 OPTIONS 并生成预检响应；HttpContentCompressor 可变换兜底/原生输出并调整 wire 分帧。鉴权、路由、CORS 与压缩配置仍属于应用策略。
 
@@ -62,6 +64,27 @@ ReadTimeoutHandler 度量入站无数据时间，包括空闲 Keep-Alive 和部�
 已确认取舍：普通内部接口先支持 HTTP/1.1，采用独立实现，避免给 NetworkServer/ConnectionHandler 增加 HTTP 分支。明确接入要求或实测连接/响应顺序瓶颈出现时再评估 HTTP/2，单凭高 QPS 不足以判断。body 上限不限制执行队列、连接数量或响应缓冲，不宣称生产容量。内建路由、JSON、压缩、multipart 与 CORS 不在初版实现中。
 
 源码：[HttpServer](../../game-network/src/main/java/cn/managame/network/http/HttpServer.java)、[Builder](../../game-network/src/main/java/cn/managame/network/http/HttpServerBuilder.java)、[Transport](../../game-network/src/main/java/cn/managame/network/http/HttpServerTransport.java)。验证：[HttpServerTest](../../game-network/src/test/java/cn/managame/network/http/HttpServerTest.java)、[HttpServerExample](../../game-example/src/main/java/cn/managame/example/network/HttpServerExample.java)、[示例测试](../../game-example/src/test/java/cn/managame/example/network/HttpServerExampleTest.java)。测试覆盖真实 socket、chunked 入站、持久/流水线响应边界、HEAD/204/205/304、原生 TLS/明文拒绝、拒绝、执行器投递时的 100/413 顺序、所有权、handler 失败、无数据超时、资源生命周期、原生路由/鉴权拒绝/默认 404、CORS 预检、gzip 变换和扩展执行器一致性。生产容量仍未验证；全仓库验证目前被已有 RPC 测试 API 不匹配阻断，示例模块还存在已有 RpcEchoExample.maxPendingCalls 编译不匹配。这些无关错误修复前，单独编译并运行 HTTP 示例。
+
+<a id="http-async-response"></a>
+
+### 1.2 异步响应回调
+
+`asyncHandler(BiConsumer<FullHttpRequest, HttpResponseCallback>)` 替换同步兜底设置；随后调用 `handler(...)` 又替换它。已构建监听保持自身配置快照。每个进入兜底的请求创建一个回调对象，可在 handler 内完成，也可保留给 Route/业务任务。Network 不依赖 Runtime，也不选择 Domain/RouteKey。[HttpResponseCallback](../../game-network/src/main/java/cn/managame/network/http/HttpResponseCallback.java) 仅公开：
+
+```java
+boolean onResponse(FullHttpResponse response);
+boolean onFail(Throwable cause);
+```
+
+两个方法均线程安全。第一个有效调用返回 true 并认领唯一完成，即使 Channel 已失活或随后投递失败。true 不表示写入接纳或送达。后续调用返回 false；每次非 null 的 onResponse 消费一个独立拥有的引用，重复或无法交付的响应释放。已经转交的引用不得再次使用，除非事前另行 retain。null response/cause 抛 NullPointerException，不认领完成。onFail 在仍可交付时尝试空 500 并关闭，记录原因但不向对端暴露。handler 抛异常走 onFail；完成后再抛异常仅记录，不产生第二响应。获胜的非法响应（包括 1xx 或非法 HEAD/304 长度）释放后尝试空 500/关闭，保持已有同步规范化。同步 handler 返回 null 仍走原有 500/关闭路径。
+
+请求仍只借用至 handler 的初次调用返回。回调保存 HEAD/持久连接标记和连接状态，不保存请求。投递 Route 前应解码不可变输入，或 retain/复制需要的 buffer，并在拒绝及使用结束后释放应用拥有的引用。完成响应不是继续访问请求数据的授权。返回而未完成回调会使该连接等待；应用应最终完成或管理自己的业务期限。Network 不新增自动业务取消或重试。断开/关闭不认领回调，晚到的首次完成仍可返回 true，同时释放无法交付的响应。
+
+完成操作投递至连接的有序 HTTP 执行器；已经位于该执行器时可 inline。执行器拒绝时释放提交响应并请求关闭连接。调用方拥有的 HTTP 执行器应保持可用，直到关联 Channel 完成管线清理。HttpServerTransport 在分发后续请求前观察最终出站 LastHttpContent 的写入完成，包括原生压缩产生的内容和原生应用响应。它在协议校验/聚合之前暂存后续解码输入，使后续请求的自动 100/400/413/417 不会越过待完成响应。在当前 body 结束后临时禁用 AUTO_READ，仅恢复框架自己暂停的读取，关闭时释放已经解码/投递的排队输入。手动读取及执行器队列仍由外部管理，暂存输入没有可配置硬内存上限。原生异步扩展仍自行释放请求，并在有序上下文写入一个合法分帧的响应，不使用兜底回调。
+
+等待期间 readTimeoutMillis 继续生效，包括暂停自动读取时；它衡量入站无数据，不表示业务执行期限或回滚。例如，把回调交给 Route 任务后，30 秒无数据关闭可先于业务完成；稍后的 onResponse 释放响应，不撤销业务。长业务应显式禁用或调整此 I/O 超时。借用 worker group 时，监听关闭继续按 N-HTTP-06 允许已有连接/响应完成。
+
+示例：[HttpAsyncServerExample](../../game-example/src/main/java/cn/managame/example/network/HttpAsyncServerExample.java) 在借用期内解码 UTF-8，并从应用拥有的执行器完成回调；[HttpAsyncServerExampleTest](../../game-example/src/test/java/cn/managame/example/network/HttpAsyncServerExampleTest.java) 验证完整往返。HttpServerTest 还覆盖异步跨连接推进、流水线/自动响应顺序、请求/响应所有权、完成竞争、失败、自有资源关闭后的晚到完成、无数据超时及 Builder 替换。已有 TCP/WS 与同步 HTTP API 保持源码兼容，不变更依赖或 Wire Profile。本次验证：85 项 Network 测试通过，其中 HTTP 25 项；独立 JUnit launcher 执行的两个 HTTP 示例测试通过。根 clean verify 通过 Core/Network 后，被已有 RPC 测试编译不匹配阻断，不宣称全仓库验证成功。
 
 ## 2. Connection 与 Handler
 

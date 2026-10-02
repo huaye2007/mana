@@ -5,6 +5,8 @@ import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.protocol.ProtocolProvider;
 import cn.managame.runtime.route.RouteDomain;
 import cn.managame.runtime.route.RouteKeyBinding;
+import cn.managame.runtime.http.HttpContextFactory;
+import cn.managame.runtime.http.HttpResultCodec;
 
 import cn.managame.runtime.internal.RuntimeCompiler;
 import java.time.*;
@@ -15,6 +17,9 @@ public final class GameRuntimeBuilder {
     private List<ProtocolProvider> providers = List.of();
     private List<RouteKeyBinding<?>> keys = List.of();
     private List<Object> handlers = List.of(), events = List.of(), crons = List.of();
+    private List<Object> httpHandlers = List.of();
+    private HttpContextFactory httpContexts;
+    private HttpResultCodec httpResults = HttpResultCodec.json();
     private ZoneId cronZone = ZoneId.of("UTC");
     private RuntimeErrorHandler errors = e -> System.getLogger("cn.managame.runtime").log(
         System.Logger.Level.ERROR, "Runtime error " + e.errorCode() + " at " + e.routeDomain() + "/" + e.routeKey(), e.cause());
@@ -28,11 +33,15 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder protocols(Iterable<? extends ProtocolProvider> v) { providers = copy(v); return this; }
     public GameRuntimeBuilder routeKeys(Iterable<RouteKeyBinding<?>> v) { keys = copy(v); return this; }
     public GameRuntimeBuilder handlers(Iterable<?> v) { handlers = copy(v); return this; }
+    public GameRuntimeBuilder httpHandlers(Iterable<?> v) { httpHandlers = copy(v); return this; }
+    public GameRuntimeBuilder httpContextFactory(HttpContextFactory v) { httpContexts = Objects.requireNonNull(v); return this; }
+    public GameRuntimeBuilder httpResultCodec(HttpResultCodec v) { httpResults = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder eventHandlers(Iterable<?> v) { events = copy(v); return this; }
     public GameRuntimeBuilder cronHandlers(Iterable<?> v) { crons = copy(v); return this; }
     public GameRuntimeBuilder errorHandler(RuntimeErrorHandler v) { errors = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder cronZone(ZoneId v) { cronZone = Objects.requireNonNull(v); return this; }
     public GameRuntime build() {
-        return RuntimeCompiler.build(domains, executors, providers, keys, handlers, events, crons, cronZone, errors);
+        return RuntimeCompiler.build(domains, executors, providers, keys, handlers, events, crons,
+                httpHandlers, httpContexts, httpResults, cronZone, errors);
     }
 }

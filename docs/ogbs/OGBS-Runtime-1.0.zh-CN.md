@@ -8,9 +8,9 @@
 
 ## 1. 职责与边界
 
-Runtime 是进程内的业务执行与路由调度组件，负责 Handler 分发、Route 串行执行、上下文绑定、本地事件、定时任务和跨 Route 调用。
+Runtime 是进程内的业务执行与路由调度组件，负责 Handler 与 HTTP 方法分发、Route 串行执行、上下文绑定、本地事件、定时任务和跨 Route 调用。
 
-Runtime 不承担网络连接、RPC Peer 选择、业务消息编解码、登录鉴权、响应发送、持久化或分布式事务。接入层负责从可信来源构造上下文，并明确选择 Route。Runtime 不依赖 Network 或 RPC。
+Runtime 不承担网络连接、RPC Peer 选择、普通消息/请求业务编解码、登录鉴权、持久化或分布式事务。HTTP 业务结果编码属于其 HTTP 适配器。接入层负责从可信来源构造上下文，并明确选择 Route。HTTP 分发将返回或延迟完成的响应交给传输层完成能力，实际发送由传输层负责；普通消息分发仍由接入层负责回复。
 
 共享 Metadata 与框架错误码见 [OGBS Core](OGBS-Core-1.0.zh-CN.md)。业务失败应通过业务结果表达，不能占用 Runtime 框架错误码。
 
@@ -97,6 +97,7 @@ Runtime 通过显式注册构建，不要求 classpath 扫描或依赖注入框�
 5. Handler、Event、Cron 方法签名有效。
 6. RouteKey 提取器对同一消息类型最多注册一次。
 7. Cron 表达式与目标 Route 有效。
+8. HTTP 方法与原始 path 唯一、签名/Domain 与 RouteKey 规则有效；未配置 Key 规则的入口需要显式 Context 工厂。
 
 **RT-BUILD-01**：构建失败不得返回可部分使用的 Runtime。构建成功后不得通过原始注册对象的修改改变协议注册表。
 
@@ -129,6 +130,7 @@ dispatch 被接纳不代表业务已成功；Handler 成功也不代表响应已
 | Context | Domain、Key |
 | InvocationContext | Context + businessIdType、businessId、Metadata |
 | HandlerContext | InvocationContext + message |
+| HttpContext | Context + 借用 HTTP 请求 + 响应完成能力 |
 | EventContext | InvocationContext + event |
 | TimerContext | Context |
 | RouteCallContext | InvocationContext |
@@ -150,6 +152,7 @@ TimerContext 不携带业务身份和 Metadata。业务若需要定时保存某�
 | 操作 | 执行时的上下文 | 身份与 Metadata | 自定义字段 |
 | --- | --- | --- | --- |
 | dispatch | 接入方传入的 HandlerContext | 使用传入值 | 保留原实例字段 |
+| HTTP dispatch | 默认或工厂创建的 HttpContext | 显式路由规则；不隐式提供业务身份/Metadata | 保留原实例字段 |
 | 同 Runtime InvocationContext 中发布事件 | 新 EventContext | 继承 | 不自动复制 |
 | 外部线程或其他 Runtime 发布事件 | 新 EventContext | 默认身份、空 Metadata | 不复制 |
 | 跨 Route 计算 | 新 RouteCallContext | 源为 InvocationContext 时继承 | 不自动复制 |
@@ -349,3 +352,34 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 | 构建校验 | [GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java) |
 
 这些测试是当前验证入口，并不表示每个条款的所有竞争条件都已穷举。扩展实现时应围绕接纳、上下文恢复、关闭竞争和回调提交失败增加针对性验证。
+<a id="runtime-http-profile"></a>
+
+## 12. HTTP 业务分发
+
+HTTP 分发是 Runtime 的可选入口，与普通 Handler、Event、call 使用相同的完整 Route 标识和接纳边界。传输 framing、连接请求顺序和实际响应发送仍由 [Network HTTP Profile](OGBS-Network-1.0.zh-CN.md#http-server-profile) 负责；Java 注解及依赖见 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
+
+**RT-HTTP-01**：显式注册并冻结以 HTTP 方法和原始 path 标识的入口。匹配忽略 query，不解码百分号转义、不规范化路径、不去掉尾部斜杠、不匹配模板、不推导 HEAD/OPTIONS 行为。重复入口在构建时拒绝。未知路径返回 404，已知路径未注册的方法返回 405 及允许的方法。初始 Profile 接受 origin-form 请求目标，非法目标返回 400，不实现 CONNECT 隧道。
+
+**RT-HTTP-02**：注册选择已注册 Domain。接纳前按显式入口/Handler 规则（RT-HTTP-07）选择非零 Key；未配置规则时由应用上下文工厂确定。有规则而无工厂时创建默认 HTTP Context，包含 Route、请求及响应完成能力。提供工厂时将选定 Key 传给工厂，工厂必须保留该 Key，可增加会话数据等应用自定义 HTTP 字段。HTTP Context 不定义业务身份或 Metadata。不隐式推导玩家字段或提交线程身份。工厂可显式拒绝而不执行方法；非法输入或零 Key 返回 400。不兼容的工厂结果属于接入错误，报告 Runtime 错误处理并尝试以服务端失败完成响应。
+
+**RT-HTTP-03**：已接纳方法与其他 Runtime 入口使用相同 RouteExecutor 和 Context 作用域。相同完整 Route 的动作不能重叠，同 Route 嵌套可内联。HTTP Context 使用基础 Context 模型，不属于调用身份模型。按普通 Context 继承规则，从它发起的 Event/call 使用默认身份及空 Metadata；call 回调恢复原始 HTTP Context 对象，包括自定义字段。HTTP 没有携带业务身份或 Metadata 的框架调用信封，路由 Key 也不是已认证身份。应用自定义字段不会自动复制到 Event/call Context。Key 提取和工厂都运行在进入 Route 之前，不得访问 Route 所有的可变业务状态。
+
+**RT-HTTP-04**：方法可返回业务对象由 Runtime 自动完成，也可不返回结果并稍后显式完成业务对象。结果契约不携带传输响应封装或协议版本。首次响应/失败完成获胜，竞争失败的对象不编码。响应完成不代表实际发送或业务成功。方法异常或编码失败会报告错误并尝试以服务端失败完成；已完成结果不被替换。null 是有效对象结果，不是执行失败。不自动重试业务。
+
+**RT-HTTP-05**：Runtime 从提交到方法返回/异常持有一个额外请求引用，拒绝时也释放。方法中的请求是借用的。后续响应完成或恢复相同 Context 不延长借用期；异步使用方必须自行 retain/copy 并释放自己的资源。业务结果仍是调用方所有的普通值；适配器拥有编码后的传输资源，并在失败/晚到发送时释放。延迟结果数据必须能在请求借用结束后独立使用。
+
+**RT-HTTP-06**：Runtime/执行器关闭或过载时，新 HTTP 工作返回 503 且不执行业务。已接纳工作仍由执行器负责执行，包括释放请求引用。Runtime close 不拥有 HTTP Server，也不等待全部请求结束。断连不取消已接纳业务或撤销副作用。Runtime 不设置延迟响应截止时间；应用负责完成和停机，Network 负责传输空闲与关闭。外部回调仅持有 HTTP Context 不会获得 Route 状态访问资格。
+
+例如，玩家 HTTP 方法发起公会 call 后返回。Runtime 释放请求引用，玩家 Route 可处理其他动作。公会结果回调稍后进入原始玩家 Route 并恢复原始 HTTP Context，可重新检查玩家状态并回复，但不能读取已结束借用的请求。应先复制不可变 body 数据，或持有独立 retain 引用。如果回调接纳失败，沿用普通 call 错误报告规则，不保证 HTTP 响应最终完成。
+
+已确认取舍是为游戏服务普遍需要的 HTTP 入口提供统一业务执行模型，同时保持传输生命周期和鉴权显式。原始路径精确匹配使入口选择可预测，避免另建一套路由框架。仅在出现具体模板、body 绑定或新增 HTTP Profile 需求时重新评估；自动请求 DTO 绑定、multipart/流式分发、HTTP 客户端、回调必达和生产容量认证不属于当前实现。
+
+实现与验证入口：[RuntimeHttp](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeHttp.java)、[RuntimeHttpTest](../../game-runtime/src/test/java/cn/managame/runtime/http/RuntimeHttpTest.java)、[RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java)。测试覆盖匹配、接纳、引用所有权、完成竞争、上下文传播、关闭及真实 HTTP 传输接入。
+
+**RT-HTTP-07 — 显式 Key 选择**：入口可整体覆盖所属 Handler 的默认 Key 提取规则；入口未配置则继承 Handler。规则只能是精确字段名或显式提取方法之一，不能同时设置。字段规则在 GET 中读取一个解码后的 query 参数，其他方法读取 JSON body 的一个顶层属性，不跨来源回退。JSON 必须是完整有效的单个 UTF-8 对象，不允许重复属性名或额外尾部值。选定值必须是非零、有符号 64 位整数或十进制整数字符串，不截断小数、浮点/指数形式或溢出值。缺失、重复、非法值在工厂/接纳前返回 400，不执行业务。自定义提取在接纳前运行，返回非零 Key，可拒绝非法输入；其他异常报告诊断并尝试以服务端失败完成。配置规则后，失败不得回退到类规则或工厂 Key。提取保留请求可读 body 和所有权。JSON 嵌套/大小限制由语言绑定规定，不替代传输限制。Key 是路由输入，不是已认证业务身份。
+
+例如，Handler 默认字段 playerId，一个入口覆盖为 guildId。GET `/guild?playerId=42&guildId=73` 选择 Key 73；POST `/guild` 的 body `{"playerId":42,"guildId":73}` 也选择 73。缺失 guildId 时拒绝，即使 playerId 存在。JSON 后半部分非法时拒绝，即使之前已读取 Key。[HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java) 覆盖来源选择、覆盖/失败边界、完整 JSON 校验、整数边界、自定义提取与 body 所有权。显式字段配置减少逐入口样板，不引入自动 DTO 绑定或身份信任推导。
+
+**RT-HTTP-08 — 业务结果与编码**：默认对象完成使用状态码 200、UTF-8 JSON，null 结果编码为 JSON null。异步显式完成可提供最终状态码整数，无需构造传输响应。可配置结果 codec 以使用其他媒体表示。在完成线程同步编码获胜结果；方法自动返回在当前 Route 编码，任意外部回调不因此获得 Route 状态访问资格。编码期间对象必须稳定，不得借用已过期的请求内容。编码成功后传输层发送独立所有权字节，不保留业务对象以延迟序列化。编码失败作为 Runtime 执行错误报告并尝试服务端失败，不重试、不撤销已发生业务副作用。后续传输 Profile 必须保持该业务结果契约；当前实现仍仅支持 Network HTTP/1.1 Profile。
+
+例如，方法返回玩家快照 `{id, name}`，无需构造 HTTP/1.1 响应；跨 Route 完成通过结果回调提交相同快照。两者使用同一个配置 codec 和首次完成规则。对端收到响应不代表数据库已提交。[HttpResultTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpResultTest.java) 覆盖 DTO/null 编码、延迟结果、完成竞争、编码失败、自定义媒体表示和传输结果拒绝。协议特定 framing 仍由 Network 负责。

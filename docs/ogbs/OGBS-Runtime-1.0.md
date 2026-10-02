@@ -10,9 +10,9 @@ Status: repository draft for mana3 `game-runtime`. This document defines executi
 
 ## 1. Responsibilities and boundaries
 
-Runtime provides in-process business execution and Route scheduling: Handler dispatch, serial Route execution, context binding, local events, timers, and cross-Route calls.
+Runtime provides in-process business execution and Route scheduling: Handler and HTTP method dispatch, serial Route execution, context binding, local events, timers, and cross-Route calls.
 
-It does not own connections, RPC Peer selection, business codecs, login/authentication, response sending, persistence, or distributed transactions. Integration constructs contexts from trusted sources and explicitly chooses Route. Runtime depends on neither Network nor RPC.
+It does not own connections, RPC Peer selection, ordinary-message/request business codecs, login/authentication, persistence, or distributed transactions. HTTP business result encoding belongs to its HTTP adapter. Integration constructs contexts from trusted sources and explicitly chooses Route. HTTP dispatch hands returned or deferred responses to the transport's completion capability; the transport owns actual delivery. Ordinary message dispatch leaves replies to integration.
 
 Shared Metadata/errors: [Core](OGBS-Core-1.0.md). Business failures use business results, not Runtime framework codes.
 
@@ -108,6 +108,7 @@ Validate and freeze:
 5. Valid Handler/Event/Cron signatures.
 6. At most one RouteKey extractor per message type.
 7. Valid Cron expressions and target Routes.
+8. Unique HTTP method+raw path, valid signatures/Domains and RouteKey rules, and an explicit context factory for endpoints without a Key rule.
 
 **RT-BUILD-01**: Failed builds return no partially usable Runtime. After success, mutation of original registration objects cannot change protocol tables.
 
@@ -141,6 +142,7 @@ Accepted dispatch is not business success; successful Handler execution is not r
 | Context | Domain, Key |
 | InvocationContext | Context + businessIdType, businessId, Metadata |
 | HandlerContext | InvocationContext + message |
+| HttpContext | Context + borrowed HTTP request + response completion capability |
 | EventContext | InvocationContext + event |
 | TimerContext | Context |
 | RouteCallContext | InvocationContext |
@@ -164,6 +166,7 @@ TimerContext carries no business identity/Metadata. Explicitly capture suitable 
 | Operation | Execution context | Identity/Metadata | Custom fields |
 | --- | --- | --- | --- |
 | dispatch | Supplied HandlerContext | Supplied values | Preserve original instance fields |
+| HTTP dispatch | Default or factory-created HttpContext | Explicit routing rule; no implicit business identity/Metadata | Preserve original instance fields |
 | Event from same-Runtime InvocationContext | New EventContext | Inherit | No automatic copy |
 | Event from external thread/other Runtime | New EventContext | Defaults/empty | No copy |
 | Cross-Route computation | New RouteCallContext | Inherit if source is InvocationContext | No automatic copy |
@@ -387,3 +390,35 @@ V1 defines no cross-process Route migration, persistent tasks, automatic retry, 
 | Build validation | [GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java) |
 
 These are current verification entries, not exhaustive enumeration of every race. Extensions need targeted admission, context restoration, closure-race, and callback-rejection tests.
+
+<a id="runtime-http-profile"></a>
+
+## 12. HTTP business dispatch
+
+HTTP dispatch is an optional Runtime entry point using the same complete Route identity and admission boundary as ordinary Handlers, Events, and calls. Transport framing, connection sequencing, and response delivery remain in the [Network HTTP profile](OGBS-Network-1.0.md#http-server-profile). Java annotations and dependencies are defined in the [Java binding](OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).
+
+**RT-HTTP-01**: Explicitly register and freeze endpoints identified by HTTP method and raw path. Ignore the query during endpoint lookup; do not decode percent escapes, normalize paths, remove trailing slashes, match templates, or infer HEAD/OPTIONS behavior. Duplicates fail at build. Unknown paths return 404; a known path with an unregistered method returns 405 and its allowed methods. The initial profile accepts origin-form request targets, rejects malformed targets with 400, and does not implement CONNECT tunneling.
+
+**RT-HTTP-02**: Registration selects a registered Domain. Before Route admission, select a nonzero Key through the explicit endpoint/handler rule (RT-HTTP-07), or the application context factory if no rule exists. With a rule and no factory, create the default HTTP context containing Route, request, and response completion capability. A supplied factory receives the selected Key and must preserve it; it may add application-specific HTTP fields such as session data. The HTTP context does not define business identity or Metadata. No implicit player field or submitting-thread identity is supplied. A factory can reject explicitly without executing the method; invalid input/zero Key returns 400. An incompatible factory result is an integration failure, reported to Runtime error handling and completed as a server failure.
+
+**RT-HTTP-03**: Execute accepted methods under the same Route executor and context scope as other Runtime entries. Same complete Route work never overlaps and nested same-Route work may inline. The HTTP context follows the base Context model rather than the invocation identity model. Under the ordinary Context inheritance rules, Events/calls from it receive default identity and empty Metadata; call callbacks restore the exact HTTP context, including its custom fields. HTTP has no framework invocation envelope carrying business identity or Metadata, and a routing Key is not authenticated identity. Application-specific fields are not automatically copied into Event/call contexts. Key extraction and factory execution occur before the Route and must not access Route-owned mutable business state.
+
+**RT-HTTP-04**: A method either returns a business object for automatic completion or returns no result and explicitly completes later with a business object. The result contract contains no transport-specific response envelope or protocol version. First response/failure completion wins; losing objects are not encoded. Completing a response does not prove transport delivery or business success. A method exception or encoding failure is reported and attempts server-failure completion; a previously completed result is not replaced. Null is a valid object result, not an execution failure. No automatic business retry occurs.
+
+**RT-HTTP-05**: Runtime owns one additional request reference from submission through method return/exception, releasing it also on rejection. Request access inside the method is borrowed. Later response completion or restoration of the same context does not extend that borrow: asynchronous users must independently retain/copy and release their own resources. Business results remain ordinary caller-owned values; the adapter owns encoded transport resources and releases them on failed/late delivery. Deferred result data must be independently usable after the request borrow ends.
+
+**RT-HTTP-06**: Runtime/executor closure or overload rejects new HTTP work with 503 and no business execution. Already admitted work remains the executor's responsibility, including release of its request reference. Runtime close does not own the HTTP server or await all requests. Disconnect does not cancel admitted business actions or undo effects. Runtime imposes no deferred-response deadline; applications arrange completion and shutdown, while Network owns transport inactivity/closure. An external callback gains no Route access rights merely by holding an HTTP context.
+
+For example, a player HTTP method starts a guild call and returns. Runtime releases its request reference and may run more player actions. The guild callback later enters the original player Route with the original HTTP context; it may recheck player state and reply, but cannot read the borrowed request. Capture immutable body data first, or own an independent retained reference. If callback admission fails, ordinary call failure reporting applies and HTTP response completion is not guaranteed.
+
+The confirmed tradeoff is one business execution model for the HTTP entry points common to game services, with transport lifecycle and authentication still explicit. Exact raw paths keep endpoint selection predictable and avoid a second routing framework. Reconsider only with concrete needs for templates, body binding, or additional HTTP profiles; automatic request DTO binding, multipart/streaming dispatch, HTTP client support, guaranteed callback delivery, and production capacity certification are outside this implementation.
+
+Implementation and validation: [RuntimeHttp](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeHttp.java), [RuntimeHttpTest](../../game-runtime/src/test/java/cn/managame/runtime/http/RuntimeHttpTest.java), and [RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java). Tests cover matching, admission, reference ownership, completion races, context propagation, closure, and real HTTP transport integration.
+
+**RT-HTTP-07 — Explicit Key selection.** An endpoint may override its Handler's default Key selector as a whole; an absent endpoint selector inherits the Handler rule. A selector is either an exact field name or an explicit extraction method, not both. A field selector reads one decoded query parameter for GET and one top-level JSON body property for other methods, without falling back between sources. JSON must be one complete valid UTF-8 object, with no duplicate property names or trailing value. The selected value is a nonzero signed 64-bit integer or decimal integer string; do not truncate fractions, floating-point/exponent numbers, or overflow. Missing/duplicate/invalid values return 400 before factory/admission, with no business execution. Custom extraction runs before admission, returns a nonzero Key, and may reject invalid input; unexpected failures are diagnosed and attempt server-failure completion. Once a selector is configured, failure never falls back to a class rule or factory Key. Extraction preserves the readable request body and its ownership. JSON nesting/size limits are defined by the language binding and do not replace transport limits. The Key is routing input, not authenticated business identity.
+
+For example, a Handler defaults to field `playerId`, while one endpoint overrides to `guildId`. GET `/guild?playerId=42&guildId=73` selects Key 73; POST `/guild` with body `{"playerId":42,"guildId":73}` also selects 73. Missing guildId rejects even when playerId exists. A malformed body rejects even if the Key appears before the malformed part. [HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java) covers source selection, override/failure boundaries, full JSON validation, integer limits, custom extraction, and body ownership. Explicit field selection avoids per-endpoint boilerplate without introducing automatic DTO binding or trust inference.
+
+**RT-HTTP-08 — Business results and encoding.** Default object completion uses status 200 and UTF-8 JSON, including JSON null for a null result. Explicit asynchronous completion may supply a final numeric status without constructing a transport response. A configurable result codec may supply another media representation. Encode the winning result synchronously in the completing thread; automatic method results encode on that Route, while arbitrary external callbacks gain no Route access rights. The object must be stable during encoding and must not borrow expired request content. After successful encoding, transport sends independently owned bytes; it does not retain the business object for later serialization. Encoding errors are Runtime execution errors and attempt server failure, without retry or rollback of business effects. A later transport profile must preserve this business result contract; the current implementation still supports only the Network HTTP/1.1 profile.
+
+For example, a method returns a player snapshot `{id, name}` rather than building an HTTP/1.1 response. A cross-Route completion supplies the same snapshot through its result callback. Both use the configured result codec and the same first-completion rule. A response received by a peer does not imply a database commit. [HttpResultTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpResultTest.java) covers DTO/null encoding, deferred results, completion races, encoding failures, custom media representation, and unsupported transport result rejection. Protocol-specific framing remains Network's responsibility.

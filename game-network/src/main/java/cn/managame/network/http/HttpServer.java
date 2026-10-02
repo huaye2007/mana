@@ -14,13 +14,13 @@ import java.net.SocketAddress;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-import java.util.function.Function;
+import java.util.function.BiConsumer;
 
 /** Independent one-shot HTTP/1.1 listener. Externally supplied groups remain caller-owned. */
 public final class HttpServer implements AutoCloseable {
     static final System.Logger LOG = System.getLogger("cn.managame.network.http");
     private final SocketAddress address;
-    private final Function<FullHttpRequest, FullHttpResponse> handler;
+    private final BiConsumer<FullHttpRequest, HttpResponseCallback> handler;
     private final List<Consumer<ChannelPipeline>> pipelines;
     private final EventExecutorGroup executor;
     private final ChannelFactory<? extends ServerChannel> factory;

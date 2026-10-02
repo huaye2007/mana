@@ -11,9 +11,9 @@ Every component requires both a **language-independent specification** and a **J
 | Component | Language-independent specification | Java 25 development specification | Implementation status |
 | --- | --- | --- | --- |
 | game-core | [Core Specification](OGBS-Core-1.0.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.md) | Implemented; shared Metadata and error codes |
-| game-runtime | [Runtime Specification](OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.md) | Implemented; Route, Context, Handler, Event, Timer/Cron |
+| game-runtime | [Runtime Specification](OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.md) | Implemented; Route, Context, Handler, HTTP annotations/dispatch/object results, Event, Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.md) | Implemented; real MySQL/MongoDB validation requires configured services |
-| game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS and independent HTTP/1.1 server |
+| game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS and independent HTTP/1.1 server with synchronous/callback responses |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.md) | Implemented; internal TCP, multiple Slots, calls, heartbeat/reconnection |
 
 Specifications are version 1.0 repository drafts; Java modules are 1.0.0-SNAPSHOT on JDK 25. A specification's existence does not establish implementation or validation of every capability. Maintain status and limits accurately.
@@ -93,6 +93,8 @@ flowchart LR
     C --> D[game-data]
     C --> R[game-rpc]
     N[game-network] --> R
+    N --> RT
+    RT --> E
     N --> E[game-example]
     R --> E
     RT --> A[Application integration]
@@ -100,7 +102,7 @@ flowchart LR
     R --> A
 ```
 
-Arrows run from dependency to consumer. The root build includes Core, Runtime, Data, Network, RPC, and [game-example](../../game-example/README.md). game-example contains Network/RPC application examples under their existing specification pairs, not a separate framework component. Automatic RPC→Runtime integration and Data examples are unimplemented. Network and Runtime are independent; application integration owns business codecs, identity validation, Context creation, replies, and Route scheduling.
+Arrows run from dependency to consumer. The root build includes Core, Runtime, Data, Network, RPC, and [game-example](../../game-example/README.md). game-example contains Network/Runtime HTTP/RPC application examples under their existing specification pairs, not a separate framework component. Automatic RPC→Runtime integration and Data examples are unimplemented. Runtime depends on Network for HTTP entry, with explicit GET query/other-method JSON RouteKey fields or extraction methods, optional application HTTP context enrichment, and returned or callback responses. Network owns transport lifecycle/delivery; ordinary message codecs/replies and RPC integration remain application responsibilities. See [Runtime HTTP semantics](OGBS-Runtime-1.0.md#runtime-http-profile) and [Java binding](OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).
 
 <a id="版本与验证边界"></a>
 

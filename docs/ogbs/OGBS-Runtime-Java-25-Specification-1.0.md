@@ -12,13 +12,14 @@ Status: current repository implementation contract. Semantics: [OGBS Runtime](OG
 
 ## 1. Module and main API
 
-Maven: `cn.managame:game-runtime:1.0.0-SNAPSHOT`. Entry package: `cn.managame.runtime`, with responsibility-based subpackages. Depends on `game-core`; requires Java 25.
+Maven: `cn.managame:game-runtime:1.0.0-SNAPSHOT`. Entry package: `cn.managame.runtime`, with responsibility-based subpackages. Depends on `game-core`, `game-network`, and Jackson Databind 2.21.3 (transitive Core/Annotations) for HTTP result encoding and JSON Key extraction; requires Java 25. HTTP is a subpackage of this artifact, with native Netty HTTP types, not another Maven module. Runtime has no RPC dependency.
 
 Signature excerpts below; source defines the types.
 
 ```java
 public interface GameRuntime extends AutoCloseable {
     void dispatch(HandlerContext context);
+    HttpDispatcher http();
     <T> void call(int routeDomain, long routeKey,
                   Supplier<T> action, RouteCallback<T> callback);
     EventBus eventBus();
@@ -35,7 +36,7 @@ public interface RouteCallback<T> {
 }
 ```
 
-No separate start, dynamic registration, or public arbitrary Runnable dispatch. Successful build is usable; network callbacks need integration-created HandlerContext and dispatch.
+No separate start, dynamic registration, or public arbitrary Runnable dispatch. Successful build is usable; ordinary network messages need integration-created HandlerContext and dispatch. HTTP connects through `asyncHandler(runtime.http()::dispatch)`; see [§13](#runtime-http-api).
 
 Public packages:
 
@@ -47,6 +48,7 @@ Public packages:
 | cn.managame.runtime.executor | Executor SPI, bindings, official implementations |
 | cn.managame.runtime.protocol | Descriptors, registration, request/response association |
 | cn.managame.runtime.handler | Handler annotations |
+| cn.managame.runtime.http | HttpHandler, HttpMethod, HttpDispatcher, HttpContext, DefaultHttpContext, HttpContextFactory, HttpResultCallback, HttpResultCodec |
 | cn.managame.runtime.event | Event, EventBus, annotations |
 | cn.managame.runtime.timer | RuntimeTimer, TimerRef, Cron, CronScheduler |
 | cn.managame.runtime.time | GameTime |
@@ -66,6 +68,9 @@ GameRuntimeBuilder.builder()
     .protocols(Iterable<? extends ProtocolProvider>)
     .routeKeys(Iterable<RouteKeyBinding<?>>)
     .handlers(Iterable<?>)
+    .httpHandlers(Iterable<?>)
+    .httpContextFactory(HttpContextFactory)
+    .httpResultCodec(HttpResultCodec)
     .eventHandlers(Iterable<?>)
     .cronHandlers(Iterable<?>)
     .errorHandler(RuntimeErrorHandler)
@@ -77,7 +82,7 @@ List setters replace previous configuration and copy each Iterable, without accu
 
 `RouteDomain.of(int id, String name)` requires id>0 and nonnull name. `RouteExecutorBinding.of(executor, int... domains)` needs at least one Domain. Every registered Domain binds exactly one Executor; unknown Domains reject.
 
-Build parses annotations and compiles MethodHandles, then freezes registries. No classpath scanning; callers provide instances. Annotated methods must be public instance void methods without varargs. Invalid configuration generally throws IllegalArgumentException; null may throw NullPointerException.
+Build parses annotations and compiles MethodHandles, then freezes registries. No classpath scanning; callers provide instances. Handler/Event/Cron methods must be public instance void methods without varargs. HTTP methods may return ordinary business objects instead of void; transport response types and primitive return declarations are rejected. Invalid configuration generally throws IllegalArgumentException; null may throw NullPointerException.
 
 Failed build does not close supplied Executors; successful Runtime owns their closure. Independently managed Runtimes must not share a closable Executor without explicit external-ownership adaptation.
 
@@ -85,7 +90,7 @@ Failed build does not close supplied Executors; successful Runtime owns their cl
 
 ### 2.1 Required build work
 
-Do not defer parsing until the first message. Before returning, compile Domain/Executor bindings, protocols/response relations, Key extractors, Handler/Event/Cron methods, and expressions. Reject duplicate/unresolvable definitions at startup, preventing arrival order from choosing a Handler.
+Do not defer parsing until the first message. Before returning, compile Domain/Executor bindings, protocols/response relations, Key extractors, Handler/Event/Cron and HTTP methods, and expressions. Reject duplicate/unresolvable definitions at startup, preventing arrival order from choosing a Handler.
 
 ```text
 Application creates business objects and Executors explicitly
@@ -186,6 +191,11 @@ interface HandlerContext extends InvocationContext { Object message(); }
 interface EventContext extends InvocationContext { Event event(); }
 interface TimerContext extends Context {}
 interface RouteCallContext extends InvocationContext {}
+// cn.managame.runtime.http; full contract in section 13
+interface HttpContext extends Context {
+    FullHttpRequest request();
+    HttpResultCallback responseCallback();
+}
 ```
 
 Metadata is in `cn.managame.core`. Default constructors:
@@ -564,3 +574,69 @@ Existing regression entry points, not exhaustive enumeration of thread interleav
 | Clock changes do not auto-reschedule | CronSchedulerTest.changingGameClockNeedsExplicitRescheduleAndDoesNotChangeDynamicTimer |
 | Queued old generation invalidated; running old completion cannot overwrite new | CronSchedulerTest.cancellationAndRescheduleInvalidateAlreadyQueuedGenerations / rescheduleDuringExecutionCannotBeUndoneByOldCompletion |
 | Shared Executor closed once, error handler isolated | RuntimeTest.sharedExecutorClosesOnceAndErrorHandlerCannotEscape |
+
+<a id="runtime-http-api"></a>
+
+## 13. HTTP annotations and Route integration
+
+This binding implements [RT-HTTP-01–08](OGBS-Runtime-1.0.md#runtime-http-profile) inside game-runtime. Network's [HttpResponseCallback](OGBS-Network-Java-25-Specification-1.0.md#http-async-response) is the adapter's transport boundary; business code uses HttpResultCallback with ordinary objects. There is no CompletionStage or separate business executor.
+
+### 13.1 Registration, context, and public types
+
+`GameRuntime.http()` returns the frozen HttpDispatcher. Its `void dispatch(FullHttpRequest, cn.managame.network.http.HttpResponseCallback)` borrows the request; connect it with `HttpServerBuilder.asyncHandler(runtime.http()::dispatch)`. Business objects never implement this transport callback. Builder `httpHandlers(Iterable<?>)` copies/replaces registrations, default empty; `httpContextFactory(HttpContextFactory)` rejects null. A factory is required for endpoints without a Key rule or with a custom context type incompatible with DefaultHttpContext; other endpoints can use the default context. An empty registry returns 404 while open without a factory.
+
+`@HttpHandler` is an inherited runtime type annotation with `int domain() default 0`. `@HttpMethod` is a runtime method annotation with required `String value()` (raw path), `String method() default "GET"`, and `int domain() default 0`. Their routeKey/routeKeyMethod defaults and override rules are in §13.4. Nonzero method Domain overrides class Domain; the effective Domain must be registered. Each supplied target needs @HttpHandler. Methods are public instance non-varargs methods returning void or a reference type for a business result. Primitive return declarations and types implementing Netty HttpObject (including FullHttpResponse) fail build; boxed numbers, records, POJOs, maps, lists, and strings are ordinary result objects. Parameters remain zero to two: at most one exact FullHttpRequest and one compatible Context/HttpContext or custom HttpContext subtype, either order. InvocationContext parameters are rejected because HttpContext is not an InvocationContext. No DTO request binding or future unwrapping is performed. Invalid signatures, incompatible default contexts, missing required factories, duplicate endpoints, or unknown Domains fail build before executor ownership transfers. Handler/Event/Cron retain their void contracts.
+
+Paths start with `/`, have no query/fragment/space/control characters, and match raw case-sensitive text. The verb is an uppercase native token; CONNECT is rejected. Query is excluded without decoding for matching: `/player?id=42` matches `/player`; `/player/` and `/%70layer` do not. No automatic HEAD→GET, OPTIONS, classpath scanning, or streaming method API.
+
+`HttpContext extends Context` adds `FullHttpRequest request()` and **`HttpResultCallback responseCallback()`** to routeDomain()/routeKey(). It defines no businessIdType(), businessId(), or metadata(). Extensible `DefaultHttpContext extends DefaultContext` has only `(int domain, long key, FullHttpRequest, HttpResultCallback)` and requires nonnull request/callback. Application session/authentication fields may live in a custom HttpContext subtype; Runtime does not infer or copy them to EventContext/RouteCallContext. With an ordinary HTTP source, those target contexts use identity 0/0 and empty Metadata; the callback restores the same original HTTP instance. This follows the existing base Context rules rather than introducing HTTP-specific identity propagation.
+
+The functional `HttpContextFactory.create(int domain, long routeKey, FullHttpRequest request, HttpResultCallback callback)` runs on ingress before Route admission, without binding a new Context. Preserve selected Domain/Key, the exact request/result callback, and a compatible context instance. If supplied routeKey is zero (no annotation rule), choose a nonzero Key. The callback is Runtime's completion gate. Do not release the borrowed request; additional retained references are application-owned. The factory can call `callback.onResponse(401, errorObject)` and return null, skipping business execution. No implicit identity trust, header authentication, RouteKeyRegistry lookup, or submitting-context inheritance is provided.
+
+### 13.2 Object completion, encoding, errors, and ownership
+
+`HttpResultCallback` exposes `boolean onResponse(Object result)` (default status 200), `boolean onResponse(int statusCode, Object result)`, and `boolean onFail(Throwable cause)`. Status must be 200..599; invalid status throws IllegalArgumentException and null failure cause throws NullPointerException before claiming completion. A null result is valid and defaults to JSON `null`. Void return does not automatically respond; the method explicitly completes now or later. Object return automatically completes, including null. No Runtime deadline or implicit business retry is added.
+
+Builder `httpResultCodec(HttpResultCodec)` selects a nonnull codec. Default `HttpResultCodec.json()` creates an independent Jackson ObjectWriter using ObjectMapper defaults: UTF-8 JSON and `application/json; charset=UTF-8`, with no automatic module discovery. Supported beans/records/collections follow Jackson configuration, not arbitrary-object serialization guarantees. Unsupported properties, getter exceptions, or encoding failures complete as server failures. A custom codec can supply application serializer/modules; its functional `byte[] encode(Object result) throws Exception` returns an independently owned nonnull byte array, and `String contentType()` defaults to JSON. Build captures and validates nonblank Content-Type using native header validation before starting resources. The codec instance is retained, not deep-copied; encode must be thread-safe across Routes and callback threads, and its returned array must not be mutated after transfer. There is no ObjectMapper/Netty/HTTP-version type in the codec signature.
+
+An atomic gate claims completion before encoding. Only the winning result is encoded, synchronously in its calling thread; losing results are ignored without encoding or resource transfer. The caller retains ordinary object ownership and must keep it stable during encode; use immutable DTOs/snapshots rather than mutable Route state in external callbacks. The encoder holds no object for deferred serialization after return. Automatic result encoding stays inside the method's Route task, without another queue/executor. The adapter creates an owned transport response from encoded bytes and configured media type; actual framing/version/HEAD/204/304 normalization and delivery belong to Network. Numeric status and object result contain no protocol version. Runtime currently serves only HTTP/1.1; additional transport profiles are unimplemented.
+
+Encoding exceptions or null encoded byte arrays report RUNTIME_EXECUTION_ERROR and invoke the Network failure callback once, producing 500/close in its current profile. An asynchronous encoding failure reports the original HTTP context even after the method returned; a factory completion uses selected Domain/Key 0 diagnostics until a compatible context is established. Returning a transport object dynamically through Object or passing a Netty HttpObject/ReferenceCounted value also fails completion; unsupported reference-counted arguments are not consumed and remain caller-owned. Business callbacks do not accept or consume FullHttpResponse/ByteBuf. Completion boolean reflects first transport completion acceptance, not serialization success, peer receipt, or persistence. A disconnected pending winner may still encode before transport rejects/discards the resulting bytes; duplicate results do not encode.
+
+| Boundary | HTTP outcome | Runtime/business behavior |
+| --- | --- | --- |
+| Closed Runtime | 503 before lookup | Method not executed |
+| Non-origin target or fragment | 400 | Method not executed |
+| Missing path/wrong verb | 404 / 405 with sorted Allow | Factory/method not executed |
+| Invalid extraction/factory input or zero Key | 400 | Method not executed; invalid extraction skips factory |
+| Factory completes explicitly | Encoded object response or failure | Method not executed |
+| Incompatible factory result or unexpected extraction/factory exception | onFail; Network 500/close | RUNTIME_EXECUTION_ERROR; selected Domain/Key 0 |
+| Overload/executor closure or close racing submission | 503 | Method not executed; retained request released |
+| Method throws | onFail unless already completed | RUNTIME_EXECUTION_ERROR; no retry |
+| Winning result encode fails | Network failure callback | RUNTIME_EXECUTION_ERROR; no retry/rollback |
+| Object return is null | 200, JSON null by default | Normal completion |
+| Void return | Pending until explicit completion/closure | No automatic result |
+
+Null dispatcher arguments throw before request retain or completion. RuntimeErrorHandler exceptions follow isolated logging. Business failure results can return application DTOs/status without framework errors. Network transport normalization remains separate from the codec. Error responses expose no exception details.
+
+Runtime retains the request before Route submission and releases after business invocation and automatic result encoding, or immediately on rejection. The same Route executor/context path as Handler/Event/call supplies same Domain/Key serialization and nested inlining. A later call callback restores the original HttpContext but does not reacquire a request reference. Copy request data before return or own/release an independent retained reference across every async/admission-failure path. Disconnect does not cancel admitted business work. Runtime.close rejects new entry, lets executors drain admitted work, and does not close HttpServer or await deferred completions. A callback admission failure can leave a response unfinished; arrange in-flight completion before service shutdown.
+
+### 13.3 Example, compatibility, and validation
+
+[RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) returns an application EchoResult record for POST `/echo` and submits PlayerResult through a cross-Route callback for GET `/lookup`. POST body field playerId is the class Key default; GET query field lookupId overrides it. The example uses the default HttpContext without a factory and reads routeKey(); these Keys are routing input and do not establish authenticated identity. Business methods construct no FullHttpResponse or HTTP version. The [execution test](../../game-example/src/test/java/cn/managame/example/runtime/RuntimeHttpExampleTest.java) verifies UTF-8 DTO results over real HttpServer.
+
+Sources: [public HTTP package](../../game-runtime/src/main/java/cn/managame/runtime/http), [RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java), [RuntimeHttp](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeHttp.java). Tests: [RuntimeHttpTest](../../game-runtime/src/test/java/cn/managame/runtime/http/RuntimeHttpTest.java), [HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java), [HttpResultTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpResultTest.java). They cover registration (including rejection of InvocationContext parameters), factories, HTTP-originated default Event/call identity, exact custom HTTP context restoration, shared Route ordering, query/body rules, ownership, deferred completion, DTO/null/custom-codec encoding, completion races, and encoding failure. Run root `mvn clean verify` for dependencies and `mvn -pl game-runtime -am test` for focused validation. Existing RPC tests/example referencing removed APIs currently block root verification; HTTP examples are separately compiled/run. Production capacity, every disconnection race, and additional HTTP versions remain unverified/unimplemented respectively.
+
+Runtime depends on game-core, game-network, and Jackson Databind, with no new artifact/RPC dependency. Custom GameRuntime implementations implement http(). Existing no-HTTP builders remain usable. HttpContextFactory now accepts selected long routeKey as its second argument and HttpResultCallback as its fourth; earlier three-argument/network-callback factories must migrate. DefaultHttpContext identity/Metadata constructor arguments and HTTP businessIdType()/businessId()/metadata() access are removed; use Route accessors or explicitly defined application context fields. HTTP methods taking InvocationContext must switch to Context/HttpContext or a custom HttpContext subtype. Ordinary InvocationContext propagation remains unchanged. Replace FullHttpResponse-returning methods with DTO/void and callback responses with business objects. This explicit contract change keeps response values independent of HTTP versions rather than retaining an incompatible native response API.
+
+### 13.4 RouteKey field and method rules
+
+Both @HttpHandler and @HttpMethod add `String routeKey() default ""` and `String routeKeyMethod() default ""`. Nonempty method-level configuration replaces the entire class rule, including when switching from field to method or vice versa; both empty inherits. Field and method cannot both be nonempty at either level; whitespace-only values fail build. No implicit field or Java getter-name inference is performed. If neither level has a rule, the context factory supplies the Key; otherwise extraction runs first and the optional factory must preserve it. Without a factory, DefaultHttpContext supplies Route, request, and result callback without identity/Metadata. Custom HttpContext subtype requirements still require a compatible factory.
+
+For `routeKey = "playerId"`, GET uses Netty QueryStringDecoder UTF-8 query decoding and requires exactly one value for the exact case-sensitive name; duplicates after decoding are rejected. Values are optional minus plus ASCII digits, parseable as long and nonzero; plus signs, blanks, fractions, exponent notation, and overflow reject. Other methods use a top-level property of one strict UTF-8 JSON object in the readable ByteBuf region, never query fallback. Integer number tokens or decimal integer strings are accepted. Floating-point/exponent tokens, null/boolean/array/object fields, missing fields, duplicate JSON names anywhere, malformed JSON, extra trailing values, invalid UTF-8, overflow, and zero return 400. Property names are literal: dots are not nested path expressions. Content-Type does not select the source or parser; configured non-GET field rules expect JSON regardless of that header. Applications choose media policy in their pipeline.
+
+The package-private HttpRouteKey uses Jackson Core's streaming JsonFactory with strict duplicate detection and charset detection disabled (UTF-8). It validates the full object before accepting the Key, uses a non-releasing ByteBufInputStream over duplicate() without modifying caller indices/refCnt, and does not deserialize a business DTO. Jackson 2.21.3 defaults limit depth to 1000, number length to 1000, string length to 20,000,000, and field-name length to 50,000; no extra total document/token limit is set. Constraint violations return 400; Network still bounds the complete request body and URI. Query decoding uses no additional parameter-count cutoff within Network's URI limit. No Runtime business thread or second queue is created for extraction.
+
+`routeKeyMethod = "playerKey"` binds exactly a public instance `long playerKey(FullHttpRequest request)` or Long-returning equivalent on the registered Handler object. Compile its MethodHandle once during build; missing/private/static, wrong arguments/return, or varargs fail build. No zero-argument getter or arbitrary reflection expression is inferred. The method runs on ingress before factory/admission, borrows the request, must not access Route-owned state, and may serve concurrent requests; its object fields gain no serialization. IllegalArgumentException maps to 400; other exceptions or null Long are diagnosed as RUNTIME_EXECUTION_ERROR and call onFail. A zero return maps to 400. Methods needing request data later must acquire independent ownership.
+
+For example, `@HttpHandler(domain=1, routeKey="playerId")` plus `@HttpMethod(value="/guild", method="POST", routeKey="guildId")` selects guildId from the body; the GET version selects guildId from query. A custom `routeKeyMethod="playerKey"` replaces the class field rule and calls the declared extractor. Failure never retries another selector or lets a factory change the selected Key. [HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java) tests both override directions, source isolation, full JSON validation, malformed UTF-8, exact 64-bit bounds, preserved buffer indices/refCnt, factory Key preservation, and extraction/registration failures. The updated runnable [RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) exercises body/query extraction over a real HttpServer.

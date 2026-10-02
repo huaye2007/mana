@@ -11,21 +11,20 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-core | 共享 Metadata、类型化 MetadataKey、统一框架错误码 |
 | game-network | TCP / 二进制 WebSocket Connection API、原生 TLS / WSS，以及独立 HTTP/1.1 HttpServer |
 | game-rpc | RpcNode、主动/被动 Peer、固定 Slot、握手、心跳、重连、call / notify / reply，以及 Netty Wire 编解码 |
-| game-runtime | Route 执行、Context、Handler、Event、GameTime、可取消 Timer / Cron、跨 Route call |
+| game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
-| [game-example](game-example/README.zh-CN.md) | Network、RPC 可运行示例与示例执行测试 |
+| [game-example](game-example/README.zh-CN.md) | Network、Runtime HTTP、RPC 可运行示例与示例执行测试 |
 
 依赖方向：
 
 ```text
-game-core ──────→ game-runtime
-    ├──────────→ game-data
-    └──────────→ game-rpc ←──── game-network
-                     ↓              ↓
-                  game-example ←────┘
+game-core ──────→ game-data
+    ├──────────→ game-runtime ←──── game-network
+    └──────────→ game-rpc     ←──── game-network
+game-network / game-runtime / game-rpc ───→ game-example
 ```
 
-game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。Runtime 不依赖 RPC、网络、Spring 或业务序列化。
+game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。Runtime 为 HTTP 注解与 Route 接入依赖 game-core 和 game-network，不依赖 RPC、Spring 或业务序列化。
 
 Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包。Network 入口见 [game-network](game-network/README.zh-CN.md)；RPC 入口见 [game-rpc](game-rpc/README.zh-CN.md)。
 
@@ -58,12 +57,12 @@ mvn -pl game-network -am test
 
 在 IDE 运行 [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 
-[HttpServerExample](game-example/src/main/java/cn/managame/example/network/HttpServerExample.java) 演示独立 HTTP/1.1 服务端、应用 health/echo handler 和 JDK 示例调用方。框架 API 位于 cn.managame.network.http，详见 [HTTP 契约](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。
+[HttpServerExample](game-example/src/main/java/cn/managame/example/network/HttpServerExample.java) 演示独立 HTTP/1.1 服务端、应用 health/echo handler 和 JDK 示例调用方。[HttpAsyncServerExample](game-example/src/main/java/cn/managame/example/network/HttpAsyncServerExample.java) 演示 asyncHandler 与应用执行器上的 HttpResponseCallback 完成。框架 API 位于 cn.managame.network.http，详见 [HTTP 契约](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。
 
 Network 测试覆盖 TCP/TLS/WS/WSS、顺序、引用计数、异常、背压、握手失败及关闭/中断竞争。临时证书由当前 JDK keytool 创建。Windows Network 测试让 JDK Selector 唤醒管道回退到 TCP，并限定默认 Netty 线程数；生产框架不修改 JVM 属性。数据库实机验证状态见 Data 模块文档。
 ## Runtime 包结构与业务时间
 
-[game-runtime 模块目录](game-runtime/README.zh-CN.md) 按 context、route、executor、protocol、handler、event、timer、time、error、internal 划分职责。根包只保留 GameRuntime / GameRuntimeBuilder；使用方需要按新子包更新 import。
+[game-runtime 模块目录](game-runtime/README.zh-CN.md) 按 context、route、executor、protocol、handler、http、event、timer、time、error、internal 划分职责。根包只保留 GameRuntime / GameRuntimeBuilder；使用方需要按新子包更新 import。
 
 ```java
 import cn.managame.runtime.time.GameTime;
@@ -133,3 +132,13 @@ RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot�
 - 当前提供 Core、Network、RPC、Runtime、Data 实现与测试；RPC 包含真实 TCP 与重连测试，自动 Runtime 接入仍待实现，尚未进行生产容量基准测试。Spring 自动装配、协议代码生成、服务发现、Router、业务 codec 均为外围集成。
 
 详见 [架构与执行契约](docs/architecture.zh-CN.md) 和 [本仓库 RPC Wire Profile](docs/rpc-wire.zh-CN.md)。
+
+<a id="runtime-http"></a>
+
+## HTTP 业务入口
+
+`cn.managame.runtime.http` 在 game-runtime artifact 中提供 `@HttpHandler`、`@HttpMethod`、`HttpContext`、`DefaultHttpContext`、`HttpContextFactory`、`HttpResultCallback`、`HttpResultCodec`、`HttpDispatcher`。HttpContext 继承基础 Context，包含 Route、请求及结果回调，不含业务身份/Metadata 字段。依赖 game-network，与 Handler/Event/call 共用 Domain/RouteKey 执行器。
+
+通过 `httpHandlers(...)` 注册实例，在 @HttpHandler/@HttpMethod 设置 `routeKey="playerId"`，GET 从 query 取字段，其他方法从 JSON body 顶层字段提取；方法配置覆盖类规则。也可设置 routeKeyMethod 指向 Handler 提取方法。可选的四参数 `httpContextFactory(domain, key, request, callback)` 保留选定 Key，可增加应用自定义 HTTP Context 字段；无规则时必须提供工厂选 Key。通过 `HttpServer.builder().asyncHandler(runtime.http()::dispatch)` 接入。public 方法返回业务 DTO/对象或 void，延迟完成使用 `context.responseCallback().onResponse(dto)`。Runtime 默认编码 JSON，在内部创建传输响应，业务结果不携带 HTTP 版本；通过 `httpResultCodec(...)` 自定义结果编码。按原始方法/path 精确匹配，不自动绑定请求 DTO 或推导玩家 ID。请求只借用到方法返回；延迟完成响应不会延长请求生命周期。
+
+运行 [RuntimeHttpExample](game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 查看注解 echo 和跨 Route 延迟响应。详见 [HTTP 语义](docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 与 [Java API、失败及所有权](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
