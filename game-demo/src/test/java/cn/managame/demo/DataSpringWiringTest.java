@@ -6,9 +6,13 @@ import cn.managame.demo.bus.user.UserService;
 import cn.managame.demo.common.mysql.MysqlConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.event.ContextRefreshedEvent;
+import org.springframework.core.env.MapPropertySource;
 import javax.sql.DataSource;
 import java.lang.reflect.Proxy;
 import java.sql.*;
+import java.util.Map;
+import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DataSpringWiringTest {
@@ -20,14 +24,25 @@ class DataSpringWiringTest {
         GameData data;
         UserRepository repository;
         try(var context=new AnnotationConfigApplicationContext()) {
+            context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("test-database", Map.of(
+                    "game.db.url", "jdbc:mysql://localhost/demo_test",
+                    "game.db.username", "demo_test_user",
+                    "game.db.password", "test:password")));
             // A borrowed in-memory JDBC stub prevents opening the demo's configured database.
             context.addBeanFactoryPostProcessor(factory -> {
                 ((org.springframework.beans.factory.support.BeanDefinitionRegistry)factory).removeBeanDefinition("dataSource");
                 factory.registerSingleton("dataSource",source);
             });
-            context.register(MysqlConfig.class,UserService.class);
+            context.scan("cn.managame.demo");
             context.refresh();
+            MysqlConfig config = context.getBean(MysqlConfig.class);
+            assertEquals("jdbc:mysql://localhost/demo_test", config.getUrl());
+            assertEquals("demo_test_user", config.getUsername());
+            assertEquals("test:password", config.getPassword());
+            assertNotNull(context.getEnvironment().getPropertySources().get("class path resource [application.properties]"));
             data=context.getBean(GameData.class); repository=context.getBean(UserRepository.class);
+            assertEquals(1, context.getBeansOfType(UserRepository.class).size());
+            assertSame(repository, context.getBean("userRepository"));
             assertSame(data.repository(UserRepository.class),repository);
             var field=UserService.class.getDeclaredField("userRepository"); field.setAccessible(true);
             assertSame(repository,field.get(context.getBean(UserService.class)));
@@ -35,7 +50,39 @@ class DataSpringWiringTest {
         }
         assertThrows(cn.managame.data.error.DataOperationException.class,()->repository.get(2L));
     }
-    private static Connection connection() {
+    @Test void missingJdbcUrlFailsBeforeOpeningAPool() {
+        var config = new MysqlConfig();
+        assertTrue(assertThrows(IllegalArgumentException.class, config::dataSource).getMessage().contains("game.db.url"));
+    }
+    @Test void applicationWaitsForContextClosureAndStopsWhenInterrupted() throws Exception {
+        verifyLifecycle(false);
+        verifyLifecycle(true);
+    }
+    private static void verifyLifecycle(boolean interrupt) throws Exception {
+        var context = new AnnotationConfigApplicationContext();
+        var ready = new CountDownLatch(1);
+        context.addApplicationListener((ContextRefreshedEvent event) -> ready.countDown());
+        var outcome = new CompletableFuture<Throwable>();
+        var application = Thread.ofPlatform().unstarted(() -> {
+            try { GameDemo.run(context); outcome.complete(null); }
+            catch (Throwable failure) { outcome.complete(failure); }
+        });
+        try {
+            application.start();
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            assertTrue(context.isActive());
+            assertFalse(outcome.isDone());
+            if (interrupt) application.interrupt(); else context.close();
+            Throwable failure = outcome.get(5, TimeUnit.SECONDS);
+            if (interrupt) assertInstanceOf(InterruptedException.class, failure); else assertNull(failure);
+            assertFalse(context.isActive());
+        } finally {
+            application.interrupt();
+            application.join(5000);
+            context.close();
+        }
+    }
+    static Connection connection() {
         return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),new Class[]{Connection.class},(p,m,a)->switch(m.getName()) {
             case "prepareStatement" -> statement((String)a[0]);
             case "close" -> null;

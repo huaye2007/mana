@@ -74,6 +74,8 @@ final void initialize(MysqlLogWriter logWriter, WriteBehindManager writer);
 
 Do not manually construct and inject repositories. Builder completes nonpublic initialization before admission. Extend EntityMapper for custom backends, not final CRUD methods.
 
+Spring integration belongs to applications, without a Spring dependency in game-data. The [game-demo adapter](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java) collects scanned singleton `@Repository` definitions for the three repository bases, registers their concrete types with Builder, and supplies `data.repository(type)` as each Spring Bean instance. It preserves names/qualifiers and Spring field/setter injection while ensuring Data initialization precedes injection callbacks and business access. The existing no-argument construction requirement remains; constructor dependency injection and non-singleton scopes are unsupported by this adapter. Repository Beans depend on GameData, which depends on the borrowed DataSource, so closure follows that dependency order. Validation: [DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) and [DataSpringWiringTest](../../game-demo/src/test/java/cn/managame/demo/DataSpringWiringTest.java). This is an application integration example, not a new framework initialization API.
+
 <a id="22-读写路径"></a>
 
 ### 2.2 Read and mutation paths

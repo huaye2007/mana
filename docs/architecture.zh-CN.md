@@ -8,7 +8,7 @@
 
 ## 应用骨架
 
-[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context；MysqlConfig 持有 Hikari DataSource，传给 GameDataBuilder.mysql(source)，并将 GameData 返回的已初始化 Repository 暴露为 Spring Bean。Bean 依赖保证 Data 先于应用连接池关闭，不再扫描创建第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。Spring 依赖管理仅在 game-demo 内配置，框架模块保持既有依赖边界。
+[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context 并执行用户/角色写入示例，不包含阻塞等待；MysqlConfig 持有 Hikari DataSource。GameDataConfig 收集组件扫描得到的业务 `@Repository` 类型，通过 GameDataBuilder.mysql(source) 构建 Data，并将 Data 初始化的实例作为对应 Spring Bean。Bean 依赖保证 Repository Bean 先于 Data、Data 先于应用连接池关闭，不再构造第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。Spring 依赖管理及 Repository 适配仅位于 game-demo，框架模块保持既有依赖边界。
 
 ## Network / RPC 包边界
 

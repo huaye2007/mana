@@ -70,6 +70,8 @@ final void initialize(MysqlLogWriter logWriter, WriteBehindManager writer);
 
 业务不应手动 new Repository 后自行填充这些依赖。initialize 不向业务公开，Builder 负责在开始接纳操作之前完整装配。自定义数据库后端通过 EntityMapper 扩展，不通过重写 final CRUD 改变契约。
 
+Spring 集成由应用负责，game-data 不引入 Spring 依赖。[game-demo 适配](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java) 收集扫描到的三种 Repository 基类的单例 `@Repository` 定义，将具体类型注册到 Builder，并以 `data.repository(type)` 提供对应 Spring Bean 实例。保留名称、限定符及 Spring 字段/setter 注入，确保 Data 初始化先于注入回调和业务使用。仍要求无参构造，此适配不支持构造器依赖注入及非单例作用域。Repository Bean 依赖 GameData，GameData 依赖借用的 DataSource，关闭按此依赖顺序执行。验证入口：[DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 与 [DataSpringWiringTest](../../game-demo/src/test/java/cn/managame/demo/DataSpringWiringTest.java)。这是应用集成示例，不新增框架初始化 API。
+
 ### 2.2 读写路径
 
 Single.get 校验初始化和运行状态、精确 Key 类型，随后调用 LoadingCache.get。Loader 使用 Mapper.load；返回 null 用 CacheEntity 包装成负缓存，抛异常则转换为 DataLoadException。不能直接把 null 存进 Caffeine，也不能把异常改写为 null。

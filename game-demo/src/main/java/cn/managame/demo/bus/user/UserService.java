@@ -9,11 +9,11 @@ public class UserService {
     private UserRepository userRepository;
 
 
-    public User getAndCreateUser(Long roleId){
-        User user = userRepository.get(roleId);
+    public User getAndCreateUser(Long userId){
+        User user = userRepository.get(userId);
         if(user == null){
             user = new User();
-            user.setUserId(System.nanoTime());
+            user.setUserId(userId);
             userRepository.insert(user);
         }
         return user;

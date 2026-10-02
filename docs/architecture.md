@@ -10,7 +10,7 @@ See the [OGBS 1.0 documentation index](ogbs/README.md) for component clauses and
 
 ## Application skeleton
 
-[game-demo](../game-demo/README.md) is a plain Spring application inheriting the repository's Java 25 baseline. It defines no new framework component. GameDemo initializes the Spring context; MysqlConfig owns the Hikari DataSource, passes it to GameDataBuilder.mysql(source), and exposes the initialized Repository returned by GameData as a Spring bean. Data closes before its application-owned pool through Bean dependencies; no second uninitialized Repository is component-scanned. Existing runnable component examples remain in game-example. Spring dependency management is local to game-demo; framework modules retain their existing dependency boundaries.
+[game-demo](../game-demo/README.md) is a plain Spring application inheriting the repository's Java 25 baseline. It defines no new framework component. GameDemo initializes the Spring context and runs a user/role write example without a blocking wait; MysqlConfig owns the Hikari DataSource. GameDataConfig collects component-scanned business `@Repository` types, builds Data with GameDataBuilder.mysql(source), and supplies Data's initialized instances as their Spring Beans. Repository Beans close before Data, and Data before its application-owned pool through Bean dependencies; no second uninitialized Repository is constructed. Existing runnable component examples remain in game-example. Spring dependency management and Repository adaptation are local to game-demo; framework modules retain their existing dependency boundaries.
 
 <a id="network--rpc-包边界"></a>
 
