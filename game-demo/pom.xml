@@ -8,8 +8,14 @@
   <artifactId>game-demo</artifactId>
   <properties>
     <spring.version>7.0.9</spring.version>
+    <fory.version>1.7.6</fory.version>
   </properties>
   <dependencies>
+    <dependency>
+      <groupId>org.apache.fory</groupId>
+      <artifactId>fory-core</artifactId>
+      <version>${fory.version}</version>
+    </dependency>
     <dependency>
       <groupId>org.springframework</groupId>
       <artifactId>spring-context</artifactId>
@@ -41,4 +47,15 @@
       <version>5.1.0</version>
     </dependency>
   </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--add-opens=java.base/java.lang.invoke=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>

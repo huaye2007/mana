@@ -4,6 +4,7 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.context.Context;
 import cn.managame.runtime.context.Contexts;
 import cn.managame.runtime.context.DefaultEventContext;
+import cn.managame.runtime.context.DefaultHandlerContext;
 import cn.managame.runtime.context.DefaultInvocationContext;
 import cn.managame.runtime.context.DefaultRouteCallContext;
 import cn.managame.runtime.context.DefaultTimerContext;
@@ -14,7 +15,9 @@ import cn.managame.runtime.error.RuntimeError;
 import cn.managame.runtime.error.RuntimeErrorHandler;
 import cn.managame.runtime.event.Event;
 import cn.managame.runtime.event.EventBus;
+import cn.managame.runtime.event.Events;
 import cn.managame.runtime.executor.RouteExecutor;
+import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.RouteCallback;
 import cn.managame.runtime.route.RouteKeyBinding;
@@ -24,6 +27,7 @@ import cn.managame.runtime.timer.RuntimeTimer;
 import cn.managame.runtime.http.HttpDispatcher;
 import cn.managame.runtime.http.HttpContextFactory;
 import cn.managame.runtime.http.HttpResultCodec;
+import cn.managame.network.connection.Connection;
 
 import cn.managame.core.*;
 import static cn.managame.core.FrameworkErrorCodes.*;
@@ -36,6 +40,7 @@ final class DefaultGameRuntime implements GameRuntime {
     private final ProtocolRegistry protocols;
     private final Map<Class<?>, RouteKeyBinding<?>> keys;
     private final Map<Class<?>, HandlerBinding> handlers;
+    private final HandlerContextFactory handlerContexts;
     private final Map<Class<?>, List<EventBinding>> events;
     private final RuntimeErrorHandler errors;
     private final RuntimeTimers timers;
@@ -44,9 +49,11 @@ final class DefaultGameRuntime implements GameRuntime {
     private final AtomicBoolean closed = new AtomicBoolean();
     DefaultGameRuntime(Map<Integer, RouteExecutor> routes, ProtocolRegistry protocols,
         Map<Class<?>, RouteKeyBinding<?>> keys, Map<Class<?>, HandlerBinding> handlers,
+        HandlerContextFactory handlerContexts,
         Map<Class<?>, List<EventBinding>> events, List<CronBinding> crons,
         Map<HttpEndpoint, HttpBinding> httpHandlers, HttpContextFactory httpContexts, HttpResultCodec httpResults, RuntimeErrorHandler errors) {
         this.routes=routes; this.protocols=protocols; this.keys=keys; this.handlers=handlers; this.events=events; this.errors=errors;
+        this.handlerContexts = handlerContexts;
         http = new RuntimeHttp(httpHandlers, httpContexts, httpResults, closed::get,
                 (context, action) -> submit(context, action, false),
                 (context, cause) -> report(RUNTIME_EXECUTION_ERROR, context, cause));
@@ -91,6 +98,40 @@ final class DefaultGameRuntime implements GameRuntime {
             };
         } catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); return RUNTIME_EXECUTION_ERROR; }
     }
+    public void dispatch(Connection connection, Object message) {
+        if (handlerContexts == null) {
+            dispatch(connection, 0, 0L, message);
+            return;
+        }
+        if (closed.get()) throw failure(RUNTIME_CLOSED);
+        Objects.requireNonNull(message, "message");
+        var handler = handlers.get(message.getClass());
+        if (handler == null) throw failure(HANDLER_NOT_FOUND);
+        HandlerContext context = Objects.requireNonNull(handlerContexts.create(handler.domain(), connection, message),
+                "HandlerContextFactory returned null");
+        if (context.routeDomain() != handler.domain()) throw failure(ROUTE_DOMAIN_MISMATCH);
+        if (context.message() != message || context.connection() != connection) throw failure(HANDLER_CONTEXT_MISMATCH);
+        dispatch(context);
+    }
+    public void dispatch(Connection connection, int businessIdType, long businessId, Object message) {
+        if (closed.get()) throw failure(RUNTIME_CLOSED);
+        Objects.requireNonNull(message, "message");
+        var handler = handlers.get(message.getClass());
+        if (handler == null) throw failure(HANDLER_NOT_FOUND);
+        var keyBinding = keys.get(message.getClass());
+        long key = keyBinding == null ? 0 : extractKey(keyBinding, message);
+        dispatch(new DefaultHandlerContext(handler.domain(), key, businessIdType, businessId, Metadatas.empty(), message, connection));
+    }
+    public void dispatch(Connection connection, long routeKey, Object message) {
+        dispatch(connection, routeKey, 0, 0L, message);
+    }
+    public void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message) {
+        if (closed.get()) throw failure(RUNTIME_CLOSED);
+        Objects.requireNonNull(message, "message");
+        var handler = handlers.get(message.getClass());
+        if (handler == null) throw failure(HANDLER_NOT_FOUND);
+        dispatch(new DefaultHandlerContext(handler.domain(), routeKey, businessIdType, businessId, Metadatas.empty(), message, connection));
+    }
     public void dispatch(HandlerContext context) {
         Objects.requireNonNull(context); validate(context.routeDomain(), context.routeKey());
         Object message = Objects.requireNonNull(context.message());
@@ -98,8 +139,9 @@ final class DefaultGameRuntime implements GameRuntime {
         if (handler == null) throw failure(HANDLER_NOT_FOUND);
         if (handler.domain() != context.routeDomain()) throw failure(ROUTE_DOMAIN_MISMATCH);
         if (handler.contextType() != null && !handler.contextType().isInstance(context)) throw failure(HANDLER_CONTEXT_MISMATCH);
+        Object[] arguments = handler.resolve(context);
         int error = submit(context, () -> {
-            try { handler.invoke(context, message); } catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
+            try { handler.invoke(context, message, arguments); } catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
         }, false);
         if (error != 0) throw failure(error);
     }
@@ -144,6 +186,7 @@ final class DefaultGameRuntime implements GameRuntime {
     }
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        Events.unbind(this);
         crons.close();
         timers.close();
         Set<RouteExecutor> unique = Collections.newSetFromMap(new IdentityHashMap<>());

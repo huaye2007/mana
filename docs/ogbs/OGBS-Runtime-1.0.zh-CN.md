@@ -105,7 +105,7 @@ Runtime 通过显式注册构建，不要求 classpath 扫描或依赖注入框�
 
 **RT-BUILD-01**：构建失败不得返回可部分使用的 Runtime。构建成功后不得通过原始注册对象的修改改变协议注册表。
 
-**RT-BUILD-02**：协议注册与 RouteKey 提取注册是独立能力。协议描述不隐式携带 Domain、Key 或编解码器；分发不自动调用 Key 提取器。
+**RT-BUILD-02**：协议注册与 RouteKey 提取注册是独立能力。协议描述不隐式携带 Domain、Key 或编解码器。显式上下文分发使用传入的 Route。便捷消息分发选择 Handler 的 Domain，通常直接使用调用方传入的 Key；从消息提取属于按 RT-DISPATCH-04 单独选择的入口。
 
 **RT-BUILD-03**：构建成功即进入可工作状态；关闭后不得重新启动。需要新实例时重新构建。
 
@@ -114,9 +114,10 @@ Runtime 通过显式注册构建，不要求 classpath 扫描或依赖注入框�
 ```text
 接入层收到并解码消息
 → 验证连接身份与请求合法性
-→ 选择 Domain，显式提取或计算 Key
-→ 构造 HandlerContext
-→ dispatch：校验并尝试接纳
+→ 显式提供 Key 和业务身份
+→ 解析 Handler Domain，或验证显式上下文的 Domain
+→ 需要时构造 HandlerContext
+→ dispatch：校验、解析已注册参数并尝试接纳
 → 在目标 Route 绑定 Context
 → 执行 Handler
 → 恢复先前 Context
@@ -133,7 +134,7 @@ dispatch 被接纳不代表业务已成功；Handler 成功也不代表响应已
 | --- | --- |
 | Context | Domain、Key |
 | InvocationContext | Context + businessIdType、businessId、Metadata |
-| HandlerContext | InvocationContext + message |
+| HandlerContext | InvocationContext + message + 可选借用连接 |
 | HttpContext | Context + 借用 HTTP 请求 + 响应完成能力 |
 | EventContext | InvocationContext + event |
 | TimerContext | Context |
@@ -149,6 +150,8 @@ businessIdType 是 8 位无符号身份类别，businessId 是 64 位业务身�
 
 **RT-CTX-04**：Metadata 按共享不可变值约定传递。继承 Metadata 不代表接收方可以信任身份；可信边界仍由接入层负责。
 
+**RT-CTX-05**：Handler 上下文可携带显式传入的借用连接，业务通过上下文获取。借用不使连接保持活跃、不转移所有权、不鉴权对端，也不授权 Runtime 关闭连接。非网络业务允许没有连接。接纳后断连不取消 Handler。事件、定时器及跨 Route 目标上下文不隐式继承此连接。
+
 TimerContext 不携带业务身份和 Metadata。业务若需要定时保存某些信息，应显式捕获适当的不可变数据。
 
 ### 5.1 上下文传播矩阵
@@ -156,6 +159,8 @@ TimerContext 不携带业务身份和 Metadata。业务若需要定时保存某�
 | 操作 | 执行时的上下文 | 身份与 Metadata | 自定义字段 |
 | --- | --- | --- | --- |
 | dispatch | 接入方传入的 HandlerContext | 使用传入值 | 保留原实例字段 |
+| 内置便捷分发 | 使用外部 Key 或明确选择提取的新 HandlerContext | 显式传入时使用该身份，否则默认身份；空 Metadata | 显式传入的借用连接，不隐式复制 |
+| 配置的接入策略 | 策略为已选定 Handler Domain 创建的 HandlerContext | 策略提供的身份/Metadata | 保留返回实例及原消息/连接 |
 | HTTP dispatch | 默认或工厂创建的 HttpContext | 显式路由规则；不隐式提供业务身份/Metadata | 保留原实例字段 |
 | 同 Runtime InvocationContext 中发布事件 | 新 EventContext | 继承 | 不自动复制 |
 | 外部线程或其他 Runtime 发布事件 | 新 EventContext | 默认身份、空 Metadata | 不复制 |
@@ -178,6 +183,20 @@ Handler 只接收已注册的 REQUEST 或 NOTIFY 消息。RESPONSE 不作为入�
 
 **RT-DISPATCH-03**：一旦执行 Handler，其异常通过 Runtime 错误处理器报告，不作为业务响应自动发送给远端。
 
+**RT-DISPATCH-04**：便捷消息分发先按消息精确类型查找 Handler，选择其配置的 Domain。常规入口直接接受调用方传入的 Key，不得调用消息提取器或用提取值覆盖该 Key。另一个入口可在接纳前通过已注册规则从消息提取 Key。两者均无需接入层构造 Route 或 Context。Key 为 0 时拒绝；只有选择了消息提取入口时，未注册提取规则才导致拒绝，提取失败直接传回调用方，不入队、不执行 Handler。两个入口使用与显式上下文分发相同的校验、同 Route 内联、串行队列、拒绝、异常及关闭规则。两种入口均允许接入方显式提供业务身份；省略时使用默认身份。内置便捷上下文的 Metadata 为空，绝不隐式继承外层身份/Metadata。存在连接不代表身份已认证；接入方负责鉴权并提供可信值。语言绑定规定入口 API 及具体默认数值。
+
+**RT-DISPATCH-05**：Handler 可接收应用自定义的额外类型参数，包括业务身份值。每种类型都需显式绑定从 HandlerContext 创建参数的规则，不根据类型名字、协议字段或 Route 字段推断身份。绑定在构建时固定，未注册或歧义的参数定义导致启动失败。在上下文/Route 校验之后、接纳之前，按参数声明顺序为本次分发解析一次。解析失败直接拒绝，不入队、不调用 Handler；它属于接入失败，不属于 Handler 执行失败。解析器可在提交线程并发运行，不受目标 Route 串行保护，因此不得访问 Route 所有的可变状态。已接纳任务使用解析后的值，不重复解析；对象所有权及不可变性仍由应用负责。参数绑定不改变 Route 选择、执行顺序、过载拒绝或关闭行为。
+
+**RT-DISPATCH-06**：接入方可以为连接/消息分发显式配置上下文创建策略。先查找精确类型的 Handler 及其有效配置 Domain，再以该 Domain、借用连接和解码消息调用策略一次。策略选择 Key、业务身份、Metadata 及可选上下文子类型，必须保留 Handler Domain 和原消息/连接。策略在提交线程运行，位于目标作用域绑定、上下文校验、参数解析与接纳之前。null、抛出的失败或不兼容上下文在入队前拒绝，不回退到消息提取或其他策略。未配置策略时保留既有消息提取入口。显式上下文、外部 Key、显式身份入口绕过此策略。已接纳任务保留返回上下文，不重新读取身份存储或调用策略，包括关闭后执行；同 Route 内联恢复外层上下文。策略执行后仍可能发生关闭/拒绝。策略必须线程安全，不访问 Route 所有的可变状态。语言绑定规定入口选择及失败形式。
+
+角色身份可以存储在连接属性，也可以存储在应用管理的连接到身份 Map；Runtime 不要求具体存储。应用可根据 Handler Domain 在玩家分支选择玩家路由/身份，在公会分支选择公会路由/身份，并负责鉴权、策略含义及存储生命周期。身份由鉴权后明确提供，Domain 不为连接鉴权。接纳前选择的输入继续用于该任务，即使之后存储改变或删除。可变自定义上下文不深复制，应用需捕获稳定值。见 [Java 接入策略](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory) 和 [HandlerContextFactoryTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java)。
+
+例如应用定义 RoleId，先验证传入的 businessIdType 表示角色，再由 businessId 创建它。Key 99 与身份 role/10001 各自独立，即使请求 userId=42 也不互相替换。匿名登录可不声明 RoleId；必须有角色身份的 Handler 通过绑定拒绝匿名身份。创建 RoleId 不代表已鉴权或连接可信。见 [Java 参数契约](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)、[HandlerArgumentTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerArgumentTest.java) 和 [demo 身份测试](../../game-demo/src/test/java/cn/managame/demo/DemoIdentityTest.java)。
+
+由用户决定哪些 Handler/Domain 需要角色身份，并且只在鉴权成功后显式提供它；Runtime 不建立 Domain 到角色的策略。[packet 接入示例](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketHandler.java) 将按协议解码的对象及应用会话的路由/身份交给 dispatch。[TCP 验证](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java) 证明匹配业务方法的执行，不证明自动响应发送；[接纳验证](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketDispatchTest.java) 验证入队前捕获身份值，之后改变会话不影响已提交任务。连接建立不表示玩家已鉴权。此 demo 的 login Handler 中先由业务校验 token 成功，再手动绑定会话；校验失败时未绑定连接保持无会话。登录路由是独立的应用策略，不需要已鉴权角色。会话存储与登录前路由均为应用选择，不是框架要求。
+
+例如调用方为 userId=42 的登录消息传入 Key 99，Handler 绑定 Domain 1，常规入口仍进入 (1,99)，即使已注册 userId 提取器或该提取器会失败。只有明确选择从消息提取时才进入 (1,42)。未注册提取规则不回退到连接 ID 或任意队列。显式上下文入口继续保留原实例、路由、身份及自定义字段。源码与验证见 [Java Handler 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#automatic-handler-dispatch) 和 [HandlerDispatchTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerDispatchTest.java)。外部传 Key 是常规模型，提取规则服务于少数按协议路由的场景，不是所有 Handler 的前提。
+
 上下文类型不匹配是接入错误。例如 Handler 要求自定义 HandlerContext 子类型时，接入方必须提供该类型的实例。
 
 ## 7. 本地事件
@@ -191,6 +210,10 @@ Event 自身提供目标 Domain 和 Key。事件是进程内消息，没有持�
 **RT-EVENT-03**：一个监听器抛出异常必须报告，但不得阻止同次发布中的后续监听器执行。
 
 **RT-EVENT-04**：没有监听器不构成 Handler 缺失错误；Route 合法性与任务接纳限制仍然适用。
+
+**RT-EVENT-05**：未显式指定 Runtime 的便捷发布，首先选择当前执行上下文的所属 Runtime；不存在所属上下文时，选择显式配置的进程默认 Runtime；两者皆无则报告配置错误。选中的所属 Runtime 拒绝发布时，包括已经关闭的情况，不得转发到默认 Runtime。选中的 Runtime 执行与普通事件发布一致的 Route 校验、接纳、身份传播、监听器顺序及错误处理，不引入独立的事件执行机制。
+
+每个进程仅有一个默认绑定。重复绑定同一 Runtime 幂等；已有绑定时绑定其他 Runtime 报告冲突，不得静默替换。解绑只移除指定实例，不关闭 Runtime，也不取消已接纳事件。参考实现会在 Runtime 关闭时解除自身绑定；生命周期所有者必须协调启动绑定与关闭。发布已选定 Runtime 后，即使绑定变化，也可能仍提交给该实例或观察到其关闭，不得向新绑定实例重试。这保证多 Runtime 共存时的隔离。例如当前执行属于 Runtime A，即使 B 为默认，仍向 A 发布；旧的已解绑 A 关闭不能移除 B 的绑定。API 名称、进程绑定实现及验证入口见 [Java 规范](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#static-event-publication)。
 
 发布方不得在任务可能尚未执行时随意修改事件对象。
 

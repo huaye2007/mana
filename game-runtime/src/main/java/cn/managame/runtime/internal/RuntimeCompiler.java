@@ -10,6 +10,8 @@ import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.handler.Handler;
 import cn.managame.runtime.handler.HandlerMethod;
+import cn.managame.runtime.handler.HandlerArgumentBinding;
+import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.protocol.ProtocolDescriptor;
 import cn.managame.runtime.protocol.ProtocolProvider;
 import cn.managame.runtime.protocol.ProtocolRegistrar;
@@ -38,7 +40,8 @@ public final class RuntimeCompiler {
     private RuntimeCompiler() {}
     public static GameRuntime build(List<RouteDomain> domains, List<RouteExecutorBinding> executors,
             List<ProtocolProvider> providers, List<RouteKeyBinding<?>> keys,
-            List<Object> handlers, List<Object> events, List<Object> crons,
+            List<Object> handlers, List<HandlerArgumentBinding<?>> arguments, HandlerContextFactory handlerContexts,
+            List<Object> events, List<Object> crons,
             List<Object> httpHandlers, HttpContextFactory httpContexts, HttpResultCodec httpResults,
             ZoneId cronZone, RuntimeErrorHandler errors) {
         Set<Integer> ids = new HashSet<>();
@@ -50,12 +53,19 @@ public final class RuntimeCompiler {
         }
         if (!routes.keySet().equals(ids)) throw invalid("Every domain needs exactly one executor");
         Registry registry = new Registry(providers);
+        Map<Class<?>, HandlerArgumentBinding<?>> argumentBindings = new HashMap<>();
+        for (var argument : arguments) {
+            if (registry.get(argument.type()) != null) throw invalid("Handler argument is also a protocol: " + argument.type());
+            if (argumentBindings.putIfAbsent(argument.type(), argument) != null)
+                throw invalid("Duplicate Handler argument binding: " + argument.type());
+        }
         Map<Class<?>, RouteKeyBinding<?>> routeKeys = new HashMap<>();
         for (var key : keys) if (routeKeys.putIfAbsent(key.messageType(), key) != null) throw invalid("Duplicate route-key binding");
         Map<Class<?>, HandlerBinding> compiled = new HashMap<>();
         for (Object target : handlers) {
             Handler annotation = target.getClass().getAnnotation(Handler.class);
             if (annotation == null) throw invalid("Missing @Handler: " + target.getClass());
+            validateMessageKey(annotation.routeKey(), annotation.routeKeyMethod());
             for (Method m : methods(target)) {
                 HandlerMethod entry = m.getAnnotation(HandlerMethod.class);
                 if (entry == null) continue;
@@ -63,27 +73,45 @@ public final class RuntimeCompiler {
                 int domain = entry.domain() != 0 ? entry.domain() : annotation.domain();
                 if (!ids.contains(domain)) throw invalid("Unregistered handler domain: " + m);
                 Class<?> contextType = null, messageType = null;
-                int contextIndex = -1;
+                int[] sources = new int[m.getParameterCount()];
+                List<HandlerArgumentBinding<?>> custom = new ArrayList<>();
+                Set<Class<?>> customTypes = new HashSet<>();
                 for (int i = 0; i < m.getParameterCount(); i++) {
                     Class<?> type = m.getParameterTypes()[i];
                     if (Context.class.isAssignableFrom(type)) {
                         if (contextType != null || !(type.isAssignableFrom(HandlerContext.class) || HandlerContext.class.isAssignableFrom(type)))
                             throw invalid("Invalid handler context: " + m);
-                        contextType = type; contextIndex = i;
-                    } else {
+                        contextType = type; sources[i] = 0;
+                    } else if (registry.get(type) != null) {
                         if (messageType != null) throw invalid("Multiple message parameters: " + m);
-                        messageType = type;
+                        messageType = type; sources[i] = 1;
+                    } else {
+                        var argument = argumentBindings.get(type);
+                        if (argument == null) throw invalid("Unregistered Handler argument: " + type.getName() + " at " + m);
+                        if (!customTypes.add(type)) throw invalid("Repeated Handler argument type: " + type.getName());
+                        custom.add(argument); sources[i] = 2;
                     }
                 }
                 if (messageType == null || registry.get(messageType) == null) throw invalid("Handler needs one registered message: " + m);
                 if (registry.get(messageType).type() == ProtocolType.RESPONSE) throw invalid("Response cannot be an inbound handler: " + m);
+                validateMessageKey(entry.routeKey(), entry.routeKeyMethod());
+                boolean overrideKey = !entry.routeKey().isEmpty() || !entry.routeKeyMethod().isEmpty();
+                String keyField = overrideKey ? entry.routeKey() : annotation.routeKey();
+                String keyMethod = overrideKey ? entry.routeKeyMethod() : annotation.routeKeyMethod();
+                RouteKeyBinding<?> key = !keyField.isEmpty() ? RouteKeyBinding.ofField(messageType, keyField)
+                        : !keyMethod.isEmpty() ? RouteKeyBinding.ofMethod(messageType, keyMethod) : null;
+                if (key != null && routeKeys.putIfAbsent(messageType, key) != null)
+                    throw invalid("Duplicate route-key binding: " + messageType.getName());
                 MethodHandle handle = bind(target, m);
-                if (contextType == null) handle = MethodHandles.dropArguments(handle.asType(MethodType.methodType(void.class, Object.class)), 0, Object.class);
-                else {
-                    handle = handle.asType(MethodType.methodType(void.class, Object.class, Object.class));
-                    if (contextIndex == 1) handle = MethodHandles.permuteArguments(handle, handle.type(), 1, 0);
+                handle = handle.asType(MethodType.genericMethodType(sources.length).changeReturnType(void.class));
+                int customIndex = 0;
+                for (int i = 0; i < sources.length; i++) if (sources[i] == 2) {
+                    MethodHandle getter = MethodHandles.insertArguments(MethodHandles.arrayElementGetter(Object[].class), 1, customIndex++);
+                    handle = MethodHandles.filterArguments(handle, i, getter);
                 }
-                if (compiled.putIfAbsent(messageType, new HandlerBinding(domain, contextType, handle)) != null) throw invalid("Duplicate handler " + messageType);
+                handle = MethodHandles.permuteArguments(handle,
+                        MethodType.methodType(void.class, Object.class, Object.class, Object[].class), sources);
+                if (compiled.putIfAbsent(messageType, new HandlerBinding(domain, contextType, List.copyOf(custom), handle)) != null) throw invalid("Duplicate handler " + messageType);
             }
         }
         Map<Class<?>, List<EventBinding>> compiledEvents = new HashMap<>();
@@ -116,7 +144,7 @@ public final class RuntimeCompiler {
                 && !binding.contextType().isAssignableFrom(DefaultHttpContext.class)))
             throw invalid("Custom HTTP contexts require httpContextFactory");
         return new DefaultGameRuntime(Map.copyOf(routes), registry, Map.copyOf(routeKeys),
-            Map.copyOf(compiled), Map.copyOf(compiledEvents), List.copyOf(compiledCrons),
+            Map.copyOf(compiled), handlerContexts, Map.copyOf(compiledEvents), List.copyOf(compiledCrons),
             Map.copyOf(compiledHttp), httpContexts, httpResults, errors);
     }
 
@@ -161,6 +189,10 @@ public final class RuntimeCompiler {
         }
         return bindings;
     }
+    private static void validateMessageKey(String field, String method) {
+        if ((!field.isEmpty() && field.isBlank()) || (!method.isEmpty() && method.isBlank())
+                || (!field.isEmpty() && !method.isEmpty())) throw invalid("Handler RouteKey requires one field or method");
+    }
     private static void validateHttpKey(String field, String method) {
         if ((!field.isEmpty() && field.isBlank()) || (!method.isEmpty() && method.isBlank())
                 || (!field.isEmpty() && !method.isEmpty())) throw invalid("HTTP RouteKey requires one field or method");
@@ -200,8 +232,15 @@ public final class RuntimeCompiler {
         catch (IllegalAccessException e) { throw new IllegalArgumentException("Cannot access " + method, e); }
     }
     private static IllegalArgumentException invalid(String message) { return new IllegalArgumentException(message); }
-    record HandlerBinding(int domain, Class<?> contextType, MethodHandle handle) {
-        void invoke(Object context, Object message) throws Throwable { handle.invokeExact(context, message); }
+    record HandlerBinding(int domain, Class<?> contextType, List<HandlerArgumentBinding<?>> arguments, MethodHandle handle) {
+        private static final Object[] NO_ARGUMENTS = new Object[0];
+        Object[] resolve(HandlerContext context) {
+            if (arguments.isEmpty()) return NO_ARGUMENTS;
+            Object[] values = new Object[arguments.size()];
+            for (int i = 0; i < values.length; i++) values[i] = arguments.get(i).resolve(context);
+            return values;
+        }
+        void invoke(Object context, Object message, Object[] arguments) throws Throwable { handle.invokeExact(context, message, arguments); }
     }
     record HttpEndpoint(String method, String path) {}
     record HttpBinding(int domain, Class<?> contextType, boolean returnsResult, MethodHandle handle, HttpRouteKey routeKey) {

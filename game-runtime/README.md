@@ -16,6 +16,18 @@ Java 25 business runtime. Maven coordinates: `cn.managame:game-runtime`; interna
 
 <a id="目录与职责"></a>
 
+<a id="handler-entry"></a>
+
+## Handler entry
+
+For external ingress, configure `builder.handlerContextFactory((domain, connection, message) -> ...)` and call `runtime.dispatch(connection, message)`. Runtime resolves Domain from @Handler/@HandlerMethod first. The application factory obtains authenticated identity from connection attributes or an external Map and selects routeKey/businessIdType/businessId by that Domain; no framework identity store or fixed role rule is required. The factory runs once before admission and must preserve Domain/message/connection. Existing explicit parameters bypass it. See the [policy contract and example](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#handler-context-factory) and [two-Domain Map tests](src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java).
+
+For business work, call `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`: the caller supplies Key and trusted identity; Runtime selects Domain from the exact message Handler, constructs DefaultHandlerContext with empty Metadata, and uses its existing RouteExecutor. No separate Route/Context construction or message extraction is required. Anonymous work can omit identity (defaults 0/0); explicit-context dispatch supports Metadata/custom fields. Read the borrowed connection through `context.connection()`.
+
+Handlers accept one message, optional Context, and registered application argument types in any order, for example `handle(RoleId roleId, MyRequest request)`. Define RoleId in the application and register `builder.handlerArguments(List.of(HandlerArgumentBinding.of(RoleId.class, context -> new RoleId(context.businessId()))))`, adding businessIdType validation as appropriate. Resolvers run once on the submitting thread before admission, must be thread-safe, and cannot access Route-owned mutable state. Resolver failures reject before queueing; identity is independent of Key/protocol fields. See the [complete argument contract](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#handler-arguments) and [tests](src/test/java/cn/managame/runtime/HandlerArgumentTest.java).
+
+For exceptional protocol-based routing, configure `@HandlerMethod(routeKey="userId")` or `routeKeyMethod="getUserId"` and call `runtime.dispatch(connection, businessIdType, businessId, message)` (omit identity for anonymous extraction only without a context factory). Class-level @Handler rules are defaults, replaced by nonempty method rules. The supplied-Key overload never invokes these rules. Member access compiles once; missing/invalid rules and zero Keys reject. See [Java contract and boundaries](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#automatic-handler-dispatch), [framework tests](src/test/java/cn/managame/runtime/HandlerDispatchTest.java), and the [demo](../game-demo/README.md#handler-dispatch).
+
 ## Layout and responsibilities
 
 ```text
@@ -66,6 +78,10 @@ runtime.cron().rescheduleAll();
 SystemCron is an application-defined class. cancel stops future cycles; reschedule can resume cancelled entries; rescheduleAll includes every registered entry. A method that has started may finish; old-generation tasks cannot overwrite new schedules. Cron computes its next cycle after the current method ends. Exceptions or admission failures do not retry that cycle, but future cycles continue.
 
 <a id="文档与验证"></a>
+
+## Static event publication
+
+Business code can call `Events.publish(event)` using `cn.managame.runtime.event.Events`. Inside Runtime execution, it uses the current owning Runtime; outside, bootstrap must have called `Events.bind(runtime)`. The demo's Spring configuration does this automatically. No owner/default throws IllegalStateException. A conflicting default binding is rejected; binding the same instance is idempotent. `Events.unbind(runtime)` removes only that instance's default without closing it, and built-in Runtime.close removes its own binding. Coordinate bootstrap with shutdown and bind only live instances. Existing `runtime.eventBus().publish(event)` remains available. Events still use the configured RouteExecutor, with unchanged ordering, context inheritance, admission errors, and closure behavior. See [selection and lifecycle details](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#static-event-publication), [framework tests](src/test/java/cn/managame/runtime/event/EventsTest.java), and the [demo](../game-demo/README.md#publishing-a-runtime-event).
 
 ## Virtual-thread Route queues
 

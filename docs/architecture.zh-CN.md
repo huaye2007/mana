@@ -8,7 +8,13 @@
 
 ## 应用骨架
 
-[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context，并在 9000 端口通过应用自有的原始字节分帧 codec 启动 GamePacket 回传 TCP 监听器；Context 关闭时先关闭监听器，再关闭 Data Bean，不包含主线程阻塞等待；MysqlConfig 持有 Hikari DataSource。GameDataConfig 收集组件扫描得到的业务 `@Repository` 类型，通过 GameDataBuilder.mysql(source) 构建 Data，并将 Data 初始化的实例作为对应 Spring Bean。Bean 依赖保证 Repository Bean 先于 Data、Data 先于应用连接池关闭，不再构造第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。Spring 依赖管理及 Repository 适配仅位于 game-demo，框架模块保持既有依赖边界。
+[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context，并在 9000 端口通过应用自有的原始字节分帧 codec 启动 GamePacket 分发 TCP 监听器；Context 关闭时先关闭监听器，再关闭 Data Bean，不包含主线程阻塞等待；MysqlConfig 持有 Hikari DataSource。GameDataConfig 收集组件扫描得到的业务 `@Repository` 类型，通过 GameDataBuilder.mysql(source) 构建 Data，并将 Data 初始化的实例作为对应 Spring Bean。Bean 依赖保证 Repository Bean 先于 Data、Data 先于应用连接池关闭，不再构造第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。Spring 依赖管理及 Repository 适配仅位于 game-demo，框架模块保持既有依赖边界。
+
+GameRuntimeConfig 装配由 Spring 管理的 Runtime，将 Domain 1 绑定到虚拟线程 RouteExecutor，通过注解 include filter 将只标记 @EventHandler 的类发现并注册为 Spring Bean，无需 @Component。TCP 监听器启动后，GameDemo 通过 Events.publish 以 Key 1001 静态发布 DemoEvent；配置在启动时绑定外部线程使用的默认实例，Runtime 执行则选择自身所属实例；监听器打印绑定的 EventContext Route 与线程类型。适配使用既有 Runtime EventBus 契约，不新增独立事件线程，通过 Bean 生命周期关闭 Runtime。源码及验证入口见 [demo 事件示例](../game-demo/README.zh-CN.md#发布-runtime-事件)。
+
+demo 的 Fory 依赖与 Spring 序列化器配置属于应用。GameProtocols 提供同一份配置用于 Runtime 协议注册和 Fory 类型 ID 注册；GamePacketHandler 通过 `runtime.protocols().get(REQUEST, command)` 查询入站 REQUEST 类型，再解码、校验根对象类型，并由应用的 Domain 策略（ROLE 使用已鉴权 GameSession 快照）将对象分发给对应 Runtime HandlerMethod。GamePacket 保持既有原始字节分帧，不新增框架 codec，不改变 Data JSON 列。配置、兼容边界与验证见 [Fory body 示例](../game-demo/README.zh-CN.md#fory-业务-body)。
+
+GameRuntimeConfig 也发现仅标记 @Handler 的 Bean，包括 UserHandler、RoleHandler，并通过 GameProtocols 注册 LoginReq/LoginRes。GamePacketHandler 调用 `runtime.dispatch(connection, decodedMessage)`，Runtime 先解析 Handler 注解的 Domain，再由配置的 HandlerContextFactory 获取身份/路由输入并调用应用 GameDomain 策略选择上下文。demo 使用 Connection 的 GameSession 属性，也可换成线程安全的外部身份 Map。已注册的 HandlerArgumentBinding 将选定上下文身份适配为 RoleId 参数，匿名登录可省略。用户在鉴权成功后明确提供角色身份，并决定每个 Domain 的路由/身份策略。建连不分配 Key 或绑定会话。LOGIN（ID 2）仅用 userId 作为配置的排队 Key，身份为 0/0；业务在 login 内校验 token 成功后绑定会话，ROLE（ID 1）要求该会话并在接纳前读取一次值快照。骨架尚未实现生产 token 校验；显式参数绕过工厂，消息成员提取仍有独立重载。响应由业务负责，不自动回传 packet。见 [demo Handler 入口](../game-demo/README.zh-CN.md#handler-分发) 和 [Java 策略](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory)。
 
 ## Network / RPC 包边界
 
@@ -61,6 +67,8 @@ start/close 只在管理上下文执行；关闭立即拒绝新工作，并等�
 
 ## Runtime
 
+demo 通过业务 [GameDomain 枚举](../game-demo/src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 管理执行域：ROLE 使用显式 ID 1，LOGIN 使用显式 ID 2，均转换为 RouteDomain 注册；注解引用 Java 编译期整数常量 GameDomain.ROLE_ID，不根据枚举顺序分配 ID。这属于应用组织方式，不增加框架 ROLE 枚举，也不根据 Domain 推断身份/Key。
+
 Route identity 是完整的 domain + key，不是 worker/thread/executor。key=0 无效，其他 64 位值可用。Domain 为用户定义的正整数。
 
 默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 在 ConcurrentHashMap 持有活跃 FIFO mailbox，仅把完全空闲的 mailbox 放入 Caffeine 有界复用（默认 60 秒，缓存最大条数等于任务容量）。按 Key 的原子 Map 操作协调激活/排空，不使用执行器全局监视器。Caffeine 从 game-core 传递引入，使用默认被动维护，不配置过期调度器。过期 mailbox 不可复用，物理回收可等待后续缓存访问。两种实现均隔离任务异常并提供非阻塞 admission。
@@ -80,9 +88,9 @@ Contexts 使用 Java 25 ScopedValue，且只在真正执行任务时绑定。无
 
 ProtocolRegistry 只索引 (type,command) ↔ MessageClass 与 Req→Res。MessageClass 唯一，request/response 可同 command。Registry 不包含 Codec、Handler 或 Route。
 
-RouteKeyRegistry 是单独的 exact-class 查询：没有绑定返回 0，extractor 异常按调用方异常传播，不做继承查找或命名猜测。dispatch 不查询它，只验证 Context 中的实际 Route。
+RouteKeyRegistry 是单独的 exact-class 查询：没有绑定返回 0，extractor 异常按调用方异常传播，不做继承查找或命名猜测。显式上下文与外部 Key 分发保留其 Route；只有从消息提取的入口查询提取规则。
 
-Handler 方法必须为 public、非 static、返回 void，且只有一个已注册 REQUEST/NOTIFY 参数，可以另带一个 Context 参数（支持业务子类型及参数顺序互换）。HandlerMethod 的非零 domain 覆盖 Handler.domain。重复 message handler、非法 Context 类型、未注册 Domain 等在 build 时失败。
+Handler 方法必须为 public、非 static、返回 void，且只有一个已注册 REQUEST/NOTIFY 参数，可以另带一个 Context 及已注册的应用参数类型，顺序不限。HandlerMethod 的非零 domain 覆盖 Handler.domain。重复 message handler、非法 Context 类型、未绑定/歧义参数类型、未注册 Domain 等在 build 时失败。业务接入通过带身份的 dispatch 重载传入 Key 与 businessIdType/businessId，二者含义各自独立。HandlerArgumentBinding 在提交线程、接纳前将传入上下文投影为 RoleId 等应用类型，一次分发各解析一次，解析器不得访问 Route 所有的状态；目标 Handler 仍使用既有 Route 执行器。见 [Java 参数契约](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
 
 Event 通过自己的 routeDomain()/routeKey() 指定唯一 Route。EventMethod 按具体 Event 类 exact lookup、order 升序运行；相同 order 无相对顺序保证。单个监听方法失败上报后继续其他监听方法。
 

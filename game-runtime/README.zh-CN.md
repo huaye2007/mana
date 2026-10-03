@@ -12,6 +12,18 @@
 
 Java 25 业务运行时。Maven 坐标为 `cn.managame:game-runtime`，按包划分内部功能模块。
 
+<a id="handler-entry"></a>
+
+## Handler 入口
+
+外部接入可配置 `builder.handlerContextFactory((domain, connection, message) -> ...)`，再调用 `runtime.dispatch(connection, message)`。Runtime 先从 @Handler/@HandlerMethod 解析 Domain；业务工厂从连接属性或外部 Map 获取已鉴权身份，按 Domain 选择 routeKey/businessIdType/businessId，不要求框架身份存储或固定角色规则。工厂在接纳前运行一次，必须保留 Domain/消息/连接；已有显式参数绕过它。见 [策略契约与示例](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory) 和 [两个 Domain 的 Map 测试](src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java)。
+
+业务调用使用 `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`：调用方传入 Key 和可信身份，Runtime 按消息精确类型查找 Handler 的 Domain，构造空 Metadata 的 DefaultHandlerContext，并进入既有 RouteExecutor，无需另外构造 Route/Context 或从消息提取 Key。匿名调用可省略身份（默认 0/0）；Metadata/自定义字段仍使用显式上下文入口，通过 `context.connection()` 获取借用连接。
+
+Handler 接收一个消息、可选 Context 及已注册的应用参数类型，顺序不限，例如 `handle(RoleId roleId, MyRequest request)`。应用定义 RoleId，通过 `builder.handlerArguments(List.of(HandlerArgumentBinding.of(RoleId.class, context -> new RoleId(context.businessId()))))` 注册，并按业务需要验证 businessIdType。解析器在提交线程、接纳之前各运行一次，必须线程安全，不访问 Route 所有的可变状态；解析失败在入队前拒绝。身份与 Key/协议字段独立。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments) 和 [测试](src/test/java/cn/managame/runtime/HandlerArgumentTest.java)。
+
+少数按协议内容路由的场景，配置 `@HandlerMethod(routeKey="userId")` 或 `routeKeyMethod="getUserId"`，再调用 `runtime.dispatch(connection, businessIdType, businessId, message)`（只有未配置上下文工厂时，匿名提取入口才可省略身份）。类级 @Handler 提供默认规则，方法级非空规则覆盖；外部 Key 重载从不调用这些规则。成员访问只编译一次，缺少/非法规则和 Key 为 0 时拒绝。见 [Java 契约与边界](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#automatic-handler-dispatch)、[框架测试](src/test/java/cn/managame/runtime/HandlerDispatchTest.java) 和 [demo](../game-demo/README.zh-CN.md#handler-分发)。
+
 ## 目录与职责
 
 ```text
@@ -58,6 +70,10 @@ runtime.cron().rescheduleAll();
 ```
 
 SystemCron 是应用定义的 Cron 类。cancel 停止后续周期；reschedule 可以恢复取消的项，rescheduleAll 包含全部注册项。已经开始的方法可以完成，旧代任务不会覆盖新调度。Cron 每轮方法结束后计算下一轮，异常或接纳失败不重试当轮，但继续未来周期。
+
+## 静态事件发布
+
+业务可通过 `cn.managame.runtime.event.Events` 直接调用 `Events.publish(event)`。Runtime 执行上下文内使用当前所属 Runtime；外部线程需要启动阶段先调用 `Events.bind(runtime)`，demo 的 Spring 配置自动完成此步骤。无所属/默认实例时抛 IllegalStateException。默认绑定冲突时拒绝；重复绑定同一实例幂等。`Events.unbind(runtime)` 仅移除指定实例的默认绑定，不关闭它；内置 Runtime.close 会解除自身绑定。启动绑定需与关闭协调，且只绑定仍运行的实例。既有 `runtime.eventBus().publish(event)` 保留。事件继续使用配置的 RouteExecutor，顺序、上下文继承、接纳错误及关闭行为不变。详见 [选择及生命周期边界](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#static-event-publication)、[框架测试](src/test/java/cn/managame/runtime/event/EventsTest.java) 和 [demo](../game-demo/README.zh-CN.md#发布-runtime-事件)。
 
 ## 虚拟线程 Route 队列
 

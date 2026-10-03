@@ -17,6 +17,10 @@ Maven 坐标为 `cn.managame:game-runtime:1.0.0-SNAPSHOT`，入口包名 `cn.man
 ```java
 public interface GameRuntime extends AutoCloseable {
     void dispatch(HandlerContext context);
+    void dispatch(Connection connection, long routeKey, Object message);
+    void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
+    void dispatch(Connection connection, Object message);
+    void dispatch(Connection connection, int businessIdType, long businessId, Object message);
     HttpDispatcher http();
     <T> void call(int routeDomain, long routeKey,
                   Supplier<T> action, RouteCallback<T> callback);
@@ -34,7 +38,9 @@ public interface RouteCallback<T> {
 }
 ```
 
-没有独立 start 阶段、动态注册 API 或公开的任意 Runnable 分发入口。build 成功后可使用；普通网络消息需由接入层构造 HandlerContext 后 dispatch。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入，见 [§13](#runtime-http-api)。
+没有独立 start 阶段、动态注册 API 或公开的任意 Runnable 分发入口。build 成功后可使用。业务消息通常使用 `dispatch(connection, routeKey, businessIdType, businessId, message)`，应用无需构造 Route 或 Context；匿名调用可省略身份。Metadata/自定义上下文字段仍可使用显式 HandlerContext 分发。消息提取有独立重载，见 [§6.2](#automatic-handler-dispatch)。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入，见 [§13](#runtime-http-api)。
+
+按 Domain 决定外部接入参数时，配置 `handlerContextFactory(...)` 并使用 `dispatch(connection, message)`，工厂接收注解解析的 Domain，从应用管理的身份存储选择路由/身份；显式参数保留优先级。见 [§6.4](#handler-context-factory)。
 
 公开 API 的包划分：
 
@@ -45,7 +51,7 @@ public interface RouteCallback<T> {
 | cn.managame.runtime.route | Domain、Key 绑定/提取/注册、RouteCallback |
 | cn.managame.runtime.executor | Executor SPI、绑定与官方实现 |
 | cn.managame.runtime.protocol | 协议描述、注册、请求响应关联 |
-| cn.managame.runtime.handler | Handler 注解 |
+| cn.managame.runtime.handler | Handler 注解、HandlerArgumentBinding、HandlerContextFactory |
 | cn.managame.runtime.http | HttpHandler、HttpMethod、HttpRequestMethod、HttpDispatcher、HttpContext、DefaultHttpContext、HttpContextFactory、HttpResultCallback、HttpResultCodec |
 | cn.managame.runtime.event | Event、EventBus、事件注解 |
 | cn.managame.runtime.timer | RuntimeTimer、TimerRef、Cron、CronScheduler |
@@ -64,6 +70,8 @@ GameRuntimeBuilder.builder()
     .protocols(Iterable<? extends ProtocolProvider>)
     .routeKeys(Iterable<RouteKeyBinding<?>>)
     .handlers(Iterable<?>)
+    .handlerArguments(Iterable<? extends HandlerArgumentBinding<?>>)
+    .handlerContextFactory(HandlerContextFactory)
     .httpHandlers(Iterable<?>)
     .httpContextFactory(HttpContextFactory)
     .httpResultCodec(HttpResultCodec)
@@ -176,7 +184,10 @@ interface InvocationContext extends Context {
     long businessId();
     Metadata metadata();
 }
-interface HandlerContext extends InvocationContext { Object message(); }
+interface HandlerContext extends InvocationContext {
+    Object message();
+    default Connection connection() { return null; }
+}
 interface EventContext extends InvocationContext { Event event(); }
 interface TimerContext extends Context {}
 interface RouteCallContext extends InvocationContext {}
@@ -194,12 +205,16 @@ Metadata 位于 `cn.managame.core`。默认实现的构造器：
 | DefaultContext | (int domain, long key) |
 | DefaultInvocationContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata) |
 | DefaultHandlerContext | (int domain, long key, Object message) |
+| DefaultHandlerContext | (int domain, long key, Object message, Connection connection) |
 | DefaultHandlerContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata, Object message) |
+| DefaultHandlerContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata, Object message, Connection connection) |
 | DefaultEventContext | (Event event, int businessIdType, long businessId, Metadata metadata) |
 | DefaultTimerContext | (int domain, long key) |
 | DefaultRouteCallContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata) |
 
 短 HandlerContext 构造器使用身份 0 和空 Metadata。businessIdType 范围 0–255，Metadata 和 message 不得为 null。默认类可继承，允许接入层增加连接、请求关联等信息；这些额外信息不会自动复制进 EventContext 或 RouteCallContext。
+
+Connection 是 `cn.managame.network.connection.Connection`。旧构造器保留 null 连接，新增重载通过 final 字段保存传入的借用引用；HandlerContext 默认访问器兼容既有自定义实现。业务通过 `context.connection()` 或 `Contexts.current(HandlerContext.class).connection()` 读取连接，不将 Connection 作为独立 Handler 方法参数。Runtime 不查询其活跃状态，也不负责关闭连接，包括 Runtime 关闭时。非网络业务可传 null；任务排队期间断连后，写入可能拒绝。
 
 ```java
 Context Contexts.current();
@@ -258,16 +273,20 @@ Class<?> ProtocolRegistry.getResponseType(Class<?> requestType);
 long RouteKeyExtractor<T>.extract(T message);
 RouteKeyBinding<T> RouteKeyBinding.of(
     Class<T> messageType, RouteKeyExtractor<T> extractor);
+RouteKeyBinding<T> RouteKeyBinding.ofField(Class<T> messageType, String field);
+RouteKeyBinding<T> RouteKeyBinding.ofMethod(Class<T> messageType, String method);
 long RouteKeyRegistry.getRouteKey(Object message);
 ```
 
-非 null 类型的查询未命中时返回 null。Key 注册独立于协议注册；按精确 Class 查询，未找到提取器返回 0。提取器异常传回调用方；0 无法作为有效的分发 Key。dispatch 不会因为注册了提取器就自动修正 Context。
+非 null 类型的查询未命中时返回 null。Key 注册独立于协议注册；按精确 Class 查询，未找到提取器返回 0。提取器异常传回调用方，0 无法作为有效分发 Key。显式上下文及外部 Key 入口不使用提取规则替换 Key；只有消息提取重载主动执行提取。
 
 ## 6. Handler
 
 `@Handler(domain = ...)` 是 handlers 列表内对象必须具备的类型注解，可以从父类继承。`@HandlerMethod(domain = ...)` 的非零 domain 覆盖类上的 domain，否则使用类配置。
 
-方法必须包含且仅包含一个已注册 REQUEST/NOTIFY 消息参数，可以额外带一个 Context 参数，参数顺序不限，例如：
+两个注解还声明 `String routeKey() default ""`、`String routeKeyMethod() default ""`，可选规则引用已注册消息类上的字段或 public 无参实例方法。方法注解的非空规则替换整个类规则，包括从字段切换为方法。均未配置时不添加提取器，外部 Key 入口无需规则。两种名字同时配置或只有空白字符时构建拒绝，类规则非法时即使方法覆盖也拒绝。同一消息同时存在注解规则和 builder 显式绑定时按重复配置拒绝，不设置隐式优先级。
+
+方法必须包含且仅包含一个已注册 REQUEST/NOTIFY 消息参数，可以额外带一个 Context 参数及零到多个显式注册的自定义类型参数，参数顺序不限，例如：
 
 ```java
 @HandlerMethod
@@ -290,6 +309,8 @@ Context 参数可为 Context、InvocationContext、HandlerContext，或自定义
 | public void handle(M m) | 可以 | 单个消息参数 |
 | public void handle(HandlerContext c, M m) | 可以 | 一个消息、一个合法上下文 |
 | public void handle(M m, CustomContext c) | 可以 | 参数顺序不限；分发检查实际 Context |
+| public void handle(RoleId id, M m) | 注册绑定后可以 | RoleId 是已注册的自定义参数类型 |
+| public void handle(Connection c, M m) | 不自动绑定 | 从 HandlerContext 读取可选连接 |
 | public M handle(M m) | 不可以 | 返回值必须 void，不自动发送返回值 |
 | public static void handle(M m) | 不可以 | 必须是实例方法 |
 | public void handle(M a, M b) | 不可以 | 消息参数不唯一 |
@@ -298,6 +319,93 @@ Context 参数可为 Context、InvocationContext、HandlerContext，或自定义
 
 分发检查失败与业务执行失败必须分开：RuntimeDispatchException 表示前置条件或接纳失败；Handler 内抛出的异常进入 RuntimeErrorHandler。即使同 Route 内联，调用方也不能通过捕获 Handler 的原始业务异常来获得业务结果。
 
+
+<a id="automatic-handler-dispatch"></a>
+
+### 6.2 外部 Key 分发与少数消息提取场景
+
+业务常规调用是 `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`。Runtime 按消息精确类型查找 Handler 注解的 Domain，保留调用方传入的非零 Key，不读取协议成员、不调用已注册提取器，再构造包含连接/消息、显式身份及空 Metadata 的 DefaultHandlerContext。businessIdType 必须为 0..255，否则抛 IllegalArgumentException；businessId 保留所有 long 值，包括 0 和负数，身份解释/验证由应用负责。匿名调用可使用 `dispatch(connection, routeKey, message)`，身份为 0/0。连接可为 null，通过 Context 读取。需要自定义上下文子类型的 Handler 使用显式上下文入口或 §6.4 的配置工厂；内置上下文不兼容时以 HANDLER_CONTEXT_MISMATCH（3003）拒绝。自定义参数按 §6.3 绑定，不隐式注入 Connection。
+
+少数需要按协议内容路由的消息调用 `runtime.dispatch(connection, businessIdType, businessId, message)`，只有未配置上下文工厂时，匿名提取入口才可省略身份。Runtime 选择 Handler Domain，并调用按精确类型注册的 RouteKey 提取器；它可由显式绑定或可选注解规则编译而来。没有绑定或结果为 0 时抛 INVALID_ROUTE_KEY（3005），没有 Handler 时抛 HANDLER_NOT_FOUND（3002），Runtime 已关闭时抛 RUNTIME_CLOSED（3001）。不通过回退或重试替换 Key。提取器异常发生在提交线程、接纳之前，直接传回调用方；开始执行后的 Handler 异常仍交给 RuntimeErrorHandler。所有这些便捷重载均不继承外层当前上下文的业务身份/Metadata，保留既有执行器容量、同 Route 内联恢复及关闭规则。自定义 GameRuntime 实现需实现新增重载。
+
+```java
+@Handler(domain = 1)
+class LoginHandler {
+    @HandlerMethod
+    public void login(DefaultHandlerContext context, LoginReq request) {
+        Connection connection = context.connection();
+    }
+}
+// 常规路径：调用方已经选择 Key，不读取 request.userId。
+runtime.dispatch(connection, 99L, loginReq);
+
+// 少数场景（未配置上下文工厂）：配置 @HandlerMethod(routeKey = "userId")
+// 或 @HandlerMethod(routeKeyMethod = "getUserId") 后：
+runtime.dispatch(connection, loginReq);
+```
+
+`ofField`/`ofMethod` 立即编译，无效配置抛 IllegalArgumentException，null 类型/名字抛 NullPointerException。字段允许 private 及继承，最近声明优先。方法必须 public、实例、无参数、非 varargs，可以继承。值只接受 byte/short/int/long 或 Byte/Short/Integer/Long，精确拓宽为 long；字符串、浮点、静态成员及不存在的成员拒绝。包装值为 null 时提取抛 NullPointerException。方法抛 RuntimeException/Error 原样传回，受检异常包装成带 cause 的 IllegalStateException。0 可以读取，但不能路由。JPMS 必须允许 privateLookupIn，不可访问成员在配置时拒绝。内部 MessageRouteKey 一次编译 MethodHandle，不逐消息反射查找，也不使用 monitor。
+
+源码见 [注解](../../game-runtime/src/main/java/cn/managame/runtime/handler/HandlerMethod.java)、[RouteKeyBinding](../../game-runtime/src/main/java/cn/managame/runtime/route/RouteKeyBinding.java)、[MessageRouteKey](../../game-runtime/src/main/java/cn/managame/runtime/internal/MessageRouteKey.java)、[DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)。[HandlerDispatchTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerDispatchTest.java) 验证外部 Key 优先（包括协议字段为 null）、注解覆盖、private/继承字段、getter 异常、无效签名/配置、显式上下文保留、关闭接纳和相同 Key 串行。[DemoHandlerTest](../../game-demo/src/test/java/cn/managame/demo/DemoHandlerTest.java) 验证仅标记 Handler 的 Spring UserHandler：请求 userId=10001 时使用调用方传入的 Key 99。
+
+<a id="handler-arguments"></a>
+
+### 6.3 应用自定义 Handler 参数
+
+`cn.managame.runtime.handler.HandlerArgumentBinding<T>` 是包含 `Class<T> type` 与 `Function<HandlerContext, ? extends T> resolver` 的 record，可直接构造或用 `of(type, resolver)` 创建。两个成员及 `resolve(context)` 输入均不可为 null。基本类型、Context 派生类型抛 IllegalArgumentException。通过 builder.handlerArguments 注册，复制后的列表替换旧配置，默认空。按声明的精确 Class 绑定，不使用命名约定、反射推断构造器、父类匹配或框架 RoleId 类型。重复绑定类型、同时注册为协议的类型、同一方法重复的自定义类型参数、未绑定参数类型均在构建时抛 IllegalArgumentException；允许未被方法使用的合法绑定。
+
+参数分类依次为 Context、已注册协议、显式参数绑定。仍要求恰好一个入站消息、至多一个 Context。不同自定义类型可投影同一身份对；方法也可省略所有自定义参数和 Context。构建时编译 MethodHandle 参数适配，不在每次分发引入反射查找、额外线程或同步 monitor；没有自定义参数的方法复用空参数数组。
+
+完成 Route/Handler/上下文校验后，在提交线程、接纳之前、绑定目标 Context 作用域之前，按自定义参数声明顺序各解析一次。解析器收到的 context 才是本次输入；Contexts.current() 可能为空或属于外层上下文。解析器必须线程安全，不访问目标 Route 状态，宜由上下文数据创建不可变值。`resolve` 对 null 结果抛 NullPointerException，错误运行时类型抛 ClassCastException。解析器 RuntimeException/Error 原样传回，不提交任务、不通知 RuntimeErrorHandler；已经解析的对象不回滚。同 Route 内联也遵循此规则，之后仍可能发生过载/执行器关闭拒绝。捕获值由 Runtime 借用，不复制/销毁；已接纳任务可在关闭后执行，不再次解析。Handler 执行异常仍按既有规则处理。
+
+```java
+record RoleId(long value) { static final int TYPE = 1; }
+// 与 Handler 和协议配置一起注册：
+builder.handlerArguments(List.of(HandlerArgumentBinding.of(RoleId.class, context -> {
+    if (context.businessIdType() != RoleId.TYPE) throw new IllegalArgumentException("Expected role identity");
+    return new RoleId(context.businessId());
+})));
+@Handler(domain = 1)
+class RoleHandler {
+    @HandlerMethod public void handle(RoleId roleId, MyMessage request) { /* ... */ }
+}
+// 身份来自已鉴权的接入层，与 Key 和消息字段独立。
+runtime.dispatch(connection, 99L, RoleId.TYPE, 10001L, request);
+```
+
+身份类型不自动序列化，也不注册为协议。尚未鉴权的登录可以继续使用 `login(DefaultHandlerContext, LoginReq)`，不声明 RoleId。源码：[HandlerArgumentBinding](../../game-runtime/src/main/java/cn/managame/runtime/handler/HandlerArgumentBinding.java)、[RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java)。[HandlerArgumentTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerArgumentTest.java) 验证参数顺序、接纳前仅解析一次、身份/Key/Domain 独立、显式上下文保留、关闭后执行已接纳任务、拒绝和无效绑定。可运行的 Spring 配置注册 [demo RoleId](../../game-demo/src/main/java/cn/managame/demo/bus/role/RoleId.java)，[DemoIdentityTest](../../game-demo/src/test/java/cn/managame/demo/DemoIdentityTest.java) 验证虚拟线程执行器接入。已有消息/Context 签名继续可用；自定义 GameRuntime 实现需增加身份重载。绑定只作用于 HandlerMethod，不作用于 HTTP/Event/Cron。
+
+demo 的 [GamePacketHandler](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketHandler.java) 反序列化协议号选定的类型，再调用连接/消息 dispatch。其 §6.4 配置策略根据注解解析的 Domain 选择路由/身份：LOGIN 将配置的请求 userId 仅作为排队 Key，身份为 0/0；ROLE 从 Connection 的 AttributeKey 读取一次不可变的已鉴权 [GameSession](../../game-demo/src/main/java/cn/managame/demo/network/GameSession.java)。角色身份由业务鉴权显式设置，不隐式推断；Handler/domain 的策略由应用配置。Runtime 捕获的是解码对象而非 byte[] 帧，不需要保留应用 packet。[GamePacketNetworkTest](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java) 验证 LoginReq、PingMessage 经 TCP 到达不同 HandlerMethod 并使用虚拟线程；[GamePacketDispatchTest](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketDispatchTest.java) 验证接纳前拒绝及排队时的会话值保留。这些是接入示例，不代表自动发送响应或已实现鉴权。
+
+应用可像 [GameDomain](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 一样用自己的枚举组织注册，将显式正整数 ID/名称转成 RouteDomain，并在 @Handler/@HandlerMethod.domain 引用编译期 int 常量；Java 注解不能通过现有 int 元素接收任意用户枚举值，也不能调用枚举方法。不要用 ordinal() 作为持久配置 ID。ROLE 是 demo 业务标签，不具有框架预留的身份或 Key 语义。上述 TCP/Spring 测试执行了此配置。
+
+<a id="handler-context-factory"></a>
+
+### 6.4 根据 Domain 选择接入上下文
+
+`cn.managame.runtime.handler.HandlerContextFactory` 是函数式接口：`HandlerContext create(int domain, Connection connection, Object message)`。`builder.handlerContextFactory(factory)` 替换旧工厂，拒绝 null，默认未配置。构建成功后保留该工厂实例，不复制其字段，也不为其提供串行保护；Runtime 不关闭工厂或外部身份存储，其生命周期由应用负责。配置时 `dispatch(connection, message)` 使用工厂；未配置时仍使用既有精确类型消息 Key 提取、身份 0/0。显式上下文、三个/五个参数的外部 Key 重载、四个参数的显式身份/提取重载都绕过工厂，注册工厂不能重写调用方明确指定的路由/身份。有工厂时此入口不调用已配置的注解/RouteKeyBinding 提取器，即使它会失败也不调用，不组合规则，也不回退。
+
+调用前检查关闭状态、非 null 消息及精确 Handler 存在性。传入 @HandlerMethod/@Handler 选择的有效 Domain，不从调用方或协议描述取 Domain。在目标 Context 作用域绑定前调用一次；工厂可从 Connection AttributeKey 或线程安全的外部 Map 获取身份，再按 Domain 选择 Key/businessIdType/businessId/Metadata，并返回兼容的应用 Context 子类型。必须保留 Domain 及原消息/连接引用；非网络工厂仍允许 null 连接，可通过抛异常拒绝未鉴权请求。Metadata 可明确提供，但不自动继承外层上下文；Contexts.current() 此时可能属于外层任务。应捕获不可变值，不访问 Route 专属状态。工厂与参数解析器均在提交线程执行，工厂创建先于校验和参数解析，不增加执行器或线程。
+
+返回 null 抛 NullPointerException。改变 Domain 抛 ROUTE_DOMAIN_MISMATCH（3004）；替换消息/连接或 Handler 上下文类型不兼容抛 HANDLER_CONTEXT_MISMATCH（3003）。Key 为 0 抛 INVALID_ROUTE_KEY（3005）；Handler 缺失抛 HANDLER_NOT_FOUND（3002）；Runtime 已关闭抛 RUNTIME_CLOSED（3001）。工厂 RuntimeException/Error 原样传回，不通知 RuntimeErrorHandler、不接纳任务；工厂上下文拒绝时不运行参数解析器。工厂在返回前关闭 Runtime，后续校验仍拒绝。工厂/参数求值之后仍可能发生执行器过载/关闭拒绝，已创建值不销毁、不回滚。接纳后保留返回上下文实例和已解析参数，不再次调用工厂或身份查询；可变自定义字段仍由应用负责。Handler 执行异常仍按既有 RuntimeErrorHandler 规则处理；同 Route 工厂分发内联执行并恢复外层实例。
+
+```java
+builder.handlerContextFactory((domain, connection, message) -> {
+    // identities 是应用管理的线程安全 Connection 到已鉴权身份 Map。
+    Identity identity = Objects.requireNonNull(identities.get(connection), "Not authenticated");
+    return switch (domain) {
+        case ROLE_ID -> new DefaultHandlerContext(domain, identity.roleRouteKey(), ROLE_TYPE,
+                identity.roleId(), Metadatas.empty(), message, connection);
+        case GUILD_ID -> new DefaultHandlerContext(domain, identity.guildRouteKey(), GUILD_TYPE,
+                identity.guildId(), Metadatas.empty(), message, connection);
+        default -> throw new IllegalArgumentException("Unsupported domain: " + domain);
+    };
+});
+// 注解确定 Domain，策略提供路由与身份。
+runtime.dispatch(connection, decodedMessage);
+```
+
+demo 使用 Connection 的 [GameSession](../../game-demo/src/main/java/cn/managame/demo/network/GameSession.java) 属性而非 Map。[GameRuntimeConfig](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) 将注解解析的 Domain 传给 [GameDomain.handlerContext](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameDomain.java)，LOGIN（ID 2）仅用请求 userId 作为排队 Key，身份为 0/0，不读取或创建会话；Key 0 在接纳前拒绝。ROLE（ID 1）拒绝缺失会话，并保留业务传入的 Key 与 RoleId.TYPE/角色值，不将 Key 固定为 roleId。建连不绑定会话，业务只能在 login 内校验 token 成功后通过 context.connection() 手动绑定；无效 token 使未绑定连接继续保持无会话。会话要求非零 Key 与非 null RoleId。UserHandler 尚未实现生产鉴权，TCP 探针以仅用于测试的 token 校验验证失败不绑定和成功在 login 内绑定。网络 [GamePacketHandler](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketHandler.java) 只解码并调用双参数入口，鉴权与身份存储清理由应用负责。未配置工厂的 builder 行为不变；采用工厂只改变明确配置后的双参数入口。[HandlerContextFactoryTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java) 验证两个 Domain 与外部 Map、方法 Domain 覆盖、定制上下文、不调用消息 Key 提取器、Map 删除后保留已捕获输入、接纳前失败、显式重载优先、内联恢复及工厂创建期间关闭。demo TCP/分发测试验证基于属性的策略。
 
 ## 7. RouteExecutor
 
@@ -393,6 +501,29 @@ public void onChanged(MyEvent event) { /* Contexts.current() 获取上下文 */ 
 按事件精确 Class 匹配，order 越小越先执行，相同值顺序不保证。监听器失败报告 3009 后继续下一个。无监听器也会校验目标 Route，并受接纳限制。
 
 事件使用 DefaultEventContext。同一 Runtime 的 InvocationContext 发布时继承身份和 Metadata；其他来源使用身份 0 与空 Metadata。同 Route 发布可内联，publish 返回不等于所有跨 Route 监听器已完成。
+
+<a id="static-event-publication"></a>
+
+### 9.1 静态事件发布
+
+`cn.managame.runtime.event.Events` 提供 `static void publish(Event)`、`static void bind(GameRuntime)`、`static boolean unbind(GameRuntime)`。业务直接调用 `Events.publish(event)`，无需获取 Runtime 或 EventBus。既有实例入口 `runtime.eventBus().publish(event)` 保留，用于显式的多实例集成。
+
+Events 先从内部 ScopedValue 绑定读取所属 Runtime，没有所属实例时才读取 AtomicReference 保存的进程默认实例。只选择一次，再委托该 Runtime 的 EventBus。无所属/默认实例时抛 IllegalStateException；事件或绑定 Runtime 为 null 时抛 NullPointerException。既有 RuntimeDispatchException 拒绝码原样传播。当前所属 Runtime 已关闭时，即使另有开放的默认实例，也报告 RUNTIME_CLOSED。选择后的绑定变化不会向其他 Runtime 重试。同 Route 内联、EventContext 身份/Metadata 继承、Context 恢复、监听器顺序及异常隔离仍遵循 RT-EVENT-01–05。
+
+启动在 Runtime 构建成功且仍运行时显式调用 `Events.bind(runtime)`，之后才允许外部发布；build 不自动选择进程默认实例。bind 按实例身份比较：重复绑定同一对象无操作；不同对象冲突时抛 IllegalStateException，不替换原绑定。unbind 仅实际移除指定对象的绑定时返回 true，否则返回 false。绑定借用 Runtime，不启动/关闭资源。内置 Runtime.close 原子标记关闭，并在关闭定时器/执行器前条件解除自身默认绑定，不能清除其他 Runtime 的绑定。自定义 GameRuntime 实现必须在自身关闭生命周期安排 `Events.unbind(this)`。
+
+应用串行协调启动绑定与关闭，不得绑定已关闭的 Runtime；bind 自身不检查生命周期，也不重新开启实例。显式解绑/关闭不代表已经等待所有已选定实例的发布完成。与普通实例发布相同，Runtime 关闭可能拒绝尚未接纳的提交，已接纳工作按 RT-CLOSE-02 执行。无 Runtime 上下文时，默认绑定移除后发布抛 IllegalStateException；已接纳且仍在已关闭 Runtime 中执行的工作保留所属实例，发布报告 RUNTIME_CLOSED。
+
+```java
+// 仅用于启动；Spring/应用生命周期持有并关闭 Runtime。
+Events.bind(runtime);
+// 业务发布，也可从外部线程调用：
+Events.publish(new ChangedEvent(1, 42));
+// 显式移除默认绑定，不关闭 Runtime：
+Events.unbind(runtime);
+```
+
+[demo Runtime 配置](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) 绑定构建的实例；绑定失败时关闭它，再将其作为可关闭的 Spring Bean 暴露。业务监听器只需 @EventHandler，因为应用提供了注解扫描过滤器；Runtime 注解不因此依赖 Spring。源码：[Events](../../game-runtime/src/main/java/cn/managame/runtime/event/Events.java)、[RuntimeContexts](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeContexts.java) 及 [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)。验证：[EventsTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventsTest.java) 覆盖无实例/默认/所属选择、身份继承和内联 Context 恢复、冲突、旧实例关闭、已关闭所属实例拒绝，以及发布过程中的绑定变化；[DemoEventTest](../../game-demo/src/test/java/cn/managame/demo/DemoEventTest.java) 验证仅标记事件注解的 Spring 发现、静态发布及 Context 关闭后解绑。
 
 ## 10. GameTime、Timer 与 Cron
 

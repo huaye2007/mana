@@ -116,7 +116,7 @@ Validate and freeze:
 
 **RT-BUILD-01**: Failed builds return no partially usable Runtime. After success, mutation of original registration objects cannot change protocol tables.
 
-**RT-BUILD-02**: Protocol and RouteKey extraction registration are independent. Protocol descriptors contain no implicit Domain, Key, or codec; dispatch never automatically invokes extractors.
+**RT-BUILD-02**: Protocol and RouteKey extraction registration are independent. Protocol descriptors contain no implicit Domain, Key, or codec. Explicit-context dispatch uses the supplied Route. Convenience message dispatch selects the Handler's Domain and normally uses the caller's Key; message-derived extraction is a separately selected entry as defined in RT-DISPATCH-04.
 
 **RT-BUILD-03**: Successful build is immediately usable. Closed instances never restart; build another.
 
@@ -127,9 +127,10 @@ Validate and freeze:
 ```text
 Integration receives/decodes message
 → validates connection identity and request
-→ selects Domain and explicitly extracts/computes Key
-→ constructs HandlerContext
-→ dispatch validates and attempts admission
+→ explicitly supplies Key and business identity
+→ resolves Handler Domain or validates the explicit-context Domain
+→ constructs HandlerContext when needed
+→ dispatch validates, resolves registered arguments and attempts admission
 → bind Context on target Route
 → execute Handler
 → restore previous Context
@@ -145,7 +146,7 @@ Accepted dispatch is not business success; successful Handler execution is not r
 | --- | --- |
 | Context | Domain, Key |
 | InvocationContext | Context + businessIdType, businessId, Metadata |
-| HandlerContext | InvocationContext + message |
+| HandlerContext | InvocationContext + message + optional borrowed connection |
 | HttpContext | Context + borrowed HTTP request + response completion capability |
 | EventContext | InvocationContext + event |
 | TimerContext | Context |
@@ -161,6 +162,8 @@ businessIdType is unsigned 8-bit identity category; businessId is 64-bit busines
 
 **RT-CTX-04**: Share Metadata as immutable values. Inheritance does not establish trust; integration still owns the trust boundary.
 
+**RT-CTX-05**: A Handler context may carry an explicitly supplied borrowed connection, which business code obtains through the context. Borrowing does not keep a connection active, transfer ownership, authenticate its peer, or authorize Runtime to close it. Connection absence is allowed for non-network work. Disconnect after admission does not cancel the Handler. Events, timers, and cross-Route target contexts do not implicitly inherit this connection.
+
 TimerContext carries no business identity/Metadata. Explicitly capture suitable immutable data when needed.
 
 <a id="51-上下文传播矩阵"></a>
@@ -170,6 +173,8 @@ TimerContext carries no business identity/Metadata. Explicitly capture suitable 
 | Operation | Execution context | Identity/Metadata | Custom fields |
 | --- | --- | --- | --- |
 | dispatch | Supplied HandlerContext | Supplied values | Preserve original instance fields |
+| Built-in convenience dispatch | New HandlerContext with caller Key or explicitly selected extraction | Explicit identity when supplied, otherwise defaults; empty Metadata | Supplied borrowed connection; no implicit copy |
+| Configured ingress policy | Policy-created HandlerContext for the selected Handler Domain | Policy-supplied identity/Metadata | Preserve the returned instance and original message/connection |
 | HTTP dispatch | Default or factory-created HttpContext | Explicit routing rule; no implicit business identity/Metadata | Preserve original instance fields |
 | Event from same-Runtime InvocationContext | New EventContext | Inherit | No automatic copy |
 | Event from external thread/other Runtime | New EventContext | Defaults/empty | No copy |
@@ -193,6 +198,20 @@ Handlers receive registered REQUEST/NOTIFY messages only; RESPONSE is not an inb
 
 **RT-DISPATCH-03**: Once Handler executes, report its exceptions to Runtime error handling, never automatically send them as remote business responses.
 
+**RT-DISPATCH-04**: Convenience message dispatch resolves the exact message Handler and selects its configured Domain. The usual entry accepts the caller's Key directly and must not invoke or override it with a message extractor. A separate entry may derive Key through registered message extraction before admission. The integration need not construct a Route or Context for either entry. A zero Key rejects; missing extraction also rejects when the caller selected message-derived routing, and extraction failure propagates without queueing or executing the Handler. Both entries use the same validation, same-Route inlining, serial queue, rejection, error, and shutdown rules as explicit-context dispatch. Integration may explicitly supply business identity for either entry; omitting identity selects defaults. Built-in convenience contexts have empty Metadata and never implicitly inherit outer identity/Metadata. Connection presence does not imply authenticated identity; integration owns authentication and supplies trusted values. Bindings define APIs and numeric defaults.
+
+**RT-DISPATCH-05**: A Handler may receive additional application-defined typed arguments, including a business identity value. Each type requires an explicit binding from HandlerContext; neither type names nor protocol/Route fields infer business identity. Bindings are fixed at build and ambiguous or unregistered argument definitions reject startup. After context/Route validation and before admission, resolve the arguments in declaration order once for this dispatch. Resolution failure rejects without queueing or invoking the Handler; it is an integration failure, not a Handler execution failure. Resolvers can run concurrently on submitting threads, outside target Route serialization, so they must not access Route-owned mutable state. Accepted work uses the resolved values without repeating resolution; ownership and immutability remain the application's responsibility. Bindings do not change Route choice, execution order, overload rejection, or closure behavior.
+
+**RT-DISPATCH-06**: Integration may explicitly configure a context-creation policy for connection/message dispatch. Resolve the exact Handler and its effective configured Domain first, then call the policy once with that Domain, borrowed connection and decoded message. The policy selects Key, business identity, Metadata and optional context subtype; preserve the Handler Domain and original message/connection. Policies run on the submitting thread before target scope binding, context validation, argument resolution and admission. Null, thrown failures or incompatible returned contexts reject before queueing; never fall back to message extraction or another policy. Without a configured policy, retain the existing message-extraction entry. Explicit-context, supplied-Key and explicit-identity entries bypass this policy. Admitted work keeps the returned context and does not re-read identity storage or invoke the policy again, including execution after close; same-Route inlining restores the outer context. Closure/rejection after policy evaluation remains possible. Policies must be thread-safe and must not access Route-owned mutable state. Bindings define entry selection and failure forms.
+
+The role identity may reside in connection attributes or an application-managed connection-to-identity map; neither storage is required by Runtime. An application can use the Handler Domain to choose player routing/identity in one branch and guild routing/identity in another. It owns authentication, policy interpretation and storage lifecycle. Identity is supplied after authentication; Domain never authenticates the connection. Inputs selected before admission remain valid for that task even if storage later changes or is removed. A mutable custom context is not deep-copied, so applications must capture stable values. See [Java ingress policy](OGBS-Runtime-Java-25-Specification-1.0.md#handler-context-factory) and [HandlerContextFactoryTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java).
+
+For example, an application defines RoleId and validates that the supplied businessIdType denotes a role before constructing it from businessId. Key 99 and business identity role/10001 remain distinct even if a request contains userId=42. An anonymous login may omit RoleId; a role-required Handler rejects anonymous identity through its binding. Creating RoleId does not authenticate the request or make a connection trusted. See the [Java argument contract](OGBS-Runtime-Java-25-Specification-1.0.md#handler-arguments), [HandlerArgumentTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerArgumentTest.java), and [demo identity test](../../game-demo/src/test/java/cn/managame/demo/DemoIdentityTest.java).
+
+Applications decide which Handlers/Domains require role identity, and explicitly supply it only after successful authentication; Runtime does not install a Domain-to-role policy. The [packet integration example](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketHandler.java) forwards a protocol-decoded object plus application-session routing/identity to dispatch. [TCP validation](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java) demonstrates the matching business method, not automatic response delivery; [admission validation](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketDispatchTest.java) verifies identity values captured before queueing despite a subsequent session change. Connection establishment does not authenticate a player. In this demo, successful business token verification inside the login Handler precedes manual session binding; failed verification leaves an unbound connection without a session. Login routing is a separate application policy and requires no authenticated role. Session storage and pre-login routing are application choices, not framework requirements.
+
+For example, the caller supplies Key 99 for a login message containing userId=42 and a Handler bound to Domain 1. The usual entry targets (1,99), even if a userId extractor is registered or would fail. Only explicitly selecting message-derived routing targets (1,42). Missing extraction must not fall back to a connection ID or arbitrary queue. Explicit-context dispatch continues preserving the original context, routing, identity, and custom fields. Sources and validation: [Java Handler binding](OGBS-Runtime-Java-25-Specification-1.0.md#automatic-handler-dispatch) and [HandlerDispatchTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerDispatchTest.java). Supplied-Key routing is the normal model; extraction serves exceptional protocol-based routing without making it a prerequisite for every Handler.
+
 Context mismatch is an integration error: a Handler requiring a custom HandlerContext subtype must receive that subtype.
 
 <a id="7-本地事件"></a>
@@ -208,6 +227,10 @@ Event supplies target Domain/Key. Events are in-process messages without persist
 **RT-EVENT-03**: Report a listener exception but continue later listeners in that publication.
 
 **RT-EVENT-04**: No listeners is not a missing-Handler error. Route validation and admission still apply.
+
+**RT-EVENT-05**: Convenience publication without an explicit Runtime first selects the Runtime owning the current execution context. Without an owning context, it selects an explicitly configured process default. With neither, it reports a configuration error. It must never switch to the default after the selected owner rejects publication, including after owner closure. The selected Runtime performs the same Route validation, admission, identity propagation, listener ordering, and error handling as ordinary event publication; no separate event execution mechanism is introduced.
+
+Only one default binding exists per process. Rebinding the same Runtime is idempotent; binding a different Runtime while one is bound reports conflict instead of silently replacing it. Unbinding removes only the specified instance and neither closes the Runtime nor cancels accepted events. The reference implementation releases its own binding on Runtime closure; the lifecycle owner must coordinate startup binding with shutdown. A publication that already selected a Runtime may still submit there or observe its closure after the binding changes; it must not retry against a replacement. This preserves isolation when multiple Runtimes coexist. For example, execution owned by Runtime A publishes to A even when B is the default, and closing an old unbound A cannot remove B's binding. API names, process binding implementation, and validation entry points are defined in the [Java specification](OGBS-Runtime-Java-25-Specification-1.0.md#static-event-publication).
 
 Publishers must not arbitrarily mutate events while execution may still be pending.
 
