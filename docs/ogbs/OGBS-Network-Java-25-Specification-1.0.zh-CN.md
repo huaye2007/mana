@@ -24,9 +24,9 @@ Maven：`cn.managame:game-network:1.0.0-SNAPSHOT`。JDK 25，无 preview；Netty
 
 NettyConnection、NetworkChannelInitializer、WebSocketTransport、ConnectionHandlerAdapter 与 WS payload 适配均保持 netty 包级封装。Server/Client 入口与其实现同包，避免为拆包公开内部协作类型。
 
-内部 HTTP 保留在 game-network artifact，但使用独立的 cn.managame.network.http 包。HttpServer 自行管理 ServerBootstrap、监听、资源生命周期与请求管线，不包装 NetworkServer，不使用 Connection/ConnectionHandler。HttpServerTransport 保持包级封装；TCP/WS 类与其 Upgrade codec 不变。业务 handler 由应用负责，可运行 HTTP 示例位于 game-example 的 cn.managame.example.network。不需要新增 Maven 模块或依赖。
+内部 HTTP 保留在 game-network artifact，但使用独立的 cn.managame.network.http 包。HttpServer 自行管理 ServerBootstrap、监听、资源生命周期与请求管线，不包装 NetworkServer，不使用 Connection/ConnectionHandler。HttpServerTransport 保持包级封装；TCP/WS 类与其 Upgrade codec 不变。业务 handler 由应用负责，可运行 HTTP 示例位于 game-demo 的 cn.managame.demo.examples.network。不需要新增 Maven 模块或依赖。
 
-不再建立 attribute 包或自定义 ConnectionKey，直接使用 Netty AttributeKey。原 Acceptor/Connector 抽象由具体 NetworkServer/NetworkClient 替代。模块入口见 [game-network](../../game-network/README.zh-CN.md)。可运行示例及其执行测试位于 [game-example](../../game-example/README.zh-CN.md) 的 cn.managame.example.network 包中，不随 game-network artifact 发布。示例调用方需要更新 import 与模块依赖，不保留旧包别名。组件契约测试仍位于 game-network。
+不再建立 attribute 包或自定义 ConnectionKey，直接使用 Netty AttributeKey。原 Acceptor/Connector 抽象由具体 NetworkServer/NetworkClient 替代。模块入口见 [game-network](../../game-network/README.zh-CN.md)。可运行示例及其执行测试位于 [game-demo](../../game-demo/README.zh-CN.md) 的 cn.managame.demo.examples.network 包中，不随 game-network artifact 发布。示例调用方需要更新 import 与模块依赖，不保留旧包别名。组件契约测试仍位于 game-network。
 
 <a id="native-http-server-api"></a>
 
@@ -63,7 +63,7 @@ ReadTimeoutHandler 度量入站无数据时间，包括空闲 Keep-Alive 和部�
 
 已确认取舍：普通内部接口先支持 HTTP/1.1，采用独立实现，避免给 NetworkServer/ConnectionHandler 增加 HTTP 分支。明确接入要求或实测连接/响应顺序瓶颈出现时再评估 HTTP/2，单凭高 QPS 不足以判断。body 上限不限制执行队列、连接数量或响应缓冲，不宣称生产容量。内建路由、JSON、压缩、multipart 与 CORS 不在初版实现中。
 
-源码：[HttpServer](../../game-network/src/main/java/cn/managame/network/http/HttpServer.java)、[Builder](../../game-network/src/main/java/cn/managame/network/http/HttpServerBuilder.java)、[Transport](../../game-network/src/main/java/cn/managame/network/http/HttpServerTransport.java)。验证：[HttpServerTest](../../game-network/src/test/java/cn/managame/network/http/HttpServerTest.java)、[HttpServerExample](../../game-example/src/main/java/cn/managame/example/network/HttpServerExample.java)、[示例测试](../../game-example/src/test/java/cn/managame/example/network/HttpServerExampleTest.java)。测试覆盖真实 socket、chunked 入站、持久/流水线响应边界、HEAD/204/205/304、原生 TLS/明文拒绝、拒绝、执行器投递时的 100/413 顺序、所有权、handler 失败、无数据超时、资源生命周期、原生路由/鉴权拒绝/默认 404、CORS 预检、gzip 变换和扩展执行器一致性。生产容量仍未验证；全仓库验证目前被已有 RPC 测试 API 不匹配阻断，示例模块还存在已有 RpcEchoExample.maxPendingCalls 编译不匹配。这些无关错误修复前，单独编译并运行 HTTP 示例。
+源码：[HttpServer](../../game-network/src/main/java/cn/managame/network/http/HttpServer.java)、[Builder](../../game-network/src/main/java/cn/managame/network/http/HttpServerBuilder.java)、[Transport](../../game-network/src/main/java/cn/managame/network/http/HttpServerTransport.java)。验证：[HttpServerTest](../../game-network/src/test/java/cn/managame/network/http/HttpServerTest.java)、[HttpServerExample](../../game-demo/src/main/java/cn/managame/demo/examples/network/HttpServerExample.java)、[示例测试](../../game-demo/src/test/java/cn/managame/demo/examples/network/HttpServerExampleTest.java)。测试覆盖真实 socket、chunked 入站、持久/流水线响应边界、HEAD/204/205/304、原生 TLS/明文拒绝、拒绝、执行器投递时的 100/413 顺序、所有权、handler 失败、无数据超时、资源生命周期、原生路由/鉴权拒绝/默认 404、CORS 预检、gzip 变换和扩展执行器一致性。生产容量仍未验证；根 clean verify 已通过并执行 HTTP/RPC 示例。
 
 <a id="http-async-response"></a>
 
@@ -84,7 +84,7 @@ boolean onFail(Throwable cause);
 
 等待期间 readTimeoutMillis 继续生效，包括暂停自动读取时；它衡量入站无数据，不表示业务执行期限或回滚。例如，把回调交给 Route 任务后，30 秒无数据关闭可先于业务完成；稍后的 onResponse 释放响应，不撤销业务。长业务应显式禁用或调整此 I/O 超时。借用 worker group 时，监听关闭继续按 N-HTTP-06 允许已有连接/响应完成。
 
-示例：[HttpAsyncServerExample](../../game-example/src/main/java/cn/managame/example/network/HttpAsyncServerExample.java) 在借用期内解码 UTF-8，并从应用拥有的执行器完成回调；[HttpAsyncServerExampleTest](../../game-example/src/test/java/cn/managame/example/network/HttpAsyncServerExampleTest.java) 验证完整往返。HttpServerTest 还覆盖异步跨连接推进、流水线/自动响应顺序、请求/响应所有权、完成竞争、失败、自有资源关闭后的晚到完成、无数据超时及 Builder 替换。已有 TCP/WS 与同步 HTTP API 保持源码兼容，不变更依赖或 Wire Profile。本次验证：85 项 Network 测试通过，其中 HTTP 25 项；独立 JUnit launcher 执行的两个 HTTP 示例测试通过。根 clean verify 通过 Core/Network 后，被已有 RPC 测试编译不匹配阻断，不宣称全仓库验证成功。
+示例：[HttpAsyncServerExample](../../game-demo/src/main/java/cn/managame/demo/examples/network/HttpAsyncServerExample.java) 在借用期内解码 UTF-8，并从应用拥有的执行器完成回调；[HttpAsyncServerExampleTest](../../game-demo/src/test/java/cn/managame/demo/examples/network/HttpAsyncServerExampleTest.java) 验证完整往返。HttpServerTest 还覆盖异步跨连接推进、流水线/自动响应顺序、请求/响应所有权、完成竞争、失败、自有资源关闭后的晚到完成、无数据超时及 Builder 替换。已有 TCP/WS 与同步 HTTP API 保持源码兼容，不变更依赖或 Wire Profile。本次验证：85 项 Network 测试通过，其中 HTTP 25 项；独立 JUnit launcher 执行的两个 HTTP 示例测试通过。根 clean verify 已通过 Core/Network/RPC 及全部后续模块。
 
 ## 2. Connection 与 Handler
 
@@ -423,7 +423,7 @@ Server.build 不开始监听，也不启动默认 group；start 才开始同步�
 
 就绪连接的入口开放检查是接纳点。先观察到 close 时，Server 拒绝该 Channel，Client 报告 IllegalStateException；已经通过检查的交付允许与 close 并发完成，客户端仍以原生 Promise 与中断/传输失败仲裁。自建 group 关闭可能令已成功交付的 Connection 失效，此时按正常断开流程处理。
 
-外部 group 下，close 不等待或取消握手。例如，静默 TLS 对端握手期间 Client.close，Channel 仍保持到原生握手超时或调用方主动关闭；随后回调观察到 closed，只报告一次失败。不要禁用原生超时后又依赖入口 close 取消尝试。尚未到就绪阶段的 TCP connect 若失败，也可能报告 NetworkException。需要批量关闭的业务自行管理连接和资源。
+外部 group 下，close 不等待或取消握手。例如，静默 TLS 对端握手期间 Client.close，Channel 仍保持到原生握手超时或调用方主动关闭；随后回调观察到 closed，只报告一次失败。不要禁用原生超时后又依赖入口 close 取消尝试。关闭前已认领的传输失败仍可报告 NetworkException；失败路径观察到 closed 时报告 IllegalStateException。需要批量关闭的业务自行管理连接和资源。
 
 
 ## 8. 失败与兼容性
@@ -445,7 +445,7 @@ Server.build 不开始监听，也不启动默认 group；start 才开始同步�
 
 心跳、IdleStateHandler、自定义 HTTP Upgrade 检查和业务认证通过原生 Netty 接入或上层组件组合，当前没有独立框架 DSL。若要增加统一能力，应先说明可观察行为与资源责任，再同步两层 Spec；不能仅以“便于使用”为由默认加入自动重连、自动关闭或业务发送队列。
 
-可运行入口以现有 [NetworkEchoExample](../../game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) 及下述示例测试为准。本章的流程图、引用计数说明和状态表是设计说明，不另行声明为独立可运行程序。
+可运行入口以现有 [NetworkEchoExample](../../game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) 及下述示例测试为准。本章的流程图、引用计数说明和状态表是设计说明，不另行声明为独立可运行程序。
 
 
 ### 8.2 建立失败和晚到异常的日志
@@ -471,11 +471,13 @@ NetworkSupport 使用名为 cn.managame.network 的 System.Logger。服务端建
 - [ConnectionSetupTest](../../game-network/src/test/java/cn/managame/network/netty/ConnectionSetupTest.java)：handlerAdded 失败、绕过 WS 协议策略的写入异常路由、服务端静默连接的原生默认期限及取消，以及客户端静默 Upgrade 的原生超时。
 - [NativeTlsTest](../../game-network/src/test/java/cn/managame/network/netty/NativeTlsTest.java)：显式 TLS 位置/数量、URI 一致性、信任与主机名校验失败、握手超时/取消，TLS 成功但 WS Upgrade 未成功，以及明文在进入 HTTP 处理前被拒绝。
 - [DisconnectOrderingTest](../../game-network/src/test/java/cn/managame/network/netty/DisconnectOrderingTest.java)：EOF 尾帧先于断开、回调异常时的借用引用释放、产出尾帧后 decodeLast 失败、重复断开抑制，以及真实 TCP 上的有序异步解码。
-- [NetworkEchoExampleTest](../../game-example/src/test/java/cn/managame/example/network/NetworkEchoExampleTest.java)：在 game-example 中编译运行完整示例，命令为 mvn -pl game-example -am test。
+- [NetworkEchoExampleTest](../../game-demo/src/test/java/cn/managame/demo/examples/network/NetworkEchoExampleTest.java)：在 game-demo 中编译运行完整示例，命令为 mvn -pl game-demo -am test。
 
 `mvn -pl game-network -am test` 运行模块测试；仓库整体验证用 `mvn clean verify`。测试临时证书由当前 JDK keytool 生成；测试限定 Netty 默认线程数为 2，并在 Windows 下让 JDK Selector 唤醒管道回退到 TCP（测试专用的不可作为目录使用的 unixdomain.tmpdir，规避该环境 AF_UNIX connect 间歇失败），生产代码不修改 JVM 属性。
 
-当前未进行真实公网/native transport/生产容量认证或跨语言互操作测试。game-rpc 已提供真实 TCP 集成测试；自动 RPC 到 Runtime 接入仍未实现。
+当前未进行真实公网/native transport/生产容量认证或跨语言互操作测试。game-rpc 已提供真实 TCP 集成测试；可选 RPC 到 Runtime 接入由 game-spring 提供。
+
+2026-10-03 修复验证：NetworkClient 的 Bootstrap connect/任务拒绝/同步装配失败路径与握手失败路径统一观察 closed。上述 NetworkClient 失败路径观察到入口已关闭时，报告 IllegalStateException 并保留 cause；关闭前已经认领的 NetworkException 不被改写，不重复通知。NativeTlsTest 的取消断言保持不变，根 clean verify 通过 85 项 Network 测试。未新增连接/尝试注册表，也不将借用 group 的 close 改为批量取消。
 
 
 ### 9.1 易错契约的测试定位

@@ -2,7 +2,7 @@
 
 **[English](OGBS-RPC-1.0.md)** | [简体中文](OGBS-RPC-1.0.zh-CN.md)
 
-Document type: **Language-independent specification**. Component: game-rpc. A Java implementation is available, with confirmed current-source deviations in Peer-recreation correlation, timeout-notification isolation and finite call admission, plus a recovery race. See the Java specification section 9.1. Production capacity and cross-language interoperability are unverified.
+Document type: **Language-independent specification**. Component: game-rpc. Java implementation is available; correlation, timeout isolation and recovery handoff repairs are locally verified. Finite admission remains unimplemented/deferred. See Java section 9.1. Production capacity and cross-language interoperability are unverified.
 
 Companions: [Java 25 specification](OGBS-RPC-Java-25-Specification-1.0.md), [RPC Wire Profile](../rpc-wire.md).
 Normative dependencies: [Network](OGBS-Network-1.0.md), [Core](OGBS-Core-1.0.md).
@@ -142,7 +142,7 @@ Example: A calls B with command 101; after removal/recreation, A calls command 2
 
 **R-LIVE-03** addPeer immediately connects empty Slots. After connection/handshake failure or established disconnection, retry after a positive base delay plus a fresh uniformly sampled additive delay in [0, configured jitter]. Bindings define defaults and time granularity; zero jitter preserves fixed-delay behavior. One recovery chain per Slot covers delay, connect, and handshake; Slots are independent. Old tasks become invalid after removal/closure. No exponential backoff, retry maximum, or business resend. Jitter spreads attempts but does not impose a global connection-attempt rate limit.
 
-Java implementation status: a follow-up review reproduced a recovery-stop/unbind race that can leave an active Peer with an empty Slot and no maintained recovery chain. This remains an implementation defect, not an exception to R-LIVE-03. See [current-source review](OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险).
+Java implementation handles recovery stop/unbind races by clearing the recovery marker, rechecking and reacquiring ownership with CAS. Local concurrency regression passes; maintenance timing is not a hard real-time guarantee and production recovery convergence is unverified. See [Java validation boundaries](OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险).
 
 <a id="10-错误边界"></a>
 
@@ -175,4 +175,4 @@ Automatic HANDLER_ERROR includes no exception text, stack trace, or Metadata. Co
 
 Java tests: [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java), [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java), [RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java). Implementation, defaults, and examples are in the Java specification.
 
-The retained tests describe local real TCP and controlled concurrency coverage, but the current RPC suite cannot compile. Current diagnostic reproduction and contract deviations are recorded in the Java specification section 9.1; historical passing runs do not validate this source. Cross-language integration, production capacity, long-lived ID wrap, and public-network deployment remain unverified. Automatic RPC→Runtime integration, TLS/WS RPC Builder, and discovery are outside this implementation.
+Local real TCP/concurrency regressions and root clean verify pass. Finite admission remains deferred; cross-language, production capacity, long-lived ID wrap and public-network deployment are unverified. RPC core has no automatic Runtime dependency; optional Spring adaptation follows [container integration semantics](OGBS-Spring-1.0.md). TLS/WS RPC Builder and discovery remain unimplemented.

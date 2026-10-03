@@ -1,8 +1,8 @@
 # game-spring
 
-**[English](README.md)** | [简体中文](README.zh-CN.md)
+[English](README.md) | **[简体中文](README.zh-CN.md)**
 
-Runtime 与 MySQL Data 的可选普通 Spring 集成，Java 25、Spring Context 7.0.9，不使用 Spring Boot，核心模块保持不依赖 Spring。
+Runtime、MySQL Data 与 RPC 的可选普通 Spring 集成，Java 25、Spring Context 7.0.9，不使用 Spring Boot，核心模块保持不依赖 Spring。
 
 使用 `@EnableGameRuntime(basePackages="my.game")` 发现 Handler/EventHandler/HttpHandler 和 Cron 对象，提供 ProtocolProvider 与 GameRuntimeConfigurer Bean 配置协议、Domain、执行器及业务身份策略。`@EnableGameData(basePackages="my.game")` 配合应用持有的 DataSource 初始化 `@Repository` Bean，可选 GameDataConfigurer 配置 codec/回写。Repository 保留字段/setter 注入，仍需满足 Data 的无参构造及直接泛型基类约束。
 
@@ -20,3 +20,6 @@ Context 关闭时先拒绝新 Runtime 工作，等待已登记工作/回调，�
 契约：[容器集成规范](../docs/ogbs/OGBS-Spring-1.0.zh-CN.md)、[Java 开发规范](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)、[OGBS 索引](../docs/ogbs/README.zh-CN.md)。公开包为 `cn.managame.spring.runtime` 和 `.data`，发现/配置/生命周期辅助类型保持包内封装。
 
 构建使用 `mvn -pl game-spring -am clean verify`，测试覆盖 Cron 发现、自动 HTTP/前缀/限制/启动失败及平滑生命周期，Repository 集成测试位于 demo。真实数据库及任意自定义 Spring 代理/广播配置仍未验证。
+
+
+添加 game-rpc 依赖后，可使用 `@EnableGameRpc`，提供线程安全的 GameRpcCodec（例如 Fory），配置 game.rpc.node-id、game.rpc.port。GameRpc 按协议注册表解码并进入 Runtime；业务用 `gameRpc.reply(response)` 回复，在 Route 内用 `gameRpc.call(..., RouteCallback)` 发起调用并回到原 Route。Node 生命周期由 Spring 管理，Peer 配置仍由应用通过 gameRpcNode Bean 决定。game-rpc 是 optional 依赖，HTTP/Data-only 应用不传递引入。完整使用、构造循环、异步错误与关闭边界见 [托管 RPC](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)，真实 TCP 验证见 [RpcAssemblyTest](src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java)。公开集成包还包含 `cn.managame.spring.rpc`。

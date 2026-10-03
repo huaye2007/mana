@@ -156,7 +156,7 @@ businessIdType 是 8 位无符号身份类别，businessId 是 64 位业务身�
 
 **RT-CTX-06**：公共 Handler 上下文包含解码后的消息、路由和业务身份，客户端与 RPC 接入暴露不同的上下文能力。RPC 上下文携带逻辑来源节点、来源 Slot、command 和请求关联信息，而非物理连接。来源 Slot 是回复提示，不是 Route Key 或业务身份；请求关联值在 Notify 时为 0，在 Call 时非 0。接入层独立于传输亲和选择非零业务 Route Key 和 Handler 配置的 Domain。所需上下文能力不匹配时在接纳前拒绝。已接纳任务保留原上下文实例，包括关闭后执行；事件和跨 Route 目标只继承普通调用身份/Metadata，回源回调恢复原上下文。
 
-例如来自节点 10/Slot 2、请求 ID 为 81 的 RPC Call，可在玩家 Route (1,99)、业务 ID 10001 下执行。后续回复通过 RPC 层使用逻辑来源和关联信息，此时 Slot 可能已对应另一条连接。上下文不鉴权这些值，也不保证响应送达。自动 RPC 解码/Runtime 接入及响应组装仍未实现；这些上下文支持显式接入，不增加统一发送 API。见 [Java 上下文绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#transport-handler-contexts) 和 [传输上下文测试](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java)。
+例如来自节点 10/Slot 2、请求 ID 为 81 的 RPC Call，可在玩家 Route (1,99)、业务 ID 10001 下执行。后续回复通过 RPC 层使用逻辑来源和关联信息，此时 Slot 可能已对应另一条连接。上下文不鉴权这些值，也不保证响应送达。可选 RPC 解码/Runtime 接入及对象回复由 game-spring 提供；上下文保持区分，不增加统一发送 API。见 [Java 上下文绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#transport-handler-contexts) 和 [传输上下文测试](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java)。
 
 TimerContext 不携带业务身份和 Metadata。业务若需要定时保存某些信息，应显式捕获适当的不可变数据。
 
@@ -423,7 +423,7 @@ HTTP 分发是 Runtime 的可选入口，与普通 Handler、Event、call 使用
 
 已确认取舍是为游戏服务普遍需要的 HTTP 入口提供统一业务执行模型，同时保持传输生命周期和鉴权显式。游戏服务常用 body 请求，因此默认 POST；GET 作为 query 入口需显式选择。修改原 GET 默认值不会注册别名：未指定方法的入口现在接收 POST，GET 在未另行注册时返回 405。既有 GET 入口需显式选择 GET 才能保留行为。语言绑定使用类型化方法选择，避免拼写/大小写错误；增加方法 token 需基于实际需求审查兼容性。原始路径精确匹配使入口选择可预测，避免另建一套路由框架。仅在出现具体模板、body 绑定或新增 HTTP Profile 需求时重新评估；自动请求 DTO 绑定、multipart/流式分发、HTTP 客户端、回调必达和生产容量认证不属于当前实现。
 
-实现与验证入口：[RuntimeHttp](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeHttp.java)、[RuntimeHttpTest](../../game-runtime/src/test/java/cn/managame/runtime/http/RuntimeHttpTest.java)、[RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java)。测试覆盖默认 POST、显式支持方法、405/Allow 边界、匹配、接纳、引用所有权、完成竞争、上下文传播、关闭及真实 HTTP 传输接入。
+实现与验证入口：[RuntimeHttp](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeHttp.java)、[RuntimeHttpTest](../../game-runtime/src/test/java/cn/managame/runtime/http/RuntimeHttpTest.java)、[RuntimeHttpExample](../../game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java)。测试覆盖默认 POST、显式支持方法、405/Allow 边界、匹配、接纳、引用所有权、完成竞争、上下文传播、关闭及真实 HTTP 传输接入。
 
 **RT-HTTP-07 — 显式 Key 选择**：入口可整体覆盖所属 Handler 的默认 Key 提取规则；入口未配置则继承 Handler。规则只能是精确字段名或显式提取方法之一，不能同时设置。字段规则在 GET 中读取一个解码后的 query 参数，其他方法读取 JSON body 的一个顶层属性，不跨来源回退。JSON 必须是完整有效的单个 UTF-8 对象，不允许重复属性名或额外尾部值。选定值必须是非零、有符号 64 位整数或十进制整数字符串，不截断小数、浮点/指数形式或溢出值。缺失、重复、非法值在工厂/接纳前返回 400，不执行业务。自定义提取在接纳前运行，返回非零 Key，可拒绝非法输入；其他异常报告诊断并尝试以服务端失败完成。配置规则后，失败不得回退到类规则或工厂 Key。提取保留请求可读 body 和所有权。JSON 嵌套/大小限制由语言绑定规定，不替代传输限制。Key 是路由输入，不是已认证业务身份。
 

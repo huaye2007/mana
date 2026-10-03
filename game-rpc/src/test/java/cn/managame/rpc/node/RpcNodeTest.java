@@ -181,7 +181,6 @@ class RpcNodeTest extends RpcTestSupport {
             assertThrows(RpcException.class, () -> n.call(2, new RpcRequest(1, body), CALLBACK));
             assertEquals(0, body.refCnt());
             assertSame(old, peer.pending.get(1));
-            assertEquals(2, n.admittedCalls.get());
             assertEquals(2, peer.pending.size());
         }
         assertEquals(2, p.failures.size());

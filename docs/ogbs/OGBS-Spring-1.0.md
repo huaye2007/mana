@@ -29,3 +29,12 @@ On startup failure, caller-owned resources remain subject to container cleanup; 
 ## 3. Validation and limits
 
 Java validation entries: [CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java), [RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java), [repository integration tests](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java). Proxy policy and concrete shutdown delivery are defined in the Java binding. Production resource exhaustion, hung drivers, arbitrary container implementations, cross-process shutdown and hot registration are not verified by these tests.
+
+
+## 4. Optional RPC integration
+
+**S-RPC-01**: An explicitly enabled RPC adapter owns business codec/protocol lookup and Runtime dispatch. Decode borrowed transport bodies into independent objects before ordinary Handler admission with the received Key, identity, Metadata and logical origin. Handler declarations select Domain; the adapter must not fabricate a client Connection.
+
+**S-RPC-02**: Call response types come from request bindings. Calls require the current Runtime Route; registered success/failure continuations return to the source Route and participate in drain. Synchronous rejection must not leak a continuation reservation. Object replies preserve RPC source-Slot preference and replacement-connection fallback; Notify cannot be replied to. Return values do not automatically reply, and errors after business admission retain ordinary Runtime error policy; applications explicitly reply with errors when needed.
+
+**S-RPC-03**: The container starts Node after Runtime construction, and stops/drains Runtime before closing Node. Applications own thread-safe codecs and topology policy. This adds no discovery, automatic business retries, authentication, durable delivery or unified TCP/RPC send. For example, a Role Handler with RPC context uses a separate RPC reply entry, while its outbound call completion returns to the originating Role Route. Java APIs/configuration and real TCP validation are in [the Java specification](OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).

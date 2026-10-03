@@ -1,4 +1,4 @@
-package cn.managame.example;
+package cn.managame.demo.examples;
 
 import java.nio.file.Files;
 import java.nio.file.Path;

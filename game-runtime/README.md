@@ -109,6 +109,6 @@ Register instances with `httpHandlers(...)`. HttpMethod.method uses HttpRequestM
 
 The plain-Spring [game-demo service integration](../game-demo/README.md#demo-runtime-services) combines HTTP object results, a one-shot TimerRef Bean and annotated cron, with real execution and closure tests.
 
-Run [RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) for annotated echo and a deferred cross-Route response. See [HTTP semantics](../docs/ogbs/OGBS-Runtime-1.0.md#runtime-http-profile) and [Java API, failures, and ownership](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).
+Run [RuntimeHttpExample](../game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java) for annotated echo and a deferred cross-Route response. See [HTTP semantics](../docs/ogbs/OGBS-Runtime-1.0.md#runtime-http-profile) and [Java API, failures, and ownership](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).
 
 Runtime also accepts explicit Metadata on client ingress and annotation-Domain RPC convenience dispatch. External async callbacks can restore their source Route with runtime.callback(...). Graceful shutdown uses shutdown(), awaitTermination(Duration), then close(); stats() supplies approximate counters. HTTP can bind DTO/String inputs, with optional Contexts.current(HttpContext.class). See [request binding and lifecycle](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#135-request-binding) and optional [game-spring](../game-spring/README.md).

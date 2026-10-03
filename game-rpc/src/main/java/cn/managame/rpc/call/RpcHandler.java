@@ -5,7 +5,8 @@ import cn.managame.rpc.message.RpcResponse;
 
 /**
  * Must be thread-safe and nonblocking. Request/response normally run on Netty EventLoops;
- * failures may run on caller, timer, topology or shutdown threads.
+ * failures may run on caller, topology or shutdown threads, or owned virtual
+ * timeout-notification threads. Business notifications never run on the maintenance timer.
  * The application owns body decoding, error interpretation and business dispatch.
  */
 public interface RpcHandler {

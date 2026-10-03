@@ -2,7 +2,7 @@
 
 **[English](README.md)** | [简体中文](README.zh-CN.md)
 
-Java 25 implementation of OGBS RPC, published as cn.managame:game-rpc. Depends on game-core and game-network. Provides internal TCP, multiple slots, active/passive peers, call/notify/reply, handshakes, heartbeats, and fixed-delay reconnects. Current-source defects and validation gaps are documented in [Java specification section 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险). RPC does not depend on Runtime or business codecs.
+Java 25 implementation of OGBS RPC, Maven cn.managame:game-rpc, depending on game-core and game-network. Provides internal TCP, multiple Slots, active/passive Peers, call/notify/reply, handshakes, heartbeats and reconnect with an additive random delay. Node-wide IDs, notification isolation, recovery handoff and verification boundaries are in [Java section 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险). RPC core has no Runtime/business codec dependency; optional Spring adaptation belongs to game-spring.
 
 <a id="规范"></a>
 
@@ -32,7 +32,7 @@ try (RpcNode node = RpcNode.builder()
 }
 ```
 
-handler, encodedBody, and MyResponse are application-supplied objects/types. addPeer maintains connections asynchronously; immediately after registration, call may synchronously report onFail(UNAVAILABLE). It does not wait for connections or retry automatically. Current Builder has no maxPendingCalls or reconnectJitter. Outstanding calls have no configured admission bound; timeout failures run directly on the shared maintenance timer, so slow handlers delay other deadlines and recovery. Reconnect delay defaults to a fixed 1000ms. These source limitations are recorded in the Java specification; this review changes no production behavior.
+handler, encodedBody and MyResponse are application-supplied. addPeer maintains connections asynchronously; a call immediately afterward can report onFail(UNAVAILABLE), without waiting or retry. Finite call admission is deferred. Timeout notifications use owned virtual threads awaited by close, leaving the maintenance timer free. Reconnect base defaults to 1000ms, with a random addition up to one quarter of that base; reconnectRandomDelay(Duration.ZERO) selects fixed delay. Random delay spreads attempts; CAS handoff separately repairs recovery ownership races.
 
 Entry points are in cn.managame.rpc.node; messages in message, handlers/callbacks in call, statuses in transport, errors in error, and wire binding in netty. Peer/Slot/PendingCall remain encapsulated internally.
 
@@ -44,11 +44,11 @@ start/close are synchronous management operations and cannot run inside this Nod
 
 ## Examples and validation
 
-Runnable examples and their execution tests are maintained in [game-example](../game-example/README.md); game-rpc publishes only framework code. [RpcEchoExample](../game-example/src/main/java/cn/managame/example/rpc/RpcEchoExample.java) is intended to demonstrate real local TCP, two random ports, body retain and generic callback decoding. Its maxPendingCalls(1024) invocation currently does not compile against the restored Builder; runnable validation is pending.
+Runnable examples and execution tests live in [game-demo](../game-demo/README.md); the RPC artifact publishes only framework code. [RpcEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) demonstrates real local TCP/dynamic ports, body retain and callback decoding, executed successfully in root clean verify. Object dispatch/replies and Route callbacks are described in [Spring integration](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
 
 ```shell
 mvn -pl game-rpc -am test
 mvn clean verify
 ```
 
-Retained tests describe wire, routing, reference counts, completion races, real TCP and reconnects, but the current RPC suite fails compilation because tests still reference removed APIs. The example also references a missing API. These entries are not a passing verification claim. Production capacity and cross-language interoperability are unverified. Automatic Runtime integration, service discovery, and RPC TLS/WS configuration are not provided.
+Wire, routing, reference counts, completion races, real TCP, Peer recreation, recovery ownership and timeout isolation regressions pass: 32 RPC tests and root clean verify. Finite admission is deferred; production capacity and cross-language interoperability are unverified. Core supplies no discovery or RPC TLS/WS configuration; optional Runtime integration is in game-spring.

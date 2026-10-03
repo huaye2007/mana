@@ -101,6 +101,6 @@ ConcurrentHashMap 持有活跃队列，按完整 Domain/Key 串行业务，不�
 
 普通 Spring 的 [game-demo 服务接入](../game-demo/README.zh-CN.md#demo-runtime-services) 组合 HTTP 对象返回、一次性 TimerRef Bean 与注解 cron，并验证真实执行和关闭。
 
-运行 [RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 查看注解 echo 和跨 Route 延迟响应。详见 [HTTP 语义](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 与 [Java API、失败及所有权](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
+运行 [RuntimeHttpExample](../game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java) 查看注解 echo 和跨 Route 延迟响应。详见 [HTTP 语义](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 与 [Java API、失败及所有权](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 Runtime 还支持客户端接入显式 Metadata 及按注解 Domain 分发 RPC。外部异步回调通过 runtime.callback(...) 回到源 Route。平滑停机使用 shutdown()、awaitTermination(Duration)、close()，stats() 提供近似统计。HTTP 支持 DTO/String 输入，可通过 Contexts.current(HttpContext.class) 获取上下文。见 [请求绑定与生命周期](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#135-请求绑定) 及可选 [game-spring](../game-spring/README.zh-CN.md)。

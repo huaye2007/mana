@@ -33,7 +33,7 @@ Other language implementations need not use Netty, Java generics, EventLoop, or 
 
 TLS, when configured, protects the byte stream below application protocols: inbound decryption precedes HTTP/WebSocket or business decoding, and outbound encryption follows their encoding. Connection delivery waits for the configured TLS handshake and peer verification. A secure endpoint must not silently fall back to plaintext when TLS configuration is missing; bindings define configuration and validation mechanisms.
 
-**N-EST-02** Each valid attempt has exactly one terminal result: success or failure. Failure, cancellation, timeout, and success races have one winner. Failure must not produce that connection's business lifecycle callbacks. Closure after success must not reclassify establishment as failed.
+**N-EST-02** Each valid attempt has exactly one terminal result: success or failure. Failure, cancellation, timeout, and success races have one winner. Failure must not produce that connection's business lifecycle callbacks. Closure after success must not reclassify establishment as failed. Endpoint closure cannot overwrite an already claimed failure or success. Bindings define failure types for unfinished attempts completing after closure; no second terminal result is created.
 
 **N-EST-03** Successful delivery order: create Connection → onConnected → successful connection result. An exception from onConnected goes to onException without reversing transport success. Closing inside onConnected may deliver an already closed or closing Connection as success.
 

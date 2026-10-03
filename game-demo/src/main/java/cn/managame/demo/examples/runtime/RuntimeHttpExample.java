@@ -1,4 +1,4 @@
-package cn.managame.example.runtime;
+package cn.managame.demo.examples.runtime;
 
 import cn.managame.network.http.HttpServer;
 import cn.managame.runtime.GameRuntime;
@@ -68,6 +68,8 @@ public final class RuntimeHttpExample {
     public record EchoResult(long playerId, String received) {}
     public record PlayerResult(long playerId, String name) {}
 
+    // Instantiated directly by this standalone entry; excluded from GameDemo Bean discovery.
+    @org.springframework.context.annotation.Profile("standalone-runtime-http-example-only")
     @HttpHandler(domain = 1, routeKey = "playerId")
     public static final class Methods {
         private GameRuntime runtime;

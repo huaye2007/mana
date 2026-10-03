@@ -33,6 +33,8 @@ class DataSpringWiringTest {
             });
             context.scan("cn.managame.demo");
             context.refresh();
+            assertTrue(context.getBeansOfType(cn.managame.demo.examples.runtime.RuntimeHttpExample.Methods.class).isEmpty(),
+                    "Standalone HTTP sample must not join the main application's Handler discovery");
             MysqlConfig config = context.getBean(MysqlConfig.class);
             assertEquals("jdbc:mysql://localhost/demo_test", config.getUrl());
             assertEquals("demo_test_user", config.getUsername());

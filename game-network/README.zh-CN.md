@@ -73,7 +73,7 @@ server.start();
 // 在应用停服时关闭监听，调用位置必须在关联执行线程之外。
 ```
 
-默认 body 1 MiB、首行 4096 字节、请求头 8192 字节、入站无数据超时 30 秒，并支持 Keep-Alive。读超时不是业务期限。handler(...) 同步返回完整响应；asyncHandler((request, callback) -> ...) 可通过 HttpResponseCallback.onResponse/onFail 稍后完成。请求只借用至 handler 初次调用返回，异步使用需要 retain/复制；每次非 null 响应提交转交一个拥有的引用，包括重复或晚到完成，true 只表示认领完成，不证明送达。echo 请求内容应使用 request.content().retainedDuplicate()。默认回调运行在 EventLoop，必须保持短小；阻塞业务通过 executorGroup(...) 注入调用方拥有的有序 EventExecutorGroup，同一连接的处理与响应尝试仍串行。详见 [HTTP Java 契约](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api) 、[同步示例](../game-example/src/main/java/cn/managame/example/network/HttpServerExample.java)和[回调示例](../game-example/src/main/java/cn/managame/example/network/HttpAsyncServerExample.java)。
+默认 body 1 MiB、首行 4096 字节、请求头 8192 字节、入站无数据超时 30 秒，并支持 Keep-Alive。读超时不是业务期限。handler(...) 同步返回完整响应；asyncHandler((request, callback) -> ...) 可通过 HttpResponseCallback.onResponse/onFail 稍后完成。请求只借用至 handler 初次调用返回，异步使用需要 retain/复制；每次非 null 响应提交转交一个拥有的引用，包括重复或晚到完成，true 只表示认领完成，不证明送达。echo 请求内容应使用 request.content().retainedDuplicate()。默认回调运行在 EventLoop，必须保持短小；阻塞业务通过 executorGroup(...) 注入调用方拥有的有序 EventExecutorGroup，同一连接的处理与响应尝试仍串行。详见 [HTTP Java 契约](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api) 、[同步示例](../game-demo/src/main/java/cn/managame/demo/examples/network/HttpServerExample.java)和[回调示例](../game-demo/src/main/java/cn/managame/demo/examples/network/HttpAsyncServerExample.java)。
 
 pipeline(...) 对每条接入连接执行一次，位于 HTTP 聚合之后、可选 handler(...) 兜底之前。addLast 可安装原生请求过滤、鉴权/路由、CorsHandler 或响应压缩，addFirst 仍可安装 TLS。原生 handler 可以消费请求并自行响应；未处理请求进入函数，未配置函数时收到空 404。消费型 handler 释放请求，转发型 adapter 通过 fireChannelRead 转交引用，原生响应器自行设置合法响应分帧。使用 executorGroup(group) 时，通过 p.addLast(group, "name", handler) 追加 HTTP 扩展，保持相同有序上下文。不另建扩展框架。
 
@@ -100,6 +100,6 @@ mvn -pl game-network -am test
 mvn clean verify
 ```
 
-可运行示例及其执行测试统一维护在 [game-example](../game-example/README.zh-CN.md)，game-network 只发布框架代码。可在 IDE 运行 [NetworkEchoExample](../game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java)。示例使用随机端口、长度 framing 与普通字符串，并完整释放连接和网络资源。
+可运行示例及其执行测试统一维护在 [game-demo](../game-demo/README.zh-CN.md)，game-network 只发布框架代码。可在 IDE 运行 [NetworkEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java)。示例使用随机端口、长度 framing 与普通字符串，并完整释放连接和网络资源。
 
 测试覆盖 TCP/TLS/WS/WSS、握手失败、引用计数、背压、关闭与中断竞争，以及独立 HTTP/1.1 契约。测试自行创建临时证书，不要求外部服务；未验证公网部署、native transport 或生产容量。根构建和完整示例模块目前被已有 RPC API 不匹配阻断，HTTP 示例已单独编译并运行。

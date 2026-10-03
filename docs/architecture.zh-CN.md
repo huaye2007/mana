@@ -8,7 +8,7 @@
 
 ## 应用骨架
 
-[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context，并在 9000 端口通过应用自有的原始字节分帧 codec 启动 GamePacket 分发 TCP 监听器；同时在 127.0.0.1:8080 启动 Runtime HTTP 监听器；Context 关闭先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime 和两个监听器，最后销毁 Data，不包含主线程阻塞等待；MysqlConfig 持有 Hikari DataSource。GameDataConfig 启用 game-spring 的 Repository 扫描，通过 GameDataBuilder.mysql(source) 构建 Data，并将初始化的 Repository 实例作为对应 Spring Bean。Bean 依赖保证 Repository Bean 先于 Data、Data 先于应用连接池关闭，不再构造第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。game-demo 唯一直接框架依赖为 game-spring，传递引入 Spring Context、Runtime、Data、Network 和 Core。Spring 装配及 Repository 适配由 game-spring 提供；demo 保留 Fory、JDBC 驱动和连接池依赖，不使用 RPC。
+[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context，并在 9000 端口通过应用自有的原始字节分帧 codec 启动 GamePacket 分发 TCP 监听器；同时在 127.0.0.1:8080 启动 Runtime HTTP 监听器；Context 关闭先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime 和两个监听器，最后销毁 Data，不包含主线程阻塞等待；MysqlConfig 持有 Hikari DataSource。GameDataConfig 启用 game-spring 的 Repository 扫描，通过 GameDataBuilder.mysql(source) 构建 Data，并将初始化的 Repository 实例作为对应 Spring Bean。Bean 依赖保证 Repository Bean 先于 Data、Data 先于应用连接池关闭，不再构造第二个未初始化 Repository；既有可运行组件示例仍位于 game-demo。game-demo 直接框架依赖为 game-spring 与 game-rpc，传递引入 Spring Context、Runtime、Data、Network 和 Core。Spring 装配及 Repository 适配由 game-spring 提供；demo 保留 Fory、JDBC 驱动和连接池依赖，并由独立 RPC 示例显式使用 game-rpc。
 
 GameRuntimeConfig 装配由 Spring 管理的 Runtime，将 ROLE/LOGIN/SYSTEM Domain（ID 1/2/3）绑定到同一个虚拟线程 RouteExecutor，通过注解 include filter 将只标记 @EventHandler 的类发现并注册为 Spring Bean，无需 @Component。TCP 监听器启动后，GameDemo 通过 Events.publish 以 Key 1001 静态发布 DemoEvent；配置在启动时绑定外部线程使用的默认实例，Runtime 执行则选择自身所属实例；监听器打印绑定的 EventContext Route 与线程类型。适配使用既有 Runtime EventBus 契约，不新增独立事件线程，通过 Bean 生命周期关闭 Runtime。源码及验证入口见 [demo 事件示例](../game-demo/README.zh-CN.md#发布-runtime-事件)。
 
@@ -24,7 +24,7 @@ Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖
 
 目录划分保留包级封装：Network 的 NettyConnection/NetworkChannelInitializer 留在 netty 包内，RPC 的 ConnectionSlot 留在 node 包内。调用方需要更新已迁移类型的 import。具体类型映射见 [Network Java 开发规范](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) 和 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。
 
-游戏服务器内部 HTTP 在 game-network artifact 的 cn.managame.network.http 包中独立实现。HttpServer 自行管理 ServerBootstrap、监听、生命周期和请求/响应管线，不包装 TCP/WS 的 NetworkServer，不使用 Connection/ConnectionHandler。包内公开 HttpServer/HttpServerBuilder/HttpResponseCallback，HttpServerTransport 保持包级封装。健康检查、管理操作、路由和序列化由应用负责。初始 Profile 仅支持 HTTP/1.1、完整请求/响应 body、Keep-Alive、可配置请求限制及入站无数据超时。pipeline(...) 在聚合之后、可选兜底之前安装原生 HTTP 扩展（默认兜底为 404），包括应用选择的鉴权、CORS 和压缩。同步 handler 与 asyncHandler 回调共享逐连接顺序：等待响应会延迟后续请求处理及自动协议响应，不阻塞传输线程。可选外部有序执行器与 HTTP 扩展共享该上下文；异步使用请求需要独立所有权，晚到/重复回调响应释放。不新增客户端、HTTP/2、连接注册表或业务定时器。契约见 [HTTP Profile](ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) 与 [Java 绑定](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。HttpServerExample 位于 game-example 的 cn.managame.example.network，无需新增 Maven 模块或依赖。
+游戏服务器内部 HTTP 在 game-network artifact 的 cn.managame.network.http 包中独立实现。HttpServer 自行管理 ServerBootstrap、监听、生命周期和请求/响应管线，不包装 TCP/WS 的 NetworkServer，不使用 Connection/ConnectionHandler。包内公开 HttpServer/HttpServerBuilder/HttpResponseCallback，HttpServerTransport 保持包级封装。健康检查、管理操作、路由和序列化由应用负责。初始 Profile 仅支持 HTTP/1.1、完整请求/响应 body、Keep-Alive、可配置请求限制及入站无数据超时。pipeline(...) 在聚合之后、可选兜底之前安装原生 HTTP 扩展（默认兜底为 404），包括应用选择的鉴权、CORS 和压缩。同步 handler 与 asyncHandler 回调共享逐连接顺序：等待响应会延迟后续请求处理及自动协议响应，不阻塞传输线程。可选外部有序执行器与 HTTP 扩展共享该上下文；异步使用请求需要独立所有权，晚到/重复回调响应释放。不新增客户端、HTTP/2、连接注册表或业务定时器。契约见 [HTTP Profile](ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) 与 [Java 绑定](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。HttpServerExample 位于 game-demo 的 cn.managame.demo.examples.network，无需新增 Maven 模块或依赖。
 
 ## Runtime 包边界
 
@@ -52,7 +52,7 @@ write 检查 active/writable 后直接 writeAndFlush；ACCEPTED 转移所有权�
 
 Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常入口 → HTTP/WS handler 与 binary adapter（启用时）→ 用户 codec/handler → ConnectionHandler adapter。NetworkChannelInitializer 装配具体 handler，不使用通用 Transport 接口或 TLS 包装。末端 adapter 直接衔接原生 TLS/WS 完成事件、入口检查与 onConnected，不创建中间就绪/WS Promise 或 PromiseCombiner；Client 仅用原生 Promise 承接建连结果。不保存连接清单，不使用 ChannelGroup 或集合锁；单 Channel 处理将消息交给传入的 ConnectionHandler。TLS context、证书和主机名校验由调用方通过 pipeline(...) 配置，WSS 必须显式配置 TLS；位置与失败规则见 Network Java 规范。
 
-[game-example](../game-example/README.zh-CN.md) 统一收纳独立可运行示例及其执行测试，按 `cn.managame.example.<component>` 分包。Network 的 TCP 示例为 NetworkEchoExample，HTTP/1.1 同步示例为 HttpServerExample，异步回调示例为 HttpAsyncServerExample，RPC 双节点示例为 RpcEchoExample。模块依赖 game-network、game-runtime 与 game-rpc；框架模块不反向依赖示例，也不发布示例类。其他组件在有实际示例时再添加依赖。示例是已有契约的应用演示，不是新的框架组件或规范层。自动 RPC→Runtime 接入尚未实现。
+[game-demo](../game-demo/README.zh-CN.md) 统一提供 Spring 主应用和 `cn.managame.demo.examples.<component>` 下的独立组件入口/执行测试：TCP 字符串 echo、同步/异步 HTTP、Runtime HTTP 与双节点 RPC。模块直接依赖 game-spring 与 game-rpc，其余框架依赖由 game-spring 传递引入。独立入口不加载主应用或 MySQL；隔离 profile 防止其 HTTP Handler 被主应用扫描。框架不依赖 demo，不发布示例；这些入口演示既有两层规范，不是新框架组件。
 ## RPC
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
@@ -61,7 +61,7 @@ Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常�
 
 call/notify 按非零 routeKey 的无符号余数选起点，零值 round-robin；reply 优先实际来源 Slot，再按 routeKey 回退。首个 ACCEPTED 后不重发。requestId 仅在 Peer 内匹配调用，响应可以从任意 Slot 返回。
 
-每个 Node 一个 HashedWheelTimer 负责调用超时、握手超时与固定延迟重连；连接 IdleStateHandler 负责心跳。当前还原后的源码在 Peer 重建时重置调用 ID，没有配置调用接纳上限，直接在时间轮执行超时 onFail，关闭时为每个 Peer 扫描全局连接集合。已确认缺陷与验证状态见 [RPC Java 9.1](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)，此前修复声明不代表当前源码。断线不立即失败已接纳调用。远端所有合法错误响应交给 onResponse，本地可用性/超时/生命周期竞争走 onFail。错误码区间由 Core 定义，无高位封装。
+每个 Node 一个 HashedWheelTimer 负责维护；超时业务通知在登记的虚拟线程执行，关闭等待其结束。Node 级 requestId 跨 Peer 重建保留，停止恢复链后重新检查空 Slot 并 CAS 获得恢复权。有限 Call 接纳暂缓，关闭仍逐 Peer 扫描全局连接。规范与验证见 [RPC Java 9.1](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
 
 出站 ByteBuf body 经参数和生命周期校验后被消费，编码复制到单个连续 frame；入站 body 在回调内借用，需要 retain/copy 才能跨线程使用。消息使用只读 record，发送 ID 在内部编码时赋予，不公开 requestId setter。
 
@@ -111,7 +111,7 @@ runtime.call 的 action 业务失败应作为正常结果返回。action 抛异�
 ## 可扩展点
 
 - 自定义 RouteExecutor 并显式绑定 Domain。
-- 客户端通过 ClientHandlerContext/DefaultClientHandlerContext 访问 Connection，RPC 通过 RpcHandlerContext/DefaultRpcHandlerContext 获取逻辑来源/关联信息；应用字段继承对应默认实现。公共 HandlerContext 包含消息和调用身份，自动 RPC 到 Runtime 接入仍未实现。
+- 客户端通过 ClientHandlerContext/DefaultClientHandlerContext 访问 Connection，RPC 通过 RpcHandlerContext/DefaultRpcHandlerContext 获取逻辑来源/关联信息；应用字段继承对应默认实现。公共 HandlerContext 包含消息和调用身份，可选 RPC 到 Runtime 接入由 game-spring 提供。
 - ProtocolProvider 可由外部生成器生成。
 - MetadataKey 自带编码规则。
 - Netty pipeline 直接放入原生 Decoder/Encoder、IdleStateHandler、LoggingHandler、FlushConsolidationHandler。
@@ -135,9 +135,12 @@ Data 采用两个缓冲与固定 100ms 宽限期，接受超长线程停顿风�
 
 game-runtime 依赖 game-core 与 game-network，在已有 artifact 中发布 cn.managame.runtime.http。显式 HttpHandler/HttpMethod 注册编译 HttpRequestMethod 枚举/原始 path 查找，方法默认 POST，GET 需显式选择；显式 RouteKey 字段规则在 GET 读取 query，其他方法读取 JSON body，方法配置覆盖 Handler；也可指定 Handler 方法提取自定义 Key。HttpContextFactory 接收并保留选定 Key，可提供自定义 HTTP Context 字段，不包含框架业务身份/Metadata；无规则时由工厂选 Key。JSON 字段提取与结果编码使用 Jackson Databind 2.21.3 及传递 Core/Annotations。RuntimeHttp 接到 HttpServer.asyncHandler，与普通 Handler/Event/call 使用相同 Route 执行器和上下文路径。返回业务对象自动完成，void 方法通过 HttpResultCallback 提交对象。HttpResultCodec 默认编码 JSON，RuntimeHttp 在内部构造 Network 响应，业务结果不携带 HTTP 版本。支持 DTO/String 请求绑定，鉴权仍由应用决定。
 
-Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。跨 Route 回调恢复同一 HttpContext，但不延长请求生命周期。不增加监听器/执行器所有权：直接使用 Runtime 的应用单独创建、启动、关闭 HttpServer，在关闭 Runtime 前安排在途完成；可选 game-spring 托管监听生命周期和 context-path 映射。详见 [Runtime HTTP 语义](ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile)、[Java 绑定](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)、[RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java)。普通消息契约和独立 Network HTTP pipeline 保持原有行为，RPC 接入仍需显式实现/待完善。
+Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。跨 Route 回调恢复同一 HttpContext，但不延长请求生命周期。不增加监听器/执行器所有权：直接使用 Runtime 的应用单独创建、启动、关闭 HttpServer，在关闭 Runtime 前安排在途完成；可选 game-spring 托管监听生命周期和 context-path 映射。详见 [Runtime HTTP 语义](ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile)、[Java 绑定](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)、[RuntimeHttpExample](../game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java)。普通消息契约和独立 Network HTTP pipeline 保持原有行为，RPC 接入仍需显式实现/待完善。
 
 
 ## 可选 Spring 集成
 
 [game-spring](../game-spring/README.zh-CN.md) 依赖 Runtime、Data 和 spring-context，不使用 Spring Boot，核心模块不反向依赖 Spring。demo 使用 EnableGameRuntime/EnableGameData，仅保留应用 Domain、执行器、身份策略及数据源配置。ContextClosedEvent 先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime，随后普通监听器关闭 TCP、Spring 生命周期停止托管 HTTP，最后销毁 Data 和连接池。HTTP 应用配置 game.http.port 和 game.http.context-path，再声明 HttpHandler/HttpMethod 端点即可，其他网络参数使用配置或 GameHttpConfigurer。详见 [容器集成语义](ogbs/OGBS-Spring-1.0.zh-CN.md) 和 [Java 集成规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
+
+
+可选 `@EnableGameRpc` 由 game-spring 装配 RpcNode、对象 codec 与 Runtime 适配，配置 node-id/端口；game-rpc 为 optional Maven 依赖，只有 HTTP/Data 的应用无需传递引入；game-demo 现为独立 RPC 示例显式添加 game-rpc。详见 [Spring Java 规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。

@@ -1,4 +1,4 @@
-package cn.managame.example.network;
+package cn.managame.demo.examples.network;
 
 import cn.managame.network.connection.*;
 import cn.managame.network.netty.*;

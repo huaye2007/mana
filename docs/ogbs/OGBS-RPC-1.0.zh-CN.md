@@ -2,7 +2,7 @@
 
 [English](OGBS-RPC-1.0.md) | **[简体中文](OGBS-RPC-1.0.zh-CN.md)**
 
-文档类型：**标准规范（语言无关）**。组件 game-rpc。Java 实现已提供，但当前源码在 Peer 重建关联、超时通知隔离和有限调用接纳方面存在已确认偏差，另有恢复竞态。详见 Java 规范 9.1。生产容量与跨语言互操作尚未验证。
+文档类型：**标准规范（语言无关）**。组件 game-rpc。Java 实现已提供；关联、超时隔离与恢复交接修复已通过本地验证，有限调用接纳仍未实现并暂缓。详见 Java 规范 9.1。生产容量与跨语言互操作尚未验证。
 
 配套：[Java 25 开发规范](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)、[RPC Wire Profile](../rpc-wire.zh-CN.md)。
 规范性依赖：[Network](OGBS-Network-1.0.zh-CN.md)、[Core](OGBS-Core-1.0.zh-CN.md)。
@@ -124,7 +124,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-LIVE-03** addPeer 对空 Slot 立即首次连接。失败、握手失败或稳定连接断开后，等待正基础延迟与每次重新均匀抽取的 [0, 配置抖动] 附加延迟之和再重试。默认值与时间粒度由语言绑定定义；抖动为 0 保留固定延迟行为。同 Slot 只维护一条恢复链，涵盖延迟、建连和握手；不同 Slot 独立。Peer removal/Node close 后旧任务自然失效。没有指数退避、最大重试或业务重发。抖动分散尝试，但不提供全局建连速率限制。
 
-Java 实现状态：后续审阅已复现恢复停止与解绑竞争，主动 Peer 可能留下空 Slot 且没有持续恢复链。这仍是实现缺陷，不是 R-LIVE-03 的例外。详见 [当前源码审阅](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
+Java 实现通过清除恢复标记后重新检查并 CAS 获得恢复权处理停止/解绑竞争。本地并发回归已通过；维护计时不是严格实时保证，生产恢复收敛尚未验证。详见 [Java 验证边界](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
 
 ## 10. 错误边界
 
@@ -153,4 +153,4 @@ Java 实现状态：后续审阅已复现恢复停止与解绑竞争，主动 Pe
 
 Java 验证入口：[RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java)、[RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java)、[RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java)。实现细节、默认值与示例见 Java 开发规范。
 
-保留的测试描述本地真实 TCP 与可控并发覆盖，但当前 RPC 套件无法编译。当前诊断复现及契约偏差记录于 Java 规范 9.1，历史通过结果不代表当前源码已验证；尚未验证跨语言对接、生产容量、长时间 ID 回绕和公网部署。RPC→Runtime 自动接入、TLS/WS RPC Builder、服务发现不在本实现范围。
+本地真实 TCP、并发回归及根 clean verify 已通过。有限接纳仍暂缓；跨语言、生产容量、长时间 ID 回绕与公网部署未验证。RPC 核心不自动依赖 Runtime；可选 Spring 适配另遵循 [容器集成规范](OGBS-Spring-1.0.zh-CN.md)。TLS/WS RPC Builder 和发现尚未实现。

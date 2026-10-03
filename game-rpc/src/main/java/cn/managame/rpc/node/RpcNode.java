@@ -17,6 +17,7 @@ import io.netty.util.*;
 import java.net.SocketAddress;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import static cn.managame.rpc.error.RpcErrorCodes.*;
 
 /**
@@ -33,11 +34,14 @@ public final class RpcNode implements AutoCloseable {
     private final SocketAddress bindAddress;
     private final RpcHandler handler;
     private final long callTimeout, handshakeTimeout, reconnectDelay, heartbeatInterval, heartbeatTimeout;
+    private final long reconnectRandomDelay;
     private final Object lifecycleLock = new Object();
     final ConcurrentHashMap<Integer, RpcPeer> peers = new ConcurrentHashMap<>();
+    final AtomicInteger requestIds = new AtomicInteger(1);
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     // A close barrier for admitted API work, including late pending registrations.
     private final Phaser operations = new Phaser(1);
+    private final Set<Thread> notifications = ConcurrentHashMap.newKeySet();
     private final CountDownLatch closed = new CountDownLatch(1);
     private final ThreadLocal<Boolean> inHandler = ThreadLocal.withInitial(() -> false);
     private volatile State state = State.NEW;
@@ -51,6 +55,7 @@ public final class RpcNode implements AutoCloseable {
         nodeId = b.nodeId; bindAddress = b.address; handler = b.handler; maxFrameSize = b.maxFrameSize;
         callTimeout = b.callTimeout; handshakeTimeout = b.handshakeTimeout; reconnectDelay = b.reconnectDelay;
         heartbeatInterval = b.heartbeatInterval; heartbeatTimeout = b.heartbeatTimeout;
+        reconnectRandomDelay = b.reconnectRandomDelay < 0 ? reconnectDelay / 4 : b.reconnectRandomDelay;
     }
     public static RpcNodeBuilder builder() { return new RpcNodeBuilder(); }
     public int nodeId() { return nodeId; }
@@ -157,7 +162,7 @@ public final class RpcNode implements AutoCloseable {
                 fireFail(remoteNodeId, request.command(), UNAVAILABLE, callback);
                 return;
             }
-            int id = peer.nextRequestId();
+            int id = nextRequestId();
             body = null; // RpcWire consumes it, including exceptions.
             frame = RpcWire.encodeRequest(request, id, maxFrameSize);
             pending = new PendingCall(id, request.command(), callback);
@@ -174,7 +179,7 @@ public final class RpcNode implements AutoCloseable {
             }
             RpcPeer scheduledPeer = peer;
             PendingCall scheduledCall = pending;
-            Timeout timeout = timer.newTimeout(ignored -> fail(scheduledPeer, scheduledCall, TIMEOUT),
+            Timeout timeout = timer.newTimeout(ignored -> timeout(scheduledPeer, scheduledCall),
                     timeoutMillis, TimeUnit.MILLISECONDS);
             pending.timeout = timeout;
             // A response/removal may have completed before timeout publication.
@@ -262,37 +267,54 @@ public final class RpcNode implements AutoCloseable {
     }
 
     private void connect(RpcPeer peer, ConnectionSlot slot) {
-        if (!current(peer) || peer.target == null || slot.connection.get() != null) {
-            slot.connecting.set(false);
-            return;
-        }
+        if (!continueRecovery(peer, slot)) return;
         client.connectAsync(peer.target, new ConnectCallback() {
             public void onSuccess(Connection connection) {
                 RpcConnectionContext context = connection.get(CONTEXT);
-                if (!current(peer) || peer.target == null || context == null
-                        || context.handshakeFinished.get() || !connection.isActive()) {
+                boolean associated;
+                synchronized (lifecycleLock) {
+                    associated = current(peer) && peer.target != null && context != null
+                            && !context.handshakeFinished.get() && connection.isActive();
+                    if (associated) {
+                        context.expectedPeer = peer;
+                        context.expectedSlot = slot;
+                    }
+                }
+                if (!associated) {
                     connection.close();
                     reconnect(peer, slot);
                     return;
                 }
-                context.expectedPeer = peer;
-                context.expectedSlot = slot;
                 writeControl(connection, RpcWire.encodeHandshake(new RpcHandshake(nodeId, slot.id, peer.slots.length)));
             }
             public void onFailure(Throwable cause) { reconnect(peer, slot); }
         });
     }
     private void reconnect(RpcPeer peer, ConnectionSlot slot) {
-        if (!current(peer) || peer.target == null || slot.connection.get() != null) {
-            slot.connecting.set(false);
-            return;
-        }
+        if (!continueRecovery(peer, slot)) return;
         try {
-            timer.newTimeout(ignored -> connect(peer, slot), reconnectDelay, TimeUnit.MILLISECONDS);
+            timer.newTimeout(ignored -> connect(peer, slot), nextReconnectDelayMillis(), TimeUnit.MILLISECONDS);
         } catch (IllegalStateException stopped) {
             slot.connecting.set(false);
             if (state == State.RUNNING) throw stopped;
         }
+    }
+
+    // Relinquish the chain, then recheck: an unbind may have seen connecting=true
+    // before the clear. Either this chain reacquires ownership or the unbinder does.
+    boolean continueRecovery(RpcPeer peer, ConnectionSlot slot) {
+        if (!current(peer)) {
+            slot.connecting.set(false);
+            return false;
+        }
+        if (peer.target != null && slot.connection.get() == null) return true;
+        slot.connecting.set(false);
+        return current(peer) && peer.target != null && slot.connection.get() == null
+                && slot.connecting.compareAndSet(false, true);
+    }
+
+    long nextReconnectDelayMillis() {
+        return reconnectDelay + (reconnectRandomDelay == 0 ? 0 : ThreadLocalRandom.current().nextLong(reconnectRandomDelay + 1));
     }
 
     void connected(Connection connection) {
@@ -458,6 +480,27 @@ public final class RpcNode implements AutoCloseable {
         try { fireFail(peer.nodeId, pending.command, error, pending.callback); }
         finally { tryRemovePassive(peer); }
     }
+    private int nextRequestId() {
+        int id;
+        do { id = requestIds.getAndIncrement(); } while (id == 0);
+        return id;
+    }
+    private void timeout(RpcPeer peer, PendingCall pending) {
+        if (!peer.pending.remove(pending.id, pending)) return;
+        pending.cancelTimeout();
+        tryRemovePassive(peer);
+        Thread notification = Thread.ofVirtual().name("rpc-" + Integer.toUnsignedString(nodeId) + "-timeout").unstarted(() -> {
+            try { fireFail(peer.nodeId, pending.command, TIMEOUT, pending.callback); }
+            finally { notifications.remove(Thread.currentThread()); }
+        });
+        notifications.add(notification);
+        try {
+            notification.start();
+        } catch (RuntimeException | Error failure) {
+            notifications.remove(notification);
+            throw failure;
+        }
+    }
     private void tryRemovePassive(RpcPeer peer) {
         if (peer.target != null) return;
         peers.computeIfPresent(peer.nodeId, (id, current) -> {
@@ -516,7 +559,18 @@ public final class RpcNode implements AutoCloseable {
         cleanup(() -> { if (boss != null) boss.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly(); });
         cleanup(() -> { if (workers != null) workers.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly(); });
         cleanup(() -> { if (timer != null) timer.stop(); });
+        awaitNotifications();
         connections.clear();
+    }
+    private void awaitNotifications() {
+        boolean interrupted = false;
+        for (Thread notification : notifications) {
+            while (true) {
+                try { notification.join(); break; }
+                catch (InterruptedException e) { interrupted = true; }
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
     }
     private static void cleanup(Runnable action) {
         try { action.run(); }

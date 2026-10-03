@@ -2,7 +2,7 @@
 
 **[English](OGBS-Spring-Java-25-Specification-1.0.md)** | [简体中文](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)
 
-Companion: [container integration semantics](OGBS-Spring-1.0.md). Implemented optional artifact `cn.managame:game-spring:1.0.0-SNAPSHOT`, Java 25, depending on game-runtime, game-data and spring-context 7.0.9. No Spring Boot dependency. Framework cores have no reverse Spring dependency.
+Companion: [container integration semantics](OGBS-Spring-1.0.md). Implemented optional artifact `cn.managame:game-spring:1.0.0-SNAPSHOT`, Java 25, depending on game-runtime, game-data and spring-context 7.0.9, with optional game-rpc. No Spring Boot dependency. Framework cores have no reverse Spring dependency.
 
 ## 1. Runtime registration
 
@@ -55,9 +55,54 @@ game.http.context-path=/game
 
 POST `/game/echo` with `{"routeKey":7,"text":"hello"}` selects Domain 3 / Key 7. Port/path do not supply a Domain, routing Key or authentication identity. Users need no HttpServer builder, asyncHandler adapter or close listener. [HttpAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/runtime/HttpAssemblyTest.java) validates automatic scanned-Bean startup, DTO/String/GET dispatch, prefix boundaries, size rejection, disabling/no-owner defaults, failed binding cleanup, retained-reference ownership and shutdown admission/drain/port release. [DemoServicesTest](../../game-demo/src/test/java/cn/managame/demo/DemoServicesTest.java) exercises the same automatic listener with real Timer/Cron business execution. TLS/native security extensions, custom multicaster ordering and production load remain unverified by these tests.
 
+
+
+<a id="managed-rpc"></a>
+
+### 3.2 Managed RPC
+
+`cn.managame.spring.rpc.EnableGameRpc` explicitly imports RPC assembly. It requires a GameRuntime Bean (normally EnableGameRuntime), a thread-safe GameRpcCodec Bean, and properties game.rpc.node-id (nonzero uint32 bits in int) and game.rpc.port (0..65535). game.rpc.bind-address defaults to 127.0.0.1; game.rpc.call-timeout-millis optionally overrides the Node default of 5000. Invalid properties fail startup. Add game-rpc explicitly: game-spring declares it optional, so HTTP/Data-only applications do not inherit it. No Boot, discovery, peer list inference or hot reload is introduced.
+
+GameRpcCodec exposes `byte[] encode(Object)` and `<T> T decode(byte[], Class<T>)`. It must support concurrent transport/Route callers, return nonnull values of the requested exact registered type, and return arrays/objects independent of transport-buffer lifetime. Business serialization is application policy (for example Fory), without a framework serialization format. The adapter copies borrowed inbound bytes and decodes synchronously before Runtime admission; large/slow decoding can still delay the transport EventLoop. Never retain borrowed ByteBufs in a decoded object. Outbound arrays become adapter-owned until consumed; the codec must not modify/reuse them after return.
+
+GameRpcConfigurer Beans configure RpcNodeBuilder in Spring order after properties. The adapter installs its RpcHandler last. `gameRpc` owns RpcNode lifecycle; `gameRpcNode` exposes topology management and localAddress, and an internal SmartLifecycle starts it at Integer.MAX_VALUE after singleton initialization. Context.close first drains Runtime through S-CLOSE-01, then closes RPC at lifecycle stop and idempotent destruction. Context.stop alone is not graceful Runtime shutdown; a stopped Node cannot restart. Do not start/close this managed Node or send raw call/notify/reply messages through it: its private callback correlation belongs to GameRpc. Use RpcNode separately for the raw API. Handler construction must defer GameRpc lookup (ObjectProvider or later setter use) to avoid a Runtime/Handler/GameRpc construction cycle.
+
+Incoming Call and Notify command lookup uses ProtocolType.REQUEST; Notify uses requestId zero, not a separate NOTIFY protocol registration. Unknown commands, codec exceptions and synchronous Runtime admission/signature/Key failures propagate to RpcHandler's HANDLER_ERROR policy for Call and logging-only policy for Notify. Valid decoded requests pass source Node/Slot, command/requestId, caller Key/business identity and exact received Metadata to runtime.dispatchRpc. Annotation Domain selection and ordinary HandlerMethod signatures remain unchanged. No physical Connection is exposed or fabricated.
+
+`GameRpc.call(targetNodeId, routeKey, businessIdType, businessId, metadata, request, RouteCallback<T>)` requires this Runtime's current Route and a REQUEST-to-response binding. The caller's T must match that binding. It serializes the request, registers runtime.callback, and restores the exact source Context/Route for success and failure, including immediate missing-Peer rejection. Remote error codes and local RPC failures go to RouteCallback.onFail; a successful response that cannot be decoded becomes PROTOCOL_ERROR. A synchronous failure after callback registration completes its reservation with UNAVAILABLE and rethrows; serialization/binding failures before registration only throw. No callback is left reserved after synchronous rejection. Runtime owns continuation execution; no Spring business executor is created. Response Metadata is not exposed by this object-only convenience callback; use a standalone raw RpcNode if the application needs a transport-level response envelope.
+
+`GameRpc.notify(...)` uses the same explicit target/Key/identity/Metadata/request inputs and returns RpcSendStatus; it needs no current Route and cannot be replied to. `reply(response)` obtains Contexts.current(RpcHandlerContext.class); `reply(context, response)` permits a saved immutable envelope for delayed work without retaining a transport body. A reply must match the original request's registered response class, and requestId must be nonzero. `replyError(context, positiveCode)` sends an empty error response. Success/error replies use empty response Metadata. Both preserve source-Slot preference and replacement-connection fallback; ACCEPTED is transport acceptance, not remote completion. Business Handler return values do not trigger automatic RPC replies. Exceptions after asynchronous Handler admission remain the ordinary RuntimeErrorHandler contract: business code must issue an error reply explicitly if wanted; otherwise the caller can time out. Delayed application work outside Runtime is not automatically part of drain.
+
+Example (ProtocolProvider binds QueryReq to QueryRes):
+
+```java
+@Configuration
+@EnableGameRuntime(basePackages = "my.game")
+@EnableGameRpc
+class RpcConfig {
+    // Provide GameRpcCodec, ProtocolProvider, RouteExecutor and GameRuntimeConfigurer.
+}
+
+@Handler(domain = ROLE)
+class QueryHandler {
+    private final ObjectProvider<GameRpc> rpc;
+    QueryHandler(ObjectProvider<GameRpc> rpc) { this.rpc = rpc; }
+    @HandlerMethod public void query(QueryReq request) {
+        rpc.getObject().reply(new QueryRes(request.roleId()));
+    }
+}
+```
+
+```properties
+game.rpc.node-id=1
+game.rpc.port=9100
+```
+
+After Context.refresh, call `context.getBean(RpcNode.class).addPeer(2, address, 1)` under application topology policy. [RpcAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java) exercises actual TCP Call/Notify, identity/origin, object replies, unknown-command errors, immediate failure and exact Route restoration, plus remote-error/malformed-response routing, synchronous rejection reservation cleanup, timeout continuation drain, managed port release and one-shot lifecycle. Deployment security, discovery and production capacity remain outside this verification.
+
 ## 4. Usage and validation
 
-The demo declares game-spring as its only direct framework dependency, using its transitive Runtime/Data/Network/Core and Spring Context APIs. Fory, the JDBC driver and connection pool remain application dependencies. RPC is outside this dependency graph; applications that actually use RPC add game-rpc explicitly. `mvn -pl game-demo -am clean verify` builds the complete demo dependency reactor without requiring preinstalled framework artifacts or compiling unrelated RPC tests.
+The demo directly depends on game-spring and game-rpc. game-spring supplies transitive Runtime/Data/Network/Core and Spring Context APIs; explicit game-rpc supports the consolidated standalone RPC sample. Fory, JDBC driver and pool remain application dependencies. Other HTTP/Data-only applications still do not inherit game-spring's optional RPC dependency. `mvn -pl game-demo -am clean verify` builds the complete dependency reactor and runs application/standalone execution tests without preinstalled framework artifacts.
 
 Configuration excerpts:
 
@@ -70,4 +115,4 @@ class GameConfig {
 }
 ```
 
-The complete integration is [GameRuntimeConfig](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) and [GameDataConfig](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java). [CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java) covers method-only, inherited/default-interface and factory discovery, deduplication, startup rejection and real Route execution. [RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java) proves accepted work finishes before ordinary close listeners and resource destruction, and a replacement Context can bind Events again. Demo Repository tests validate initialized injection and all three bases using JDBC stubs; live databases and custom multicaster/proxy configurations remain unverified. Run root `mvn clean verify` for reactor boundaries; existing RPC test API inconsistencies remain a separately recorded blocker.
+The complete integration is [GameRuntimeConfig](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) and [GameDataConfig](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java). [CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java) covers method-only, inherited/default-interface and factory discovery, deduplication, startup rejection and real Route execution. [RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java) proves accepted work finishes before ordinary close listeners and resource destruction, and a replacement Context can bind Events again. Demo Repository tests validate initialized injection and all three bases using JDBC stubs; live databases and custom multicaster/proxy configurations remain unverified. Run root `mvn clean verify` for reactor boundaries; root clean verify now includes RPC and its optional adapter.

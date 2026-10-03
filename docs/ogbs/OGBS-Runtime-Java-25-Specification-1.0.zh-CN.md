@@ -293,7 +293,7 @@ runtime.dispatch(new DefaultRpcHandlerContext(domain, key, businessIdType, busin
 
 迁移：此次源码契约变化后需重新编译 Handler/工厂。包含连接的 DefaultHandlerContext 构造改用 DefaultClientHandlerContext；从 HandlerContext/DefaultHandlerContext 访问连接改用 ClientHandlerContext（或 Contexts.current(ClientHandlerContext.class)）。不包含连接的 DefaultHandlerContext 构造器继续可用。原来继承 DefaultHandlerContext 并暴露连接的自定义上下文，改为继承 DefaultClientHandlerContext 或实现 ClientHandlerContext。通用业务身份访问不变。专用 Handler 不改变消息多态规则：每个精确消息类型仍只有一个 Handler，共用多个传输的消息使用公共 HandlerContext 签名，仅在需要时检查传输能力。
 
-源码：[上下文类型](../../game-runtime/src/main/java/cn/managame/runtime/context)、[分发实现](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)。[TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java) 验证共用串行 Route、接纳前类型拒绝、关闭后执行已接纳任务、Notify/Call 关联、嵌套 TCP/RPC 恢复及 Event/call 仅继承调用字段。[RPC 回复所有权与 Slot](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) 保持不变，真实 RPC 到 Runtime 的网络接入仍未实现。
+源码：[上下文类型](../../game-runtime/src/main/java/cn/managame/runtime/context)、[分发实现](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)。[TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java) 验证共用串行 Route、接纳前类型拒绝、关闭后执行已接纳任务、Notify/Call 关联、嵌套 TCP/RPC 恢复及 Event/call 仅继承调用字段。[RPC 回复所有权与 Slot](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) 保持不变，可选真实 RPC 到 Runtime 网络接入由 game-spring 的 RpcAssemblyTest 验证。
 
 ## 5. Protocol 与 RouteKey 注册
 
@@ -787,7 +787,7 @@ Runtime 在 Route 提交前 retain 请求，业务调用及自动结果编码结
 
 ### 13.3 示例、兼容性与验证
 
-[RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 在 POST `/echo` 返回应用 EchoResult record，在 GET `/lookup` 的跨 Route 回调提交 PlayerResult。POST /echo 省略 method，验证 POST 默认值；GET /lookup 显式选择 HttpRequestMethod.GET。POST body 字段 playerId 是类 Key 默认，GET query 字段 lookupId 覆盖它。示例无需工厂，使用默认 HttpContext 并读取 routeKey()；这些 Key 仅作路由输入，不证明已认证身份。业务方法不构造 FullHttpResponse 或 HTTP 版本。[执行测试](../../game-example/src/test/java/cn/managame/example/runtime/RuntimeHttpExampleTest.java) 通过真实 HttpServer 验证 UTF-8 DTO 结果。
+[RuntimeHttpExample](../../game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java) 在 POST `/echo` 返回应用 EchoResult record，在 GET `/lookup` 的跨 Route 回调提交 PlayerResult。POST /echo 省略 method，验证 POST 默认值；GET /lookup 显式选择 HttpRequestMethod.GET。POST body 字段 playerId 是类 Key 默认，GET query 字段 lookupId 覆盖它。示例无需工厂，使用默认 HttpContext 并读取 routeKey()；这些 Key 仅作路由输入，不证明已认证身份。业务方法不构造 FullHttpResponse 或 HTTP 版本。[执行测试](../../game-demo/src/test/java/cn/managame/demo/examples/runtime/RuntimeHttpExampleTest.java) 通过真实 HttpServer 验证 UTF-8 DTO 结果。
 
 源码：[公开 HTTP 包](../../game-runtime/src/main/java/cn/managame/runtime/http)、[RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java)、[RuntimeHttp](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeHttp.java)。测试：[RuntimeHttpTest](../../game-runtime/src/test/java/cn/managame/runtime/http/RuntimeHttpTest.java)、[HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java)、[HttpResultTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpResultTest.java)，覆盖默认 POST 与显式枚举方法、精确方法匹配及 405/Allow（含未知 token）、注册（含拒绝 InvocationContext 参数）、工厂、HTTP 发起 Event/call 的默认身份、自定义 HTTP Context 原实例恢复、共用 Route 顺序、query/body 规则、所有权、延迟完成、DTO/null/自定义 codec、完成竞争及编码失败。依赖变更需根 `mvn clean verify`，定向验证用 `mvn -pl game-runtime -am test`。已有 RPC 测试/示例引用已移除 API，当前阻塞根验证；HTTP 示例单独编译执行。生产容量及所有断连竞争未验证，其他 HTTP 版本尚未实现。
 
@@ -803,7 +803,7 @@ Runtime 依赖 game-core、game-network、Jackson Databind，并从 Core 传递�
 
 `routeKeyMethod = "playerKey"` 在注册的 Handler 对象上精确绑定 public 实例方法 `long playerKey(FullHttpRequest request)` 或返回 Long 的对应方法。构建时一次编译 MethodHandle；缺失/private/static、错误参数/返回类型或 varargs 在构建时拒绝。不推导无参 getter 或任意反射表达式。方法在接入线程、工厂/接纳前运行，借用请求，不得访问 Route 所有的状态，可被并发调用，实例字段不因此串行。IllegalArgumentException 映射 400，其他异常或 null Long 报告 RUNTIME_EXECUTION_ERROR 并 onFail；返回零映射 400。后续需要请求数据时自行获取独立所有权。
 
-例如 `@HttpHandler(domain=1, routeKey="playerId")` 配合 `@HttpMethod(value="/guild", routeKey="guildId")` 使用默认 POST 从 body 选择 guildId；显式 method=HttpRequestMethod.GET 时从 query 选择 guildId。自定义 `routeKeyMethod="playerKey"` 替换类字段规则并调用声明的提取方法。失败不尝试其他规则，也不允许工厂修改选定 Key。[HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java) 覆盖两个覆盖方向、来源隔离、完整 JSON 校验、非法 UTF-8、精确 64 位边界、buffer indices/refCnt 保留、工厂 Key 保留、提取/注册失败。更新后的可运行 [RuntimeHttpExample](../../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 通过真实 HttpServer 演示 body/query 提取。
+例如 `@HttpHandler(domain=1, routeKey="playerId")` 配合 `@HttpMethod(value="/guild", routeKey="guildId")` 使用默认 POST 从 body 选择 guildId；显式 method=HttpRequestMethod.GET 时从 query 选择 guildId。自定义 `routeKeyMethod="playerKey"` 替换类字段规则并调用声明的提取方法。失败不尝试其他规则，也不允许工厂修改选定 Key。[HttpRouteKeyTest](../../game-runtime/src/test/java/cn/managame/runtime/http/HttpRouteKeyTest.java) 覆盖两个覆盖方向、来源隔离、完整 JSON 校验、非法 UTF-8、精确 64 位边界、buffer indices/refCnt 保留、工厂 Key 保留、提取/注册失败。更新后的可运行 [RuntimeHttpExample](../../game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java) 通过真实 HttpServer 演示 body/query 提取。
 
 ### 13.5 请求绑定
 
@@ -817,7 +817,7 @@ Builder `httpRequestCodec(HttpRequestCodec)` 替换默认 codec，拒绝 null。
 
 `dispatch(connection, metadata, message)` 将非 null 的原始 Metadata 实例传给接入工厂；无工厂时按消息提取 Key，身份为 0/0。六参数 `dispatch(connection, key, businessIdType, businessId, metadata, message)` 绕过工厂，保留显式输入。其他重载使用空 Metadata，不隐式继承外层值。HandlerContextFactory 现在为四参数，三参数 lambda 必须迁移并保留输入 Metadata 实例。更换 Metadata 实例与替换消息/连接一样，以 HANDLER_CONTEXT_MISMATCH（3003）拒绝。packet 的 command/seq/code 可使用应用自定义 Core key；Runtime 不新增保留 key。
 
-`dispatchRpc(sourceNodeId, sourceSlotId, command, requestId, key, businessIdType, businessId, metadata, message)` 查找精确 Handler 的有效注解 Domain，构造 DefaultRpcHandlerContext。沿用普通校验及参数解析路径，不引入 game-rpc 依赖。应用在分发前解码/复制借用 RPC body、检查 command/类型及身份，选择 Key/身份。此入口不发送回复、不选择 Peer、不修改 game-rpc 传输行为；完全自动 RPC 适配器尚未实现。[TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java) 验证便捷信封。
+`dispatchRpc(sourceNodeId, sourceSlotId, command, requestId, key, businessIdType, businessId, metadata, message)` 查找精确 Handler 的有效注解 Domain，构造 DefaultRpcHandlerContext。沿用普通校验及参数解析路径，不引入 game-rpc 依赖。应用在分发前解码/复制借用 RPC body、检查 command/类型及身份，选择 Key/身份。此入口不发送回复、不选择 Peer、不修改 game-rpc 传输行为；可选对象 RPC 适配由 game-spring 提供，不增加核心反向依赖。[TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java) 验证便捷信封。
 
 `runtime.callback(RouteCallback<T>)` 要求当前 Route 属于本 Runtime，否则抛 IllegalStateException。登记一个未完成回调，捕获原始 Context，返回线程安全的一次完成适配器。首次 onSuccess/onFail 回到源 Route（已在该 Route 时内联），重复完成忽略。onFail 要求正错误码，非法值抛 IllegalArgumentException 且不消费登记。回调异常报告 RUNTIME_EXECUTION_ERROR，回源接纳失败报告 ROUTE_CALLBACK_DISPATCH_FAILED。完成提交后释放回调登记，已提交回调任务继续计数。外部调用同步失败也必须完成适配器，并保证外部超时路径；没有独立 cancel 句柄。恢复 Context 的借用字段可能失效，初始 Handler 返回前应复制必要数据。
 

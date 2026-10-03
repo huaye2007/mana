@@ -1,4 +1,4 @@
-package cn.managame.example.network;
+package cn.managame.demo.examples.network;
 
 import cn.managame.network.http.HttpServer;
 import io.netty.buffer.Unpooled;

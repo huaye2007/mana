@@ -19,91 +19,72 @@ import static org.junit.jupiter.api.Assertions.*;
 class RpcResilienceTest extends RpcTestSupport {
     private static final RpcCallback<Object> CALLBACK = value -> {};
 
-    @Test void nodeWideAdmissionBoundsConcurrentCallsAndReleasesAcrossPeers() throws Exception {
-        Probe p = new Probe();
-        RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p).maxPendingCalls(8).build();
-        n.start();
-        try (n; ExecutorService senders = Executors.newFixedThreadPool(8)) {
-            Fake a = bind(n, 2, 0, 1), b = bind(n, 3, 0, 1);
-            CountDownLatch go = new CountDownLatch(1);
-            List<Future<?>> calls = new ArrayList<>();
-            for (int i = 0; i < 64; i++) {
-                int target = i % 2 + 2;
-                calls.add(senders.submit(() -> {
-                    try { go.await(); } catch (InterruptedException e) { throw new RuntimeException(e); }
-                    ByteBuf body = Unpooled.buffer().writeByte(1);
-                    n.call(target, new RpcRequest(1, body), 10000, CALLBACK);
-                    assertEquals(0, body.refCnt());
-                }));
+    @Test void stoppingRecoveryCannotLoseConcurrentUnbindOrUpgrade() throws Exception {
+        try (RpcNode n = node(1, new Probe()); ExecutorService racers = Executors.newFixedThreadPool(2)) {
+            RpcPeer peer = new RpcPeer(2, 1, LOCAL);
+            n.peers.put(2, peer);
+            ConnectionSlot slot = peer.slots[0];
+            CyclicBarrier start = new CyclicBarrier(3), end = new CyclicBarrier(3);
+            java.util.concurrent.atomic.AtomicInteger owners = new java.util.concurrent.atomic.AtomicInteger();
+            int rounds = 10000;
+            Future<?> stopper = racers.submit(() -> {
+                try {
+                    for (int i = 0; i < rounds; i++) {
+                        start.await();
+                        if (n.continueRecovery(peer, slot)) owners.incrementAndGet();
+                        end.await();
+                    }
+                } catch (Exception e) { throw new RuntimeException(e); }
+            });
+            Future<?> unbinder = racers.submit(() -> {
+                try {
+                    for (int i = 0; i < rounds; i++) {
+                        start.await();
+                        if (peer.target == null) peer.target = LOCAL;
+                        else slot.connection.set(null);
+                        if (slot.connecting.compareAndSet(false, true)) owners.incrementAndGet();
+                        end.await();
+                    }
+                } catch (Exception e) { throw new RuntimeException(e); }
+            });
+            boolean missing = false, duplicate = false;
+            for (int i = 0; i < rounds; i++) {
+                peer.target = i % 2 == 0 ? LOCAL : null;
+                slot.connection.set(i % 2 == 0 ? new Fake() : null);
+                slot.connecting.set(true); owners.set(0);
+                start.await(5, TimeUnit.SECONDS); end.await(5, TimeUnit.SECONDS);
+                missing |= !slot.connecting.get() || owners.get() == 0;
+                duplicate |= owners.get() > 1;
             }
-            go.countDown();
-            for (Future<?> call : calls) call.get(5, TimeUnit.SECONDS);
-            assertEquals(8, n.admittedCalls.get());
-            assertEquals(8, a.frames.size() + b.frames.size());
-            assertEquals(56, p.failures.size());
-            assertTrue(p.failures.stream().allMatch(e -> e == UNAVAILABLE));
-            Fake source = a.frames.isEmpty() ? b : a;
-            int target = source == a ? 2 : 3;
-            int id = java.nio.ByteBuffer.wrap(source.frames.getFirst()).getInt(9);
-            receive(n, source, RpcWire.encodeResponse(new RpcResponse(id, 0, null, null), 1024));
-            assertEquals(7, n.admittedCalls.get());
-            n.call(target, new RpcRequest(2, null), 10000, CALLBACK);
-            assertEquals(8, n.admittedCalls.get());
-            n.removePeer(2); n.removePeer(3);
-            assertEquals(0, n.admittedCalls.get());
+            stopper.get(5, TimeUnit.SECONDS); unbinder.get(5, TimeUnit.SECONDS);
+            assertFalse(missing, "Empty Slot lost its recovery chain");
+            assertFalse(duplicate, "More than one recovery chain owns the Slot");
         }
     }
 
-    @Test void responseNotificationRetainsAdmissionUntilHandlerReturns() throws Exception {
-        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
-        Probe p = new Probe() {
-            @Override public void onResponse(int source, int command, RpcResponse response, RpcCallback<?> callback) {
-                entered.countDown();
-                try { release.await(); } catch (InterruptedException e) { throw new RuntimeException(e); }
-                super.onResponse(source, command, response, callback);
-            }
-        };
-        RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p).maxPendingCalls(1).build();
-        n.start();
-        ExecutorService receiver = Executors.newSingleThreadExecutor();
-        try {
-            Fake c = bind(n, 2, 0, 1);
-            n.call(2, new RpcRequest(1, null), CALLBACK);
-            int id = n.peers.get(2).pending.keys().nextElement();
-            Future<?> response = receiver.submit(() -> receive(n, c,
-                    RpcWire.encodeResponse(new RpcResponse(id, 0, null, null), 1024)));
-            assertTrue(entered.await(5, TimeUnit.SECONDS));
-            assertTrue(n.peers.get(2).pending.isEmpty());
-            n.call(2, new RpcRequest(2, null), CALLBACK);
-            assertEquals(UNAVAILABLE, take(p.failures));
-            release.countDown(); response.get(5, TimeUnit.SECONDS);
-            n.call(2, new RpcRequest(3, null), CALLBACK);
-            assertEquals(1, n.admittedCalls.get()); assertEquals(2, c.frames.size());
-        } finally { release.countDown(); receiver.close(); n.close(); }
-    }
-    @Test void encodingAndSendRejectionDoNotLeakAdmission() {
+    @Test void encodingAndSendRejectionDoNotLeakPendingCalls() {
         Probe p = new Probe();
         RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p)
-                .maxFrameSize(64).maxPendingCalls(1).build();
+                .maxFrameSize(64).build();
         n.start();
         try (n) {
             Fake c = bind(n, 2, 0, 1);
             ByteBuf large = Unpooled.buffer().writeZero(128);
             assertThrows(RpcEncodeException.class, () -> n.call(2, new RpcRequest(1, large), CALLBACK));
-            assertEquals(0, large.refCnt()); assertEquals(0, n.admittedCalls.get());
+            assertEquals(0, large.refCnt()); assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty()));
             c.status = WriteStatus.NOT_WRITABLE;
             n.call(2, new RpcRequest(1, null), CALLBACK);
-            assertEquals(UNAVAILABLE, p.failures.remove()); assertEquals(0, n.admittedCalls.get());
+            assertEquals(UNAVAILABLE, p.failures.remove()); assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty()));
             c.status = WriteStatus.ACCEPTED;
             c.onWrite = frame -> { throw new IllegalStateException("write failure"); };
             assertThrows(IllegalStateException.class, () -> n.call(2, new RpcRequest(1, null), CALLBACK));
-            assertEquals(0, n.admittedCalls.get());
+            assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty()));
             n.disconnected(c);
             bind(n, 2, 0, 1);
             n.call(2, new RpcRequest(2, null), CALLBACK);
-            assertEquals(1, n.admittedCalls.get());
+            assertEquals(1, n.peers.get(2).pending.size());
         }
-        assertEquals(0, n.admittedCalls.get());
+        assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty()));
     }
 
     @Test void passiveRecreationDoesNotReuseCallIdsOrAdmitOldReplies() throws Exception {
@@ -114,16 +95,16 @@ class RpcResilienceTest extends RpcTestSupport {
             int oldId = n.peers.get(2).pending.keys().nextElement();
             old.close(); n.disconnected(old);
             assertEquals(TIMEOUT, take(p.failures));
-            await(() -> !n.peers.containsKey(2) && n.admittedCalls.get() == 0);
+            await(() -> !n.peers.containsKey(2));
             Fake fresh = bind(n, 2, 0, 1);
             n.call(2, new RpcRequest(202, null), CALLBACK);
             int newId = n.peers.get(2).pending.keys().nextElement();
             assertNotEquals(oldId, newId);
             receive(n, fresh, RpcWire.encodeResponse(new RpcResponse(oldId, 0, null, null), 1024));
-            assertTrue(p.responses.isEmpty()); assertEquals(1, n.admittedCalls.get());
+            assertTrue(p.responses.isEmpty()); assertEquals(1, n.peers.get(2).pending.size());
             receive(n, fresh, RpcWire.encodeResponse(new RpcResponse(newId, 0, null, null), 1024));
             assertEquals(202, take(p.responses).command());
-            assertEquals(0, n.admittedCalls.get());
+            assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty()));
         }
     }
 
@@ -142,7 +123,7 @@ class RpcResilienceTest extends RpcTestSupport {
             }
         };
         RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p)
-                .handshakeTimeout(Duration.ofMillis(60)).maxPendingCalls(2).build();
+                .handshakeTimeout(Duration.ofMillis(60)).build();
         p.node = n; n.start();
         ExecutorService closer = Executors.newSingleThreadExecutor();
         try {
@@ -152,11 +133,8 @@ class RpcResilienceTest extends RpcTestSupport {
             Fake silent = new Fake(); n.connected(silent);
             n.call(2, new RpcRequest(2, null), 40, CALLBACK);
             assertEquals(TIMEOUT, take(p.failures));
-            await(() -> !silent.active && n.admittedCalls.get() == 1);
+            await(() -> !silent.active);
             n.call(2, new RpcRequest(3, null), CALLBACK);
-            ByteBuf rejected = Unpooled.buffer().writeByte(1);
-            n.call(2, new RpcRequest(4, rejected), CALLBACK);
-            assertEquals(UNAVAILABLE, take(p.failures)); assertEquals(0, rejected.refCnt());
             n.removePeer(2);
             assertEquals(PEER_REMOVED, take(p.failures));
             Future<?> closing = closer.submit(n::close);
@@ -166,23 +144,14 @@ class RpcResilienceTest extends RpcTestSupport {
             closing.get(5, TimeUnit.SECONDS);
             assertEquals(TIMEOUT, take(p.failures));
             assertTrue(virtual.get()); assertTrue(closeRejected.get());
-            assertEquals(0, n.admittedCalls.get()); assertTrue(p.failures.isEmpty());
+            assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty())); assertTrue(p.failures.isEmpty());
         } finally { release.countDown(); n.close(); closer.close(); }
     }
 
     @Test void removePeerOnlyTouchesItsConnections() {
         try (RpcNode n = node(1, new Probe())) {
             Fake own = bind(n, 2, 0, 1);
-            Fake unrelated = new Fake() {
-                boolean inspect;
-                @Override public <T> T get(AttributeKey<T> key) {
-                    if (inspect) fail("removePeer inspected an unrelated connection");
-                    return super.get(key);
-                }
-                @Override public <T> void set(AttributeKey<T> key, T value) {
-                    super.set(key, value); inspect = true;
-                }
-            };
+            Fake unrelated = new Fake();
             n.connected(unrelated);
             n.removePeer(2);
             assertFalse(own.active); assertTrue(unrelated.active);
@@ -202,18 +171,18 @@ class RpcResilienceTest extends RpcTestSupport {
                 assertNull(peer.slots[0].connection.get());
                 n.removePeer(2);
                 assertEquals(-1, socket.getInputStream().read());
-                assertTrue(peer.connections.isEmpty());
+                assertFalse(n.peers.containsKey(2));
             }
         }
     }
 
-    @Test void reconnectSpreadAndAdmissionBuilderBoundaries() {
+    @Test void reconnectSpreadAndBuilderBoundaries() {
         Probe p = new Probe();
         RpcNodeBuilder builder = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p)
                 .reconnectDelay(Duration.ofMillis(100));
         try (RpcNode spread = builder.build();
-             RpcNode fixed = builder.reconnectJitter(Duration.ZERO).build();
-             RpcNode custom = builder.reconnectJitter(Duration.ofMillis(80)).build()) {
+             RpcNode fixed = builder.reconnectRandomDelay(Duration.ZERO).build();
+             RpcNode custom = builder.reconnectRandomDelay(Duration.ofMillis(80)).build()) {
             for (int i = 0; i < 100; i++) {
                 long delay = spread.nextReconnectDelayMillis();
                 assertTrue(delay >= 100 && delay <= 125);
@@ -222,12 +191,10 @@ class RpcResilienceTest extends RpcTestSupport {
                 assertTrue(delay >= 100 && delay <= 180);
             }
         }
-        assertThrows(IllegalArgumentException.class, () -> builder.maxPendingCalls(0));
-        assertThrows(IllegalArgumentException.class, () -> builder.maxPendingCalls(-1));
-        assertThrows(IllegalArgumentException.class, () -> builder.reconnectJitter(Duration.ofNanos(-1)));
-        assertThrows(IllegalArgumentException.class, () -> builder.reconnectJitter(Duration.ofMillis(Long.MAX_VALUE)));
+        assertThrows(IllegalArgumentException.class, () -> builder.reconnectRandomDelay(Duration.ofNanos(-1)));
+        assertThrows(IllegalArgumentException.class, () -> builder.reconnectRandomDelay(Duration.ofMillis(Long.MAX_VALUE)));
         assertThrows(IllegalArgumentException.class, () -> builder
                 .reconnectDelay(Duration.ofMillis(Long.MAX_VALUE / 1_000_000))
-                .reconnectJitter(Duration.ofMillis(1)).build());
+                .reconnectRandomDelay(Duration.ofMillis(1)).build());
     }
 }

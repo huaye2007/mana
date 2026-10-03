@@ -2,7 +2,7 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-根 Maven 构建中的普通 Spring 应用，使用 JDK 25 和仓库父 POM，应用源码位于 `cn.managame.demo`。唯一直接框架依赖为 [game-spring](../game-spring/README.zh-CN.md)，传递引入 Spring Context 7.0.9、game-runtime、game-data，并经这些模块引入 game-network 和 game-core。demo 未使用 RPC 代码，因此不依赖 game-rpc。应用层 Fory、HikariCP、MySQL Driver 仍显式声明。
+根 Maven 构建中的普通 Spring 应用与统一示例模块，使用 JDK 25 和仓库父 POM。主应用位于 `cn.managame.demo`，独立运行入口及测试位于 `cn.managame.demo.examples.<component>`。直接框架依赖为 [game-spring](../game-spring/README.zh-CN.md) 与 game-rpc；Spring Context、Runtime、Data、Network、Core 通过 game-spring 传递引入，RPC 供独立示例使用。应用层 Fory、HikariCP、MySQL Driver 仍显式声明。框架模块不依赖此应用，也不发布示例类。
 
 `org.apache.fory:fory-core:1.7.6` 在此应用内提供业务 body 的二进制序列化。按照 [Fory 的 JDK 配置说明](https://fory.apache.org/docs/object-serialization/java/)，在 IDE 中使用 JDK 25 启动 GameDemo 时增加 VM 参数 `--add-opens=java.base/java.lang.invoke=ALL-UNNAMED`；demo POM 已为 Surefire 测试配置该参数。
 
@@ -196,7 +196,7 @@ if (connection.write(packet) != WriteStatus.ACCEPTED) connection.close();
 mvn -pl game-demo -am clean verify
 ```
 
-[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 注入、Data 关闭及 URL 缺失时拒绝启动。生命周期测试按当前非阻塞入口验证：初始化返回后 main 可以继续启动 TCP；HTTP 由 game-spring 管理，独立业务测试禁用监听。Context 关闭释放 Spring 资源。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 的 `clean verify` 中 23 项测试全部通过，包括真实 TCP 和 HTTP/Timer/Cron 集成测试。桩测试不验证原生 MySQL；此前使用旧入口验证过本地 MySQL 启动和关闭，本次未对当前完整的 Spring/Data/TCP/HTTP 入口执行真实 MySQL 验证。这些检查不代表所有数据库操作、故障场景或生产定时精度/容量均已验证。根 clean verify 已执行到 RPC，仍被引用 maxPendingCalls、reconnectJitter 等已移除 API 的既有测试阻塞。demo 完整依赖模块通过 `mvn -pl game-demo -am clean verify`，不需要预先安装框架 artifact，也不编译 RPC 测试。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件示例仍位于 [game-example](../game-example/README.zh-CN.md)。
+[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 注入、Data 关闭及 URL 缺失时拒绝启动。生命周期测试按当前非阻塞入口验证：初始化返回后 main 可以继续启动 TCP；HTTP 由 game-spring 管理，独立业务测试禁用监听。Context 关闭释放 Spring 资源。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 的 `clean verify` 中 28 项测试全部通过，包括真实 TCP/HTTP/Timer/Cron 集成和五个独立入口；Spring 扫描回归确认独立 HTTP 对象不被注册。桩测试不验证原生 MySQL；此前使用旧入口验证过本地 MySQL 启动和关闭，本次未对当前完整的 Spring/Data/TCP/HTTP 入口执行真实 MySQL 验证。这些检查不代表所有数据库操作、故障场景或生产定时精度/容量均已验证。根 clean verify 已通过全部七个组件/应用模块。demo 完整依赖模块通过 `mvn -pl game-demo -am clean verify`，不需要预先安装框架 artifact，RPC 与 demo 测试均参与验证。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件入口详见[独立入口清单](#standalone-samples)。
 
 
 ## Packet Metadata、错误与管理
@@ -204,3 +204,24 @@ mvn -pl game-demo -am clean verify
 GamePacketHandler 通过 [GamePacketMetadata](src/main/java/cn/managame/demo/network/GamePacketMetadata.java) 传入 command/seq/code，使用应用自定义 int key 1/2/3。Handler 读取 context.metadata()，这些 key 不是 Core 保留编号。RuntimeDispatchException 接纳拒绝回复保留 command/seq、携带框架错误码和空 body 的 packet，不自动断连或重试。记录 WriteStatus，接纳不代表送达。未知协议、非法 Fory body/类型不匹配及鉴权策略缺失仍走异常路径。Handler 执行异常仍由 RuntimeErrorHandler 报告，不自动构造远程响应。这些策略不修改 packet 线格式或实现鉴权。
 
 POST /demo/echo 直接接收 String，POST /demo/dto 和 GET /demo/query 接收 EchoRequest，无需 Context 参数。Contexts.current(HttpContext.class) 提供当前 Route；即使参数为 String，非 GET 仍需 JSON body routeKey。query 示例：/demo/query?routeKey=1&text=hello。Runtime stats、Data stats/flush 为显式管理 API，不新增未鉴权管理入口。复用集成契约见 [容器语义](../docs/ogbs/OGBS-Spring-1.0.zh-CN.md) 及 [Java 规范](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
+
+
+<a id="standalone-samples"></a>
+
+## 独立组件运行入口
+
+组件示例与其执行测试统一放在本模块的 `cn.managame.demo.examples`，不再维护第二个示例 Maven 模块。以下入口直接创建自己的组件，使用本机随机端口并释放自有资源，无须启动主 GameDemo、加载 MySQL 配置或启用 Spring profile。
+
+| 示例 | 行为 | 标准规范 | Java 开发规范 |
+| --- | --- | --- | --- |
+| [NetworkEchoExample](src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) | 本机随机端口、带长度 framing 的 TCP 字符串 echo | [Network](../docs/ogbs/OGBS-Network-1.0.zh-CN.md) | [Network Java 25](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) |
+| [HttpServerExample](src/main/java/cn/managame/demo/examples/network/HttpServerExample.java) | 独立 HTTP/1.1 health/echo 服务端、请求 body retain、JDK 示例调用方 | [HTTP Profile](../docs/ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) | [HTTP Java 绑定](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api) |
+| [HttpAsyncServerExample](src/main/java/cn/managame/demo/examples/network/HttpAsyncServerExample.java) | 应用执行器上的 HTTP 回调完成、不可变 UTF-8 输入快照 | [HTTP Profile](../docs/ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) | [HTTP 回调 API](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#http-async-response) |
+| [RuntimeHttpExample](src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java) | 业务 DTO JSON 结果与跨 Route 对象回调、GET/query 与 POST/body Key | [Runtime HTTP](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) | [Runtime HTTP API](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api) |
+| [RpcEchoExample](src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) | 两个本机 TCP 节点、call/reply、借用 body 的 retain、应用字符串解码 | [RPC](../docs/ogbs/OGBS-RPC-1.0.zh-CN.md) | [RPC Java 25](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) |
+
+在 IDE 中通过 game-demo classpath 运行对应 main。示例将响应等待限制为五秒，失败向调用方传播；这只是演示期限，不是生产配置。独立 RuntimeHttpExample.Methods 带隔离 profile，仅在示例入口中手动构造；正常主应用扫描不会注册这个 Handler，也不会增加 /echo、/lookup 路径。不要为 GameDemo 启用这个隔离 profile。
+
+NetworkEchoExample 演示字符串编解码；若回传引用计数 body，则需独立 retain。HttpServerExample 在借用期内 retain echo body 给同步响应，HttpAsyncServerExample 先取得不可变 UTF-8 内容再提交给自有执行器。RuntimeHttpExample 展示 POST/body 与 GET/query Key，以及跨 Route 回调返回对象；异步回复不得读取已释放请求。RpcEchoExample 在两个本地节点上展示原始 RPC call/reply 与借用 body retain，不会为主应用自动启动 RPC 监听。业务对象 RPC 接入使用 [Spring RPC 适配](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
+
+五项独立入口执行测试与主应用测试一起通过 `mvn -pl game-demo -am clean verify` 或根 `mvn clean verify`。测试夹具限制 Netty 线程、启用泄漏检测并处理 Windows Selector TCP 唤醒兼容；生产入口不修改 JVM 系统属性。旧独立示例坐标与包名不保留别名，调用方改用 game-demo 和 cn.managame.demo.examples。跨语言互操作、公网部署及生产容量仍未验证。

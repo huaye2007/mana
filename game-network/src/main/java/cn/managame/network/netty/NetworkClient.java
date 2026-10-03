@@ -90,7 +90,7 @@ public final class NetworkClient implements AutoCloseable {
             if (loop.inEventLoop()) connect.run();
             else loop.execute(connect);
         } catch (RejectedExecutionException cause) {
-            result.tryFailure(networkFailure(cause));
+            result.tryFailure(connectionFailure(cause));
             if (callback != null) reject(callback, result.cause());
         }
         return result;
@@ -118,8 +118,12 @@ public final class NetworkClient implements AutoCloseable {
             ChannelFuture future = bootstrap.connect(address);
             // A completed cancellation also closes a channel created after the waiter exited.
             result.addListener(f -> { if (!f.isSuccess()) future.channel().close(); });
-            future.addListener(f -> { if (!f.isSuccess()) result.tryFailure(networkFailure(f.cause())); });
-        } catch (Throwable cause) { result.tryFailure(networkFailure(cause)); }
+            future.addListener(f -> { if (!f.isSuccess()) result.tryFailure(connectionFailure(f.cause())); });
+        } catch (Throwable cause) { result.tryFailure(connectionFailure(cause)); }
+    }
+
+    private RuntimeException connectionFailure(Throwable cause) {
+        return closed.get() ? new IllegalStateException("Client is closed", cause) : networkFailure(cause);
     }
 
     private static Connection await(Future<Connection> result) {

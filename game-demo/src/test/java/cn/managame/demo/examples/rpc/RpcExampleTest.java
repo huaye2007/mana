@@ -1,6 +1,6 @@
-package cn.managame.example.rpc;
+package cn.managame.demo.examples.rpc;
 
-import cn.managame.example.ExampleTestSupport;
+import cn.managame.demo.examples.ExampleTestSupport;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 

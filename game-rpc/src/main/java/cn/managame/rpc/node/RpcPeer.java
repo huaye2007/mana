@@ -9,7 +9,6 @@ final class RpcPeer {
     final ConnectionSlot[] slots;
     volatile SocketAddress target;
     final ConcurrentHashMap<Integer, PendingCall> pending = new ConcurrentHashMap<>();
-    final AtomicInteger requestId = new AtomicInteger(1);
     final AtomicInteger roundRobin = new AtomicInteger();
 
     RpcPeer(int nodeId, int slotCount, SocketAddress target) {
@@ -17,11 +16,6 @@ final class RpcPeer {
         this.target = target;
         slots = new ConnectionSlot[slotCount];
         for (int i = 0; i < slotCount; i++) slots[i] = new ConnectionSlot(i);
-    }
-    int nextRequestId() {
-        int id;
-        do { id = requestId.getAndIncrement(); } while (id == 0);
-        return id;
     }
     int startSlot(long routeKey) {
         return routeKey == 0

@@ -1,6 +1,6 @@
-package cn.managame.example.network;
+package cn.managame.demo.examples.network;
 
-import cn.managame.example.ExampleTestSupport;
+import cn.managame.demo.examples.ExampleTestSupport;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 

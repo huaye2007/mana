@@ -29,3 +29,12 @@
 ## 3. 验证与边界
 
 Java 验证入口：[CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java)、[RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java)、[Repository 集成测试](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java)。代理策略和具体停机通知在 Java 绑定规定。这些测试未验证生产资源耗尽、驱动挂起、任意容器实现、跨进程停机或热注册。
+
+
+## 4. 可选 RPC 接入
+
+**S-RPC-01**：显式启用的 RPC 适配接管业务 codec、协议查询和 Runtime 投递。先将借用传输 body 解码为独立对象，再以收到的 Key、身份、Metadata 和逻辑来源进入普通 Runtime Handler。Domain 由 Handler 声明决定；适配不得伪造客户端 Connection。
+
+**S-RPC-02**：Call 的响应类型由请求绑定决定；调用须来自当前 Runtime Route，所有已登记成功/失败续接回到来源 Route，并计入 Runtime drain。同步拒绝不能遗留续接预留。对象回复保持 RPC 来源 Slot 优先和跨替换连接 fallback，Notify 不可回复。返回值不自动回复，已接纳后的业务异常维持 Runtime 普通错误策略；应用需要错误响应时显式回复。
+
+**S-RPC-03**：容器在 Runtime 创建后启动 Node，停服时先拒绝/排空 Runtime，再关闭 Node。codec 并发安全与拓扑策略由应用负责。该接入不增加发现、自动业务重试、认证、持久投递或统一 TCP/RPC send。例：同一 Role Handler 可在 RPC 来源 Context 中调用独立 RPC 回复入口，回调仍回到发起调用的 Role Route。Java API、配置和真实 TCP 验证见 [Java 规范](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
