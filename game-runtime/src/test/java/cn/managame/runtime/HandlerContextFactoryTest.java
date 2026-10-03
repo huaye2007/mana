@@ -23,7 +23,7 @@ class HandlerContextFactoryTest {
     record RoleId(long value) {}
     record GuildId(long value) {}
     record Received(Object identity, HandlerContext context) {}
-    static class CustomContext extends DefaultHandlerContext {
+    static class CustomContext extends DefaultClientHandlerContext {
         CustomContext(int domain, long key, int type, long id, Object message, Connection connection) {
             super(domain, key, type, id, Metadatas.empty(), message, connection);
         }
@@ -61,7 +61,7 @@ class HandlerContextFactoryTest {
         var roles = new ConcurrentHashMap<Connection, Identity>();
         Connection connection = connection(); roles.put(connection, new Identity(10001, 20002));
         var handlers = new Handlers(); var tasks = new ArrayDeque<Runnable>();
-        var domains = new ArrayList<Integer>(); var contexts = new ArrayList<HandlerContext>();
+        var domains = new ArrayList<Integer>(); var contexts = new ArrayList<ClientHandlerContext>();
         var errors = new ArrayList<RuntimeError>(); var routes = new ArrayList<String>();
         try (var runtime = builder(handlers, (d, k, t) -> {
             routes.add(d + "/" + k); tasks.add(t); return RouteExecuteStatus.ACCEPTED;
@@ -108,7 +108,7 @@ class HandlerContextFactoryTest {
                 (d, c, m) -> new CustomContext(d, 99, 7, 1, new HandlerDispatchTest.FieldRequest(42), c),
                 (d, c, m) -> new CustomContext(d, 99, 7, 1, m, replacement),
                 (d, c, m) -> new CustomContext(d, 0, 7, 1, m, c),
-                (d, c, m) -> new DefaultHandlerContext(d, 99, m, c));
+                (d, c, m) -> new DefaultClientHandlerContext(d, 99, m, c));
         int[] expectedErrors = {0, FrameworkErrorCodes.ROUTE_DOMAIN_MISMATCH,
                 FrameworkErrorCodes.HANDLER_CONTEXT_MISMATCH, FrameworkErrorCodes.HANDLER_CONTEXT_MISMATCH,
                 FrameworkErrorCodes.INVALID_ROUTE_KEY, FrameworkErrorCodes.HANDLER_CONTEXT_MISMATCH};
@@ -159,10 +159,10 @@ class HandlerContextFactoryTest {
     }
 
     @Test void closureDuringFactoryCreationRejectsAndInlineDispatchRestoresOuterContext() {
-        var contexts = new ArrayList<HandlerContext>();
+        var contexts = new ArrayList<ClientHandlerContext>();
         @Handler(domain = 1) class Nested {
             GameRuntime runtime;
-            @HandlerMethod public void handle(HandlerContext context, HandlerDispatchTest.FieldRequest request) {
+            @HandlerMethod public void handle(ClientHandlerContext context, HandlerDispatchTest.FieldRequest request) {
                 contexts.add(context);
                 if (request.userId() == 1) {
                     runtime.dispatch(context.connection(), new HandlerDispatchTest.FieldRequest(2));
@@ -176,7 +176,7 @@ class HandlerContextFactoryTest {
             submissions.incrementAndGet(); t.run(); return RouteExecuteStatus.ACCEPTED;
         }, errors).handlerContextFactory((d, c, m) -> {
             factoryScopes.add(Contexts.currentOrNull());
-            return new DefaultHandlerContext(d, 99, 7, ((HandlerDispatchTest.FieldRequest) m).userId(), Metadatas.empty(), m, c);
+            return new DefaultClientHandlerContext(d, 99, 7, ((HandlerDispatchTest.FieldRequest) m).userId(), Metadatas.empty(), m, c);
         }).build()) {
             handler.runtime = runtime; runtime.dispatch(null, new HandlerDispatchTest.FieldRequest(1));
             assertEquals(1, submissions.get()); assertEquals(2, contexts.size());
@@ -187,7 +187,7 @@ class HandlerContextFactoryTest {
         try (var runtime = HandlerDispatchTest.builder(handler, (d, k, t) -> {
             submissions.incrementAndGet(); return RouteExecuteStatus.ACCEPTED;
         }, errors).handlerContextFactory((d, c, m) -> {
-            runtimeRef[0].close(); return new DefaultHandlerContext(d, 99, m, c);
+            runtimeRef[0].close(); return new DefaultClientHandlerContext(d, 99, m, c);
         }).build()) {
             runtimeRef[0] = runtime;
             assertEquals(FrameworkErrorCodes.RUNTIME_CLOSED,

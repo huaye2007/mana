@@ -195,9 +195,13 @@ interface InvocationContext extends Context {
     long businessId();
     Metadata metadata();
 }
-interface HandlerContext extends InvocationContext {
-    Object message();
-    default Connection connection() { return null; }
+interface HandlerContext extends InvocationContext { Object message(); }
+interface ClientHandlerContext extends HandlerContext { Connection connection(); }
+interface RpcHandlerContext extends HandlerContext {
+    int sourceNodeId();
+    int sourceSlotId();
+    int command();
+    int requestId();
 }
 interface EventContext extends InvocationContext { Event event(); }
 interface TimerContext extends Context {}
@@ -216,16 +220,17 @@ Metadata is in `cn.managame.core`. Default constructors:
 | DefaultContext | (int domain, long key) |
 | DefaultInvocationContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata) |
 | DefaultHandlerContext | (int domain, long key, Object message) |
-| DefaultHandlerContext | (int domain, long key, Object message, Connection connection) |
+| DefaultClientHandlerContext | (int domain, long key, Object message, Connection connection) |
 | DefaultHandlerContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata, Object message) |
-| DefaultHandlerContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata, Object message, Connection connection) |
+| DefaultClientHandlerContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata, Object message, Connection connection) |
+| DefaultRpcHandlerContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata, Object message, int sourceNodeId, int sourceSlotId, int command, int requestId) |
 | DefaultEventContext | (Event event, int businessIdType, long businessId, Metadata metadata) |
 | DefaultTimerContext | (int domain, long key) |
 | DefaultRouteCallContext | (int domain, long key, int businessIdType, long businessId, Metadata metadata) |
 
 Short HandlerContext construction uses identity 0 and empty Metadata. businessIdType is 0–255; Metadata/message cannot be null. Defaults are extensible for connections/correlation fields, which do not automatically copy into EventContext/RouteCallContext.
 
-Connection is `cn.managame.network.connection.Connection`. Existing constructors preserve a null connection; the additional overloads store the supplied borrowed reference in a final field. HandlerContext's default accessor preserves existing custom implementations. Business code reads `context.connection()` or `Contexts.current(HandlerContext.class).connection()`; Connection is not a separate Handler method parameter. Runtime neither queries its active state nor closes it, including at shutdown. Null is valid for non-network work, and writes may reject if the connection disconnected while the task waited.
+Connection is `cn.managame.network.connection.Connection`. DefaultClientHandlerContext stores the borrowed reference in a final field and permits null. Business code reads `context.connection()` or `Contexts.current(ClientHandlerContext.class).connection()`; Connection is not a separate Handler method parameter. Runtime neither queries active state nor closes it; writes may reject after disconnection while queued. Common HandlerContext does not expose a connection; see §4.2 for specific fields and migration.
 
 ```java
 Context Contexts.current();
@@ -255,6 +260,44 @@ Submit:
 Comparing only routeKey is insufficient. Callbacks retain the original context object. With a custom outer HandlerContext, target computation uses DefaultRouteCallContext; only returning to source restores the custom object.
 
 Contexts.current(MyHandlerContext.class) is valid only when that is the actual context. Event, Timer, and target RouteCall code must not assume network-request context. No public bind lets arbitrary threads impersonate Route execution.
+
+<a id="transport-handler-contexts"></a>
+
+### 4.2 Client and RPC Handler contexts
+
+ClientHandlerContext denotes player/client ingress rather than a specific transport protocol; it can carry any game-network Connection, including a WebSocket connection. Its name does not establish authentication. RpcHandlerContext denotes inter-service RPC ingress, including both Call and Notify.
+
+HandlerContext/DefaultHandlerContext contain only the decoded message and inherited invocation fields. ClientHandlerContext/DefaultClientHandlerContext add the borrowed Connection. RpcHandlerContext/DefaultRpcHandlerContext add sourceNodeId, sourceSlotId, command and requestId; they do not expose Connection or depend on game-rpc. HTTP remains the separate HttpContext hierarchy without invocation identity/Metadata.
+
+All Connection convenience dispatch overloads create DefaultClientHandlerContext, including with null Connection. HandlerContextFactory.create returns ClientHandlerContext; custom factory contexts extend DefaultClientHandlerContext or implement ClientHandlerContext. Ordinary Handler methods may receive HandlerContext/DefaultHandlerContext for transport-independent work, ClientHandlerContext for client-connection work, or RpcHandlerContext for RPC work, in either message/context order. At dispatch, incompatible required subtypes reject with HANDLER_CONTEXT_MISMATCH (3003) before argument resolution or admission. Context-free message methods remain supported.
+
+DefaultRpcHandlerContext requires nonzero sourceNodeId and command, sourceSlotId in 0..254, businessIdType in 0..255, and nonnull Metadata/message. Invalid numeric values throw IllegalArgumentException; null values throw NullPointerException. Node IDs, commands and nonzero request IDs retain negative int representations of unsigned wire values; requestId=0 represents Notify. Domain and nonzero Key are validated during dispatch, against the exact Handler's annotation-derived Domain. Context construction does not cross-check command against protocol registration, validate the source Slot against current Peer topology, or authenticate the envelope; integration owns those checks.
+
+The RPC adapter decodes the borrowed RpcRequest body before its callback returns, then submits the decoded object and copied envelope primitives. It must not defer access to a borrowed ByteBuf without arranging its lifetime separately. The context retains its decoded message without copying it and owns no RPC buffer; applications must provide a message safe for deferred Route execution. A zero RPC transport affinity does not permit a zero Runtime Key: integration selects a nonzero business Key. sourceSlotId is preserved only for reply selection. No automatic adapter, RPC response encoding, send/reply method, or extra executor is added.
+
+```java
+@Handler(domain = 1)
+class PlayerHandlers {
+    @HandlerMethod public void login(ClientHandlerContext context, LoginReq request) {
+        Connection connection = context.connection();
+        // Verify token here before manually binding application identity.
+    }
+    @HandlerMethod public void update(RpcHandlerContext context, UpdateReq request) {
+        long roleId = context.businessId();
+        int sourceNodeId = context.sourceNodeId();
+        int sourceSlotId = context.sourceSlotId();
+        int requestId = context.requestId();
+        // Integration/business code uses the RPC layer to encode and reply when required.
+    }
+}
+// External RPC integration; annotation-derived Domain and business Key selected beforehand:
+runtime.dispatch(new DefaultRpcHandlerContext(domain, key, businessIdType, businessId,
+        metadata, decodedMessage, sourceNodeId, sourceSlotId, command, requestId));
+```
+
+Migration: recompile handlers/factories after this source contract change. Replace connection-bearing DefaultHandlerContext construction with DefaultClientHandlerContext, and connection access through HandlerContext/DefaultHandlerContext with ClientHandlerContext (or Contexts.current(ClientHandlerContext.class)). Connection-free DefaultHandlerContext constructors remain available. Custom contexts that used to extend DefaultHandlerContext and expose a connection now extend DefaultClientHandlerContext or implement ClientHandlerContext. Generic business identity access remains unchanged. Typed handlers do not gain polymorphic message dispatch: each exact message class still has one Handler, so a message shared across transports uses a common HandlerContext signature and checks transport capabilities only if needed.
+
+Sources: [context types](../../game-runtime/src/main/java/cn/managame/runtime/context), [dispatch implementation](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java). [TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java) verifies shared serial Route execution, pre-admission type rejection, accepted work after close, Notify/Call correlation, nested TCP/RPC restoration and invocation-only Event/call inheritance. [RPC reply ownership and Slots](OGBS-RPC-Java-25-Specification-1.0.md) remain unchanged; real RPC-to-Runtime network integration is unimplemented.
 
 <a id="5-protocol-与-routekey-注册"></a>
 
@@ -326,7 +369,7 @@ M is a registered REQUEST/NOTIFY; CustomContext is a HandlerContext subtype:
 | public void handle(HandlerContext c, M m) | Yes | One message, valid context |
 | public void handle(M m, CustomContext c) | Yes | Either order; actual context checked |
 | public void handle(Extra value, M m) | Yes, with optional binding | Extra is an explicitly registered application argument |
-| public void handle(Connection c, M m) | No automatic binding | Read the optional connection from HandlerContext |
+| public void handle(Connection c, M m) | No automatic binding | Read the optional connection from ClientHandlerContext |
 | public M handle(M m) | No | Must return void; no automatic response sending |
 | public static void handle(M m) | No | Instance method required |
 | public void handle(M a, M b) | No | Message not unique |
@@ -339,7 +382,7 @@ RuntimeDispatchException means precondition/admission failure; Handler exception
 
 ### 6.2 Supplied-Key dispatch and exceptional message extraction
 
-The usual business call is `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`. It resolves the exact Handler's annotation Domain, preserves the supplied nonzero Key without reading any protocol member or invoking a registered extractor, and constructs DefaultHandlerContext with that connection/message, the explicit identity, and empty Metadata. businessIdType must be 0..255 (otherwise IllegalArgumentException); businessId retains all long values, including zero and negative values. Identity interpretation/validation belongs to the application. Anonymous work may use `dispatch(connection, routeKey, message)` with identity 0/0. Connection may be null; read it from Context. Handlers needing a custom context subtype use explicit-context dispatch or the configured factory in §6.4; built-in contexts reject incompatibility with HANDLER_CONTEXT_MISMATCH (3003). Custom parameters use the bindings in §6.3; no implicit Connection injection is added.
+The usual business call is `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`. It resolves the exact Handler's annotation Domain, preserves the supplied nonzero Key without reading any protocol member or invoking a registered extractor, and constructs DefaultClientHandlerContext with that connection/message, the explicit identity, and empty Metadata. businessIdType must be 0..255 (otherwise IllegalArgumentException); businessId retains all long values, including zero and negative values. Identity interpretation/validation belongs to the application. Anonymous work may use `dispatch(connection, routeKey, message)` with identity 0/0. Connection may be null; read it from Context. Handlers needing a custom context subtype use explicit-context dispatch or the configured factory in §6.4; built-in contexts reject incompatibility with HANDLER_CONTEXT_MISMATCH (3003). Custom parameters use the bindings in §6.3; no implicit Connection injection is added.
 
 For the minority of messages whose routing depends on protocol content, call `runtime.dispatch(connection, businessIdType, businessId, message)`, or omit identity for anonymous work only when no context factory is configured. It resolves Handler Domain and invokes the exact-class RouteKey binding, supplied explicitly or compiled from optional annotations. Missing binding or zero result yields INVALID_ROUTE_KEY (3005); no Handler yields HANDLER_NOT_FOUND (3002), and closed Runtime yields RUNTIME_CLOSED (3001). No fallback or retry substitutes a supplied/extracted Key. Extractor exceptions occur on the submitting thread before admission and propagate; Handler exceptions after execution begins still go to RuntimeErrorHandler. None of these convenience overloads inherits business identity/Metadata from an outer current context. They preserve existing executor capacity, same-Route inline restoration and shutdown rules. Custom GameRuntime implementations must implement the new overloads.
 
@@ -347,7 +390,7 @@ For the minority of messages whose routing depends on protocol content, call `ru
 @Handler(domain = 1)
 class LoginHandler {
     @HandlerMethod
-    public void login(DefaultHandlerContext context, LoginReq request) {
+    public void login(ClientHandlerContext context, LoginReq request) {
         Connection connection = context.connection();
     }
 }
@@ -367,7 +410,7 @@ Sources: [annotations](../../game-runtime/src/main/java/cn/managame/runtime/hand
 
 ### 6.3 Context business identity and optional Handler arguments
 
-The normal business API is `handle(DefaultHandlerContext context, MyMessage request)`, reading `context.businessId()` and, when needed, `context.businessIdType()`. No RoleId/GuildId/RoomId wrapper or custom argument registration is required. Authentication and category checks belong to business integration; Context access itself does not perform them. Key and business identity remain independent. Direct access reuses the identity pair already present in Context and avoids wrapper allocation and registration for each identity category. Optional custom argument bindings below are an extension for applications that need additional values or stronger type constraints, not a prerequisite for identity access.
+The normal business API is `handle(HandlerContext context, MyMessage request)`, reading `context.businessId()` and, when needed, `context.businessIdType()`. No RoleId/GuildId/RoomId wrapper or custom argument registration is required. Authentication and category checks belong to business integration; Context access itself does not perform them. Key and business identity remain independent. Direct access reuses the identity pair already present in Context and avoids wrapper allocation and registration for each identity category. Optional custom argument bindings below are an extension for applications that need additional values or stronger type constraints, not a prerequisite for identity access.
 
 `cn.managame.runtime.handler.HandlerArgumentBinding<T>` is a record of `Class<T> type` and `Function<HandlerContext, ? extends T> resolver`, constructed directly or with `of(type, resolver)`. Both components and `resolve(context)` input must be nonnull. Primitive and Context-derived types reject with IllegalArgumentException. Register via builder.handlerArguments; the copied list replaces previous registrations and defaults empty. Bindings use exact declared Class, without naming conventions, constructors inferred by reflection, superclass matching, or a framework RoleId type. Duplicate binding types, a type also registered as a protocol, a repeated custom type in one method, and unbound method argument types fail build with IllegalArgumentException. An unused valid binding is permitted.
 
@@ -379,7 +422,7 @@ After Route/Handler/context validation, resolvers run once in custom-parameter d
 // Register this Handler and its request protocol; no argument binding is required.
 @Handler(domain = 1)
 class RoleHandler {
-    @HandlerMethod public void handle(DefaultHandlerContext context, MyMessage request) {
+    @HandlerMethod public void handle(HandlerContext context, MyMessage request) {
         long roleId = context.businessId();
         // Read role-owned state only here, inside the selected Route.
     }
@@ -388,7 +431,7 @@ class RoleHandler {
 runtime.dispatch(connection, 99L, 1, 10001L, request);
 ```
 
-Identity is not automatically serialized or registered as a protocol. Login before authentication may remain `login(DefaultHandlerContext, LoginReq)` without RoleId. Sources: [HandlerArgumentBinding](../../game-runtime/src/main/java/cn/managame/runtime/handler/HandlerArgumentBinding.java), [RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java). [HandlerArgumentTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerArgumentTest.java) verifies ordering, one-time pre-admission resolution, independent identity/Key/Domain, explicit-context preservation, admitted work after closure, rejection and invalid bindings. The runnable Spring configuration uses [RoleHandler](../../game-demo/src/main/java/cn/managame/demo/bus/role/RoleHandler.java) with direct Context access and no argument bindings; [DemoIdentityTest](../../game-demo/src/test/java/cn/managame/demo/DemoIdentityTest.java) validates independent Key/identity, virtual-thread execution and missing-session policy rejection. Existing message/Context-only signatures remain valid; custom GameRuntime implementations need the identity overloads. Bindings apply only to HandlerMethod, not HTTP/Event/Cron.
+Identity is not automatically serialized or registered as a protocol. Login before authentication may remain `login(ClientHandlerContext, LoginReq)` without RoleId. Sources: [HandlerArgumentBinding](../../game-runtime/src/main/java/cn/managame/runtime/handler/HandlerArgumentBinding.java), [RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java). [HandlerArgumentTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerArgumentTest.java) verifies ordering, one-time pre-admission resolution, independent identity/Key/Domain, explicit-context preservation, admitted work after closure, rejection and invalid bindings. The runnable Spring configuration uses [RoleHandler](../../game-demo/src/main/java/cn/managame/demo/bus/role/RoleHandler.java) with direct Context access and no argument bindings; [DemoIdentityTest](../../game-demo/src/test/java/cn/managame/demo/DemoIdentityTest.java) validates independent Key/identity, virtual-thread execution and missing-session policy rejection. Existing message/Context-only signatures remain valid; custom GameRuntime implementations need the identity overloads. Bindings apply only to HandlerMethod, not HTTP/Event/Cron.
 
 The demo [GamePacketHandler](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketHandler.java) deserializes the command-selected class and invokes connection/message dispatch. Its configured policy in §6.4 selects routing/identity by the annotation-derived Domain. LOGIN uses its configured request userId solely as a queue Key with identity 0/0; ROLE reads an immutable authenticated [GameSession](../../game-demo/src/main/java/cn/managame/demo/network/GameSession.java) once from Connection's AttributeKey. Role identity is explicitly installed by business authentication; no implicit identity inference is performed. Handler/domain policies are application configuration. Runtime need not retain the application packet because dispatch captures its decoded object, not its byte[] frame. [GamePacketNetworkTest](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java) verifies LoginReq and PingMessage reach distinct HandlerMethods over TCP on virtual threads; [GamePacketDispatchTest](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketDispatchTest.java) verifies pre-admission rejection and queued session capture. These are integration examples, without automatic response sending or implemented authentication.
 
@@ -398,7 +441,7 @@ Applications may organize registrations using their own enums, as in [GameDomain
 
 ### 6.4 Domain-aware ingress context policy
 
-`cn.managame.runtime.handler.HandlerContextFactory` is a functional interface: `HandlerContext create(int domain, Connection connection, Object message)`. `builder.handlerContextFactory(factory)` replaces the previous factory, rejects null, and defaults unconfigured. Successful build retains that factory instance; its fields are not copied or serialized. Runtime does not close the factory or its external identity store; their lifecycle belongs to the application. `dispatch(connection, message)` uses it when configured; otherwise it keeps the existing exact-class message-Key extraction and identity 0/0. The explicit-context, three/five-argument supplied-Key, and four-argument explicit-identity/extraction overloads all bypass the factory. Thus registering a factory cannot rewrite callers' explicit routing/identity. With a factory, this entry does not invoke any configured annotation/RouteKeyBinding extractor, even if it would fail. No merged selector or fallback exists.
+`cn.managame.runtime.handler.HandlerContextFactory` is a functional interface: `ClientHandlerContext create(int domain, Connection connection, Object message)`. `builder.handlerContextFactory(factory)` replaces the previous factory, rejects null, and defaults unconfigured. Successful build retains that factory instance; its fields are not copied or serialized. Runtime does not close the factory or its external identity store; their lifecycle belongs to the application. `dispatch(connection, message)` uses it when configured; otherwise it keeps the existing exact-class message-Key extraction and identity 0/0. The explicit-context, three/five-argument supplied-Key, and four-argument explicit-identity/extraction overloads all bypass the factory. Thus registering a factory cannot rewrite callers' explicit routing/identity. With a factory, this entry does not invoke any configured annotation/RouteKeyBinding extractor, even if it would fail. No merged selector or fallback exists.
 
 Before invocation, check closed state, nonnull message and exact Handler existence. Pass the effective Domain selected by @HandlerMethod/@Handler, not caller input or protocol descriptors. Invoke once before the target Context scope is bound. The factory may obtain identity from a Connection AttributeKey or thread-safe external Map, then select Key/businessIdType/businessId/Metadata by Domain. It may return a compatible application Context subtype. It must preserve Domain and the exact message/connection references; null connection remains valid for non-network factories. It may reject missing authentication by throwing. Metadata can be explicitly provided, but no outer context is inherited automatically; Contexts.current() may still represent an outer task. Capture immutable values and avoid Route-confined state. Factory and argument resolvers share the submitting thread, with factory creation preceding validation and argument resolution. No extra executor or thread is added.
 
@@ -409,9 +452,9 @@ builder.handlerContextFactory((domain, connection, message) -> {
     // identities is an application-managed, thread-safe connection-to-authenticated-identity map.
     Identity identity = Objects.requireNonNull(identities.get(connection), "Not authenticated");
     return switch (domain) {
-        case ROLE_ID -> new DefaultHandlerContext(domain, identity.roleRouteKey(), ROLE_TYPE,
+        case ROLE_ID -> new DefaultClientHandlerContext(domain, identity.roleRouteKey(), ROLE_TYPE,
                 identity.roleId(), Metadatas.empty(), message, connection);
-        case GUILD_ID -> new DefaultHandlerContext(domain, identity.guildRouteKey(), GUILD_TYPE,
+        case GUILD_ID -> new DefaultClientHandlerContext(domain, identity.guildRouteKey(), GUILD_TYPE,
                 identity.guildId(), Metadatas.empty(), message, connection);
         default -> throw new IllegalArgumentException("Unsupported domain: " + domain);
     };
@@ -548,6 +591,10 @@ The [demo Runtime configuration](../../game-demo/src/main/java/cn/managame/demo/
 <a id="10-gametimetimer-与-cron"></a>
 
 ## 10. GameTime, Timer, and Cron
+
+<a id="demo-task-integration"></a>
+
+The plain-Spring [demo task integration](../../game-demo/README.md#demo-runtime-services) discovers classes with @Cron methods through CronMethodFilter and collects annotated singleton Bean instances through CronBeans, registers them with cronHandlers and explicitly selects UTC. Known @Bean product types and inherited public methods are included without a fixed task-type list. Scanning avoids unrelated eager initialization, deduplicates exact object references, and rejects prototype or identifiable Spring AOP proxy targets; unknown FactoryBean product types must be made identifiable. Discovery is application bootstrap behavior, frozen at Runtime build, and introduces no Spring dependency into Runtime. onCron uses `*/10 * * * * ?` on Domain 3/Key 1. A Spring TimerRef Bean schedules tasks::onTimer with a default 3000 ms delay and cancels on destruction. Marker-only HttpHandler scanning registers object-returning endpoints through httpHandlers; the main listener uses HttpServer.asyncHandler(runtime.http()::dispatch) with default port 8080. These are application defaults, not new Runtime defaults or public APIs. No Spring scheduler or additional business executor is introduced. [DemoServicesTest](../../game-demo/src/test/java/cn/managame/demo/DemoServicesTest.java) verifies real HTTP/1.1, timer and cron occurrence, route/thread context, cancellation and closure.
 
 ### 10.1 GameTime
 

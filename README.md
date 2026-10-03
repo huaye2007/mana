@@ -14,7 +14,7 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | game-runtime | Route execution, Context, Handler, HTTP annotations/dispatch, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
 | [game-example](game-example/README.md) | Runnable Network, Runtime HTTP, and RPC examples and their execution tests |
-| [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories and a GamePacket TCP echo listener |
+| [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories, GamePacket TCP dispatch, Runtime HTTP, timer and cron |
 
 Dependency direction:
 
@@ -58,7 +58,7 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-The root build includes game-core, game-network, game-rpc, game-runtime, game-data, game-example, and game-demo. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories; build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-example, under `cn.managame.example.<component>`; framework artifacts contain no example classes. Run mvn -pl game-example -am test to validate the examples. RPC→Runtime integration and DataMemoryDemo remain unimplemented.
+The root build includes game-core, game-network, game-rpc, game-runtime, game-data, game-example, and game-demo. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-example, under `cn.managame.example.<component>`; framework artifacts contain no example classes. Run mvn -pl game-example -am test to validate the examples. RPC→Runtime integration and DataMemoryDemo remain unimplemented.
 
 Run [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 

@@ -9,7 +9,7 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.core.FrameworkErrorCodes;
 import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.context.Contexts;
-import cn.managame.runtime.context.DefaultHandlerContext;
+import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.handler.HandlerMethod;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
@@ -26,7 +26,7 @@ class DemoHandlerTest {
     @Profile("manual-handler-probe-only")
     static class Probe extends UserHandler {
         final LinkedBlockingQueue<Received> received = new LinkedBlockingQueue<>();
-        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public void login(DefaultHandlerContext handlerContext, LoginReq request) {
+        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public void login(ClientHandlerContext handlerContext, LoginReq request) {
             var context = Contexts.current();
             received.add(new Received(handlerContext.connection(), request, context.routeDomain(), context.routeKey(), Thread.currentThread().isVirtual()));
         }

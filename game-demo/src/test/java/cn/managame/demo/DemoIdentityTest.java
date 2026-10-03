@@ -5,7 +5,7 @@ import cn.managame.demo.common.runtime.GameDomain;
 import cn.managame.demo.common.runtime.GameRuntimeConfig;
 import cn.managame.demo.network.message.PingMessage;
 import cn.managame.runtime.GameRuntime;
-import cn.managame.runtime.context.DefaultHandlerContext;
+import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.network.connection.Connection;
 import cn.managame.runtime.context.HandlerContext;
 import cn.managame.runtime.handler.HandlerMethod;
@@ -24,7 +24,7 @@ class DemoIdentityTest {
     @Profile("manual-identity-probe-only")
     static class Probe extends RoleHandler {
         final LinkedBlockingQueue<Received> received = new LinkedBlockingQueue<>();
-        @Override @HandlerMethod public void ping(DefaultHandlerContext context, PingMessage request) {
+        @Override @HandlerMethod public void ping(ClientHandlerContext context, PingMessage request) {
             received.add(new Received(context.businessId(), request, context, Thread.currentThread().isVirtual()));
         }
     }

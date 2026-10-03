@@ -6,13 +6,11 @@ import cn.managame.demo.bus.user.UserService;
 import cn.managame.demo.common.mysql.MysqlConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.core.env.MapPropertySource;
 import javax.sql.DataSource;
 import java.lang.reflect.Proxy;
 import java.sql.*;
 import java.util.Map;
-import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DataSpringWiringTest {
@@ -54,32 +52,13 @@ class DataSpringWiringTest {
         var config = new MysqlConfig();
         assertTrue(assertThrows(IllegalArgumentException.class, config::dataSource).getMessage().contains("game.db.url"));
     }
-    @Test void applicationWaitsForContextClosureAndStopsWhenInterrupted() throws Exception {
-        verifyLifecycle(false);
-        verifyLifecycle(true);
-    }
-    private static void verifyLifecycle(boolean interrupt) throws Exception {
-        var context = new AnnotationConfigApplicationContext();
-        var ready = new CountDownLatch(1);
-        context.addApplicationListener((ContextRefreshedEvent event) -> ready.countDown());
-        var outcome = new CompletableFuture<Throwable>();
-        var application = Thread.ofPlatform().unstarted(() -> {
-            try { GameDemo.run(context); outcome.complete(null); }
-            catch (Throwable failure) { outcome.complete(failure); }
-        });
-        try {
-            application.start();
-            assertTrue(ready.await(5, TimeUnit.SECONDS));
+    @Test void applicationInitializationReturnsBeforeListenerStartupAndContextOwnsClosure() throws Exception {
+        try (var context = new AnnotationConfigApplicationContext()) {
+            // Bootstrap returns so main can start TCP and HTTP; no keepalive thread is created.
+            GameDemo.run(context);
             assertTrue(context.isActive());
-            assertFalse(outcome.isDone());
-            if (interrupt) application.interrupt(); else context.close();
-            Throwable failure = outcome.get(5, TimeUnit.SECONDS);
-            if (interrupt) assertInstanceOf(InterruptedException.class, failure); else assertNull(failure);
-            assertFalse(context.isActive());
-        } finally {
-            application.interrupt();
-            application.join(5000);
             context.close();
+            assertFalse(context.isActive());
         }
     }
     static Connection connection() {

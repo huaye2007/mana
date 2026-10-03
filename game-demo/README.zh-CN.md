@@ -16,7 +16,7 @@ public class UserRepository extends SingleRepository<Long, User> {
 
 在 `src/main/resources/application.properties` 配置 `game.db.url`、`game.db.username`、`game.db.password` 后，使用 JDK 25 在 IDE 启动 `cn.managame.demo.GameDemo`。数据库需预先存在，Data 会初始化缺失的状态表/列/索引。JDBC URL 缺失或为空时，在创建连接池前报错并明确提示配置 `game.db.url`。也可通过 JVM 系统属性和环境变量向 Spring Environment 提供这些配置键。
 
-`@PropertySource` 加载文件，Spring 默认的内嵌值解析器负责注入 `@Value`，无需显式声明 `PropertySourcesPlaceholderConfigurer` Bean。初始化成功后，入口输出 `game-demo started. Press Ctrl+C to stop.`，并返回 main 在 9000 端口启动 packet 分发 TCP 服务。Netty 持有的线程使进程持续运行。当前入口不阻塞主线程；JVM 退出时触发 Spring 关闭钩子。Context 关闭先关闭监听器及其持有的网络资源，再关闭 Data 和应用持有的连接池。不新增保活线程；目前尚未创建 HTTP 监听器。
+`@PropertySource` 加载文件，Spring 默认的内嵌值解析器负责注入 `@Value`，无需显式声明 `PropertySourcesPlaceholderConfigurer` Bean。初始化成功后，入口输出 `game-demo started. Press Ctrl+C to stop.`，并返回 main 在 9000 端口启动 packet 分发 TCP 服务。Netty 持有的线程使进程持续运行。当前入口不阻塞主线程；JVM 退出时触发 Spring 关闭钩子。Context 关闭先关闭监听器及其持有的网络资源，再关闭 Data 和应用持有的连接池。HTTP 同时监听 127.0.0.1:8080，两个监听器先于 Runtime/Data 销毁而关闭，不新增保活线程。
 
 [GameDataConfig](src/main/java/cn/managame/demo/common/data/GameDataConfig.java) 收集扫描到的、继承 SingleRepository、GroupRepository 或 LogRepository 的 `@Repository` Bean，不提前实例化。它将类型注册到 GameDataBuilder，并把 Bean 的实例供应器改为 `data.repository(type)`，保留 Bean 名称、限定符及 Spring 字段/setter 注入。Data 初始化实例后才进入 Spring 注入回调或供业务使用；在扫描范围内新增 Repository 无需逐个注册类型或声明 `@Bean` 方法。Repository 必须为单例作用域，其他作用域在启动时拒绝；仍遵守 Data 直接继承具体参数化基类及无参构造的要求。实例由 GameData 构造，因此不支持构造器依赖注入。此适配位于 demo 应用层，game-data 不依赖 Spring。
 
@@ -44,9 +44,9 @@ DemoEvent received: routeDomain=1, routeKey=1001, message=hello game-runtime, vi
 
 ## Handler 分发
 
-[GameDomain](src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 是应用自定义的执行域枚举，ROLE 使用显式 ID 1，LOGIN 使用显式 ID 2；GameRuntimeConfig 将枚举值转为 RouteDomain 注册，再把它们的 ID 绑定到执行器。Handler 注解使用编译期常量 `@Handler(domain = GameDomain.ROLE_ID)`，因为 Java 注解元素不能接收任意应用枚举类型，也不能使用 ROLE.id() 等方法调用。ID 不使用 ordinal()，枚举调整顺序不会改变路由。Domain 组织执行，本身不决定角色身份、不要求鉴权，也不自动选择 routeKey；routeKey 与鉴权后的 roleId 均由业务接入明确传入。
+[GameDomain](src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 是应用自定义的执行域枚举，ROLE 使用显式 ID 1，LOGIN 使用显式 ID 2，SYSTEM 使用显式 ID 3；GameRuntimeConfig 将枚举值转为 RouteDomain 注册，再把它们的 ID 绑定到执行器。Handler 注解使用编译期常量 `@Handler(domain = GameDomain.ROLE_ID)`，因为 Java 注解元素不能接收任意应用枚举类型，也不能使用 ROLE.id() 等方法调用。ID 不使用 ordinal()，枚举调整顺序不会改变路由。Domain 组织执行，本身不决定角色身份、不要求鉴权，也不自动选择 routeKey；routeKey 与鉴权后的 roleId 均由业务接入明确传入。
 
-GameRuntimeConfig 也通过扫描发现仅标记 `@Handler` 的 Bean，再通过 `builder.handlers(...)` 注册。[UserHandler](src/main/java/cn/managame/demo/bus/user/UserHandler.java) 使用 `@Handler(domain=GameDomain.ROLE_ID)`，并在 `login(DefaultHandlerContext context, LoginReq request)` 上用 `@HandlerMethod(domain=GameDomain.LOGIN_ID)` 覆盖登录域，通过 `context.connection()` 获取连接，不使用独立 Connection 方法参数。GameProtocols 在协议号 1003 注册 LoginReq/LoginRes、关联响应，并分配 Fory 类型 ID 3/4。
+GameRuntimeConfig 也通过扫描发现仅标记 `@Handler` 的 Bean，再通过 `builder.handlers(...)` 注册。[UserHandler](src/main/java/cn/managame/demo/bus/user/UserHandler.java) 使用 `@Handler(domain=GameDomain.ROLE_ID)`，并在 `login(ClientHandlerContext context, LoginReq request)` 上用 `@HandlerMethod(domain=GameDomain.LOGIN_ID)` 覆盖登录域，通过 `context.connection()` 获取连接，不使用独立 Connection 方法参数。GameProtocols 在协议号 1003 注册 LoginReq/LoginRes、关联响应，并分配 Fory 类型 ID 3/4。
 
 调用方通常已知 Key，只需要：
 
@@ -56,7 +56,7 @@ runtime.dispatch(connection, routeKey, loginReq);
 
 Runtime 选择 Handler 的 Domain 并创建上下文；协议 userId 不覆盖外部传入的 Key，无需配置提取规则。只有少数按协议路由的场景才使用 `@HandlerMethod(routeKey="userId")` 或 `routeKeyMethod="getUserId"`，在未配置 HandlerContextFactory 的 builder 上再调用 `runtime.dispatch(connection, loginReq)`。demo 已配置工厂，由它按 Domain 明确选择路由，见下文。这些名字对应 LoginReq 的字段或 public 无参 getter。此匿名登录使用身份 0/0、空 Metadata；Metadata/自定义字段仍可通过显式 Context 分发。
 
-业务 Handler 直接从 Context 获取身份。[RoleHandler](src/main/java/cn/managame/demo/bus/role/RoleHandler.java) 声明 `ping(DefaultHandlerContext context, PingMessage request)`，通过 `long roleId = context.businessId()` 获取角色 ID。无需定义 RoleId/GuildId/RoomId 包装类型，也无需注册 handlerArguments。GameDomain.ROLE_BUSINESS_ID_TYPE=1 表示应用的角色身份类别，与执行 Domain 独立；可信接入层也可以明确传入身份：
+业务 Handler 直接从 Context 获取身份。[RoleHandler](src/main/java/cn/managame/demo/bus/role/RoleHandler.java) 声明 `ping(ClientHandlerContext context, PingMessage request)`，通过 `long roleId = context.businessId()` 获取角色 ID。无需定义 RoleId/GuildId/RoomId 包装类型，也无需注册 handlerArguments。GameDomain.ROLE_BUSINESS_ID_TYPE=1 表示应用的角色身份类别，与执行 Domain 独立；可信接入层也可以明确传入身份：
 
 ```java
 runtime.dispatch(connection, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, new PingMessage(1234));
@@ -65,6 +65,40 @@ runtime.dispatch(connection, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, new 
 Domain 1 来自 @Handler，Key 为 99，context.businessId() 为 10001；Key 和协议 timestamp 均不选择身份。接入层鉴权并提供可信身份。网络入口的 ROLE 策略在入队前拒绝缺少会话的请求，再将角色类别和 ID 捕获到 Context。显式 Key/身份/上下文重载绕过该策略，调用方必须传入正确的可信身份；Context 参数本身不会自动校验业务类别或完成鉴权。只有 Handler 在自己的 Route 执行。[DemoIdentityTest](src/test/java/cn/managame/demo/DemoIdentityTest.java) 无需数据库/socket，验证无需参数绑定的 Spring 分发、身份/Key/协议值独立、虚拟线程执行及缺少会话时拒绝。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
 
 [DemoHandlerTest](src/test/java/cn/managame/demo/DemoHandlerTest.java) 只装配 Runtime 配置，用手动测试探针替换空的登录实现，验证 LoginReq.userId=10001 时使用调用方 Key 99、Domain 2、原连接/请求及虚拟线程；还验证未绑定 LOGIN 按 userId 仅选择路由、不访问连接属性，以及 Key 0 在接纳前拒绝，无需数据库或 socket。TCP 入口现已将解码消息分发到 Runtime Handler；UserHandler 登录业务仍为空，不自动生成 LoginRes。完整 demo 启动仍需数据库配置。
+
+<a id="demo-runtime-services"></a>
+
+## HTTP、定时与 cron
+
+[SystemHttpHandler](src/main/java/cn/managame/demo/bus/system/SystemHttpHandler.java) 只需 @HttpHandler 即可被扫描，无需 @Component。GameRuntimeConfig 通过 httpHandlers 注册，并由 main 的 HTTP 监听器接到 runtime.http()::dispatch。SYSTEM 使用显式 Domain ID 3，与 ROLE、LOGIN 共用同一个 RouteExecutor。应用尚未为 SYSTEM 明确配置 packet 的身份/路由策略，因此 packet 上下文策略拒绝该 Domain 的消息。HTTP 默认监听 127.0.0.1:8080，可通过 Spring Environment 的 game.http.port 覆盖，例如 JVM 参数 -Dgame.http.port=8081；TCP 继续使用 9000 端口。两个监听器在 ContextClosedEvent 中关闭，先于 Runtime/Data 销毁；监听器启动失败时关闭 Context 及已经启动的监听器。
+
+| 请求 | RouteKey 输入 | 返回 |
+| --- | --- | --- |
+| POST /demo/echo | JSON body 的 routeKey 字段 | EchoResult，包含选定 Key 与原始 UTF-8 body |
+| GET /demo/tasks | query 的 routeKey 字段 | JSON timerRuns、cronRuns 计数 |
+
+POST 使用注解默认值；GET 显式使用 HttpRequestMethod.GET。业务方法返回对象，JSON 编码和传输响应由 Runtime 提供。Key 必须是非零的有符号 64 位整数；缺失/非法 Key 返回 400，未知路径返回 404，已知路径的方法不匹配返回 405。Key 只选择执行路由，不表示玩家已鉴权；HttpContext 不包含业务身份/Metadata。这些示范接口未实现 token 校验、请求 DTO 绑定或生产管理策略。
+
+```shell
+curl -H "Content-Type: application/json" -d '{"routeKey":1,"message":"hello"}' http://127.0.0.1:8080/demo/echo
+curl "http://127.0.0.1:8080/demo/tasks?routeKey=1"
+```
+
+[DemoTasks](src/main/java/cn/managame/demo/bus/system/DemoTasks.java) 演示两种任务机制。demoStartupTimer Bean 通过 runtime.timer().schedule(SYSTEM_ID, 1, delay, tasks::onTimer) 安排一次执行，默认从 Runtime 配置初始化时起延迟 3000 毫秒；game.demo.timer.delayMillis 可以覆盖这个非负延迟，负数会拒绝启动。返回的 TimerRef 由 Spring 持有并在销毁时取消；Runtime 关闭也会停止待触发延迟，已经触发/接纳的任务可能继续执行。这是一次性定时器，不是固定延迟的重复循环。
+
+public onCron 方法使用 @Cron(value="*/10 * * * * ?", domain=GameDomain.SYSTEM_ID, routeKey=1)。GameRuntimeConfig 使用仅在启动时运行的 CronMethodFilter，在 cn.managame.demo 中发现声明/继承 @Cron 方法的独立具体类，包括接口 default 方法；无需 @Component、@Import 任务列表或固定任务类型。CronBeans 从已知类型的 Spring Bean 中收集带注解的任务对象，包括 @Bean 产物和手动注册的单例，再传给 cronHandlers。@Cron 仍是框架方法注解，这种按方法发现类的能力由 demo 的 Spring 适配提供。demo 明确使用 UTC，在墙钟秒数 0、10、20、30、40、50 触发。Runtime 构建时启动调度，每次方法结束后计算未来的一次触发，不补发错过的时刻。Timer 和 cron 回调携带 TimerContext，在 Route (3,1) 执行；使用 Key 1 的 HTTP 请求加入同一条串行 Route。Runtime 原有的 timer 调度器仅负责到期信号，demo 不增加任务执行器或调度线程。计数使用 AtomicLong，因为 HTTP 可以从其他 Key 查询；两个计数仅用于观察，不是事务快照。
+
+```java
+TimerRef timer = runtime.timer().schedule(GameDomain.SYSTEM_ID, DemoTasks.ROUTE_KEY,
+        Duration.ofSeconds(3), tasks::onTimer);
+timer.cancel(); // 只有取消在触发之前获胜才返回 true
+runtime.cron().cancel(DemoTasks.class, "onCron");
+runtime.cron().reschedule(DemoTasks.class, "onCron");
+```
+
+任务发现通过 Bean 类型检查，不提前创建无关 Bean 或正在构建的 Runtime。类型未知且尚未初始化的 FactoryBean 产物不会为了推断任务而被实例化，需提供可识别的产物/返回类型。带注解的任务对象在 Runtime 构建时初始化，必须是单例；同一对象的重复引用只注册一次。非法 private/static/签名/Domain/表达式在构建时失败，不被静默忽略。继承的 public 方法保留 Runtime 按声明类/方法名取消的标识；无注解的覆盖方法不会继承方法注解。Spring AOP 代理不作为受支持的 Cron 目标，可识别的代理会拒绝启动。任务构造器不能依赖同一个仍在构建的 Runtime；延迟依赖需在 Runtime 初始化完成后解析。构建后新增任务 Bean 不会改变已冻结的注册。[CronBeansTest](src/test/java/cn/managame/demo/common/runtime/CronBeansTest.java) 验证仅方法注解扫描、工厂创建及继承任务、真实 Route 执行、按对象身份去重、不提前初始化无关 Bean，以及启动拒绝。
+
+[DemoServicesTest](src/test/java/cn/managame/demo/DemoServicesTest.java) 无需 Data/MySQL，装配实际 Spring 配置，通过真实本地 HTTP/1.1 发送 UTF-8 POST、GET 请求，验证路由绑定/虚拟线程执行和 400/405 拒绝，等待启动定时任务及一次实际 cron 触发，并检查取消及关闭后的拒绝。完整应用仍需已有数据库配置。见 [Runtime 定时/cron 语义](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#demo-runtime-services)、[Java 任务 API](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#demo-task-integration) 与 [HTTP 契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 ## Fory 业务 body
 
@@ -98,7 +132,7 @@ runtime.dispatch(connection, decodedMessage);
 
 ```java
 @HandlerMethod(domain = GameDomain.LOGIN_ID)
-public void login(DefaultHandlerContext context, LoginReq loginReq) {
+public void login(ClientHandlerContext context, LoginReq loginReq) {
     // verify 必须拒绝无效 token，并返回服务端核实的身份。
     var identity = tokenVerifier.verify(loginReq.getToken());
     long selectedRouteKey = selectRoleRouteKey(identity);
@@ -145,7 +179,7 @@ packet.setBody(fory.serialize(login));
 if (connection.write(packet) != WriteStatus.ACCEPTED) connection.close();
 ```
 
-[GamePacketCodecTest](src/test/java/cn/managame/demo/network/GamePacketCodecTest.java) 验证确切线字节、半包/粘包、空及二进制 body、大小限制、EOF 和输入引用释放。[GamePacketNetworkTest](src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java) 使用实际 Spring GamePacketHandler、借用的 EventLoopGroup 和显式清理，在真实本地 TCP 上验证。仅标记 Handler 的测试探针在各自 HandlerMethod 中接收解码后的 LoginReq（1003）及 PingMessage（1002），验证虚拟线程、服务端连接与会话 Route/身份。login 测试探针使用仅用于测试的 token 校验：无效 token 保持无会话，校验成功在 HandlerMethod 内绑定后再发送 ROLE ping；该夹具不实现生产鉴权。协议号 1001 下的 PingMessage 会关闭连接，不再调用业务，也不自动响应。[GamePacketDispatchTest](src/test/java/cn/managame/demo/network/GamePacketDispatchTest.java) 验证建连不创建或覆盖会话、无会话 LOGIN 路由、角色身份要求在入队前拒绝、排队期间会话/解码对象值保留、Handler/会话缺失拒绝及不自动写回。Windows 上只有 TCP 测试沿用 game-network 对 JDK Selector AF_UNIX 唤醒管道的处理，生产代码不改 JVM 属性。采用业务枚举配置的十六项 Handler/身份/Fory/packet/事件相关测试通过。TCP 验证不代表 TLS/WebSocket 或生产性能认证。
+[GamePacketCodecTest](src/test/java/cn/managame/demo/network/GamePacketCodecTest.java) 验证确切线字节、半包/粘包、空及二进制 body、大小限制、EOF 和输入引用释放。[GamePacketNetworkTest](src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java) 使用实际 Spring GamePacketHandler、借用的 EventLoopGroup 和显式清理，在真实本地 TCP 上验证。仅标记 Handler 的测试探针在各自 HandlerMethod 中接收解码后的 LoginReq（1003）及 PingMessage（1002），验证虚拟线程、服务端连接与会话 Route/身份。login 测试探针使用仅用于测试的 token 校验：无效 token 保持无会话，校验成功在 HandlerMethod 内绑定后再发送 ROLE ping；该夹具不实现生产鉴权。协议号 1001 下的 PingMessage 会关闭连接，不再调用业务，也不自动响应。[GamePacketDispatchTest](src/test/java/cn/managame/demo/network/GamePacketDispatchTest.java) 验证建连不创建或覆盖会话、无会话 LOGIN 路由、角色身份要求在入队前拒绝、排队期间会话/解码对象值保留、Handler/会话缺失拒绝及不自动写回。Windows 上 TCP、HTTP 测试沿用 game-network 对 JDK Selector AF_UNIX 唤醒管道的处理，生产代码不改 JVM 属性。采用业务枚举配置的十六项 Handler/身份/Fory/packet/事件相关测试通过。TCP 验证不代表 TLS/WebSocket 或生产性能认证。
 
 在仓库根目录构建：
 
@@ -153,4 +187,4 @@ if (connection.write(packet) != WriteStatus.ACCEPTED) connection.close();
 mvn -pl game-demo -am clean verify
 ```
 
-[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 的注入及 Data 关闭。同时验证 URL 缺失时拒绝启动，以及入口持续运行直至 Context 关闭或主线程中断。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 验证为十九项通过、一项生命周期测试失败：测试要求主线程等待及处理中断，而入口在初始化后返回。生命周期测试的同步调整尚未完成。桩测试不验证原生 MySQL；此前使用阻塞入口验证过配置的本地 MySQL 启动和关闭；本次未对当前包含 Spring/Data 的完整 TCP 入口执行真实 MySQL 启动验证。packet TCP 测试独立于 MySQL 运行。这些检查不代表所有数据库操作和故障场景均已验证。根 `clean verify` 仍被引用 `maxPendingCalls` 等已移除 API 的既有 RPC 测试挡住；demo 生产源码可编译，但当前 `clean verify` 因生命周期测试而失败。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件示例仍位于 [game-example](../game-example/README.zh-CN.md)。
+[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 注入、Data 关闭及 URL 缺失时拒绝启动。生命周期测试按当前非阻塞入口验证：初始化返回后 main 可以继续启动 TCP/HTTP，Context 关闭释放 Spring 资源。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 的 `clean verify` 中 27 项测试全部通过，包括真实 TCP 和 HTTP/Timer/Cron 集成测试。桩测试不验证原生 MySQL；此前使用旧入口验证过本地 MySQL 启动和关闭，本次未对当前完整的 Spring/Data/TCP/HTTP 入口执行真实 MySQL 验证。这些检查不代表所有数据库操作、故障场景或生产定时精度/容量均已验证。根 `clean verify` 仍被引用 maxPendingCalls 等已移除 API 的既有 RPC 测试挡住；本地 Maven 仓库已有构建好的依赖时，单独执行 `mvn -pl game-demo clean verify` 成功。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件示例仍位于 [game-example](../game-example/README.zh-CN.md)。

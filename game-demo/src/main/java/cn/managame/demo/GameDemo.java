@@ -4,6 +4,8 @@ import cn.managame.demo.bus.user.User;
 import cn.managame.demo.bus.user.UserRepository;
 import cn.managame.demo.bus.user.UserService;
 import cn.managame.network.netty.NetworkServer;
+import cn.managame.network.http.HttpServer;
+import cn.managame.runtime.GameRuntime;
 import cn.managame.demo.network.GamePacketDecoder;
 import cn.managame.demo.network.GamePacketEncoder;
 import cn.managame.demo.network.GamePacketHandler;
@@ -21,15 +23,27 @@ public class GameDemo {
         context.scan("cn.managame.demo");
         run(context);
 
-        GamePacketHandler handler = context.getBean(GamePacketHandler.class);
-        NetworkServer server = NetworkServer.builder()
-                .bindAddress(new InetSocketAddress(9000))
-                .pipeline(pipeline -> pipeline.addLast(new GamePacketDecoder(), new GamePacketEncoder()))
-                .handler(handler)
-                .build();
-        context.addApplicationListener((ContextClosedEvent event) -> server.close());
-        server.start();
-        Events.publish(new DemoEvent(1001L, "hello game-runtime"));
+        try {
+            GamePacketHandler handler = context.getBean(GamePacketHandler.class);
+            NetworkServer server = NetworkServer.builder()
+                    .bindAddress(new InetSocketAddress(9000))
+                    .pipeline(pipeline -> pipeline.addLast(new GamePacketDecoder(), new GamePacketEncoder()))
+                    .handler(handler)
+                    .build();
+            int httpPort = context.getEnvironment().getProperty("game.http.port", Integer.class, 8080);
+            HttpServer http = HttpServer.builder().bindAddress(new InetSocketAddress("127.0.0.1", httpPort))
+                    .asyncHandler(context.getBean(GameRuntime.class).http()::dispatch).build();
+            context.addApplicationListener((ContextClosedEvent event) -> {
+                try { http.close(); } finally { server.close(); }
+            });
+            server.start();
+            http.start();
+            System.out.println("Demo HTTP listening on " + http.localAddress());
+            Events.publish(new DemoEvent(1001L, "hello game-runtime"));
+        } catch (RuntimeException | Error failure) {
+            try { context.close(); } catch (RuntimeException | Error cleanup) { failure.addSuppressed(cleanup); }
+            throw failure;
+        }
 //        UserService userService = context.getBean(UserService.class);
 //        User user = userService.getAndCreateUser(System.nanoTime());
 //        UserRepository userRepository = context.getBean(UserRepository.class);

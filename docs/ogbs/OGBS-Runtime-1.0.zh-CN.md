@@ -134,7 +134,9 @@ dispatch 被接纳不代表业务已成功；Handler 成功也不代表响应已
 | --- | --- |
 | Context | Domain、Key |
 | InvocationContext | Context + businessIdType、businessId、Metadata |
-| HandlerContext | InvocationContext + message + 可选借用连接 |
+| HandlerContext | InvocationContext + message |
+| ClientHandlerContext | HandlerContext + 可选借用连接 |
+| RpcHandlerContext | HandlerContext + 逻辑来源节点/Slot、command、requestId |
 | HttpContext | Context + 借用 HTTP 请求 + 响应完成能力 |
 | EventContext | InvocationContext + event |
 | TimerContext | Context |
@@ -150,7 +152,11 @@ businessIdType 是 8 位无符号身份类别，businessId 是 64 位业务身�
 
 **RT-CTX-04**：Metadata 按共享不可变值约定传递。继承 Metadata 不代表接收方可以信任身份；可信边界仍由接入层负责。
 
-**RT-CTX-05**：Handler 上下文可携带显式传入的借用连接，业务通过上下文获取。借用不使连接保持活跃、不转移所有权、不鉴权对端，也不授权 Runtime 关闭连接。非网络业务允许没有连接。接纳后断连不取消 Handler。事件、定时器及跨 Route 目标上下文不隐式继承此连接。
+**RT-CTX-05**：客户端专用 Handler 上下文携带显式传入的借用连接。借用不使连接保持活跃、不转移所有权、不鉴权对端，也不授权 Runtime 关闭连接。显式提交的任务允许没有连接。接纳后断连不取消 Handler。事件、定时器及跨 Route 目标上下文不隐式继承此连接。
+
+**RT-CTX-06**：公共 Handler 上下文包含解码后的消息、路由和业务身份，客户端与 RPC 接入暴露不同的上下文能力。RPC 上下文携带逻辑来源节点、来源 Slot、command 和请求关联信息，而非物理连接。来源 Slot 是回复提示，不是 Route Key 或业务身份；请求关联值在 Notify 时为 0，在 Call 时非 0。接入层独立于传输亲和选择非零业务 Route Key 和 Handler 配置的 Domain。所需上下文能力不匹配时在接纳前拒绝。已接纳任务保留原上下文实例，包括关闭后执行；事件和跨 Route 目标只继承普通调用身份/Metadata，回源回调恢复原上下文。
+
+例如来自节点 10/Slot 2、请求 ID 为 81 的 RPC Call，可在玩家 Route (1,99)、业务 ID 10001 下执行。后续回复通过 RPC 层使用逻辑来源和关联信息，此时 Slot 可能已对应另一条连接。上下文不鉴权这些值，也不保证响应送达。自动 RPC 解码/Runtime 接入及响应组装仍未实现；这些上下文支持显式接入，不增加统一发送 API。见 [Java 上下文绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#transport-handler-contexts) 和 [传输上下文测试](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java)。
 
 TimerContext 不携带业务身份和 Metadata。业务若需要定时保存某些信息，应显式捕获适当的不可变数据。
 
@@ -263,7 +269,11 @@ Event 自身提供目标 Domain 和 Key。事件是进程内消息，没有持�
 前两种目标失败与“回源失败”是两层不同问题。回源失败可能发生在目标已经完成之后，不能据此推断目标未执行。若业务要求结果最终必达，需要由更高层设计持久化或补偿流程，V1 本地调用不承诺这一点。
 
 
+<a id="demo-runtime-services"></a>
+
 ## 9. GameTime、Timer 与 Cron
+
+[demo 服务示例](../../game-demo/README.zh-CN.md#demo-runtime-services) 将 HTTP 请求、一次性定时任务和重复 cron 接到同一套执行基础设施。Domain/Key 相同就选择同一条串行 Route，与入口类型无关；定时触发表示接纳，不保证立即执行。应用启动持有传输监听器和任务注册，关闭时先停止入口与待触发任务，再释放 Runtime 资源。[DemoServicesTest](../../game-demo/src/test/java/cn/managame/demo/DemoServicesTest.java) 验证真实请求、定时执行与取消/关闭，不代表生产定时精度或已实现鉴权。
 
 ### 9.1 业务时间
 

@@ -21,16 +21,16 @@ import static org.junit.jupiter.api.Assertions.*;
 class HandlerDispatchTest {
     record FieldRequest(long userId) {}
     record MethodRequest(Integer id) { public Integer key() { return id; } }
-    record Received(Connection connection, Object message, HandlerContext context) {}
+    record Received(Connection connection, Object message, ClientHandlerContext context) {}
 
     @Handler(domain = 1, routeKey = "userId")
     static class Handlers {
         final Queue<Received> received = new ConcurrentLinkedQueue<>();
-        @HandlerMethod public void field(DefaultHandlerContext context, FieldRequest message) {
+        @HandlerMethod public void field(ClientHandlerContext context, FieldRequest message) {
             received.add(new Received(context.connection(), message, context));
         }
         @HandlerMethod(domain = 2, routeKeyMethod = "key")
-        public void method(MethodRequest message, HandlerContext context) {
+        public void method(MethodRequest message, ClientHandlerContext context) {
             received.add(new Received(context.connection(), message, context));
         }
     }
@@ -110,7 +110,7 @@ class HandlerDispatchTest {
         var errors = new ArrayList<RuntimeError>();
         var reads = new AtomicInteger();
         Connection original = connection();
-        var context = new DefaultHandlerContext(1, 99, new FieldRequest(42)) {
+        var context = new DefaultClientHandlerContext(1, 99, new FieldRequest(42), null) {
             @Override public Connection connection() { reads.incrementAndGet(); return original; }
         };
         var runtime = builder(handler, (d, k, t) -> { tasks.add(t); return RouteExecuteStatus.ACCEPTED; }, errors).build();
@@ -182,7 +182,7 @@ class HandlerDispatchTest {
         var active = new AtomicInteger();
         var errors = new CopyOnWriteArrayList<RuntimeError>();
         @Handler(domain = 1, routeKeyMethod = "userId") class Serial {
-            @HandlerMethod public void field(DefaultHandlerContext context, FieldRequest request) {
+            @HandlerMethod public void field(ClientHandlerContext context, FieldRequest request) {
                 assertEquals(1, active.incrementAndGet());
                 try { completed.add(Contexts.current().routeKey()); throw new IllegalArgumentException("handler failure"); }
                 finally { active.decrementAndGet(); }

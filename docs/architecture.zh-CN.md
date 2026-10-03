@@ -8,9 +8,11 @@
 
 ## 应用骨架
 
-[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context，并在 9000 端口通过应用自有的原始字节分帧 codec 启动 GamePacket 分发 TCP 监听器；Context 关闭时先关闭监听器，再关闭 Data Bean，不包含主线程阻塞等待；MysqlConfig 持有 Hikari DataSource。GameDataConfig 收集组件扫描得到的业务 `@Repository` 类型，通过 GameDataBuilder.mysql(source) 构建 Data，并将 Data 初始化的实例作为对应 Spring Bean。Bean 依赖保证 Repository Bean 先于 Data、Data 先于应用连接池关闭，不再构造第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。Spring 依赖管理及 Repository 适配仅位于 game-demo，框架模块保持既有依赖边界。
+[game-demo](../game-demo/README.zh-CN.md) 是普通 Spring 应用，继承仓库 Java 25 基线，不新增框架组件。GameDemo 初始化 Spring Context，并在 9000 端口通过应用自有的原始字节分帧 codec 启动 GamePacket 分发 TCP 监听器；同时在 127.0.0.1:8080 启动 Runtime HTTP 监听器；Context 关闭时先关闭两个监听器，再关闭 Runtime/Data Bean，不包含主线程阻塞等待；MysqlConfig 持有 Hikari DataSource。GameDataConfig 收集组件扫描得到的业务 `@Repository` 类型，通过 GameDataBuilder.mysql(source) 构建 Data，并将 Data 初始化的实例作为对应 Spring Bean。Bean 依赖保证 Repository Bean 先于 Data、Data 先于应用连接池关闭，不再构造第二个未初始化 Repository；既有可运行组件示例仍位于 game-example。Spring 依赖管理及 Repository 适配仅位于 game-demo，框架模块保持既有依赖边界。
 
-GameRuntimeConfig 装配由 Spring 管理的 Runtime，将 Domain 1 绑定到虚拟线程 RouteExecutor，通过注解 include filter 将只标记 @EventHandler 的类发现并注册为 Spring Bean，无需 @Component。TCP 监听器启动后，GameDemo 通过 Events.publish 以 Key 1001 静态发布 DemoEvent；配置在启动时绑定外部线程使用的默认实例，Runtime 执行则选择自身所属实例；监听器打印绑定的 EventContext Route 与线程类型。适配使用既有 Runtime EventBus 契约，不新增独立事件线程，通过 Bean 生命周期关闭 Runtime。源码及验证入口见 [demo 事件示例](../game-demo/README.zh-CN.md#发布-runtime-事件)。
+GameRuntimeConfig 装配由 Spring 管理的 Runtime，将 ROLE/LOGIN/SYSTEM Domain（ID 1/2/3）绑定到同一个虚拟线程 RouteExecutor，通过注解 include filter 将只标记 @EventHandler 的类发现并注册为 Spring Bean，无需 @Component。TCP 监听器启动后，GameDemo 通过 Events.publish 以 Key 1001 静态发布 DemoEvent；配置在启动时绑定外部线程使用的默认实例，Runtime 执行则选择自身所属实例；监听器打印绑定的 EventContext Route 与线程类型。适配使用既有 Runtime EventBus 契约，不新增独立事件线程，通过 Bean 生命周期关闭 Runtime。源码及验证入口见 [demo 事件示例](../game-demo/README.zh-CN.md#发布-runtime-事件)。
+
+[demo HTTP/任务示例](../game-demo/README.zh-CN.md#demo-runtime-services) 注册仅标记 HttpHandler 的 Bean、按方法发现的单例 Cron Bean和 Spring 持有的一次性 TimerRef。SYSTEM Domain 3 接入既有执行器，main 持有 HTTP 监听器，Context 关闭时先停两个传输入口，再销毁 Runtime；不新增 Spring 调度执行器或框架模块。
 
 demo 的 Fory 依赖与 Spring 序列化器配置属于应用。GameProtocols 提供同一份配置用于 Runtime 协议注册和 Fory 类型 ID 注册；GamePacketHandler 通过 `runtime.protocols().get(REQUEST, command)` 查询入站 REQUEST 类型，再解码、校验根对象类型，并由应用的 Domain 策略（ROLE 使用已鉴权 GameSession 快照）将对象分发给对应 Runtime HandlerMethod。GamePacket 保持既有原始字节分帧，不新增框架 codec，不改变 Data JSON 列。配置、兼容边界与验证见 [Fory body 示例](../game-demo/README.zh-CN.md#fory-业务-body)。
 
@@ -67,7 +69,7 @@ start/close 只在管理上下文执行；关闭立即拒绝新工作，并等�
 
 ## Runtime
 
-demo 通过业务 [GameDomain 枚举](../game-demo/src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 管理执行域：ROLE 使用显式 ID 1，LOGIN 使用显式 ID 2，均转换为 RouteDomain 注册；注解引用 Java 编译期整数常量 GameDomain.ROLE_ID，不根据枚举顺序分配 ID。这属于应用组织方式，不增加框架 ROLE 枚举，也不根据 Domain 推断身份/Key。
+demo 通过业务 [GameDomain 枚举](../game-demo/src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 管理执行域：ROLE 使用显式 ID 1，LOGIN 使用显式 ID 2，SYSTEM 使用显式 ID 3，均转换为 RouteDomain 注册；注解引用 Java 编译期整数常量 GameDomain.ROLE_ID，不根据枚举顺序分配 ID。这属于应用组织方式，不增加框架 ROLE 枚举，也不根据 Domain 推断身份/Key。
 
 Route identity 是完整的 domain + key，不是 worker/thread/executor。key=0 无效，其他 64 位值可用。Domain 为用户定义的正整数。
 
@@ -109,7 +111,7 @@ runtime.call 的 action 业务失败应作为正常结果返回。action 抛异�
 ## 可扩展点
 
 - 自定义 RouteExecutor 并显式绑定 Domain。
-- 继承 DefaultHandlerContext 增加 Session/reply 等业务能力。
+- 客户端通过 ClientHandlerContext/DefaultClientHandlerContext 访问 Connection，RPC 通过 RpcHandlerContext/DefaultRpcHandlerContext 获取逻辑来源/关联信息；应用字段继承对应默认实现。公共 HandlerContext 包含消息和调用身份，自动 RPC 到 Runtime 接入仍未实现。
 - ProtocolProvider 可由外部生成器生成。
 - MetadataKey 自带编码规则。
 - Netty pipeline 直接放入原生 Decoder/Encoder、IdleStateHandler、LoggingHandler、FlushConsolidationHandler。

@@ -8,7 +8,7 @@ import cn.managame.demo.network.message.PingMessage;
 import cn.managame.demo.bus.role.RoleHandler;
 import cn.managame.demo.bus.user.LoginReq;
 import cn.managame.demo.bus.user.UserHandler;
-import cn.managame.runtime.context.DefaultHandlerContext;
+import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.handler.HandlerMethod;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
@@ -34,12 +34,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class GamePacketNetworkTest {
-    record Received(Object message, long roleId, DefaultHandlerContext context, boolean virtual) {}
+    record Received(Object message, long roleId, ClientHandlerContext context, boolean virtual) {}
 
     @Profile("packet-probe-only")
     static class LoginProbe extends UserHandler {
         final LinkedBlockingQueue<Received> received = new LinkedBlockingQueue<>();
-        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public void login(DefaultHandlerContext context, LoginReq request) {
+        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public void login(ClientHandlerContext context, LoginReq request) {
             assertNull(context.connection().get(GameSession.KEY));
             // Test-only token verifier. Production authentication remains business-owned.
             if ("demo-token".equals(request.getToken())) {
@@ -52,7 +52,7 @@ class GamePacketNetworkTest {
     @Profile("packet-probe-only")
     static class RoleProbe extends RoleHandler {
         final LinkedBlockingQueue<Received> received = new LinkedBlockingQueue<>();
-        @Override @HandlerMethod public void ping(DefaultHandlerContext context, PingMessage request) {
+        @Override @HandlerMethod public void ping(ClientHandlerContext context, PingMessage request) {
             received.add(new Received(request, context.businessId(), context, Thread.currentThread().isVirtual()));
         }
     }

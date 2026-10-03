@@ -9,7 +9,7 @@ import cn.managame.demo.network.message.DemoMessage;
 import cn.managame.demo.network.message.PingMessage;
 import cn.managame.network.connection.Connection;
 import cn.managame.runtime.GameRuntimeBuilder;
-import cn.managame.runtime.context.DefaultHandlerContext;
+import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.executor.RouteExecuteStatus;
 import cn.managame.runtime.executor.RouteExecutorBinding;
@@ -40,11 +40,11 @@ class GamePacketDispatchTest {
         assertEquals(GameDomain.ROLE_BUSINESS_ID_TYPE, roleContext.businessIdType());
     }
 
-    record Received(long roleId, PingMessage message, DefaultHandlerContext context) {}
+    record Received(long roleId, PingMessage message, ClientHandlerContext context) {}
     @Handler(domain = 1) @Profile("manual-packet-dispatch-only")
     static class BusinessHandler {
         final List<Received> received = new ArrayList<>();
-        @HandlerMethod public void ping(PingMessage message, DefaultHandlerContext context) {
+        @HandlerMethod public void ping(PingMessage message, ClientHandlerContext context) {
             received.add(new Received(context.businessId(), message, context));
         }
     }

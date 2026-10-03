@@ -4,7 +4,8 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.context.Context;
 import cn.managame.runtime.context.Contexts;
 import cn.managame.runtime.context.DefaultEventContext;
-import cn.managame.runtime.context.DefaultHandlerContext;
+import cn.managame.runtime.context.DefaultClientHandlerContext;
+import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.context.DefaultInvocationContext;
 import cn.managame.runtime.context.DefaultRouteCallContext;
 import cn.managame.runtime.context.DefaultTimerContext;
@@ -107,7 +108,7 @@ final class DefaultGameRuntime implements GameRuntime {
         Objects.requireNonNull(message, "message");
         var handler = handlers.get(message.getClass());
         if (handler == null) throw failure(HANDLER_NOT_FOUND);
-        HandlerContext context = Objects.requireNonNull(handlerContexts.create(handler.domain(), connection, message),
+        ClientHandlerContext context = Objects.requireNonNull(handlerContexts.create(handler.domain(), connection, message),
                 "HandlerContextFactory returned null");
         if (context.routeDomain() != handler.domain()) throw failure(ROUTE_DOMAIN_MISMATCH);
         if (context.message() != message || context.connection() != connection) throw failure(HANDLER_CONTEXT_MISMATCH);
@@ -120,7 +121,7 @@ final class DefaultGameRuntime implements GameRuntime {
         if (handler == null) throw failure(HANDLER_NOT_FOUND);
         var keyBinding = keys.get(message.getClass());
         long key = keyBinding == null ? 0 : extractKey(keyBinding, message);
-        dispatch(new DefaultHandlerContext(handler.domain(), key, businessIdType, businessId, Metadatas.empty(), message, connection));
+        dispatch(new DefaultClientHandlerContext(handler.domain(), key, businessIdType, businessId, Metadatas.empty(), message, connection));
     }
     public void dispatch(Connection connection, long routeKey, Object message) {
         dispatch(connection, routeKey, 0, 0L, message);
@@ -130,7 +131,7 @@ final class DefaultGameRuntime implements GameRuntime {
         Objects.requireNonNull(message, "message");
         var handler = handlers.get(message.getClass());
         if (handler == null) throw failure(HANDLER_NOT_FOUND);
-        dispatch(new DefaultHandlerContext(handler.domain(), routeKey, businessIdType, businessId, Metadatas.empty(), message, connection));
+        dispatch(new DefaultClientHandlerContext(handler.domain(), routeKey, businessIdType, businessId, Metadatas.empty(), message, connection));
     }
     public void dispatch(HandlerContext context) {
         Objects.requireNonNull(context); validate(context.routeDomain(), context.routeKey());

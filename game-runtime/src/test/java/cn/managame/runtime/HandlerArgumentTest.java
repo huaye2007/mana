@@ -55,7 +55,7 @@ class HandlerArgumentTest {
             var request = new HandlerDispatchTest.FieldRequest(42);
             runtime.dispatch(connection, 99L, 7, Long.MIN_VALUE, request);
             runtime.dispatch(connection, 7, 10001L, request);
-            var context = new DefaultHandlerContext(2, 88, 7, 0L, Metadatas.empty(), request, connection);
+            var context = new DefaultClientHandlerContext(2, 88, 7, 0L, Metadatas.empty(), request, connection);
             runtime.dispatch(context);
             assertEquals(List.of("2/99", "2/42", "2/88"), routes);
             assertEquals(3, calls.get()); assertTrue(handler.received.isEmpty());
@@ -65,7 +65,7 @@ class HandlerArgumentTest {
             assertEquals(3, calls.get()); assertEquals(3, handler.received.size());
             assertEquals(new RoleId(Long.MIN_VALUE), handler.received.get(0).get(0));
             assertSame(request, handler.received.get(0).get(1));
-            var first = (DefaultHandlerContext) handler.received.get(0).get(2);
+            var first = (ClientHandlerContext) handler.received.get(0).get(2);
             assertSame(connection, first.connection()); assertEquals(99, first.routeKey());
             assertEquals(new Identity(7, Long.MIN_VALUE), handler.received.get(0).get(3));
             assertEquals(new RoleId(10001), handler.received.get(1).get(0));

@@ -1,9 +1,9 @@
 package cn.managame.runtime.handler;
 
 import cn.managame.network.connection.Connection;
-import cn.managame.runtime.context.HandlerContext;
+import cn.managame.runtime.context.ClientHandlerContext;
 
-/** Application ingress policy, called with the exact Handler's annotation-derived Domain. */
+/** Client ingress policy, called with the exact Handler's annotation-derived Domain. */
 @FunctionalInterface
 public interface HandlerContextFactory {
     /**
@@ -12,5 +12,5 @@ public interface HandlerContextFactory {
      * admission/scope binding. Must be thread-safe and must not access Route-owned mutable state.
      * Returning null or throwing rejects dispatch; no fallback or retry is performed.
      */
-    HandlerContext create(int domain, Connection connection, Object message);
+    ClientHandlerContext create(int domain, Connection connection, Object message);
 }

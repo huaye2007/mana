@@ -146,7 +146,9 @@ Accepted dispatch is not business success; successful Handler execution is not r
 | --- | --- |
 | Context | Domain, Key |
 | InvocationContext | Context + businessIdType, businessId, Metadata |
-| HandlerContext | InvocationContext + message + optional borrowed connection |
+| HandlerContext | InvocationContext + message |
+| ClientHandlerContext | HandlerContext + optional borrowed connection |
+| RpcHandlerContext | HandlerContext + logical source node/Slot, command, requestId |
 | HttpContext | Context + borrowed HTTP request + response completion capability |
 | EventContext | InvocationContext + event |
 | TimerContext | Context |
@@ -162,7 +164,11 @@ businessIdType is unsigned 8-bit identity category; businessId is 64-bit busines
 
 **RT-CTX-04**: Share Metadata as immutable values. Inheritance does not establish trust; integration still owns the trust boundary.
 
-**RT-CTX-05**: A Handler context may carry an explicitly supplied borrowed connection, which business code obtains through the context. Borrowing does not keep a connection active, transfer ownership, authenticate its peer, or authorize Runtime to close it. Connection absence is allowed for non-network work. Disconnect after admission does not cancel the Handler. Events, timers, and cross-Route target contexts do not implicitly inherit this connection.
+**RT-CTX-05**: Client-specific Handler contexts carry an explicitly supplied borrowed connection. Borrowing does not keep a connection active, transfer ownership, authenticate its peer, or authorize Runtime to close it. The connection may be absent for explicitly submitted work. Disconnect after admission does not cancel the Handler. Events, timers, and cross-Route target contexts do not implicitly inherit this connection.
+
+**RT-CTX-06**: Common Handler contexts contain decoded messages, routing and business identity. Client and RPC ingress expose distinct context capabilities. RPC contexts carry logical source node, source Slot, command and request correlation instead of a physical connection. A source Slot is a reply hint, not a Route Key or business identity; request correlation is zero for Notify and nonzero for Call. Integration chooses a nonzero business Route Key and the Handler's configured Domain independently of transport affinity. Required context capability mismatches reject before admission. Accepted tasks keep the supplied context instance, including after closure; events and cross-Route targets inherit only ordinary invocation identity/Metadata, while return callbacks restore the exact original context.
+
+For example, an RPC Call from node 10/Slot 2 with request ID 81 may execute on player Route (1,99), business ID 10001. A later reply uses the logical origin and correlation through the RPC layer, whose Slot may now contain a different connection. The context does not authenticate these values or guarantee response delivery. Automatic RPC decoding/Runtime ingress and response assembly remain unimplemented; these contexts support explicit integration without introducing a unified sending API. See the [Java context binding](OGBS-Runtime-Java-25-Specification-1.0.md#transport-handler-contexts) and [transport context tests](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java).
 
 TimerContext carries no business identity/Metadata. Explicitly capture suitable immutable data when needed.
 
@@ -287,7 +293,11 @@ Target failure and return-path failure are distinct. Return-path failure may occ
 
 <a id="9-gametimetimer-与-cron"></a>
 
+<a id="demo-runtime-services"></a>
+
 ## 9. GameTime, Timer, and Cron
+
+The [demo service example](../../game-demo/README.md#demo-runtime-services) combines HTTP requests, a one-shot timer and a recurring cron on the same configured execution infrastructure. Equal Domain/Key values select the same serial Route regardless of entry type; a timer trigger is admission, not a promise of immediate execution. Application startup owns transport listeners and task registrations, and shutdown stops ingress and pending triggers before releasing Runtime resources. [DemoServicesTest](../../game-demo/src/test/java/cn/managame/demo/DemoServicesTest.java) validates actual requests, timed execution and cancellation/closure; it does not establish production timing precision or authentication.
 
 <a id="91-业务时间"></a>
 

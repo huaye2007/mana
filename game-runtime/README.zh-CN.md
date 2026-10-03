@@ -18,11 +18,13 @@ Java 25 业务运行时。Maven 坐标为 `cn.managame:game-runtime`，按包划
 
 外部接入可配置 `builder.handlerContextFactory((domain, connection, message) -> ...)`，再调用 `runtime.dispatch(connection, message)`。Runtime 先从 @Handler/@HandlerMethod 解析 Domain；业务工厂从连接属性或外部 Map 获取已鉴权身份，按 Domain 选择 routeKey/businessIdType/businessId，不要求框架身份存储或固定角色规则。工厂在接纳前运行一次，必须保留 Domain/消息/连接；已有显式参数绕过它。见 [策略契约与示例](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory) 和 [两个 Domain 的 Map 测试](src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java)。
 
-业务调用使用 `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`：调用方传入 Key 和可信身份，Runtime 按消息精确类型查找 Handler 的 Domain，构造空 Metadata 的 DefaultHandlerContext，并进入既有 RouteExecutor，无需另外构造 Route/Context 或从消息提取 Key。匿名调用可省略身份（默认 0/0）；Metadata/自定义字段仍使用显式上下文入口，通过 `context.connection()` 获取借用连接。
+业务调用使用 `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`：调用方传入 Key 和可信身份，Runtime 按消息精确类型查找 Handler 的 Domain，构造空 Metadata 的 DefaultClientHandlerContext，并进入既有 RouteExecutor，无需另外构造 Route/Context 或从消息提取 Key。匿名调用可省略身份（默认 0/0）；Metadata/自定义字段仍使用显式上下文入口，通过 `context.connection()` 获取借用连接。
 
-默认 Handler 写法为 `handle(DefaultHandlerContext context, MyRequest request)`，通过 context.businessId() 获取业务身份，需要时读取 context.businessIdType()。无需定义 RoleId/GuildId/RoomId 包装类型或注册参数转换。接入层负责鉴权和类别校验；Context 访问不会根据 Domain、Key 或协议字段推断身份。已注册应用参数仍可通过 HandlerArgumentBinding 作为可选扩展；解析器在提交线程、接纳之前各运行一次，必须线程安全，不访问 Route 所有的可变状态，解析失败在入队前拒绝。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments) 和 [测试](src/test/java/cn/managame/runtime/HandlerArgumentTest.java)。
+默认 Handler 写法为 `handle(ClientHandlerContext context, MyRequest request)`，通过 context.businessId() 获取业务身份，需要时读取 context.businessIdType()。无需定义 RoleId/GuildId/RoomId 包装类型或注册参数转换。接入层负责鉴权和类别校验；Context 访问不会根据 Domain、Key 或协议字段推断身份。已注册应用参数仍可通过 HandlerArgumentBinding 作为可选扩展；解析器在提交线程、接纳之前各运行一次，必须线程安全，不访问 Route 所有的可变状态，解析失败在入队前拒绝。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments) 和 [测试](src/test/java/cn/managame/runtime/HandlerArgumentTest.java)。
 
 少数按协议内容路由的场景，配置 `@HandlerMethod(routeKey="userId")` 或 `routeKeyMethod="getUserId"`，再调用 `runtime.dispatch(connection, businessIdType, businessId, message)`（只有未配置上下文工厂时，匿名提取入口才可省略身份）。类级 @Handler 提供默认规则，方法级非空规则覆盖；外部 Key 重载从不调用这些规则。成员访问只编译一次，缺少/非法规则和 Key 为 0 时拒绝。见 [Java 契约与边界](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#automatic-handler-dispatch)、[框架测试](src/test/java/cn/managame/runtime/HandlerDispatchTest.java) 和 [demo](../game-demo/README.zh-CN.md#handler-分发)。
+
+客户端消息使用 ClientHandlerContext（借用 Connection），RPC 消息使用 RpcHandlerContext（来源节点/Slot、command 和请求 ID）。两者继承 HandlerContext，都直接暴露 businessId；所需上下文子类型不匹配时在接纳前拒绝。HTTP 保持独立 HttpContext，不增加统一发送 API 或自动 RPC 到 Runtime 的适配器。见 [上下文契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#transport-handler-contexts) 和 [传输测试](src/test/java/cn/managame/runtime/TransportContextTest.java)。
 
 ## 目录与职责
 
@@ -96,5 +98,7 @@ ConcurrentHashMap 持有活跃队列，按完整 Domain/Key 串行业务，不�
 `cn.managame.runtime.http` 在 game-runtime artifact 中提供 `@HttpHandler`、`@HttpMethod`、`HttpRequestMethod`、`HttpContext`、`DefaultHttpContext`、`HttpContextFactory`、`HttpResultCallback`、`HttpResultCodec`、`HttpDispatcher`。HttpContext 继承基础 Context，包含 Route、请求及结果回调，不含业务身份/Metadata 字段。依赖 game-network，与 Handler/Event/call 共用 Domain/RouteKey 执行器。
 
 通过 `httpHandlers(...)` 注册实例。HttpMethod.method 使用 HttpRequestMethod 枚举，默认 POST；GET 需显式 `method=HttpRequestMethod.GET`。在 @HttpHandler/@HttpMethod 设置 `routeKey="playerId"`，GET 从 query 取字段，其他方法从 JSON body 顶层字段提取；方法配置覆盖类规则。也可设置 routeKeyMethod 指向 Handler 提取方法。可选的四参数 `httpContextFactory(domain, key, request, callback)` 保留选定 Key，可增加应用自定义 HTTP Context 字段；无规则时必须提供工厂选 Key。通过 `HttpServer.builder().asyncHandler(runtime.http()::dispatch)` 接入。public 方法返回业务 DTO/对象或 void，延迟完成使用 `context.responseCallback().onResponse(dto)`。Runtime 默认编码 JSON，在内部创建传输响应，业务结果不携带 HTTP 版本；通过 `httpResultCodec(...)` 自定义结果编码。按原始方法/path 精确匹配，不自动绑定请求 DTO 或推导玩家 ID。请求只借用到方法返回；延迟完成响应不会延长请求生命周期。
+
+普通 Spring 的 [game-demo 服务接入](../game-demo/README.zh-CN.md#demo-runtime-services) 组合 HTTP 对象返回、一次性 TimerRef Bean 与注解 cron，并验证真实执行和关闭。
 
 运行 [RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java) 查看注解 echo 和跨 Route 延迟响应。详见 [HTTP 语义](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 与 [Java API、失败及所有权](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
