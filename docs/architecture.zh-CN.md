@@ -14,7 +14,7 @@ GameRuntimeConfig 装配由 Spring 管理的 Runtime，将 Domain 1 绑定到虚
 
 demo 的 Fory 依赖与 Spring 序列化器配置属于应用。GameProtocols 提供同一份配置用于 Runtime 协议注册和 Fory 类型 ID 注册；GamePacketHandler 通过 `runtime.protocols().get(REQUEST, command)` 查询入站 REQUEST 类型，再解码、校验根对象类型，并由应用的 Domain 策略（ROLE 使用已鉴权 GameSession 快照）将对象分发给对应 Runtime HandlerMethod。GamePacket 保持既有原始字节分帧，不新增框架 codec，不改变 Data JSON 列。配置、兼容边界与验证见 [Fory body 示例](../game-demo/README.zh-CN.md#fory-业务-body)。
 
-GameRuntimeConfig 也发现仅标记 @Handler 的 Bean，包括 UserHandler、RoleHandler，并通过 GameProtocols 注册 LoginReq/LoginRes。GamePacketHandler 调用 `runtime.dispatch(connection, decodedMessage)`，Runtime 先解析 Handler 注解的 Domain，再由配置的 HandlerContextFactory 获取身份/路由输入并调用应用 GameDomain 策略选择上下文。demo 使用 Connection 的 GameSession 属性，也可换成线程安全的外部身份 Map。已注册的 HandlerArgumentBinding 将选定上下文身份适配为 RoleId 参数，匿名登录可省略。用户在鉴权成功后明确提供角色身份，并决定每个 Domain 的路由/身份策略。建连不分配 Key 或绑定会话。LOGIN（ID 2）仅用 userId 作为配置的排队 Key，身份为 0/0；业务在 login 内校验 token 成功后绑定会话，ROLE（ID 1）要求该会话并在接纳前读取一次值快照。骨架尚未实现生产 token 校验；显式参数绕过工厂，消息成员提取仍有独立重载。响应由业务负责，不自动回传 packet。见 [demo Handler 入口](../game-demo/README.zh-CN.md#handler-分发) 和 [Java 策略](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory)。
+GameRuntimeConfig 也发现仅标记 @Handler 的 Bean，包括 UserHandler、RoleHandler，并通过 GameProtocols 注册 LoginReq/LoginRes。GamePacketHandler 调用 `runtime.dispatch(connection, decodedMessage)`，Runtime 先解析 Handler 注解的 Domain，再由配置的 HandlerContextFactory 获取身份/路由输入并调用应用 GameDomain 策略选择上下文。demo 使用 Connection 的 GameSession 属性，也可换成线程安全的外部身份 Map。Handler 直接从 Context 读取 businessId() 与 businessIdType()，无需身份包装类型或参数绑定。用户在鉴权成功后明确提供角色身份，并决定每个 Domain 的路由/身份策略。建连不分配 Key 或绑定会话。LOGIN（ID 2）仅用 userId 作为配置的排队 Key，身份为 0/0；业务在 login 内校验 token 成功后绑定会话，ROLE（ID 1）要求该会话并在接纳前读取一次值快照。骨架尚未实现生产 token 校验；显式参数绕过工厂，消息成员提取仍有独立重载。响应由业务负责，不自动回传 packet。见 [demo Handler 入口](../game-demo/README.zh-CN.md#handler-分发) 和 [Java 策略](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory)。
 
 ## Network / RPC 包边界
 
@@ -90,7 +90,7 @@ ProtocolRegistry 只索引 (type,command) ↔ MessageClass 与 Req→Res。Messa
 
 RouteKeyRegistry 是单独的 exact-class 查询：没有绑定返回 0，extractor 异常按调用方异常传播，不做继承查找或命名猜测。显式上下文与外部 Key 分发保留其 Route；只有从消息提取的入口查询提取规则。
 
-Handler 方法必须为 public、非 static、返回 void，且只有一个已注册 REQUEST/NOTIFY 参数，可以另带一个 Context 及已注册的应用参数类型，顺序不限。HandlerMethod 的非零 domain 覆盖 Handler.domain。重复 message handler、非法 Context 类型、未绑定/歧义参数类型、未注册 Domain 等在 build 时失败。业务接入通过带身份的 dispatch 重载传入 Key 与 businessIdType/businessId，二者含义各自独立。HandlerArgumentBinding 在提交线程、接纳前将传入上下文投影为 RoleId 等应用类型，一次分发各解析一次，解析器不得访问 Route 所有的状态；目标 Handler 仍使用既有 Route 执行器。见 [Java 参数契约](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
+Handler 方法必须为 public、非 static、返回 void，且只有一个已注册 REQUEST/NOTIFY 参数，可以另带一个 Context 及已注册的应用参数类型，顺序不限。HandlerMethod 的非零 domain 覆盖 Handler.domain。重复 message handler、非法 Context 类型、未绑定/歧义参数类型、未注册 Domain 等在 build 时失败。业务接入通过带身份的 dispatch 重载传入 Key 与 businessIdType/businessId，二者含义各自独立。业务身份通常直接从 Context 获取，无需 RoleId/GuildId/RoomId 包装类型或参数注册。HandlerArgumentBinding 保留为其他应用参数的可选扩展，在提交线程、接纳前各解析一次，解析器不得访问 Route 所有的状态；目标 Handler 仍使用既有 Route 执行器。见 [Java 参数契约](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
 
 Event 通过自己的 routeDomain()/routeKey() 指定唯一 Route。EventMethod 按具体 Event 类 exact lookup、order 升序运行；相同 order 无相对顺序保证。单个监听方法失败上报后继续其他监听方法。
 

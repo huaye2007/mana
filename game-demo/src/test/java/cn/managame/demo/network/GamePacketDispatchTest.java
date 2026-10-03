@@ -1,7 +1,6 @@
 package cn.managame.demo.network;
 
 import cn.managame.core.FrameworkErrorCodes;
-import cn.managame.demo.bus.role.RoleId;
 import cn.managame.demo.bus.user.LoginReq;
 import cn.managame.demo.common.protocol.GameProtocols;
 import cn.managame.demo.common.runtime.GameDomain;
@@ -35,15 +34,18 @@ class GamePacketDispatchTest {
         assertEquals(0, context.businessIdType()); assertEquals(0, context.businessId());
         assertSame(request, context.message()); assertSame(connection, context.connection());
         assertNull(connection.get(GameSession.KEY));
-        assertThrows(NullPointerException.class, () -> new GameSession(99L, null));
+        connection.set(GameSession.KEY, new GameSession(99L, 0L));
+        var roleContext = GameDomain.ROLE.handlerContext(connection, new PingMessage(1L));
+        assertEquals(99L, roleContext.routeKey()); assertEquals(0L, roleContext.businessId());
+        assertEquals(GameDomain.ROLE_BUSINESS_ID_TYPE, roleContext.businessIdType());
     }
 
-    record Received(RoleId role, PingMessage message, DefaultHandlerContext context) {}
+    record Received(long roleId, PingMessage message, DefaultHandlerContext context) {}
     @Handler(domain = 1) @Profile("manual-packet-dispatch-only")
     static class BusinessHandler {
         final List<Received> received = new ArrayList<>();
-        @HandlerMethod public void ping(PingMessage message, RoleId role, DefaultHandlerContext context) {
-            received.add(new Received(role, message, context));
+        @HandlerMethod public void ping(PingMessage message, DefaultHandlerContext context) {
+            received.add(new Received(context.businessId(), message, context));
         }
     }
 
@@ -67,7 +69,7 @@ class GamePacketDispatchTest {
                 }, 1))).protocols(List.of(new GameProtocols())).handlers(List.of(handler))
                 .handlerContextFactory((domain, connection, message) -> GameDomain.fromId(domain)
                         .handlerContext(connection, message))
-                .handlerArguments(List.of(HandlerArgumentBinding.of(RoleId.class, RoleId::from))).build()) {
+                .build()) {
             var fory = new ForyConfig().fory(new GameProtocols());
             var packets = new GamePacketHandler(fory, runtime);
             var connection = connection(); var other = connection();
@@ -78,16 +80,16 @@ class GamePacketDispatchTest {
             var packet = GamePacketCodecTest.packet(1002, 8, 0, fory.serialize(request));
             assertThrows(IllegalArgumentException.class, () -> packets.onMessage(connection, packet));
             assertTrue(tasks.isEmpty());
-            connection.set(GameSession.KEY, new GameSession(99L, new RoleId(10001L)));
+            connection.set(GameSession.KEY, new GameSession(99L, 10001L));
             packets.onConnected(connection);
-            assertEquals(new GameSession(99L, new RoleId(10001L)), connection.get(GameSession.KEY));
+            assertEquals(new GameSession(99L, 10001L), connection.get(GameSession.KEY));
             packets.onMessage(connection, packet);
             assertEquals(1, tasks.size()); assertTrue(handler.received.isEmpty());
-            connection.set(GameSession.KEY, new GameSession(88L, new RoleId(20002L)));
+            connection.set(GameSession.KEY, new GameSession(88L, 20002L));
             packet.setBody(new byte[0]); // Queued work owns the decoded object, not the original packet body.
             tasks.remove().run();
             var received = handler.received.getFirst();
-            assertEquals(request, received.message()); assertEquals(new RoleId(10001L), received.role());
+            assertEquals(request, received.message()); assertEquals(10001L, received.roleId());
             assertEquals(99L, received.context().routeKey()); assertSame(connection, received.context().connection());
             assertEquals(10001L, received.context().businessId());
             var missingHandler = GamePacketCodecTest.packet(1001, 9, 0, fory.serialize(new DemoMessage(1L, "no handler")));

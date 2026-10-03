@@ -6,10 +6,8 @@ import cn.managame.demo.common.runtime.GameRuntimeConfig;
 import cn.managame.demo.common.runtime.GameDomain;
 import cn.managame.demo.network.message.PingMessage;
 import cn.managame.demo.bus.role.RoleHandler;
-import cn.managame.demo.bus.role.RoleId;
 import cn.managame.demo.bus.user.LoginReq;
 import cn.managame.demo.bus.user.UserHandler;
-import cn.managame.runtime.context.Contexts;
 import cn.managame.runtime.context.DefaultHandlerContext;
 import cn.managame.runtime.handler.HandlerMethod;
 import cn.managame.network.connection.Connection;
@@ -36,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class GamePacketNetworkTest {
-    record Received(Object message, RoleId roleId, DefaultHandlerContext context, boolean virtual) {}
+    record Received(Object message, long roleId, DefaultHandlerContext context, boolean virtual) {}
 
     @Profile("packet-probe-only")
     static class LoginProbe extends UserHandler {
@@ -45,17 +43,17 @@ class GamePacketNetworkTest {
             assertNull(context.connection().get(GameSession.KEY));
             // Test-only token verifier. Production authentication remains business-owned.
             if ("demo-token".equals(request.getToken())) {
-                context.connection().set(GameSession.KEY, new GameSession(99L, new RoleId(20002L)));
+                context.connection().set(GameSession.KEY, new GameSession(99L, 20002L));
             }
-            received.add(new Received(request, null, context, Thread.currentThread().isVirtual()));
+            received.add(new Received(request, context.businessId(), context, Thread.currentThread().isVirtual()));
         }
     }
 
     @Profile("packet-probe-only")
     static class RoleProbe extends RoleHandler {
         final LinkedBlockingQueue<Received> received = new LinkedBlockingQueue<>();
-        @Override @HandlerMethod public void ping(RoleId roleId, PingMessage request) {
-            received.add(new Received(request, roleId, Contexts.current(DefaultHandlerContext.class), Thread.currentThread().isVirtual()));
+        @Override @HandlerMethod public void ping(DefaultHandlerContext context, PingMessage request) {
+            received.add(new Received(request, context.businessId(), context, Thread.currentThread().isVirtual()));
         }
     }
 
@@ -123,12 +121,12 @@ class GamePacketNetworkTest {
             assertEquals(0, login.context().businessIdType()); assertEquals(0, login.context().businessId());
             assertTrue(login.virtual()); assertNotSame(connection, login.context().connection());
             Connection serverConnection = login.context().connection();
-            assertEquals(new GameSession(99L, new RoleId(20002L)), serverConnection.get(GameSession.KEY));
+            assertEquals(new GameSession(99L, 20002L), serverConnection.get(GameSession.KEY));
             var ping = new PingMessage(Long.MAX_VALUE);
             assertEquals(WriteStatus.ACCEPTED, connection.write(
                     GamePacketCodecTest.packet(1002, 43, 0, fory.serialize(ping))));
             Received role = roleProbe.received.poll(5, TimeUnit.SECONDS);
-            assertNotNull(role); assertEquals(ping, role.message()); assertEquals(new RoleId(20002), role.roleId());
+            assertNotNull(role); assertEquals(ping, role.message()); assertEquals(20002L, role.roleId());
             assertEquals(1, role.context().routeDomain()); assertEquals(99L, role.context().routeKey());
             assertSame(serverConnection, role.context().connection()); assertTrue(role.virtual());
             // A valid Fory value of the wrong protocol type closes without invoking another Handler.

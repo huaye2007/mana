@@ -1,13 +1,11 @@
 package cn.managame.demo.common.runtime;
 
-import cn.managame.demo.bus.role.RoleId;
 import cn.managame.demo.common.protocol.GameProtocols;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeBuilder;
 import cn.managame.runtime.event.EventHandler;
 import cn.managame.runtime.event.Events;
 import cn.managame.runtime.handler.Handler;
-import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.executor.RouteExecutors;
 import org.springframework.context.ApplicationContext;
@@ -38,7 +36,6 @@ public class GameRuntimeConfig {
                     .handlers(context.getBeansWithAnnotation(Handler.class).values())
                     .handlerContextFactory((domain, connection, message) ->
                             GameDomain.fromId(domain).handlerContext(connection, message))
-                    .handlerArguments(List.of(HandlerArgumentBinding.of(RoleId.class, RoleId::from)))
                     .eventHandlers(handlers)
                     .build();
             try {

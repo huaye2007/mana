@@ -56,13 +56,13 @@ runtime.dispatch(connection, routeKey, loginReq);
 
 Runtime 选择 Handler 的 Domain 并创建上下文；协议 userId 不覆盖外部传入的 Key，无需配置提取规则。只有少数按协议路由的场景才使用 `@HandlerMethod(routeKey="userId")` 或 `routeKeyMethod="getUserId"`，在未配置 HandlerContextFactory 的 builder 上再调用 `runtime.dispatch(connection, loginReq)`。demo 已配置工厂，由它按 Domain 明确选择路由，见下文。这些名字对应 LoginReq 的字段或 public 无参 getter。此匿名登录使用身份 0/0、空 Metadata；Metadata/自定义字段仍可通过显式 Context 分发。
 
-大多数业务 Handler 需要身份。应用自定义 [RoleId](src/main/java/cn/managame/demo/bus/role/RoleId.java)，demo 身份类别 TYPE=1，GameRuntimeConfig 注册 `HandlerArgumentBinding.of(RoleId.class, RoleId::from)`，验证类别后从 context.businessId() 创建类型值。[RoleHandler](src/main/java/cn/managame/demo/bus/role/RoleHandler.java) 声明 `ping(RoleId roleId, PingMessage request)`，无需额外注解或继承框架身份类型：
+业务 Handler 直接从 Context 获取身份。[RoleHandler](src/main/java/cn/managame/demo/bus/role/RoleHandler.java) 声明 `ping(DefaultHandlerContext context, PingMessage request)`，通过 `long roleId = context.businessId()` 获取角色 ID。无需定义 RoleId/GuildId/RoomId 包装类型，也无需注册 handlerArguments。GameDomain.ROLE_BUSINESS_ID_TYPE=1 表示应用的角色身份类别，与执行 Domain 独立；可信接入层也可以明确传入身份：
 
 ```java
-runtime.dispatch(connection, 99L, RoleId.TYPE, 10001L, new PingMessage(1234));
+runtime.dispatch(connection, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, new PingMessage(1234));
 ```
 
-Domain 1 来自 @Handler，Key 为 99，RoleId.value 为 10001；Key 和协议 timestamp 均不选择身份。接入层必须鉴权并提供可信身份。解析器在提交线程、接纳前执行，只有 Handler 在自己的 Route 执行；此 Handler 的匿名分发会在入队前因类别检查失败而拒绝。RoleId 是上下文参数，不注册为 Fory/协议类型。[DemoIdentityTest](src/test/java/cn/managame/demo/DemoIdentityTest.java) 无需数据库/socket，验证实际 Spring 绑定、身份/Key/协议值独立、虚拟线程执行及匿名拒绝。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
+Domain 1 来自 @Handler，Key 为 99，context.businessId() 为 10001；Key 和协议 timestamp 均不选择身份。接入层鉴权并提供可信身份。网络入口的 ROLE 策略在入队前拒绝缺少会话的请求，再将角色类别和 ID 捕获到 Context。显式 Key/身份/上下文重载绕过该策略，调用方必须传入正确的可信身份；Context 参数本身不会自动校验业务类别或完成鉴权。只有 Handler 在自己的 Route 执行。[DemoIdentityTest](src/test/java/cn/managame/demo/DemoIdentityTest.java) 无需数据库/socket，验证无需参数绑定的 Spring 分发、身份/Key/协议值独立、虚拟线程执行及缺少会话时拒绝。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
 
 [DemoHandlerTest](src/test/java/cn/managame/demo/DemoHandlerTest.java) 只装配 Runtime 配置，用手动测试探针替换空的登录实现，验证 LoginReq.userId=10001 时使用调用方 Key 99、Domain 2、原连接/请求及虚拟线程；还验证未绑定 LOGIN 按 userId 仅选择路由、不访问连接属性，以及 Key 0 在接纳前拒绝，无需数据库或 socket。TCP 入口现已将解码消息分发到 Runtime Handler；UserHandler 登录业务仍为空，不自动生成 LoginRes。完整 demo 启动仍需数据库配置。
 
@@ -94,7 +94,7 @@ runtime.dispatch(connection, decodedMessage);
 
 预期类型由协议号确定，不写死 DemoMessage。cast 校验实际解码根对象：已注册的 PingMessage 若以协议号 1001 发送，会被拒绝，不会被当作 DemoMessage 读取。未知协议号在解码前拒绝。随后通过 Runtime 在配置的 Route 执行器上调用精确类型对应的 HandlerMethod，不再由网络回调回传。注册协议不代表有 Handler：DemoMessage 仍是序列化测试消息，以正确 body 分发协议号 1001 当前会拒绝 HANDLER_NOT_FOUND。LoginReq 协议号 1003 进入 UserHandler.login；PingMessage 协议号 1002 进入 RoleHandler.ping。原始空 body 是有效分帧，但不是已序列化的 Fory 对象。
 
-[GameSession](src/main/java/cn/managame/demo/network/GameSession.java) 是存储在 Connection 的 Netty AttributeKey 中的不可变应用 record。它保存业务选择的非零 Key 和非 null 的已鉴权 RoleId。onConnected 为空，不分配 Key，不绑定或覆盖会话；鉴权成功前没有会话。只能在 login 的业务 token 校验成功后手动绑定。下例是业务接入示意，tokenVerifier 和 Key 选择由应用实现，当前骨架未实现：
+[GameSession](src/main/java/cn/managame/demo/network/GameSession.java) 是存储在 Connection 的 Netty AttributeKey 中的不可变应用 record。它保存业务选择的非零 Key 和long 类型的已鉴权 roleId。onConnected 为空，不分配 Key，不绑定或覆盖会话；鉴权成功前没有会话。只能在 login 的业务 token 校验成功后手动绑定。下例是业务接入示意，tokenVerifier 和 Key 选择由应用实现，当前骨架未实现：
 
 ```java
 @HandlerMethod(domain = GameDomain.LOGIN_ID)
@@ -103,11 +103,11 @@ public void login(DefaultHandlerContext context, LoginReq loginReq) {
     var identity = tokenVerifier.verify(loginReq.getToken());
     long selectedRouteKey = selectRoleRouteKey(identity);
     context.connection().set(GameSession.KEY,
-            new GameSession(selectedRouteKey, new RoleId(identity.roleId())));
+            new GameSession(selectedRouteKey, identity.roleId()));
 }
 ```
 
-角色身份必须由业务在鉴权后明确提供，不从 loginReq.userId/token 复制。GameRuntimeConfig 注册 HandlerContextFactory：Runtime 先解析 Handler 注解的 Domain，再由工厂调用 GameDomain.fromId(domain).handlerContext(...)。LOGIN（ID 2）明确选择 LoginReq.userId 仅作为排队 Key，身份为 0/0，不读写会话；客户端值不代表已鉴权身份，Key 0 在接纳前拒绝。ROLE（ID 1）读取一次 GameSession，缺少会话时在接纳前拒绝，保留业务传入的 Key 与 RoleId.TYPE/角色值，不将 Key 固定为 roleId。token 校验失败时未绑定连接继续保持未绑定；绑定成功只影响后续接纳，不改变之前已接纳的上下文；新 Domain 明确定义自己的策略。可将属性查询替换成线程安全的 Connection 到角色 Map，不需要修改 GamePacketHandler 或 Runtime，不强制具体存储或固定的 Domain 到角色规则。哪些 Handler 需要类型化身份仍由业务参数/绑定策略决定。见 [工厂契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory)。
+角色身份必须由业务在鉴权后明确提供，不从 loginReq.userId/token 复制。GameRuntimeConfig 注册 HandlerContextFactory：Runtime 先解析 Handler 注解的 Domain，再由工厂调用 GameDomain.fromId(domain).handlerContext(...)。LOGIN（ID 2）明确选择 LoginReq.userId 仅作为排队 Key，身份为 0/0，不读写会话；客户端值不代表已鉴权身份，Key 0 在接纳前拒绝。ROLE（ID 1）读取一次 GameSession，缺少会话时在接纳前拒绝，保留业务传入的 Key 与 GameDomain.ROLE_BUSINESS_ID_TYPE/角色值，不将 Key 固定为 roleId。token 校验失败时未绑定连接继续保持未绑定；绑定成功只影响后续接纳，不改变之前已接纳的上下文；新 Domain 明确定义自己的策略。可将属性查询替换成线程安全的 Connection 到角色 Map，不需要修改 GamePacketHandler 或 Runtime，不强制具体存储或固定的 Domain 到角色规则。Handler 通过 Context 读取身份。会话是否存在表示业务是否成功绑定；roleId 为 long，不以 0/null 作为鉴权标记，业务可自行约束 ID 范围。见 [工厂契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory)。
 
 即使之后连接会话或原始 packet 改变，已接纳任务仍使用原值与解码对象。改变 Key 只影响后续接纳，不迁移旧任务，状态交接由应用协调。已配置工厂的入口不隐式提取消息 Key，也不在会话缺失时回退。无效 Fory body、类型不匹配、ROLE 会话缺失、工厂/身份解析失败、Handler 缺失、过载及 Runtime 关闭等接纳失败交给 Network 的 onException 回调并关闭连接；Handler 执行失败走 RuntimeErrorHandler，不自动关闭连接或重试。断连不取消已接纳任务。鉴权、身份存储清理、packet seq/code 关联及响应构造/发送仍属于业务接入；此入口不自动回传或产生响应 DTO。显式 Key/身份及显式上下文分发继续可用，并绕过工厂。
 

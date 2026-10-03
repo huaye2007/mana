@@ -4,7 +4,6 @@ import cn.managame.runtime.route.RouteDomain;
 import cn.managame.runtime.context.DefaultHandlerContext;
 import cn.managame.network.connection.Connection;
 import cn.managame.demo.network.GameSession;
-import cn.managame.demo.bus.role.RoleId;
 import cn.managame.demo.bus.user.LoginReq;
 import cn.managame.core.Metadatas;
 
@@ -16,6 +15,7 @@ public enum GameDomain {
     // Annotation arguments need compile-time constants rather than arbitrary enum values.
     public static final int ROLE_ID = 1;
     public static final int LOGIN_ID = 2;
+    public static final int ROLE_BUSINESS_ID_TYPE = 1;
 
     private final int id;
 
@@ -41,9 +41,8 @@ public enum GameDomain {
             case ROLE -> {
                 GameSession session = connection.get(GameSession.KEY);
                 if (session == null) throw new IllegalArgumentException("ROLE requires an authenticated GameSession");
-                RoleId role = session.roleId();
-                yield new DefaultHandlerContext(id, session.routeKey(), RoleId.TYPE,
-                        role.value(), Metadatas.empty(), message, connection);
+                yield new DefaultHandlerContext(id, session.routeKey(), ROLE_BUSINESS_ID_TYPE,
+                        session.roleId(), Metadatas.empty(), message, connection);
             }
         };
     }

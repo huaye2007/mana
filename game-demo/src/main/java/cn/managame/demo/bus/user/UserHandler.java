@@ -13,7 +13,7 @@ public class UserHandler {
         // Implement token verification here. Only after successful verification, bind the
         // business-selected routeKey and authenticated roleId through context.connection():
         // context.connection().set(GameSession.KEY,
-        //         new GameSession(selectedRouteKey, new RoleId(authenticatedRoleId)));
+        //         new GameSession(selectedRouteKey, authenticatedRoleId));
         // Until verification is implemented, this skeleton does not install a session.
     }
 }
