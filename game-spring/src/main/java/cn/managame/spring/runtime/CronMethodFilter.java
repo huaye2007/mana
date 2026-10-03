@@ -1,4 +1,4 @@
-package cn.managame.demo.common.runtime;
+package cn.managame.spring.runtime;
 
 import cn.managame.runtime.timer.Cron;
 import org.springframework.core.type.classreading.MetadataReader;
@@ -8,7 +8,7 @@ import org.springframework.core.type.filter.TypeFilter;
 import java.io.IOException;
 
 /** Startup-only discovery of classes declaring or inheriting a Cron method. */
-public class CronMethodFilter implements TypeFilter {
+final class CronMethodFilter implements TypeFilter {
     @Override
     public boolean match(MetadataReader reader, MetadataReaderFactory readers) throws IOException {
         if (reader.getAnnotationMetadata().hasAnnotatedMethods(Cron.class.getName())) return true;

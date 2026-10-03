@@ -9,6 +9,7 @@ import cn.managame.runtime.route.RouteDomain;
 import cn.managame.runtime.route.RouteKeyBinding;
 import cn.managame.runtime.http.HttpContextFactory;
 import cn.managame.runtime.http.HttpResultCodec;
+import cn.managame.runtime.http.HttpRequestCodec;
 
 import cn.managame.runtime.internal.RuntimeCompiler;
 import java.time.*;
@@ -24,6 +25,7 @@ public final class GameRuntimeBuilder {
     private List<Object> httpHandlers = List.of();
     private HttpContextFactory httpContexts;
     private HttpResultCodec httpResults = HttpResultCodec.json();
+    private HttpRequestCodec httpRequests = HttpRequestCodec.json();
     private ZoneId cronZone = ZoneId.of("UTC");
     private RuntimeErrorHandler errors = e -> System.getLogger("cn.managame.runtime").log(
         System.Logger.Level.ERROR, "Runtime error " + e.errorCode() + " at " + e.routeDomain() + "/" + e.routeKey(), e.cause());
@@ -42,12 +44,13 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder httpHandlers(Iterable<?> v) { httpHandlers = copy(v); return this; }
     public GameRuntimeBuilder httpContextFactory(HttpContextFactory v) { httpContexts = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder httpResultCodec(HttpResultCodec v) { httpResults = Objects.requireNonNull(v); return this; }
+    public GameRuntimeBuilder httpRequestCodec(HttpRequestCodec v) { httpRequests = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder eventHandlers(Iterable<?> v) { events = copy(v); return this; }
     public GameRuntimeBuilder cronHandlers(Iterable<?> v) { crons = copy(v); return this; }
     public GameRuntimeBuilder errorHandler(RuntimeErrorHandler v) { errors = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder cronZone(ZoneId v) { cronZone = Objects.requireNonNull(v); return this; }
     public GameRuntime build() {
         return RuntimeCompiler.build(domains, executors, providers, keys, handlers, arguments, handlerContexts, events, crons,
-                httpHandlers, httpContexts, httpResults, cronZone, errors);
+                httpHandlers, httpContexts, httpResults, httpRequests, cronZone, errors);
     }
 }

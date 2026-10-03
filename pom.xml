@@ -1,7 +1,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>cn.managame</groupId><artifactId>mana3</artifactId><version>1.0.0-SNAPSHOT</version><packaging>pom</packaging>
-  <modules><module>game-core</module><module>game-network</module><module>game-rpc</module><module>game-runtime</module><module>game-data</module><module>game-example</module><module>game-demo</module></modules>
+  <modules><module>game-core</module><module>game-network</module><module>game-rpc</module><module>game-runtime</module><module>game-data</module><module>game-spring</module><module>game-example</module><module>game-demo</module></modules>
   <properties><maven.compiler.release>25</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding><netty.version>4.1.135.Final</netty.version></properties>
   <dependencyManagement><dependencies>
     <dependency><groupId>io.netty</groupId><artifactId>netty-bom</artifactId><version>${netty.version}</version><type>pom</type><scope>import</scope></dependency>

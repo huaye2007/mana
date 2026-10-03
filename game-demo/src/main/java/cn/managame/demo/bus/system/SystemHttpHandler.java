@@ -2,12 +2,10 @@ package cn.managame.demo.bus.system;
 
 import cn.managame.demo.common.runtime.GameDomain;
 import cn.managame.runtime.http.HttpContext;
+import cn.managame.runtime.context.Contexts;
 import cn.managame.runtime.http.HttpHandler;
 import cn.managame.runtime.http.HttpMethod;
 import cn.managame.runtime.http.HttpRequestMethod;
-import io.netty.handler.codec.http.FullHttpRequest;
-
-import java.nio.charset.StandardCharsets;
 
 @HttpHandler(domain = GameDomain.SYSTEM_ID, routeKey = "routeKey")
 public class SystemHttpHandler {
@@ -16,9 +14,16 @@ public class SystemHttpHandler {
     public SystemHttpHandler(DemoTasks tasks) { this.tasks = tasks; }
 
     @HttpMethod("/demo/echo")
-    public EchoResult echo(HttpContext context, FullHttpRequest request) {
-        return new EchoResult(context.routeKey(), request.content().toString(StandardCharsets.UTF_8));
+    public EchoResult echo(String body) {
+        return new EchoResult(Contexts.current(HttpContext.class).routeKey(), body);
     }
+    @HttpMethod("/demo/dto")
+    public EchoResult dto(EchoRequest request) {
+        return new EchoResult(Contexts.current(HttpContext.class).routeKey(), request.text());
+    }
+    @HttpMethod(value = "/demo/query", method = HttpRequestMethod.GET)
+    public EchoResult query(EchoRequest request) { return dto(request); }
+    public record EchoRequest(String text) {}
 
     @HttpMethod(value = "/demo/tasks", method = HttpRequestMethod.GET)
     public DemoTasks.Status status() { return tasks.status(); }

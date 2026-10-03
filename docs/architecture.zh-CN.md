@@ -136,3 +136,8 @@ Data 采用两个缓冲与固定 100ms 宽限期，接受超长线程停顿风�
 game-runtime 依赖 game-core 与 game-network，在已有 artifact 中发布 cn.managame.runtime.http。显式 HttpHandler/HttpMethod 注册编译 HttpRequestMethod 枚举/原始 path 查找，方法默认 POST，GET 需显式选择；显式 RouteKey 字段规则在 GET 读取 query，其他方法读取 JSON body，方法配置覆盖 Handler；也可指定 Handler 方法提取自定义 Key。HttpContextFactory 接收并保留选定 Key，可提供自定义 HTTP Context 字段，不包含框架业务身份/Metadata；无规则时由工厂选 Key。JSON 字段提取与结果编码使用 Jackson Databind 2.21.3 及传递 Core/Annotations。RuntimeHttp 接到 HttpServer.asyncHandler，与普通 Handler/Event/call 使用相同 Route 执行器和上下文路径。返回业务对象自动完成，void 方法通过 HttpResultCallback 提交对象。HttpResultCodec 默认编码 JSON，RuntimeHttp 在内部构造 Network 响应，业务结果不携带 HTTP 版本。不绑定请求 DTO 或鉴权。
 
 Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。跨 Route 回调恢复同一 HttpContext，但不延长请求生命周期。不增加监听器/执行器所有权：应用单独创建、启动、关闭 HttpServer，在关闭 Runtime 前安排在途完成。详见 [Runtime HTTP 语义](ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile)、[Java 绑定](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)、[RuntimeHttpExample](../game-example/src/main/java/cn/managame/example/runtime/RuntimeHttpExample.java)。普通消息契约和独立 Network HTTP pipeline 保持原有行为，RPC 接入仍需显式实现/待完善。
+
+
+## 可选 Spring 集成
+
+[game-spring](../game-spring/README.zh-CN.md) 依赖 Runtime、Data 和 spring-context，不使用 Spring Boot，核心模块不反向依赖 Spring。demo 使用 EnableGameRuntime/EnableGameData，仅保留应用 Domain、执行器、身份策略及数据源配置。ContextClosedEvent 先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime，随后普通监听器关闭 TCP/HTTP，最后销毁 Data 和连接池。详见 [容器集成语义](ogbs/OGBS-Spring-1.0.zh-CN.md) 和 [Java 集成规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。

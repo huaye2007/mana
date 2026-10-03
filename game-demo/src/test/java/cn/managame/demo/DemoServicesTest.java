@@ -46,10 +46,10 @@ class DemoServicesTest {
         final LinkedBlockingQueue<Invocation> received = new LinkedBlockingQueue<>();
         Probe(DemoTasks tasks) { super(tasks); }
         @Override @HttpMethod("/demo/echo")
-        public EchoResult echo(HttpContext context, FullHttpRequest request) {
-            assertSame(context, Contexts.current());
+        public EchoResult echo(String body) {
+            var context = Contexts.current(HttpContext.class);
             received.add(new Invocation(context.routeDomain(), context.routeKey(), Thread.currentThread().isVirtual()));
-            return super.echo(context, request);
+            return super.echo(body);
         }
     }
 

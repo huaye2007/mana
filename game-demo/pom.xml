@@ -7,7 +7,6 @@
   </parent>
   <artifactId>game-demo</artifactId>
   <properties>
-    <spring.version>7.0.9</spring.version>
     <fory.version>1.7.6</fory.version>
   </properties>
   <dependencies>
@@ -17,9 +16,9 @@
       <version>${fory.version}</version>
     </dependency>
     <dependency>
-      <groupId>org.springframework</groupId>
-      <artifactId>spring-context</artifactId>
-      <version>${spring.version}</version>
+      <groupId>cn.managame</groupId>
+      <artifactId>game-spring</artifactId>
+      <version>${project.version}</version>
     </dependency>
     <dependency>
       <groupId>cn.managame</groupId>

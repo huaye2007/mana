@@ -13,6 +13,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-rpc | RpcNode、主动/被动 Peer、固定 Slot、握手、心跳、重连、call / notify / reply，以及 Netty Wire 编解码 |
 | game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
+| [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、初始化 Repository 注入、Runtime 停机排空 |
 | [game-example](game-example/README.zh-CN.md) | Network、Runtime HTTP、RPC 可运行示例与示例执行测试 |
 | [game-demo](game-demo/README.zh-CN.md) | Spring 应用，装配 MySQL Data Repository、GamePacket TCP 分发、Runtime HTTP、定时与 cron |
 
@@ -23,6 +24,7 @@ game-core ──────→ game-data
     ├──────────→ game-runtime ←──── game-network
     └──────────→ game-rpc     ←──── game-network
 game-network / game-runtime / game-rpc ───→ game-example
+game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
 ```
 
 game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。game-core 为 Runtime/Data 缓存统一发布 Caffeine 依赖，归属见 [Core Java 规范](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责)。Runtime 为 HTTP 注解与 Route 接入依赖 game-core 和 game-network，不依赖 RPC、Spring 或业务序列化。
@@ -31,7 +33,7 @@ Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包
 
 ## OGBS 规范文档
 
-每个框架组件必须配套标准规范和 Java 开发规范；当前五个组件的成对文档统一入口见 [OGBS 1.0 文档索引](docs/ogbs/README.zh-CN.md)。
+每个框架组件必须配套标准规范和 Java 开发规范；当前六个组件的成对文档统一入口见 [OGBS 1.0 文档索引](docs/ogbs/README.zh-CN.md)。
 
 | 组件 | 标准规范（语言无关） | Java 开发规范 |
 | --- | --- | --- |
@@ -40,6 +42,7 @@ Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包
 | game-rpc | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.zh-CN.md) | [RPC Java 开发规范](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) |
 | game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java 开发规范](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) |
 | game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.zh-CN.md) | [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md) |
+| game-spring | [容器集成规范](docs/ogbs/OGBS-Spring-1.0.zh-CN.md) | [Spring Java 开发规范](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md) |
 
 game-data 已提供 Single/Group 缓存与异步写回、MySQL/JDBC、MongoDB 适配及 MySQL 追加日志，依赖 game-core；game-example 在实现可运行 Data 示例时再添加 game-data 依赖。详见 [模块入口](game-data/README.zh-CN.md)、[Data 语义规范](docs/ogbs/OGBS-Data-1.0.zh-CN.md) 和 [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。实机数据库验证状态见模块文档。
 

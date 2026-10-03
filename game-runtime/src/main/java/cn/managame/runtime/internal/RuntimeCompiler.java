@@ -28,6 +28,8 @@ import cn.managame.runtime.http.HttpContext;
 import cn.managame.runtime.http.HttpContextFactory;
 import cn.managame.runtime.http.DefaultHttpContext;
 import cn.managame.runtime.http.HttpResultCodec;
+import cn.managame.runtime.http.HttpRequestCodec;
+import java.util.function.Function;
 import io.netty.handler.codec.http.FullHttpRequest;
 
 import java.lang.invoke.*;
@@ -42,7 +44,7 @@ public final class RuntimeCompiler {
             List<ProtocolProvider> providers, List<RouteKeyBinding<?>> keys,
             List<Object> handlers, List<HandlerArgumentBinding<?>> arguments, HandlerContextFactory handlerContexts,
             List<Object> events, List<Object> crons,
-            List<Object> httpHandlers, HttpContextFactory httpContexts, HttpResultCodec httpResults,
+            List<Object> httpHandlers, HttpContextFactory httpContexts, HttpResultCodec httpResults, HttpRequestCodec httpRequests,
             ZoneId cronZone, RuntimeErrorHandler errors) {
         Set<Integer> ids = new HashSet<>();
         for (var d : domains) if (!ids.add(d.id())) throw invalid("Duplicate domain " + d.id());
@@ -137,7 +139,7 @@ public final class RuntimeCompiler {
             if (!cronKeys.add(cronKey)) throw invalid("Duplicate cron " + cronKey);
             compiledCrons.add(new CronBinding(cronKey, cron.domain(), cron.routeKey(), schedule, bind(target, m)));
         }
-        Map<HttpEndpoint, HttpBinding> compiledHttp = compileHttp(httpHandlers, ids);
+        Map<HttpEndpoint, HttpBinding> compiledHttp = compileHttp(httpHandlers, ids, httpRequests);
         if (httpContexts == null && compiledHttp.values().stream().anyMatch(binding -> binding.routeKey() == null))
             throw invalid("HTTP endpoints without a RouteKey rule require httpContextFactory");
         if (httpContexts == null && compiledHttp.values().stream().anyMatch(binding -> binding.contextType() != null
@@ -148,7 +150,7 @@ public final class RuntimeCompiler {
             Map.copyOf(compiledHttp), httpContexts, httpResults, errors);
     }
 
-    private static Map<HttpEndpoint, HttpBinding> compileHttp(List<Object> handlers, Set<Integer> domains) {
+    private static Map<HttpEndpoint, HttpBinding> compileHttp(List<Object> handlers, Set<Integer> domains, HttpRequestCodec requests) {
         Map<HttpEndpoint, HttpBinding> bindings = new HashMap<>();
         for (Object target : handlers) {
             HttpHandler owner = target.getClass().getAnnotation(HttpHandler.class);
@@ -169,13 +171,21 @@ public final class RuntimeCompiler {
                         || path.chars().anyMatch(c -> c <= 32 || c == 127)) throw invalid("Invalid HTTP path: " + method);
                 Class<?> contextType = null;
                 boolean requestSeen = false;
+                Function<FullHttpRequest, Object> decoder = request -> null;
                 int[] arguments = new int[method.getParameterCount()];
                 for (int i = 0; i < arguments.length; i++) {
                     Class<?> type = method.getParameterTypes()[i];
-                    if (type == FullHttpRequest.class && !requestSeen) { requestSeen = true; arguments[i] = 1; }
+                    if (type == FullHttpRequest.class && !requestSeen) {
+                        requestSeen = true; arguments[i] = 1; decoder = request -> request;
+                    }
                     else if (contextType == null && Context.class.isAssignableFrom(type)
                             && (type.isAssignableFrom(HttpContext.class) || HttpContext.class.isAssignableFrom(type))) {
                         contextType = type; arguments[i] = 0;
+                    } else if (!requestSeen && !Context.class.isAssignableFrom(type) && !type.isPrimitive()
+                            && !io.netty.handler.codec.http.HttpObject.class.isAssignableFrom(type)) {
+                        requestSeen = true; arguments[i] = 1;
+                        Type declared = method.getGenericParameterTypes()[i]; validateHttpType(declared);
+                        decoder = Objects.requireNonNull(requests.decoder(declared), "HTTP decoder");
                     } else throw invalid("Invalid HTTP parameters: " + method);
                 }
                 MethodHandle handle = bind(target, method);
@@ -183,11 +193,17 @@ public final class RuntimeCompiler {
                 if (!returnsResult) handle = MethodHandles.filterReturnValue(handle, MethodHandles.constant(Object.class, null));
                 handle = handle.asType(MethodType.genericMethodType(arguments.length));
                 handle = MethodHandles.permuteArguments(handle, MethodType.methodType(Object.class, Object.class, Object.class), arguments);
-                if (bindings.putIfAbsent(new HttpEndpoint(verb, path), new HttpBinding(domain, contextType, returnsResult, handle, key)) != null)
+                if (bindings.putIfAbsent(new HttpEndpoint(verb, path), new HttpBinding(domain, contextType, returnsResult, handle, key, decoder)) != null)
                     throw invalid("Duplicate HTTP method/path: " + verb + " " + path);
             }
         }
         return bindings;
+    }
+    private static void validateHttpType(Type type) {
+        if (type instanceof TypeVariable<?> || type instanceof WildcardType) throw invalid("HTTP payload requires a concrete type: " + type);
+        if (type instanceof ParameterizedType parameterized)
+            for (Type argument : parameterized.getActualTypeArguments()) validateHttpType(argument);
+        if (type instanceof GenericArrayType array) validateHttpType(array.getGenericComponentType());
     }
     private static void validateMessageKey(String field, String method) {
         if ((!field.isEmpty() && field.isBlank()) || (!method.isEmpty() && method.isBlank())
@@ -243,7 +259,8 @@ public final class RuntimeCompiler {
         void invoke(Object context, Object message, Object[] arguments) throws Throwable { handle.invokeExact(context, message, arguments); }
     }
     record HttpEndpoint(String method, String path) {}
-    record HttpBinding(int domain, Class<?> contextType, boolean returnsResult, MethodHandle handle, HttpRouteKey routeKey) {
+    record HttpBinding(int domain, Class<?> contextType, boolean returnsResult, MethodHandle handle, HttpRouteKey routeKey,
+                       Function<FullHttpRequest, Object> decoder) {
         Object invoke(Object context, Object request) throws Throwable { return handle.invokeExact(context, request); }
     }
     record EventBinding(int order, MethodHandle handle) {

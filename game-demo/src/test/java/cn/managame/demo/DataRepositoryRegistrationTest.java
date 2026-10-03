@@ -45,6 +45,7 @@ class DataRepositoryRegistrationTest {
 
     @Test void rejectsPrototypeRepositoriesBeforeOpeningDatabaseConnections() {
         try (var context = context()) {
+            context.getEnvironment().setActiveProfiles("repository-prototype-tests");
             context.register(GameDataConfig.class, PrototypePlayers.class);
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, context::refresh);
             assertTrue(failure.getMessage().contains("singleton"));
@@ -93,6 +94,6 @@ class DataRepositoryRegistrationTest {
     @Repository @Profile("repository-binding-tests")
     static class Logs extends LogRepository<Entry> {}
 
-    @Repository @Profile("repository-binding-tests") @Scope("prototype")
+    @Repository @Profile("repository-prototype-tests") @Scope("prototype")
     static class PrototypePlayers extends SingleRepository<Long, Player> {}
 }

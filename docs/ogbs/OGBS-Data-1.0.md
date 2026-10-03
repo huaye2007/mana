@@ -222,6 +222,14 @@ close closes admission before processing accepted work. New changes reject; acce
 
 close neither stops upstream Runtime/network admission nor closes external database clients. Stop producers and tasks that may still call Repository before closing Data. Forced process termination has no normal-close guarantees.
 
+### 7.4 Explicit flush and diagnostics
+
+**D-FLUSH-01**: Explicit flush processes outstanding state buffers and log queues synchronously while keeping Data open. For a stable persistence barrier, first quiesce business writers. With concurrent writes, flush does not define a transaction/snapshot or guarantee that later writes are included. Accepted batches still follow coalescing, retry and terminal-failure handling. A prior unrecovered failure remains observable; empty queues and successful later batches do not erase it. Recursive flush from persistence/error callbacks rejects rather than deadlocking. Driver timeouts remain application configuration.
+
+**D-DIAG-01**: Pending-change, queued-log, terminal-failed-batch and cache counts are approximate observations, not durable acknowledgements or memory limits. Group cache counts identify cached groups, not entities. Flush success confirms only the covered mapper operations, not a distributed transaction or protection against process loss before earlier write-back.
+
+Changing an entity still requires update; direct mutation of a returned Group Map still bypasses persistence. Automatic dirty tracking, immutable save snapshots and cache-capacity eviction are not added. A business-critical operation can quiesce its writers and flush from a management context, while ordinary gameplay stays asynchronous. See [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
+
 <a id="8-存储适配语义"></a>
 
 ## 8. Storage adapter semantics

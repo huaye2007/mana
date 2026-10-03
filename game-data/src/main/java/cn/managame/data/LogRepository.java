@@ -10,6 +10,7 @@ public abstract class LogRepository<E> {
     private MysqlLogWriter logWriter;
     private WriteBehindManager writer;
     protected LogRepository() {}
+    final long queuedLogs() { return queue.size(); }
     final void initialize(MysqlLogWriter logWriter, WriteBehindManager writer) {
         this.logWriter = logWriter; this.writer = writer;
     }

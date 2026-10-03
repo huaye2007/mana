@@ -9,6 +9,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.concurrent.atomic.LongAdder;
 
 final class WriteBehindManager {
     private enum State { RUNNING, CLOSING, CLOSED }
@@ -25,7 +26,8 @@ final class WriteBehindManager {
     private final long intervalNanos;
     private final DataErrorHandler handler;
     private final RetryPolicy retry;
-    private DataSaveException failure;
+    private volatile DataSaveException failure;
+    private final LongAdder failedBatches = new LongAdder(), flushes = new LongAdder(), saveNanos = new LongAdder();
     private volatile DataSaveException closeFailure;
     WriteBehindManager(Map<EntityMeta,EntityMapper> mappers, Duration interval, int batchSize,
                        int maxAttempts, DataErrorHandler handler, RetryPolicy retry) {
@@ -67,13 +69,14 @@ final class WriteBehindManager {
         synchronized (pipeline) {
             if (state == State.CLOSED) return;
             pipelineThread = Thread.currentThread();
+            long started = System.nanoTime();
             try {
                 PendingBuffer old = activeBuffer;
                 activeBuffer = old == a ? b : a;
                 grace();
                 flushBuffer(old);
                 for (LogRepository<?> log : logs) log.drain(this, batchSize);
-            } finally { pipelineThread = null; }
+            } finally { flushes.increment(); saveNanos.add(System.nanoTime() - started); pipelineThread = null; }
         }
     }
     private static void grace() {
@@ -124,6 +127,7 @@ final class WriteBehindManager {
                 }
                 if (again) continue;
                 if (failure == null) failure = new DataSaveException("One or more accepted batches failed; see DataErrorHandler", cause);
+                failedBatches.increment();
                 try { handler.onError(context); }
                 catch (Throwable callbackFailure) {
                     System.getLogger(getClass().getName()).log(System.Logger.Level.ERROR, "DataErrorHandler failed", callbackFailure);
@@ -131,6 +135,20 @@ final class WriteBehindManager {
                 return;
             }
         }
+    }
+    DataStats stats(long singles, long groups) {
+        long changes = 0;
+        for (var map : a.changes.values()) changes += map.size();
+        for (var map : b.changes.values()) changes += map.size();
+        long queued = 0;
+        for (var log : logs) queued += log.queuedLogs();
+        return new DataStats(state == State.RUNNING, changes, queued, failedBatches.sum(), flushes.sum(), saveNanos.sum(), singles, groups);
+    }
+    void flushNow() {
+        if (Thread.currentThread() == pipelineThread) throw new DataOperationException("Cannot flush from a persistence callback");
+        ensureRunning();
+        flush(); flush();
+        if (failure != null) throw failure;
     }
     void close() {
         if (Thread.currentThread() == pipelineThread)

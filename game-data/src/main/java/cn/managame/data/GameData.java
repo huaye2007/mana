@@ -13,5 +13,15 @@ public final class GameData implements AutoCloseable {
         if (repository == null) throw new IllegalArgumentException("Repository is not registered: " + type);
         return type.cast(repository);
     }
+    /** Flushes both buffers synchronously; first quiesce writers for a stable persistence barrier. */
+    public void flush() { writer.flushNow(); }
+    public DataStats stats() {
+        long singles = 0, groups = 0;
+        for (Object repository : repositories.values()) {
+            if (repository instanceof SingleRepository<?, ?> single) singles += single.cachedEntries();
+            if (repository instanceof GroupRepository<?, ?> group) groups += group.cachedEntries();
+        }
+        return writer.stats(singles, groups);
+    }
     @Override public void close() { writer.close(); }
 }

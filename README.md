@@ -13,6 +13,7 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | game-rpc | RpcNode, active/passive peers, fixed slots, handshakes, heartbeats, reconnects, call / notify / reply, and Netty wire codecs |
 | game-runtime | Route execution, Context, Handler, HTTP annotations/dispatch, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
+| [game-spring](game-spring/README.md) | Optional plain Spring: annotation discovery, initialized Repository injection, Runtime shutdown drain |
 | [game-example](game-example/README.md) | Runnable Network, Runtime HTTP, and RPC examples and their execution tests |
 | [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories, GamePacket TCP dispatch, Runtime HTTP, timer and cron |
 
@@ -23,6 +24,7 @@ game-core ──────→ game-data
     ├──────────→ game-runtime ←──── game-network
     └──────────→ game-rpc     ←──── game-network
 game-network / game-runtime / game-rpc ───→ game-example
+game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
 ```
 
 game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. game-core publishes the shared Caffeine dependency for Runtime/Data cache use, with ownership defined in the [Core Java specification](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责). Runtime depends on game-core and game-network for HTTP annotations and Route integration; it does not depend on RPC, Spring, or business serialization.
@@ -33,7 +35,7 @@ Network and RPC each publish one Maven artifact, with responsibility-based subpa
 
 ## OGBS specifications
 
-Every framework component requires a standard specification and a Java development specification. All five pairs are listed in the [OGBS 1.0 documentation index](docs/ogbs/README.md).
+Every framework component requires a standard specification and a Java development specification. All six pairs are listed in the [OGBS 1.0 documentation index](docs/ogbs/README.md).
 
 | Component | Specification (language-independent) | Java Development Specification |
 | --- | --- | --- |
@@ -42,6 +44,7 @@ Every framework component requires a standard specification and a Java developme
 | game-rpc | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.md) | [RPC Java Development Specification](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md) |
 | game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
 | game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) | [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
+| game-spring | [Container Integration Specification](docs/ogbs/OGBS-Spring-1.0.md) | [Spring Java Development Specification](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md) |
 
 game-data provides Single/Group caches, asynchronous write-behind, MySQL/JDBC and MongoDB adapters, and append-only MySQL logs. It depends on game-core; game-example will add a game-data dependency when runnable Data examples are implemented. See the [module entry](game-data/README.md), [Data semantics](docs/ogbs/OGBS-Data-1.0.md), and [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md). Live database validation status is in the module documentation.
 
@@ -58,7 +61,7 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-The root build includes game-core, game-network, game-rpc, game-runtime, game-data, game-example, and game-demo. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-example, under `cn.managame.example.<component>`; framework artifacts contain no example classes. Run mvn -pl game-example -am test to validate the examples. RPC→Runtime integration and DataMemoryDemo remain unimplemented.
+The root build includes game-core, game-network, game-rpc, game-runtime, game-data, game-spring, game-example, and game-demo. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-example, under `cn.managame.example.<component>`; framework artifacts contain no example classes. Run mvn -pl game-example -am test to validate the examples. RPC→Runtime integration and DataMemoryDemo remain unimplemented.
 
 Run [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 

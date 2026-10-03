@@ -6,6 +6,7 @@ import cn.managame.network.connection.Connection;
 import cn.managame.demo.network.GameSession;
 import cn.managame.demo.bus.user.LoginReq;
 import cn.managame.core.Metadatas;
+import cn.managame.core.Metadata;
 
 /** Application-owned domains with explicit IDs; never use enum ordinal as a Route ID. */
 public enum GameDomain {
@@ -38,14 +39,17 @@ public enum GameDomain {
 
     /** Application policy: each new domain explicitly chooses its routing and identity inputs. */
     public DefaultClientHandlerContext handlerContext(Connection connection, Object message) {
+        return handlerContext(connection, Metadatas.empty(), message);
+    }
+    public DefaultClientHandlerContext handlerContext(Connection connection, Metadata metadata, Object message) {
         return switch (this) {
             case LOGIN -> new DefaultClientHandlerContext(id, ((LoginReq) message).getUserId(), 0, 0,
-                    Metadatas.empty(), message, connection);
+                    metadata, message, connection);
             case ROLE -> {
                 GameSession session = connection.get(GameSession.KEY);
                 if (session == null) throw new IllegalArgumentException("ROLE requires an authenticated GameSession");
                 yield new DefaultClientHandlerContext(id, session.routeKey(), ROLE_BUSINESS_ID_TYPE,
-                        session.roleId(), Metadatas.empty(), message, connection);
+                        session.roleId(), metadata, message, connection);
             }
             case SYSTEM -> throw new IllegalArgumentException("SYSTEM has no packet identity policy");
         };

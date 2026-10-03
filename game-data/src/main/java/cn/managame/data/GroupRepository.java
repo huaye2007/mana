@@ -15,6 +15,7 @@ public abstract class GroupRepository<K, E> {
     private WriteBehindManager writer;
     private LoadingCache<GroupKey, ConcurrentHashMap<K,E>> cache;
     protected GroupRepository() {}
+    final long cachedEntries() { return cache.estimatedSize(); }
     @SuppressWarnings("unchecked")
     final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;

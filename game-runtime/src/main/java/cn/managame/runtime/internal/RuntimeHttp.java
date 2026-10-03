@@ -61,6 +61,7 @@ final class RuntimeHttp implements HttpDispatcher {
             return;
         }
         HttpContext context;
+        Object payload;
         try {
             completion.context = new DefaultContext(binding.domain(), 0);
             long key = binding.routeKey() == null ? 0 : binding.routeKey().extract(request);
@@ -75,6 +76,7 @@ final class RuntimeHttp implements HttpDispatcher {
                 throw new IllegalStateException("HTTP context factory returned an incompatible context");
             if (context.routeKey() == 0) { reject(completion, HttpResponseStatus.BAD_REQUEST, null); return; }
             completion.context = context;
+            payload = binding.decoder().apply(request);
         } catch (IllegalArgumentException invalidInput) {
             reject(completion, HttpResponseStatus.BAD_REQUEST, null); return;
         } catch (Throwable cause) {
@@ -89,7 +91,7 @@ final class RuntimeHttp implements HttpDispatcher {
         try {
             int error = submit.apply(context, () -> {
                 try {
-                    Object result = binding.invoke(context, request);
+                    Object result = binding.invoke(context, payload);
                     if (binding.returnsResult()) completion.onResponse(result);
                 } catch (Throwable cause) {
                     report.accept(context, cause);

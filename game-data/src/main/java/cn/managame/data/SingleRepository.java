@@ -14,6 +14,7 @@ public abstract class SingleRepository<K, E> {
     private WriteBehindManager writer;
     private LoadingCache<K, CacheEntity<E>> cache;
     protected SingleRepository() {}
+    final long cachedEntries() { return cache.estimatedSize(); }
     @SuppressWarnings("unchecked")
     final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;

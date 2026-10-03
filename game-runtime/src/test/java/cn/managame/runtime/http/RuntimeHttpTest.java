@@ -101,6 +101,63 @@ class RuntimeHttpTest {
         @HttpMethod(value = "/encoded%2Fpath", method = HttpRequestMethod.GET) public String encoded() { return response("encoded"); }
     }
 
+    record Input(long id, String text, List<String> tags) {}
+    @HttpHandler(domain = 1, routeKey = "id") static class BoundInputs {
+        @HttpMethod("/dto") public String dto(Input request) {
+            assertEquals(request.id(), Contexts.current(HttpContext.class).routeKey());
+            return request.text() + ":" + request.tags().size();
+        }
+        @HttpMethod(value = "/dto", method = HttpRequestMethod.GET) public String query(Input request) { return dto(request); }
+        @HttpMethod("/string") public String string(String body) { return body; }
+        @HttpMethod(value = "/generic", routeKeyMethod = "fixedKey")
+        public Integer generic(Map<String, List<Input>> request) { return request.get("items").getFirst().tags().size(); }
+        public long fixedKey(FullHttpRequest request) { return 99; }
+    }
+
+    static Result dispatchBody(GameRuntime runtime, String method, String uri, String body) {
+        var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, io.netty.handler.codec.http.HttpMethod.valueOf(method), uri,
+                Unpooled.copiedBuffer(body, StandardCharsets.UTF_8));
+        var result = new Result();
+        try { runtime.http().dispatch(request, result); } finally { request.release(); }
+        return result;
+    }
+
+    @Test void dtoStringGenericAndRepeatedQueryValuesBindWithoutContextParameter() {
+        var executor = new QueueExecutor();
+        try (var runtime = rawBuilder(executor).httpHandlers(List.of(new BoundInputs())).build()) {
+            String body = "{\"id\":99,\"text\":\"你好\",\"tags\":[\"a\",\"b\"]}";
+            var dto = dispatchBody(runtime, "POST", "/dto", body); executor.next(); assertEquals("你好:2", dto.body);
+            var string = dispatchBody(runtime, "POST", "/string", body); executor.next(); assertEquals(body, string.body);
+            var query = dispatchBody(runtime, "GET", "/dto?id=99&text=hello&tags=a&tags=b", "");
+            executor.next(); assertEquals("hello:2", query.body);
+            var generic = dispatchBody(runtime, "POST", "/generic", "{\"items\":[" + body + "]}");
+            executor.next(); assertEquals("2", generic.body);
+            assertEquals(400, dispatchBody(runtime, "POST", "/generic", "{\"items\":123}").status);
+            assertTrue(executor.tasks.isEmpty());
+            for (String invalid : List.of("{\"id\":99,\"tags\":123}", body + " null", "{\"id\":99,\"text\":[]}")) {
+                assertEquals(400, dispatchBody(runtime, "POST", "/dto", invalid).status);
+                assertTrue(executor.tasks.isEmpty());
+            }
+        }
+    }
+
+    @Test void admittedHandlerCanSubmitHttpContinuationAfterShutdownButExternalHttpRejects() throws Exception {
+        record Trigger(Runnable action) {}
+        @Handler(domain = 1) class Owner {
+            @HandlerMethod public void handle(Trigger request) { request.action().run(); }
+        }
+        var executor = new QueueExecutor(); var responses = new ArrayList<Result>();
+        try (var runtime = rawBuilder(executor).protocols(List.of(r -> r.register(Protocols.request(1, Trigger.class))))
+                .handlers(List.of(new Owner())).httpHandlers(List.of(new BoundInputs())).build()) {
+            runtime.dispatch(null, 7L, new Trigger(() -> responses.add(dispatchBody(runtime, "POST", "/string", "{\"id\":99}"))));
+            runtime.shutdown();
+            assertEquals(503, dispatchBody(runtime, "POST", "/string", "{\"id\":99}").status);
+            executor.next(); assertFalse(runtime.awaitTermination(Duration.ZERO));
+            executor.next(); assertTrue(runtime.awaitTermination(Duration.ofSeconds(1)));
+            assertEquals(200, responses.getFirst().status); assertEquals("{\"id\":99}", responses.getFirst().body);
+        }
+    }
+
     @Test void exactLookupQueryExclusionMethodAllowAndDomainOverride() {
         var executor = new QueueExecutor();
         try (var runtime = builder(executor).httpHandlers(List.of(new Methods())).build()) {
@@ -342,7 +399,7 @@ class RuntimeHttpTest {
     @HttpHandler(domain = 1) static class PrivateMethod { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) private void bad() {} }
     @HttpHandler(domain = 1) static class StaticMethod { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public static void bad() {} }
     @HttpHandler(domain = 1) static class WrongReturn { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public FullHttpResponse bad() { return null; } }
-    @HttpHandler(domain = 1) static class WrongParameter { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad(String text) {} }
+    @HttpHandler(domain = 1) static class WrongParameter { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad(String first, String second) {} }
     @HttpHandler(domain = 1) static class InvocationParameter { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad(InvocationContext context) {} }
     @HttpHandler(domain = 3) static class UnknownDomain { @HttpMethod(value = "/bad", method = HttpRequestMethod.GET) public void bad() {} }
     @HttpHandler(domain = 1) static class InvalidPath { @HttpMethod(value = "/bad?x=1", method = HttpRequestMethod.GET) public void bad() {} }

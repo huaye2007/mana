@@ -225,4 +225,33 @@ class DataContractTest {
         try { if (!latch.await(3,TimeUnit.SECONDS)) throw new AssertionError("Latch timed out"); }
         catch (InterruptedException e) { throw new AssertionError(e); }
     }
+
+    @Test void explicitFlushDrainsBothBuffersAndExposesApproximateStatistics() {
+        var mapper = new RecordingMapper();
+        try (var data = builder(mapper).build()) {
+            var players = data.repository(Players.class);
+            players.insert(new Player(1));
+            var once = new AtomicBoolean();
+            mapper.beforeSave = () -> {
+                assertThrows(DataOperationException.class, data::flush);
+                if (once.compareAndSet(false, true)) players.insert(new Player(2));
+            };
+            assertEquals(1, data.stats().pendingChanges()); data.flush();
+            assertEquals(List.of("INSERT", "INSERT"), mapper.events);
+            assertEquals(0, data.stats().pendingChanges()); assertEquals(2, data.stats().singleCacheEntries());
+            assertEquals(2, data.stats().flushes()); assertEquals(0, data.stats().failedBatches());
+            assertTrue(data.stats().saveNanos() > 0);
+        }
+    }
+
+    @Test void explicitFlushReportsHistoricalFailuresAndKeepsLaterBatchesWorking() {
+        var mapper = new RecordingMapper(); mapper.saveFailure = true;
+        var data = builder(mapper).errorHandler(error -> {}).build();
+        data.repository(Players.class).insert(new Player(1));
+        assertThrows(DataSaveException.class, data::flush); assertEquals(1, data.stats().failedBatches());
+        mapper.saveFailure = false; data.repository(Players.class).insert(new Player(2));
+        assertThrows(DataSaveException.class, data::flush); assertEquals(List.of("INSERT"), mapper.events);
+        assertThrows(DataSaveException.class, data::close);
+        assertThrows(DataOperationException.class, data::flush); assertFalse(data.stats().accepting());
+    }
 }

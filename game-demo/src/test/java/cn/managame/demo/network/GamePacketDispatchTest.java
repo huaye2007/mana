@@ -50,12 +50,16 @@ class GamePacketDispatchTest {
     }
 
     static Connection connection() {
+        return connection(new ArrayList<>());
+    }
+    static Connection connection(List<GamePacket> writes) {
         var attributes = new ConcurrentHashMap<AttributeKey<?>, Object>();
         return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[]{Connection.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "get" -> attributes.get(args[0]);
                     case "set" -> { attributes.put((AttributeKey<?>) args[0], args[1]); yield null; }
                     case "remove" -> attributes.remove(args[0]);
+                    case "write" -> { writes.add((GamePacket) args[0]); yield cn.managame.network.connection.WriteStatus.ACCEPTED; }
                     default -> throw new AssertionError("Unexpected Connection operation: " + method.getName());
                 });
     }
@@ -67,12 +71,13 @@ class GamePacketDispatchTest {
                 .routeExecutors(List.of(RouteExecutorBinding.of((d, k, t) -> {
                     tasks.add(t); return RouteExecuteStatus.ACCEPTED;
                 }, 1))).protocols(List.of(new GameProtocols())).handlers(List.of(handler))
-                .handlerContextFactory((domain, connection, message) -> GameDomain.fromId(domain)
-                        .handlerContext(connection, message))
+                .handlerContextFactory((domain, connection, metadata, message) -> GameDomain.fromId(domain)
+                        .handlerContext(connection, metadata, message))
                 .build()) {
             var fory = new ForyConfig().fory(new GameProtocols());
             var packets = new GamePacketHandler(fory, runtime);
-            var connection = connection(); var other = connection();
+            var writes = new ArrayList<GamePacket>();
+            var connection = connection(writes); var other = connection();
             packets.onConnected(connection); packets.onConnected(other);
             assertNull(connection.get(GameSession.KEY));
             assertNull(other.get(GameSession.KEY));
@@ -92,9 +97,15 @@ class GamePacketDispatchTest {
             assertEquals(request, received.message()); assertEquals(10001L, received.roleId());
             assertEquals(99L, received.context().routeKey()); assertSame(connection, received.context().connection());
             assertEquals(10001L, received.context().businessId());
+            assertEquals(1002, received.context().metadata().get(GamePacketMetadata.COMMAND));
+            assertEquals(8, received.context().metadata().get(GamePacketMetadata.SEQ));
+            assertEquals(0, received.context().metadata().get(GamePacketMetadata.CODE));
             var missingHandler = GamePacketCodecTest.packet(1001, 9, 0, fory.serialize(new DemoMessage(1L, "no handler")));
-            assertEquals(FrameworkErrorCodes.HANDLER_NOT_FOUND,
-                    assertThrows(RuntimeDispatchException.class, () -> packets.onMessage(connection, missingHandler)).errorCode());
+            packets.onMessage(connection, missingHandler);
+            assertEquals(1, writes.size());
+            assertEquals(FrameworkErrorCodes.HANDLER_NOT_FOUND, writes.getFirst().getCode());
+            assertEquals(1001, writes.getFirst().getCommand()); assertEquals(9, writes.getFirst().getSeq());
+            assertEquals(0, writes.getFirst().getBody().length);
             assertTrue(tasks.isEmpty());
             other.remove(GameSession.KEY);
             assertThrows(IllegalArgumentException.class, () -> packets.onMessage(other,

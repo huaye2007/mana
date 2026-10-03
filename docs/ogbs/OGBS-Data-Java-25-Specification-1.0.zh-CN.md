@@ -405,3 +405,9 @@ DataOperation 包括 INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT。这
 | 日志失败使用同一 Handler 且继续后续分区 | LogContractTest.logFailuresReachSameHandlerAndDoNotBlockLaterPartitions |
 
 这些入口不能证明固定 100ms 宽限期在任意线程暂停下安全，也不能替代真实数据库的故障与兼容性验证。涉及这类保证的新增需求应增加相应实现及验证，而不是扩大现有测试结论。
+
+## 11. 显式 flush 与 DataStats
+
+`GameData.flush()` 通过既有持久化流水线串行执行两次缓冲区轮换/flush，每次保留 100 毫秒宽限期；周期任务可能在两次之间运行。需要稳定屏障时先暂停写入，并发写入没有快照隔离；调用后 GameData 继续可用。已关闭/关闭中的 Data 以及持久化回调线程的重入调用以 DataOperationException 拒绝。处理后若有任何历史最终失败，抛 DataSaveException，包括当前队列为空时；flush 不自动重试这些历史失败，close 仍报告相同失败。JDBC/Mongo 超时策略决定阻塞时间，避免在繁忙游戏 Route 执行整个服务的 flush。
+
+`GameData.stats()` 返回 DataStats：accepting、pendingChanges（两个缓冲区合并后条目，可能包括正在保存的批次）、queuedLogs、failedBatches（最终失败，不是重试次数）、flushes（轮换次数，不包含 close 最终处理）、saveNanos（包括宽限期的流水线耗时）、singleCacheEntries（包括不存在的负缓存）、groupCacheEntries（组数，不是实体数）。字段读取间可能变化。日志队列 size 遍历为 O(n)，应按管理频率采样，不逐消息调用。不隐式安装 exporter、HTTP 管理接口、硬队列限制、脏检测或快照复制。[DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java) 验证两个缓冲区、统计、回调拒绝及历史失败。真实数据库持久性/故障行为需配置集成服务验证。

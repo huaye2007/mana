@@ -1,4 +1,4 @@
-package cn.managame.demo.common.runtime;
+package cn.managame.spring.runtime;
 
 import cn.managame.runtime.timer.Cron;
 import org.springframework.aop.support.AopUtils;

@@ -164,4 +164,19 @@ class TransportContextTest {
                 Metadatas.empty(), message, 10, 0, 2, 1));
         assertSame(message, rpc(1, 99, message, -1).message());
     }
+
+    @Test void rpcConvenienceEntrySelectsAnnotatedDomainAndPreservesEnvelope() {
+        var errors = new ArrayList<RuntimeError>(); var calls = new AtomicInteger();
+        try (var runtime = builder((d, k, task) -> { task.run(); return RouteExecuteStatus.ACCEPTED; }, errors).build()) {
+            var metadata = Metadatas.builder().put(MetadataKeys.intKey(1), 3).build();
+            runtime.dispatchRpc(10, 2, 2, 33, 100, 1, 100, metadata, new RpcMessage(() -> {
+                var context = Contexts.current(RpcHandlerContext.class);
+                assertEquals(1, context.routeDomain()); assertEquals(10, context.sourceNodeId());
+                assertEquals(2, context.sourceSlotId()); assertEquals(33, context.requestId());
+                assertEquals(100, context.routeKey()); assertEquals(100, context.businessId());
+                assertSame(metadata, context.metadata()); calls.incrementAndGet();
+            }));
+            assertEquals(1, calls.get()); assertTrue(errors.isEmpty());
+        }
+    }
 }

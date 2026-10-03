@@ -11,6 +11,7 @@
 | game-core | [Core Specification](OGBS-Core-1.0.zh-CN.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.zh-CN.md) | 已实现；共享 Metadata 与错误码 |
 | game-runtime | [Runtime Specification](OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) | 已实现；Route、Context、Handler、HTTP 注解/分发/对象结果、Event、Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.zh-CN.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.zh-CN.md) | 已实现；真实 MySQL/MongoDB 验证需配置环境 |
+| game-spring | [容器集成规范](OGBS-Spring-1.0.zh-CN.md) | [Spring Java 开发规范](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md) | 已实现；可选普通 Spring 扫描、初始化 Repository 注入与停机排空 |
 | game-network | [Network Specification](OGBS-Network-1.0.zh-CN.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) | 已实现；TCP/TLS/WS/WSS 与独立 HTTP/1.1 服务端（同步/回调响应） |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.zh-CN.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) | 已实现；内部 TCP、多 Slot、调用、心跳/重连 |
 
@@ -83,6 +84,9 @@ flowchart LR
     C --> R[game-rpc]
     N[game-network] --> R
     N --> RT
+    RT --> S[game-spring]
+    D --> S
+    S --> A
     RT --> E
     N --> E[game-example]
     R --> E
