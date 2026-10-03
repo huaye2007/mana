@@ -17,6 +17,7 @@ import java.time.ZoneId;
 @Configuration
 @Import(GameProtocols.class)
 @EnableGameRuntime(basePackages = "cn.managame.demo")
+@PropertySource("classpath:game-http.properties")
 public class GameRuntimeConfig {
     @Bean(destroyMethod = "close")
     public RouteExecutor routeExecutor() { return RouteExecutors.virtualThreads(); }

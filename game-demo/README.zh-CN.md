@@ -2,7 +2,7 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-根 Maven 构建中的普通 Spring 应用，使用 JDK 25 和仓库父 POM，应用源码位于 `cn.managame.demo`。`spring-context:7.0.9` 提供依赖注入；应用层 HikariCP 与 MySQL Driver 提供连接池和 JDBC 实现。
+根 Maven 构建中的普通 Spring 应用，使用 JDK 25 和仓库父 POM，应用源码位于 `cn.managame.demo`。唯一直接框架依赖为 [game-spring](../game-spring/README.zh-CN.md)，传递引入 Spring Context 7.0.9、game-runtime、game-data，并经这些模块引入 game-network 和 game-core。demo 未使用 RPC 代码，因此不依赖 game-rpc。应用层 Fory、HikariCP、MySQL Driver 仍显式声明。
 
 `org.apache.fory:fory-core:1.7.6` 在此应用内提供业务 body 的二进制序列化。按照 [Fory 的 JDK 配置说明](https://fory.apache.org/docs/object-serialization/java/)，在 IDE 中使用 JDK 25 启动 GameDemo 时增加 VM 参数 `--add-opens=java.base/java.lang.invoke=ALL-UNNAMED`；demo POM 已为 Surefire 测试配置该参数。
 
@@ -16,7 +16,7 @@ public class UserRepository extends SingleRepository<Long, User> {
 
 在 `src/main/resources/application.properties` 配置 `game.db.url`、`game.db.username`、`game.db.password` 后，使用 JDK 25 在 IDE 启动 `cn.managame.demo.GameDemo`。数据库需预先存在，Data 会初始化缺失的状态表/列/索引。JDBC URL 缺失或为空时，在创建连接池前报错并明确提示配置 `game.db.url`。也可通过 JVM 系统属性和环境变量向 Spring Environment 提供这些配置键。
 
-`@PropertySource` 加载文件，Spring 默认的内嵌值解析器负责注入 `@Value`，无需显式声明 `PropertySourcesPlaceholderConfigurer` Bean。初始化成功后，入口输出 `game-demo started. Press Ctrl+C to stop.`，并返回 main 在 9000 端口启动 packet 分发 TCP 服务。Netty 持有的线程使进程持续运行。当前入口不阻塞主线程；JVM 退出时触发 Spring 关闭钩子。Context 关闭先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime、监听器、Data 和应用持有的连接池。HTTP 同时监听 127.0.0.1:8080，两个监听器在 Runtime 排空后、Data 销毁前关闭，不新增保活线程。
+`@PropertySource` 加载文件，Spring 默认的内嵌值解析器负责注入 `@Value`，无需显式声明 `PropertySourcesPlaceholderConfigurer` Bean。初始化成功后，入口输出 `game-demo started. Press Ctrl+C to stop.`，并返回 main 在 9000 端口启动 packet 分发 TCP 服务。Netty 持有的线程使进程持续运行。当前入口不阻塞主线程；JVM 退出时触发 Spring 关闭钩子。Context 关闭先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime、监听器、Data 和应用持有的连接池。game-spring 在 Spring refresh 时自动启动 HTTP，默认监听 127.0.0.1:8080，两个监听器在 Runtime 排空后、Data 销毁前关闭，不新增保活线程。
 
 [GameDataConfig](src/main/java/cn/managame/demo/common/data/GameDataConfig.java) 收集扫描到的、继承 SingleRepository、GroupRepository 或 LogRepository 的 `@Repository` Bean，不提前实例化。它将类型注册到 GameDataBuilder，并把 Bean 的实例供应器改为 `data.repository(type)`，保留 Bean 名称、限定符及 Spring 字段/setter 注入。Data 初始化实例后才进入 Spring 注入回调或供业务使用；在扫描范围内新增 Repository 无需逐个注册类型或声明 `@Bean` 方法。Repository 必须为单例作用域，其他作用域在启动时拒绝；仍遵守 Data 直接继承具体参数化基类及无参构造的要求。实例由 GameData 构造，因此不支持构造器依赖注入。此适配已抽到可选 game-spring，由 @EnableGameData 启用；game-data 不依赖 Spring。
 
@@ -70,7 +70,14 @@ Domain 1 来自 @Handler，Key 为 99，context.businessId() 为 10001；Key 和
 
 ## HTTP、定时与 cron
 
-[SystemHttpHandler](src/main/java/cn/managame/demo/bus/system/SystemHttpHandler.java) 只需 @HttpHandler 即可被扫描，无需 @Component。GameRuntimeConfig 通过 httpHandlers 注册，并由 main 的 HTTP 监听器接到 runtime.http()::dispatch。SYSTEM 使用显式 Domain ID 3，与 ROLE、LOGIN 共用同一个 RouteExecutor。应用尚未为 SYSTEM 明确配置 packet 的身份/路由策略，因此 packet 上下文策略拒绝该 Domain 的消息。HTTP 默认监听 127.0.0.1:8080，可通过 Spring Environment 的 game.http.port 覆盖，例如 JVM 参数 -Dgame.http.port=8081；TCP 继续使用 9000 端口。两个监听器在 ContextClosedEvent 中关闭，在 Runtime 排空/关闭后、Data 销毁前；监听器启动失败时关闭 Context 及已经启动的监听器。
+[SystemHttpHandler](src/main/java/cn/managame/demo/bus/system/SystemHttpHandler.java) 仅标记 @HttpHandler，无需 @Component；EnableGameRuntime 通过 game-spring 完成注册、HTTP 自动启动、Runtime 分发和停机。SYSTEM 使用显式 Domain ID 3，与 ROLE、LOGIN 共享同一个 RouteExecutor；应用尚未给 SYSTEM 增加 packet 的身份/路由策略，因此 packet 上下文策略拒绝该 Domain 的消息。仅在 [game-http.properties](src/main/resources/game-http.properties) 配置端口和统一 context path，由 GameRuntimeConfig 加载；默认保持 127.0.0.1:8080 和根路径。TCP 继续使用 9000 端口。Context 关闭先排空/关闭 Runtime，再关闭 TCP 和托管 HTTP，最后销毁 Data。HTTP 绑定/配置失败导致 Spring 启动失败并释放资源。
+
+```properties
+game.http.port=8080
+game.http.context-path=/
+```
+
+设置 context-path=/game 后，既有 /demo/echo 方法通过 /game/demo/echo 访问，不改 Handler 代码。-Dgame.http.port=8081 等 JVM 属性覆盖文件值。game.http.enabled=false 禁用监听。额外地址、body/header/line 限制、入站无数据超时和 socket 参数通过配置提供；[game-spring HTTP 配置](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#31-托管-http) 记录默认值及可选 GameHttpConfigurer 扩展。main 不再包含 HTTP builder、asyncHandler 适配、手动启动或关闭监听器。
 
 | 请求 | RouteKey 输入 | 返回 |
 | --- | --- | --- |
@@ -100,7 +107,7 @@ runtime.cron().reschedule(DemoTasks.class, "onCron");
 
 任务发现通过 Bean 类型检查，不提前创建无关 Bean 或正在构建的 Runtime。类型未知且尚未初始化的 FactoryBean 产物不会为了推断任务而被实例化，需提供可识别的产物/返回类型。带注解的任务对象在 Runtime 构建时初始化，必须是单例；同一对象的重复引用只注册一次。非法 private/static/签名/Domain/表达式在构建时失败，不被静默忽略。继承的 public 方法保留 Runtime 按声明类/方法名取消的标识；无注解的覆盖方法不会继承方法注解。Spring AOP 代理不作为受支持的 Cron 目标，可识别的代理会拒绝启动。任务构造器不能依赖同一个仍在构建的 Runtime；延迟依赖需在 Runtime 初始化完成后解析。构建后新增任务 Bean 不会改变已冻结的注册。[CronBeansTest](../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java) 验证仅方法注解扫描、工厂创建及继承任务、真实 Route 执行、按对象身份去重、不提前初始化无关 Bean，以及启动拒绝。
 
-[DemoServicesTest](src/test/java/cn/managame/demo/DemoServicesTest.java) 无需 Data/MySQL，装配实际 Spring 配置，通过真实本地 HTTP/1.1 发送 UTF-8 POST、GET 请求，验证路由绑定/虚拟线程执行和 400/405 拒绝，等待启动定时任务及一次实际 cron 触发，并检查取消及关闭后的拒绝。完整应用仍需已有数据库配置。见 [Runtime 定时/cron 语义](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#demo-runtime-services)、[Java 任务 API](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#demo-task-integration) 与 [HTTP 契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
+[DemoServicesTest](src/test/java/cn/managame/demo/DemoServicesTest.java) 无需 Data/MySQL，装配实际 Spring 配置，覆盖测试默认禁用监听后自动启动随机端口和 /game 前缀的 HTTP，通过真实本地 HTTP/1.1 发送 UTF-8 POST、GET 请求，验证路由绑定/虚拟线程执行和 400/405 拒绝，等待启动定时任务及一次实际 cron 触发，并检查取消及关闭后的拒绝。完整应用仍需已有数据库配置。见 [Runtime 定时/cron 语义](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#demo-runtime-services)、[Java 任务 API](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#demo-task-integration) 与 [HTTP 契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 ## Fory 业务 body
 
@@ -189,7 +196,7 @@ if (connection.write(packet) != WriteStatus.ACCEPTED) connection.close();
 mvn -pl game-demo -am clean verify
 ```
 
-[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 注入、Data 关闭及 URL 缺失时拒绝启动。生命周期测试按当前非阻塞入口验证：初始化返回后 main 可以继续启动 TCP/HTTP，Context 关闭释放 Spring 资源。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 的 `clean verify` 中 23 项测试全部通过，包括真实 TCP 和 HTTP/Timer/Cron 集成测试。桩测试不验证原生 MySQL；此前使用旧入口验证过本地 MySQL 启动和关闭，本次未对当前完整的 Spring/Data/TCP/HTTP 入口执行真实 MySQL 验证。这些检查不代表所有数据库操作、故障场景或生产定时精度/容量均已验证。根 `clean verify` 仍被引用 maxPendingCalls 等已移除 API 的既有 RPC 测试挡住；本地 Maven 仓库已有基线 Core/Network/RPC artifact 时，选择性执行 `mvn -pl game-runtime,game-data,game-spring,game-demo clean verify` 成功。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件示例仍位于 [game-example](../game-example/README.zh-CN.md)。
+[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 注入、Data 关闭及 URL 缺失时拒绝启动。生命周期测试按当前非阻塞入口验证：初始化返回后 main 可以继续启动 TCP；HTTP 由 game-spring 管理，独立业务测试禁用监听。Context 关闭释放 Spring 资源。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 的 `clean verify` 中 23 项测试全部通过，包括真实 TCP 和 HTTP/Timer/Cron 集成测试。桩测试不验证原生 MySQL；此前使用旧入口验证过本地 MySQL 启动和关闭，本次未对当前完整的 Spring/Data/TCP/HTTP 入口执行真实 MySQL 验证。这些检查不代表所有数据库操作、故障场景或生产定时精度/容量均已验证。根 clean verify 已执行到 RPC，仍被引用 maxPendingCalls、reconnectJitter 等已移除 API 的既有测试阻塞。demo 完整依赖模块通过 `mvn -pl game-demo -am clean verify`，不需要预先安装框架 artifact，也不编译 RPC 测试。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件示例仍位于 [game-example](../game-example/README.zh-CN.md)。
 
 
 ## Packet Metadata、错误与管理

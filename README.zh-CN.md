@@ -13,7 +13,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-rpc | RpcNode、主动/被动 Peer、固定 Slot、握手、心跳、重连、call / notify / reply，以及 Netty Wire 编解码 |
 | game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
-| [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、初始化 Repository 注入、Runtime 停机排空 |
+| [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、HTTP 配置及托管生命周期、初始化 Repository 注入、Runtime 停机排空 |
 | [game-example](game-example/README.zh-CN.md) | Network、Runtime HTTP、RPC 可运行示例与示例执行测试 |
 | [game-demo](game-demo/README.zh-CN.md) | Spring 应用，装配 MySQL Data Repository、GamePacket TCP 分发、Runtime HTTP、定时与 cron |
 
@@ -57,7 +57,7 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data、game-example、game-demo。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-example 的 `cn.managame.example.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-example -am test 验证示例。RPC→Runtime 集成和 DataMemoryDemo 尚未实现。
+当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data、game-spring、game-example、game-demo。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-example 的 `cn.managame.example.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-example -am test 验证示例。RPC→Runtime 集成和 DataMemoryDemo 尚未实现。
 
 在 IDE 运行 [NetworkEchoExample](game-example/src/main/java/cn/managame/example/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 

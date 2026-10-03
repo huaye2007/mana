@@ -54,7 +54,7 @@ class DataSpringWiringTest {
     }
     @Test void applicationInitializationReturnsBeforeListenerStartupAndContextOwnsClosure() throws Exception {
         try (var context = new AnnotationConfigApplicationContext()) {
-            // Bootstrap returns so main can start TCP and HTTP; no keepalive thread is created.
+            // Bootstrap returns so main can start TCP; HTTP is managed by game-spring (disabled in this test).
             GameDemo.run(context);
             assertTrue(context.isActive());
             context.close();

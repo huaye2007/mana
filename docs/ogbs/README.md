@@ -13,7 +13,7 @@ Every component requires both a **language-independent specification** and a **J
 | game-core | [Core Specification](OGBS-Core-1.0.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.md) | Implemented; shared Metadata and error codes |
 | game-runtime | [Runtime Specification](OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.md) | Implemented; Route, Context, Handler, HTTP annotations/dispatch/object results, Event, Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.md) | Implemented; real MySQL/MongoDB validation requires configured services |
-| game-spring | [Container Integration Specification](OGBS-Spring-1.0.md) | [Spring Java Development Specification](OGBS-Spring-Java-25-Specification-1.0.md) | Implemented; optional plain Spring discovery, initialized Repository injection and shutdown drain |
+| game-spring | [Container Integration Specification](OGBS-Spring-1.0.md) | [Spring Java Development Specification](OGBS-Spring-Java-25-Specification-1.0.md) | Implemented; optional plain Spring discovery, managed HTTP configuration/lifecycle, initialized Repository injection and shutdown drain |
 | game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS and independent HTTP/1.1 server with synchronous/callback responses |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.md) | Implemented; internal TCP, multiple Slots, calls, heartbeat/reconnection |
 

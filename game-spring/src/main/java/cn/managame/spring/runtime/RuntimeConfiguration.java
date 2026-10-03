@@ -14,6 +14,7 @@ import java.lang.annotation.Annotation;
 import java.util.*;
 
 @Configuration(proxyBeanMethods = false)
+@Import(RuntimeHttpConfiguration.class)
 class RuntimeConfiguration {
     @Bean(destroyMethod = "close")
     GameRuntime gameRuntime(ApplicationContext context, ConfigurableListableBeanFactory beans,

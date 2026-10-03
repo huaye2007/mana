@@ -13,6 +13,7 @@ import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.http.HttpContext;
 import cn.managame.runtime.http.HttpMethod;
 import cn.managame.runtime.timer.TimerRef;
+import cn.managame.spring.runtime.GameHttpConfigurer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -68,6 +69,9 @@ class DemoServicesTest {
         try (var spring = new AnnotationConfigApplicationContext()) {
             spring.registerBean("systemHttpHandler", SystemHttpHandler.class,
                     () -> new Probe(spring.getBean(DemoTasks.class)));
+            spring.getEnvironment().getPropertySources().addFirst(new MapPropertySource("http-test",
+                    Map.of("game.http.enabled", "true", "game.http.port", "0", "game.http.context-path", "/game")));
+            spring.registerBean(GameHttpConfigurer.class, () -> builder -> builder.bossGroup(boss).workerGroup(worker));
             spring.register(GameRuntimeConfig.class);
             spring.refresh();
             var runtime = spring.getBean(GameRuntime.class);
@@ -77,13 +81,11 @@ class DemoServicesTest {
             runtime.timer().schedule(GameDomain.SYSTEM_ID, DemoTasks.ROUTE_KEY, Duration.ofSeconds(12), () ->
                     observation.complete(new TimerObservation(tasks.status(),
                             Contexts.current(TimerContext.class), Thread.currentThread().isVirtual())));
-            try (var server = HttpServer.builder().bindAddress(new InetSocketAddress("127.0.0.1", 0))
-                    .bossGroup(boss).workerGroup(worker).asyncHandler(runtime.http()::dispatch).build();
-                 var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+            var server = spring.getBean(HttpServer.class);
+            try (var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
                          .connectTimeout(Duration.ofSeconds(5)).build()) {
-                server.start();
                 int port = ((InetSocketAddress) server.localAddress()).getPort();
-                String base = "http://127.0.0.1:" + port;
+                String base = "http://127.0.0.1:" + port + "/game";
                 String body = "{\"routeKey\":99,\"message\":\"你好\"}";
                 var response = client.send(HttpRequest.newBuilder(URI.create(base + "/demo/echo"))
                         .header("Content-Type", "application/json")

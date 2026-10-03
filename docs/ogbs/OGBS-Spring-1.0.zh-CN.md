@@ -14,6 +14,12 @@
 
 ## 2. 生命周期与失败
 
+**S-HTTP-01**：容器管理的 HTTP 装配将发现的 HTTP 端点接入普通业务消息相同的 Runtime 接纳、Domain 和 Route 规则。应用配置监听端口和可选统一 context path，端点声明仍使用此前缀下的相对路径。前缀按完整原始路径段匹配，保留 query，不静默解码或重定向其他路径。前缀外请求返回 404，不执行业务。配置提供大小/时间限制；无效配置或绑定失败导致应用启动失败，不静默禁用监听。不新增业务执行器。
+
+**S-HTTP-02**：在业务注册和容器单例初始化完成后启动托管监听器。默认需要发现 HTTP 端点所属对象才启用，显式配置可以启用或禁用。容器持有监听器及其自行创建的资源，显式传入的网络线程组仍由调用方持有。在 S-CLOSE-01 的 Runtime 排空屏障之后、存储销毁之前关闭。执行排空不保证响应投递完成，也不覆盖未登记为 Runtime 工作的延迟响应；需要此边界的应用应登记其续接。启动失败释放托管监听器及容器持有的 Runtime 资源。底层 Network HTTP API 仍供自行装配传输的应用使用。
+
+例如前缀 `/game` 将 `/game/status?id=7` 映射至已注册的 `/status`，保留相同的 `id=7` query；`/games/status` 和 `/game%2Fstatus` 不匹配。Handler 观察到前缀内的相对请求 URI。[HttpAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/runtime/HttpAssemblyTest.java) 验证监听生命周期、路径和引用所有权，Java 绑定定义配置项及默认值。
+
 **S-CLOSE-01**：管理上下文停机时先停止 Runtime 接纳和未来调度，等待已登记任务及后续回调，再关闭 Runtime 及网络/数据依赖。保持 [RT-DRAIN](OGBS-Runtime-1.0.zh-CN.md#103-停止接纳等待排空与观察统计) 边界：送达、未登记回调与持久化是独立阶段。遗失回调或业务挂起会使停机继续等待，本 Profile 不在固定期限后强制丢弃工作。
 
 例如已接纳的玩家 Handler 可在开始停机后继续更新 Repository，必须等待它及登记回调完成才能销毁 Repository，随后 Data 最终回写。玩家新请求在 Runtime 接纳处拒绝。禁止在该 Handler 自己的 Route 上关闭容器，否则会等待自身。

@@ -21,21 +21,6 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>cn.managame</groupId>
-      <artifactId>game-runtime</artifactId>
-      <version>1.0.0-SNAPSHOT</version>
-    </dependency>
-    <dependency>
-      <groupId>cn.managame</groupId>
-      <artifactId>game-rpc</artifactId>
-      <version>1.0.0-SNAPSHOT</version>
-    </dependency>
-    <dependency>
-      <groupId>cn.managame</groupId>
-      <artifactId>game-data</artifactId>
-      <version>1.0.0-SNAPSHOT</version>
-    </dependency>
-    <dependency>
       <groupId>com.mysql</groupId>
       <artifactId>mysql-connector-j</artifactId>
       <version>9.7.0</version>
@@ -53,6 +38,10 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
           <argLine>--add-opens=java.base/java.lang.invoke=ALL-UNNAMED</argLine>
+          <systemPropertyVariables>
+            <!-- Isolated business tests do not open a listener; HTTP integration overrides via Environment. -->
+            <game.http.enabled>false</game.http.enabled>
+          </systemPropertyVariables>
         </configuration>
       </plugin>
     </plugins>
