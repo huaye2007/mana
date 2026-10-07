@@ -59,9 +59,13 @@ Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常�
 
 [game-router](../game-router/README.zh-CN.md) 依赖 game-rpc，在现有唯一 Node 启动前私有组合普通 RpcHandler。GameRouter 提供 Router 成员/查询，服务工厂返回具体 ServiceRouting，直接提供回调注册、绑定和业务收发。所有连接统一使用 rpc.addPeer。RPC 拥有连接、Slot、ID、pending 和超时，Router 拥有权威、同步与下一跳。外部发现拥有服务存在性并显式移除精确 Node 代际，暂时断线保留权威。应用拥有 Node 生命周期，依赖仍为 Router → RPC。
 
-RPC 接入仅包括 Handler 组合、Node 就绪/清理回调与可用性/Slot 数量快照；发送复用 call/notify/reply。路由拥有同步重试和缓冲清理，恢复不能重置共享 RPC Peer 或取消无关调用。RpcHandler 本身仍只有三个消息方法。
+RPC 接入仅包括普通 Handler 组合与可用性/Slot 数量快照，不提供 Node 就绪/清理回调或可变 Handler 钩子；发送复用 call/notify/reply。路由拥有协议维护、同步重试和缓冲清理，恢复不能重置共享 RPC Peer 或取消无关调用。RpcHandler 本身仍只有三个消息方法。
 
-Router Peer 使用全连接，每对单 Slot；服务注册可使用多 Slot，绑定权威在传输丢失后仍保留，仅通过显式服务发现或注销清理。快照分块与增量使用有限且具有 Peer 本地 ACK 的控制流，本地 bind 成功不等待集群。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v1)。
+Router Peer 使用全连接，每对单 Slot；服务注册可使用多 Slot，绑定权威在传输丢失后仍保留，仅通过显式服务发现或注销清理。快照分块与增量使用有限且具有 Peer 本地 ACK 的控制流，本地 bind 成功不等待集群。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v2)。
+
+已实现的 Router 装配独立于 Spring 托管 RPC 适配。`GameRpc` 当前在 GameRpcConfigurer 执行后安装私有直连 RPC Handler，该 configurer 无法将 Router 组合到托管 Node。直接 RpcHandlerContext/GameRpc 回复也缺少来源附着 epoch，并使用原生直连回复。因此路由 Runtime 适配既需要 build 前的 Handler 组合，也需要精确路由回复身份，以及路由生命周期、捕获回调和 drain 集成。接入职责归应用或可选 game-spring 适配，保留唯一 Node 和 Router → RPC 依赖；同时启用两个组件并不实现该接入。不能用第二个 Node 或把 Runtime 解码/分派移进 Router 来掩盖缺口。
+
+发现/放置集成也是应用工作，Router 示例没有提供：精确代际退役、Router 重启后的事件重放、成员移除和迁移执行隔离需要运维契约。epoch 的冲突排序不能单独证明时间新旧，绑定冲突的确定性解析也不会串行化跨进程业务执行。全连接会在每个 Router 复制全部权威桶；R 个 Router 使用 R×(R−1)/2 条成对连接，每个本地变更最多传播给 R−1 个 Peer。控制与业务帧共享单 Slot 和转发 monitor，同步就绪还会限制转发。这些是明确的小规模 Router 集群约束，生产成员数、内存及恢复预算仍未验证。[Router 审查](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-尚未修复的审查结论2026-10-07) 记录源码依据及待定集成决策。
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
 
