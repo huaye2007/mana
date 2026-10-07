@@ -139,7 +139,9 @@ Router 身份取直连 RPC Peer ID，握手 epoch 与当前连接关系限定其
 
 HELLO 允许在同一 RPC 连接上重启路由同步：丢弃未完成的入站暂存，要求新的 BEGIN/分块/END；在 END 前保留最后提交的桶。已完成双向同步的接收方也启动自身快照；交换仍在进行的接收方不重复回送 HELLO。它只重置路由协议状态，不重置 RPC 握手、Peer 或无关调用，该交换使用现有 HELLO/快照操作，不引入 RPC 消息 type。
 
-控制操作使用非零 ID 的普通 RPC Call。成功 NodeRegister 与 Verify 的原生 RPC Response body 恰好包含 routerEpoch:uint64（八字节，无 Router header）；其他成功控制 body 为空，正 errorCode 表示拒绝。NodeRegister 对发现已移除的代际返回 NOT_REGISTERED。Verify 校验接收方 epoch 与发送方状态：Router 发送方需要同 senderEpoch、senderRevision 的已提交双向关系；服务发送方使用 nodeEpoch、senderRevision=0，并要求匹配注册。状态不匹配/缺失返回 NOT_REGISTERED；Verify 不注册、不改变权威，也不证明服务存在性。每个 Router Peer 只有一个在途控制，下一个在前者响应后发送；两端交换各自快照，不通过控制关联广播或业务请求。NodeBind 只确认本地 Router，不等待其他 Router 确认。
+状态控制（op 1–13 和 16）使用非零 ID 的普通 RPC Call。成功 NodeRegister 与 Verify 的原生 RPC Response body 恰好包含 routerEpoch:uint64（八字节，无 Router header）；其他成功控制 body 为空，正 errorCode 表示拒绝。NodeRegister 对发现已移除的代际返回 NOT_REGISTERED。Verify 校验接收方 epoch 与发送方状态：Router 发送方需要同 senderEpoch、senderRevision 的已提交双向关系；服务发送方使用 nodeEpoch、senderRevision=0，并要求匹配注册。状态不匹配/缺失返回 NOT_REGISTERED；Verify 不注册、不改变权威，也不证明服务存在性。每个 Router Peer 只有一个在途状态控制，下一个状态控制在前者响应后发送；两端交换各自快照，不通过控制关联广播或业务请求。NodeBind 只确认本地 Router，不等待其他 Router 确认。
+
+RoutedError（op 15）使用外层 requestId=0 的普通 RPC Notify，独立于状态控制 FIFO 及其 ACK 发送。payload 的 requestId 是原业务调用的非零 ID。不创建中间 PendingCall，不需要 ACK，也不重试；准入失败时仍由原调用的既有超时结束。不改变 payload 字段或 Profile v2 版本。接收方也接受旧的非零外层 ID Call 形式，并对该形式返回通常的空控制 ACK；现有 Profile v2 接收方已经支持 Notify 形式。这只说明错误返回表示的兼容性，不新增跨语言验证结论。
 
 SnapshotBegin 捕获来源 revision。操作 6..9 对每次已接受本地修改（含幂等控制）将其加一，按 2^64 取模；增量 revision 必须为已提交来源 revision 加一。End 将捕获版本与暂存桶一起提交。版本缺口拒绝同步流，要求新快照，不定义重放日志。Verify 比较版本，即使未观察到短暂重连也能发现遗漏增量。
 
@@ -165,4 +167,4 @@ Profile v2 与早期 v1 草案不兼容：快照/增量字段及 NodeRegister AC
 
 服务回复使用 mode 4，目标为原来源 ID/epoch，source 字段标识响应服务。中间仍通过 Notify 传输。来源 Router 最终发送的原生 RPC Response 使用原 requestId，**外层 errorCode=0、Metadata 空**，body 为完整 Router version/op=14/mode=4 envelope。原 RPC 取得 pending 完成权后，来源解包内层真正的业务/框架错误及 Metadata。Router 产生的错误则使用原生正外层 errorCode 和空 body；必要时 op 15 在 Router 间传递此类错误。错误 requestId 须非零，errorCode 须为正。这两种形式均不改变基础 RPC 错误编码。
 
-握手 payload 黄金向量（epoch=0x0102030405060708）：`01 01 0102030405060708`。[RouterWireTest](../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java) 验证向量、envelope 长度、字段保留及借用所有权。旧/未启用 Router 的端点不实现这一显式 command；普通 RPC v1 支持不意味着支持 Router 互通。Router 跨语言互通未验证。
+握手 payload 黄金向量（epoch=0x0102030405060708）：`02 01 0102030405060708`。[RouterWireTest](../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java) 验证向量、envelope 长度、字段保留及借用所有权。旧/未启用 Router 的端点不实现这一显式 command；普通 RPC v1 支持不意味着支持 Router 互通。Router 跨语言互通未验证。

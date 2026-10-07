@@ -229,9 +229,12 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
             if (id != router || router == 0 || (expectedGeneration != null && generation != expectedGeneration)) return;
             if (clear && error == RpcErrorCodes.PEER_REMOVED && rpc.isPeerConnected(id))
                 throw new IllegalStateException("Old Router recovered before unregister");
-            generation++; report = registering || restoring;
+            boolean recoverable = transientError(error)
+                    || error == cn.managame.router.error.RouterErrorCodes.NOT_REGISTERED;
+            generation++; report = registering || restoring || (!clear && registered && !recoverable);
             registered = false; registering = false; restoring = false; detaching = false;
-            retryRegistration = !clear && !closed;
+            // Transport recovery cannot revive a selection stopped by protocol validation.
+            retryRegistration = retryRegistration && !clear && !closed && recoverable;
             restoringKeys = Collections.emptyIterator();
             abandoned = new ArrayList<>(controls); controls.clear();
             if (active != null) { abandoned.addFirst(active); active = null; }

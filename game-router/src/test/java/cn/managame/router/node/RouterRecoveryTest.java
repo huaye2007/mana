@@ -8,6 +8,8 @@ import cn.managame.router.route.RouteBinding;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.lang.reflect.*;
 import java.net.SocketAddress;
 import java.util.*;
@@ -40,6 +42,249 @@ class RouterRecoveryTest {
 
     private static Object field(Object value, String name) throws Exception {
         Field f = value.getClass().getDeclaredField(name); f.setAccessible(true); return f.get(value);
+    }
+    private static void maintain(Object routing) throws Exception {
+        Method method = routing.getClass().getDeclaredMethod("maintain");
+        method.setAccessible(true); method.invoke(routing);
+    }
+
+    private record HeldControl(int source, int slot, int id, long routeKey) {}
+
+    @Test void routedErrorDoesNotWaitForSynchronizationAcknowledgement() throws Exception {
+        Probe sourceProbe = new Probe(), targetProbe = new Probe();
+        GameRouter a = GameRouter.forRouterNode(101, new Probe());
+        BlockingQueue<HeldControl> held = new LinkedBlockingQueue<>();
+        AtomicBoolean hold = new AtomicBoolean(true);
+        RpcHandler handler = new RpcHandler() {
+            @Override public void onRequest(int source, int slot, RpcRequest request) {
+                if (source == 102 && request.command() == COMMAND
+                        && operation(request.body().duplicate()) == VERIFY && hold.compareAndSet(true, false)) {
+                    held.add(new HeldControl(source, slot, request.requestId(), request.routeKey()));
+                    return;
+                }
+                a.onRequest(source, slot, request);
+            }
+            @Override public void onResponse(int source, int command, RpcResponse response, RpcCallback<?> callback) {
+                a.onResponse(source, command, response, callback);
+            }
+            @Override public void onFail(int target, int command, int error, RpcCallback<?> callback) {
+                a.onFail(target, command, error, callback);
+            }
+        };
+        try (a; RpcNode rpc = RpcNode.builder().nodeId(101).bindAddress(LOCAL).handler(handler).build();
+             RouterFixture b = router(102); NodeFixture source = new NodeFixture(1, 1, sourceProbe);
+             NodeFixture target = new NodeFixture(2, 2, targetProbe)) {
+            a.start(rpc); rpc.start();
+            assertEquals(0, source.attach(101, rpc.localAddress(), 1, 1).get(5, TimeUnit.SECONDS));
+            assertEquals(0, target.attach(102, b.rpc.localAddress(), 1, 2).get(5, TimeUnit.SECONDS));
+            b.routing.registerRouter(101); a.registerRouter(102); rpc.addPeer(102, b.rpc.localAddress(), 1);
+            await(() -> a.isRouterReady(102) && b.isRouterReady(101));
+            HeldControl verification = take(held);
+            try {
+                target.rpc.removePeer(102); await(() -> !b.rpc.isPeerConnected(2));
+                source.routing.callNode(2, new RpcRequest(810, null), 1500, ignored -> {});
+                Result rejected = take(sourceProbe.responses);
+                assertEquals(810, rejected.command()); assertEquals(PEER_NOT_FOUND, rejected.error());
+                assertTrue(sourceProbe.failures.isEmpty()); assertTrue(targetProbe.requests.isEmpty());
+                assertTrue(b.isRouterReady(101));
+                Object engine = field(b.routing, "engine");
+                synchronized (field(engine, "lock")) {
+                    Object peer = ((Map<?, ?>) field(engine, "routers")).get(101);
+                    assertEquals(true, field(peer, "sending"));
+                    assertTrue(((Deque<?>) field(peer, "outgoing")).isEmpty());
+                }
+            } finally {
+                // Release the unrelated verification even when the regression assertion fails.
+                rpc.reply(verification.source(), verification.slot(), verification.routeKey(),
+                        new RpcResponse(verification.id(), 0, null, Unpooled.buffer(8).writeLong(101)));
+            }
+            source.routing.callNode(2, new RpcRequest(811, null), ignored -> {});
+            assertEquals(PEER_NOT_FOUND, take(sourceProbe.responses).error());
+            assertTrue(sourceProbe.responses.isEmpty()); assertTrue(sourceProbe.failures.isEmpty());
+        } finally { sourceProbe.release(); targetProbe.release(); }
+    }
+
+    @Test void routerSlotReconfigurationInvalidatesReadinessAndRequiresNewSnapshot() throws Exception {
+        Probe pa = new Probe(), pb = new Probe(); pb.echo = true;
+        try (RouterFixture a = router(101); RouterFixture b = router(102);
+             NodeFixture source = new NodeFixture(1, 1, pa); NodeFixture target = new NodeFixture(2, 2, pb)) {
+            pa.client = source.routing; pb.client = target.routing;
+            assertEquals(0, source.attach(101, a.rpc.localAddress(), 1, 1).get(5, TimeUnit.SECONDS));
+            assertEquals(0, target.attach(102, b.rpc.localAddress(), 1, 2).get(5, TimeUnit.SECONDS));
+            assertEquals(0, target.bind(42).get(5, TimeUnit.SECONDS)); connect(a, b);
+            Object ea = field(a.routing, "engine"), eb = field(b.routing, "engine");
+            ((ScheduledExecutorService) field(ea, "retries")).shutdownNow();
+            ((ScheduledExecutorService) field(eb, "retries")).shutdownNow();
+            b.rpc.removePeer(101); a.rpc.removePeer(102); a.rpc.addPeer(102, b.rpc.localAddress(), 2);
+            await(() -> a.rpc.isPeerConnected(102) && b.rpc.isPeerConnected(101));
+            assertEquals(2, a.rpc.peerSlotCount(102)); assertEquals(2, b.rpc.peerSlotCount(101));
+            // Querying readiness must reject the changed configuration before the maintenance tick.
+            assertFalse(a.isRouterReady(102)); assertFalse(b.isRouterReady(101));
+            source.routing.notifyNode(2, new RpcRequest(815, null));
+            source.broadcast(2, new RpcRequest(816, null));
+            source.callNode(2, new RpcRequest(812, null), ignored -> {});
+            assertEquals(UNAVAILABLE, take(pa.responses).error());
+            // Same-Slot barriers fence both the Router receive stream and service delivery.
+            a.rpc.notify(102, new RpcRequest(813, null));
+            assertEquals(813, take(b.primary.direct));
+            b.rpc.notify(2, new RpcRequest(817, null));
+            assertEquals(817, take(pb.direct)); assertTrue(pb.requests.isEmpty());
+            maintain(ea); maintain(eb);
+            assertEquals(Optional.of(new RouteBinding(2, 2)), a.resolve(2, 42));
+            source.callNode(2, new RpcRequest(818, null), ignored -> {});
+            assertEquals(UNAVAILABLE, take(pa.responses).error());
+            assertEquals(2, a.rpc.peerSlotCount(102)); assertTrue(a.rpc.isPeerConnected(102));
+            b.rpc.removePeer(101); a.rpc.removePeer(102); a.rpc.addPeer(102, b.rpc.localAddress(), 1);
+            await(() -> a.rpc.isPeerConnected(102) && b.rpc.isPeerConnected(101));
+            maintain(ea); maintain(eb);
+            await(() -> a.isRouterReady(102) && b.isRouterReady(101));
+            assertEquals(Optional.of(new RouteBinding(2, 2)), a.resolve(2, 42));
+            source.callNode(2, new RpcRequest(814, null), ignored -> {});
+            assertEquals(0, take(pa.responses).error());
+            var received = take(pb.requests);
+            assertEquals(814, received.request().command());
+        } finally { pa.release(); pb.release(); }
+    }
+
+    @Test void retainedRouterBucketDoesNotAdmitDataUntilSynchronizationRecovers() throws Exception {
+        Probe pa = new Probe(), pb = new Probe(); pb.echo = true;
+        try (RouterFixture a = router(101); RouterFixture b = router(102);
+             NodeFixture na = new NodeFixture(1, 1, pa); NodeFixture nb = new NodeFixture(2, 1, pb)) {
+            pa.client = na.routing; pb.client = nb.routing;
+            // Single Slots make both first-hop admission and recipient barriers FIFO.
+            assertEquals(0, na.attach(101, a.rpc.localAddress(), 1, 1).get(5, TimeUnit.SECONDS));
+            assertEquals(0, nb.attach(102, b.rpc.localAddress(), 1, 2).get(5, TimeUnit.SECONDS));
+            assertEquals(0, na.bind(42).get(5, TimeUnit.SECONDS)); connect(a, b);
+            nb.callNode(1, new RpcRequest(800, null), ignored -> {});
+            var pendingReply = take(pa.requests);
+            if (pendingReply.request().body() != null) pendingReply.request().body().release();
+            Object ea = field(a.routing, "engine"), eb = field(b.routing, "engine");
+            // Hold the real recovery window open, without manufacturing synchronization state.
+            ((ScheduledExecutorService) field(ea, "retries")).shutdownNow();
+            ((ScheduledExecutorService) field(eb, "retries")).shutdownNow();
+            assertEquals(cn.managame.rpc.transport.RpcSendStatus.ACCEPTED, a.rpc.notify(102,
+                    packet(control(BEGIN).writeLong(101).writeInt(RouterTable.MAX_NODES + 1).writeInt(0).writeLong(0))));
+            await(() -> !b.isRouterReady(101));
+            assertEquals(Optional.of(new RouteBinding(1, 1)), b.resolve(1, 42));
+            assertTrue(a.isRouterReady(102));
+            assertEquals(cn.managame.rpc.transport.RpcSendStatus.ACCEPTED,
+                    na.routing.notifyNode(2, new RpcRequest(801, null)));
+            assertEquals(cn.managame.rpc.transport.RpcSendStatus.ACCEPTED,
+                    na.broadcast(1, new RpcRequest(802, null)));
+            assertEquals(cn.managame.rpc.transport.RpcSendStatus.ACCEPTED,
+                    na.reply(pendingReply, new RpcResponse(pendingReply.request().requestId(), 0, null, null)));
+            na.callNode(2, new RpcRequest(803, null), ignored -> {});
+            Result rejected = take(pa.responses);
+            assertEquals(803, rejected.command()); assertEquals(UNAVAILABLE, rejected.error());
+            // Fence the target's receive channel as well as the Router's earlier DATA frames.
+            assertEquals(cn.managame.rpc.transport.RpcSendStatus.ACCEPTED,
+                    b.rpc.notify(2, new RpcRequest(806, null)));
+            assertEquals(806, take(pb.direct));
+            assertTrue(pb.requests.isEmpty()); assertTrue(pb.responses.isEmpty());
+            assertEquals(Optional.of(new RouteBinding(1, 1)), b.resolve(1, 42));
+            assertEquals(cn.managame.rpc.transport.RpcSendStatus.ACCEPTED,
+                    a.rpc.notify(102, new RpcRequest(804, null)));
+            assertEquals(804, take(b.primary.direct));
+            maintain(eb); maintain(ea);
+            await(() -> a.isRouterReady(102) && b.isRouterReady(101));
+            na.callNode(2, new RpcRequest(805, null), ignored -> {});
+            Result recovered = take(pa.responses);
+            assertEquals(805, recovered.command()); assertEquals(0, recovered.error());
+            var received = take(pb.requests);
+            try { assertEquals(805, received.request().command()); }
+            finally { if (received.request().body() != null) received.request().body().release(); }
+            assertTrue(pb.requests.isEmpty()); assertTrue(pb.responses.isEmpty());
+        } finally { pa.release(); pb.release(); }
+    }
+
+    private record Verification(int source, int slot, RpcRequest request) {}
+
+    @ParameterizedTest @ValueSource(ints = {0, 1, 2, 3, 4})
+    void nontransientVerificationFailureStopsRetriesAndPreservesExplicitRetry(int failureKind) throws Exception {
+        Probe p = new Probe(); AtomicReference<RpcNode> server = new AtomicReference<>();
+        AtomicInteger registers = new AtomicInteger(), binds = new AtomicInteger();
+        AtomicBoolean holdVerification = new AtomicBoolean(true);
+        BlockingQueue<Verification> verification = new LinkedBlockingQueue<>();
+        Probe remote = new Probe() {
+            public void onRequest(int source, int slot, RpcRequest request) {
+                int op = operation(request.body().duplicate());
+                if (op == REGISTER) registers.incrementAndGet();
+                if (op == CLIENT_BIND) binds.incrementAndGet();
+                if (op == VERIFY && holdVerification.get()) {
+                    // Retain only immutable fields; the inbound body is borrowed.
+                    verification.add(new Verification(source, slot, new RpcRequest(request.command(),
+                            request.requestId(), request.routeKey(), 0, 0, null, null))); return;
+                }
+                server.get().reply(source, slot, request.routeKey(), new RpcResponse(request.requestId(), 0, null,
+                        op == REGISTER || op == VERIFY ? Unpooled.buffer(8).writeLong(303) : null));
+            }
+        };
+        try (RpcNode r = RpcNode.builder().nodeId(101).bindAddress(LOCAL).handler(remote).build();
+             NodeFixture n = new NodeFixture(1, 1, p)) {
+            server.set(r); r.start(); assertEquals(0, n.attach(101, r.localAddress(), 1, 7).get(5, TimeUnit.SECONDS));
+            assertEquals(0, take(p.registrations)); assertEquals(0, n.bind(42).get(5, TimeUnit.SECONDS));
+            Channel original = channel(n.rpc, 101, 0);
+            Verification v = take(verification);
+            BlockingQueue<Integer> abandoned = new LinkedBlockingQueue<>();
+            n.routing.bind(43, abandoned::add); n.routing.unbind(42, abandoned::add);
+            int expectedError = failureKind == 4 ? INVALID_SERVICE : PROTOCOL_ERROR;
+            var malformed = switch (failureKind) {
+                case 1 -> Unpooled.buffer(4).writeInt(303);
+                case 2 -> Unpooled.buffer(8).writeLong(0);
+                case 3 -> Unpooled.buffer(9).writeLong(303).writeByte(0);
+                default -> null;
+            };
+            assertEquals(cn.managame.rpc.transport.RpcSendStatus.ACCEPTED, r.reply(v.source, v.slot, v.request.routeKey(),
+                    new RpcResponse(v.request.requestId(), failureKind == 4 ? INVALID_SERVICE : 0, null, malformed)));
+            assertEquals(expectedError, take(abandoned)); assertEquals(expectedError, take(abandoned));
+            assertEquals(expectedError, take(p.registrations));
+            assertFalse(n.isRegistered()); assertEquals(Set.of(42L), n.bindings());
+            assertSame(original, channel(n.rpc, 101, 0));
+            for (int tick = 0; tick < 10; tick++) maintain(n.routing);
+            assertEquals(1, registers.get()); assertTrue(verification.isEmpty()); assertTrue(abandoned.isEmpty());
+            // Even an observed connection loss must not revive a stopped protocol selection.
+            n.rpc.removePeer(101); maintain(n.routing);
+            n.rpc.addPeer(101, r.localAddress(), 1); await(() -> n.rpc.isPeerConnected(101));
+            for (int tick = 0; tick < 10; tick++) maintain(n.routing);
+            assertFalse(n.isRegistered()); assertEquals(1, registers.get()); assertTrue(p.registrations.isEmpty());
+            holdVerification.set(false);
+            BlockingQueue<Integer> retried = new LinkedBlockingQueue<>();
+            n.routing.register(101, 7, retried::add);
+            assertEquals(0, take(retried)); assertEquals(0, take(p.registrations));
+            assertTrue(n.isRegistered()); assertEquals(Set.of(42L), n.bindings());
+            assertEquals(2, registers.get()); assertEquals(2, binds.get());
+            assertTrue(retried.isEmpty()); assertTrue(abandoned.isEmpty());
+        } finally { p.release(); }
+    }
+
+    @ParameterizedTest @ValueSource(ints = {TIMEOUT, NOT_REGISTERED})
+    void recoverableVerificationFailureStillRestoresBindingsWithoutResettingPeer(int error) throws Exception {
+        Probe p = new Probe(); AtomicReference<RpcNode> server = new AtomicReference<>();
+        AtomicInteger registers = new AtomicInteger(), binds = new AtomicInteger(), verifies = new AtomicInteger();
+        Probe remote = new Probe() {
+            public void onRequest(int source, int slot, RpcRequest request) {
+                int op = operation(request.body().duplicate());
+                if (op == REGISTER) registers.incrementAndGet();
+                if (op == CLIENT_BIND) binds.incrementAndGet();
+                if (op == VERIFY && verifies.incrementAndGet() == 1) {
+                    if (error != TIMEOUT) server.get().reply(source, slot, request.routeKey(),
+                            new RpcResponse(request.requestId(), error, null, null));
+                    return;
+                }
+                server.get().reply(source, slot, request.routeKey(), new RpcResponse(request.requestId(), 0, null,
+                        op == REGISTER || op == VERIFY ? Unpooled.buffer(8).writeLong(303) : null));
+            }
+        };
+        try (RpcNode r = RpcNode.builder().nodeId(101).bindAddress(LOCAL).handler(remote).build();
+             NodeFixture n = new NodeFixture(1, 1, p, 150)) {
+            server.set(r); r.start(); assertEquals(0, n.attach(101, r.localAddress(), 1, 7).get(5, TimeUnit.SECONDS));
+            assertEquals(0, take(p.registrations)); assertEquals(0, n.bind(42).get(5, TimeUnit.SECONDS));
+            Channel original = channel(n.rpc, 101, 0);
+            assertEquals(0, take(p.registrations));
+            assertTrue(n.isRegistered()); assertEquals(Set.of(42L), n.bindings());
+            assertEquals(2, registers.get()); assertEquals(2, binds.get());
+            assertSame(original, channel(n.rpc, 101, 0));
+        } finally { p.release(); }
     }
     private static Channel channel(RpcNode rpc, int peerId, int slot) throws Exception {
         Object peer = ((Map<?, ?>) field(rpc, "peers")).get(peerId);

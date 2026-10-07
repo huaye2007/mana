@@ -38,9 +38,13 @@ rpc.close();
 
 所有连接使用 rpc.addPeer(id,address,slots)。Router 对只有一个连接发起方，并且恰好一个 Slot，以保持控制顺序；服务可以多 Slot。在成员声明后配置多 Slot Peer 可以建立传输，但路由保持不可用，直到应用重新配置 RPC。unregisterRouter 删除可见桶与排队控制，不移除 RPC Peer。地址/连接数变更沿用 RPC 规则。
 
+就绪查询及所有业务转发（包括广播）在维护 tick 前也检查当前 Slot 数。维护观察到非单 Slot 配置时作废同步、释放排队控制，并保留已提交查询。恢复为单 Slot 后，双向新快照完成才重新就绪。非法配置上的同步消息不能提交桶。Router 不修改共享 RPC Peer，直连 RPC 仍可使用。`routerSlotReconfigurationInvalidatesReadinessAndRequiresNewSnapshot` 在 [RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 覆盖就绪 Peer 重配、Notify/广播/Call 拒绝、保留查询及恢复。
+
 removeNode(nodeId,nodeEpoch) 即使注册尚未到达，也记录发现移除的精确代际。仅匹配当前本地代际才删除并发布权威移除；旧事件不能移除新注册。随后同一对身份 REGISTER 返回 NOT_REGISTERED。每个 Router 对象生命周期保留最多 100,000 对不同移除身份，继续新增在修改前抛 RejectedExecutionException；重复移除幂等。限制不持久化，也不作为发现权威复制：Router 重启后发现需要重放当前移除，并向相关拥有方提供事件。新实例使用新 epoch。容量需要运维规划；不静默淘汰，也不实现服务发现提供方。
 
-isRouterReady 要求 RPC 当前可用、入站状态已提交、出站快照 END 已确认。恢复期间最后提交状态仍可查询，但不能替代转发就绪。查询返回不可变副本/Optional，结果是快照而非投递保证；resolve 要求正 serviceId，接受任意 long key。
+isRouterReady 要求 RPC 当前可用、当前恰好一个 Slot、入站状态已提交、出站快照 END 已确认。恢复期间最后提交状态仍可查询，但不能替代转发就绪。查询返回不可变副本/Optional，结果是快照而非投递保证；resolve 要求正 serviceId，接受任意 long key。
+
+RouterEngine 在 monitor 内按同一就绪条件准入远端 DATA，包括 Notify、广播、Call 和响应转发。恢复时保留的桶仍可查询；被拒绝的 Call 尝试通过独立错误返回路径返回 UNAVAILABLE，其他业务消息丢弃且不重放。普通 RPC 和协议控制不受影响。[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 中的 `retainedRouterBucketDoesNotAdmitDataUntilSynchronizationRecovers` 固定真实恢复窗口，验证这些边界及重新同步后的成功转发。
 
 ## 3. 服务注册和回调
 
@@ -63,6 +67,8 @@ rpc.addPeer(101, routerAddress, 3);
 
 选中关系仍有效时，注册对 UNAVAILABLE、PEER_NOT_FOUND、PEER_REMOVED、TIMEOUT 重试。远端注册拒绝、非法 ACK 和其他非瞬时错误停止自动重试；调用方可检查后显式重试相同失败选择。校验或绑定控制的 NOT_REGISTERED 先触发重新注册。发现已移除的代际即使重连仍被 Router 拒绝。业务调用不重试。
 
+非瞬时 VERIFY 失败使注册失效，以该错误完成排队控制一次，并通过 RouterHandler.onRegistration 报告该错误一次；回调在状态转换后、服务 monitor 外执行。期望绑定保持不变，已完成的初始注册 callback 不再调用。已停止的选择跨已观察到的传输丢失/重连仍保持停止。以同一 Router/epoch 显式 register 开启新尝试，在成功完成前恢复期望键；已结束的失败选择也可通过现有 unregister 操作清除。瞬时 VERIFY 失败和 NOT_REGISTERED 保留自动恢复。`nontransientVerificationFailureStopsRetriesAndPreservesExplicitRetry` 覆盖缺失、截断、零 epoch、尾随字节 ACK 和远端非瞬时拒绝；`recoverableVerificationFailureStillRestoresBindingsWithoutResettingPeer` 覆盖超时和注册缺失。
+
 维护 tick 为 100ms；距上次校验至少一秒后，空闲已注册服务发送 VERIFY，携带最后确认的 routerEpoch 和自身 nodeEpoch。替代 Router 或缺失注册触发重新注册及期望键恢复，即使多个 Slot 让 Peer 始终可用。协议状态完好的短暂重连不一定再产生注册事件。tick 观察到传输丢失时，使服务协议状态失效，用 UNAVAILABLE 限制过期控制，同时保留期望键及未完成的初始 callback。generation 忽略晚到响应；底层 pending 和超时仍归 RPC。
 
 控制 callback 返回零或正框架错误；校验在准入前拒绝，每个已接纳 callback 恰好完成一次。清除丢失选择返回 PEER_REMOVED，路由关闭返回 NODE_CLOSED。callback RuntimeException 独立记录，不阻塞 FIFO。回调在服务 monitor 外执行，可能早于发起方法返回，必须快速/非阻塞，状态转换后可重入。isRegistered 还要求恢复完成且传输当前可用；它是可能在下一次校验前过时的本地协议认知，不是发现存在性。
@@ -80,6 +86,8 @@ RouterHandler.onRoutedRequest 接收精确 sourceNodeId/sourceNodeEpoch 和借�
 原 Node 拥有一个外层 RPC pending 调用。中间 Router 用 Notify envelope 转发，并在内层保留原 ID，不创建业务 pending Map。最终 Router 经原 Router Peer 转发原生 RpcResponse；RPC 删除 pending，私有适配器解包，携原 command/callback 调用 RouterHandler.onResponse。应用解码业务响应并调用 RpcCallback。远端错误进入 onResponse；本地超时、移除、关闭和立即失败进入 onFail。第 3 节的控制回调已经携带错误码，按直接完成契约执行。
 
 动态缺失返回 ROUTE_NOT_FOUND；物理缺失返回 RPC PEER_NOT_FOUND；下一跳不可用返回 RPC UNAVAILABLE。业务 Handler RuntimeException 尝试返回路由 HANDLER_ERROR。返回链路失败仍可超时。已匹配原生响应的内层数据非法时，携原 command/callback 以 onFail(PROTOCOL_ERROR) 完成。合法 onResponse 后的应用异常只记录，不二次完成。
+
+Router 间 DATA_ERROR 经 rpc.notify 独立发送，不进入同步 FIFO，不创建中间 pending，也不等待 VERIFY/快照/增量 ACK。私有编码 body 无论成功、拒绝或发送异常均释放。发送异常只记录，不作废同步或重试错误；准入失败时仍由原调用的既有超时结束。接收方按来源 Router epoch 和原目标的精确 Node/epoch 校验，随后投递原生错误响应。`routedErrorDoesNotWaitForSynchronizationAcknowledgement` 暂扣 VERIFY ACK 后断开目标服务，验证 PEER_NOT_FOUND 先于业务超时返回、同步仍就绪且回调不重复。Wire Profile 定义传输表示及旧 Call 形式的接收兼容性。
 
 | 边界 | 所有权 |
 | --- | --- |
@@ -118,3 +126,26 @@ RouterEngine 用单 monitor 串行化状态、快照/增量入队及转发；完
 RPC 的 Handler 修改、就绪和清理钩子已移除，由普通 Handler 装配、组件拥有的协议维护和应用显式关闭替代。已复现的回调锁循环、多 Slot Router 重启、缺失注册 ACK 恢复、已移除精确代际复活、关闭后晚到 Handler 修改状态均有代码调整及永久回归。服务 FIFO 已限制准入；Node 绑定移除使用 owner 索引，不再扫描全部绑定。
 
 RPC 暂缓的有限 pending 准入仍未实现。转发 monitor 仍覆盖编码/发送、快照/冲突扫描；resolveKey 可能重复扫描 Router 来源桶。生产内存/吞吐及持续分区/溢出恢复未验证。移除限制有容量上限，且不跨 Router epoch 持久化，需要发现重放和容量规划。进一步索引、流式快照生成或可配置预算需要实测需求；不引入新的通用扩展框架。
+
+同日后续发现的偏差已有实现修复及 [RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 永久回归。入站 DATA 使用与出站转发相同的就绪限制，恢复时保留已提交查询但拒绝业务投递。非瞬时 VERIFY 失败停止注册恢复、暴露错误，并保留期望绑定供显式重试；传输重连不能复活已停止的选择。测试覆盖 Notify/广播/Call/响应拒绝、普通 RPC 连续可用、重新同步后的投递、非法/非瞬时校验 ACK、排队回调完成、显式重试和瞬时错误/NOT_REGISTERED 恢复。这些调整落实 RT-SYNC-03 和 RT-LIFE-02，不替换其契约。临时评估探针已由这些维护中的验证入口替代。
+
+修复验证：`mvn -pl game-router -am test` 通过，Router 共 37 个测试，两轮审查共新增十个回归场景。最新两项回归在修复前的错误返回、就绪实现上均失败。根 `mvn clean verify` 中 Router 和其他框架模块通过，但 game-demo 测试编译因现有 DemoRpcBootstrapTest 导入缺失的 GameRpcConfig 而失败。已确认改动前 HEAD 同样具有该过期导入且缺少对应源码。前一轮审查中，RouterEchoExample.run 使用清理重建后的类独立编译/执行，返回 `hello game-router`。这不代表根目录完整验证成功；无关的示例启动测试编译问题仍未解决。
+
+容量还需要恢复延迟预算。在默认桶上限下，快照需要 391 个 Node 分块、3,907 个绑定分块及 HELLO/BEGIN/END，共 4,301 个确认控制，每个 Peer 只有一个在途。因此理想的串行 ACK 延迟项约为 `4,301 × RTT`（RTT 为 10 ms 时约 43 秒），尚未包含编码、排队和并发变化。服务恢复为每个期望键发送一次确认 bind，对应项为 `keyCount × RTT`。这些是从协议推导的估算，不是实测吞吐或恢复保证。提高容量或改变已确认的顺序契约前，应测量快照完成、恢复时间、monitor 持有时间及 pending 内存。
+
+### 继续评估容量与失败路径
+
+剩余同步与进程容量风险建议按以下顺序评估；这是后续方案，不是生效要求或已实现功能：
+
+1. 测量每个 Peer 的控制到达/排出速率、排队及在途字节数、ACK 延迟、快照/恢复耗时、按原因分类的重置次数、monitor 持有时间，以及已提交/暂存/索引的总内存。比较持续变更速率与实测排出能力，包含恢复流量。
+2. 评估现有单 Slot 上的有限在途状态控制窗口。保持有序应用及连续 revision，条数和字节限制同时覆盖排队与在途工作。不能仅凭 END ACK 开启就绪，必须此前全部快照控制成功。窗口失败或被替代时，应先限制全部晚到回调，再启动新同步。需要同步调整本 Java 规范及 Wire Profile 当前的单在途规则，并补并发/失败回归；根据测量选择窗口，不预设未经验证的固定默认值。从已捕获的不可变视图按需生成快照分块，预留增量容量，保持快照先于增量。批量增量或服务绑定恢复可作为后续选项，需要明确 Wire 操作、版本/兼容性审查与测试；不能直接跳过携带 revision 的变更来合并。若到达速率仍超过排出能力，需要应用速率预算或明确准入策略；只增大 FIFO 仅延后溢出。
+3. 缩小转发 monitor 范围：锁内捕获不可变路由决策/身份及所需 payload retain，锁外编码、发送，每条结果路径对应 release。保留关闭/准入边界、控制入队顺序及快照一致性，不能锁外遍历仍可变的表。有效 Node 定位索引和获胜绑定索引需要保存所有候选桶来源，确保移除获胜项后按现有确定性冲突规则显露正确的竞争项。已有 owner 到 key 的移除索引解决的是另一类扫描。
+4. 定义进程总量及每 Peer 的字节预算，覆盖已提交状态、暂存、排队/在途控制和 fan-out，同时限制 Router 成员数及并发恢复数。配置化预算及拒绝原本会接受的工作会改变公开默认值/准入行为，需要明确设计调整，并同步双层规范与边界测试。发现移除依据需要权威的代际退役/检查点规则，或配合发现重放的运维滚动方案；超时/LRU 淘汰不能安全解决生命周期上限。
+
+后续本地评估包含以下已解决偏差与剩余容量风险。忽略目录 `game-router/target/router-followup-review` 下的临时 TCP 探针提供初始本地证据，不是生产容量测试。错误返回阻塞与 Slot 重配偏差已由代码修复及永久回归替代，其余事项未实施。
+
+- **Router Peer 重配后可能保留非法 READY 状态（已解决）。** 原实现在重配成双 Slot 后仍报告 READY；现在按当前 Slot 数限制就绪、单播和广播，维护作废非法同步并保留查询，恢复单 Slot 后重新交换快照。第 2 节及永久回归 `routerSlotReconfigurationInvalidatesReadinessAndRequiresNewSnapshot` 定义、验证该边界。
+- **业务 Call pending 没有有限准入（已确认的现有 RPC 能力缺口）。** 真实本地 Router 将 10,000 个 Call 投递到只消费请求、不回复的服务。来源使用 60 秒调用超时；10,000 个调用全部留在其 RPC Peer pending Map，未发生准入失败。有界服务控制 FIFO 不限制这些业务调用，可写 TCP 也不表示响应能力。这确认的是准入机制缺失，不是内存溢出阈值或受支持吞吐。Node 级 Call 准入归 RPC 暂缓的 R-SEND-04；Router 应复用其完成语义，不另设业务 pending Map。参见 [RPC Java 规范](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。 超时会移除 pending 并报告 TIMEOUT，晚到响应不会再次完成；这不表示永久泄漏。风险是超时前的并发积压，约为到达速率乘平均等待时间。
+- **路由错误等待同步 ACK（已解决）。** 初始探针暂扣 VERIFY ACK，在目标服务断开后观察到 DATA_ERROR 的 PEER_NOT_FOUND 排在同步队列中，200 ms Call 超时。错误返回现经 Notify 独立发送；Wire Profile 已记录其表示与旧 Call 的接收兼容性。永久回归 `routedErrorDoesNotWaitForSynchronizationAcknowledgement` 覆盖修复，不保证不可用返回链路的交付。
+- **持续变更可能超过串行同步能力（协议推导的容量风险）。** 只有一个确认控制在途时，理想排出速率最多约为每秒 `1 / RTT` 个控制。多个服务可以持续产生注册、bind 和 unbind；它们本地成功不等待远端排出。总到达速率超过排出速率时，8,192 个控制的队列最终溢出，作废流并重新启动完整快照。在最大快照规模下，如果捕获期间没有 ACK 排出，留给后续变更的排队空间约为 3,892 个。持续过载可能反复破坏快照进度。现有收敛以来源状态停止变化为条件，持续负载恢复预算未验证。服务恢复逐键确认 bind，也会在期望集合恢复完成前保持出站业务路由不可用。
+- **每桶限制不构成进程资源预算（结构性、未实测的生产风险）。** Router 成员配置没有总量上限；每个 Peer 可以保留已提交桶、暂存另一桶并拥有编码控制队列。表还维护 owner 到 key 的索引。内存随来源桶数、并发恢复和 fan-out 增长，而不只受本地百万绑定限制。快照编码、冲突扫描和业务编码/fan-out 共用一个 monitor；这里阻塞会延迟共享 EventLoop 上的其他 RPC 连接。多个桶声称同一 key 时，`resolveKey` 可能产生 Router 桶数的平方级工作；服务整体查询扫描全部注册并重复定位 owner。选择索引或预算前，应测量字节数、monitor 持有时间和尾延迟。独立的十万对移除依据还是生命周期限制，因此发现事件变化也需要运维预算；用满后，新增移除会在清理其存活路由前被拒绝，这是第 2 节明确的设计边界。

@@ -4,7 +4,7 @@
 
 文档类型：语言无关 Specification。组件：game-router。配套：[Java 25 开发规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。依赖：[RPC](OGBS-RPC-1.0.zh-CN.md)、[Core](OGBS-Core-1.0.zh-CN.md)。字节定义：[RPC Wire Profile 中的 Router Profile](../rpc-wire.zh-CN.md#router-profile-v2)。状态：Java 参考实现已实现，具有本地 TCP 契约测试；生产容量与跨语言互通尚未验证。
 
-装配、回调锁循环、多 Slot 重启、注册 ACK 恢复、发现移除及晚到 Handler 缺陷已有代码调整和永久本地回归。RPC 有限 pending 准入、转发临界区成本及生产边界仍未解决，详见 [Java 审查修复与剩余边界](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-尚未修复的审查结论2026-10-07)。
+装配、回调锁循环、多 Slot 重启、注册 ACK 恢复、发现移除、晚到 Handler、入站转发就绪及校验失败重试缺陷已有代码调整和永久本地回归。RPC 有限 pending 准入、转发临界区成本及生产边界仍未解决，详见 [Java 审查修复与剩余边界](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-尚未修复的审查结论2026-10-07)。
 
 ## 1. 职责与组合
 
@@ -53,6 +53,8 @@
 
 分区期间，服务发现成员和最后确认的路由仍可见，即使下一跳不可用。已知路由的传输不可用返回 UNAVAILABLE，不臆造服务下线或路由缺失。视图可过期，直到显式发现移除或新的权威快照到达。没有共识、租约或分区强一致性；全连接恢复且来源状态停止变化后收敛。Router 重启通过 Node 注册及 Peer 快照重建状态，没有持久路由数据库。
 
+就绪边界同时约束发送和接收 Router 业务 envelope。例如，B 作废与 A 的同步但保留 A 的已提交桶时，B 仍可查询 A 的绑定；A 已发出的消息不能借该桶绕过 B 的就绪检查。B 丢弃 Notify/广播/响应转发，并尝试沿原来源附着关系为 Call 返回 UNAVAILABLE，仍受返回链路可用性限制。业务消息不缓冲、不重放。普通直连 RPC 和同步/错误控制仍可使用，以便完成恢复。[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 验证拒绝、保留查询及快照恢复后重新转发。
+
 ## 4. 转发与调用完成
 
 **RT-DATA-01** 动态请求在来源 Router 只解析一次，得到精确 Node/epoch；物理请求直接使用 nodeId。来源 Router 本地投递，或转发到目标所属 Router；接收 Router 只向自己的本地目标投递。转发 MUST 保留 Metadata、body、业务身份、command、亲和字段及原调用 ID。直连 Node 的来源身份按附着关系校验；已同步、受信任的 Router 为其转发消息的来源身份负责。
@@ -62,6 +64,8 @@
 **RT-DATA-02** 原始 RPC Node 拥有路由调用的 pending 状态和超时。中间 Router MUST NOT 新建另一笔业务调用、分配新的业务 requestId 或自行关联响应。控制同步可使用独立普通 RPC call。响应指向原 sourceNodeId、sourceEpoch，不能重新查 binding；过期目标附着关系 MUST 拒绝投递。响应被接受不证明来源仍有 PendingCall。
 
 **RT-DATA-03** 动态路由缺失时 Notify 丢弃；Call 返回 ROUTE_NOT_FOUND，不能主动等待超时。物理 Node 不存在及下一跳不可用复用 RPC PEER_NOT_FOUND/UNAVAILABLE。转发使用现有 RPC 发送结果；ACCEPTED 仅表示本地传输准入。如果来源或返回链路已经消失，错误响应也可能无法返回，最终仍由 RPC 超时。Router 不提供端到端发送收据。远端错误进入响应 Handler，本地 RPC 失败进入失败 Handler。
+
+Router 产生的错误返回独立于快照、增量和校验确认，立即尝试向原来源的精确附着关系进行传输准入，不创建中间 pending 调用，也不重试。例如，在返回连接可用时，暂扣同步校验 ACK 不能使已知的 PEER_NOT_FOUND 排在该 ACK 后。传输背压或来源消失仍可能使错误无法在原调用超时前到达。[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 覆盖这一失败隔离，传输表示见 [Wire Profile](../rpc-wire.zh-CN.md#router-profile-v2)。
 
 示例：Room 调用 `(MATCH, playerId)`；Match 收到原始来源身份，随后解绑 playerId。响应仍返回 Room 的精确 Node/epoch。Room 切换或移除附着关系可能丢失响应；超时不会撤销 Match 的执行。[集成测试](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) 验证这一边界。
 
@@ -77,6 +81,8 @@
 
 **RT-LIFE-02** RPC 拥有自身生命周期/资源屏障；应用拥有组件装配及关闭顺序。显式路由关闭时 MUST 停止接纳状态变更、限制晚到 Handler 并释放自有表/控制缓冲，随后应用关闭 RPC；已分派回调可按 RPC 契约结束。远端实例清理仍需发现通知。路由不创建端点或业务 Executor，自行拥有有限协议恢复调度并在关闭时停止。恢复仅重试幂等注册/同步，不能重试业务执行。选中关系 MUST 在传输仍可用时协调远端 Router 替换和失败注册；连接可用不是注册依据。校验失败停止自动注册重试，并保持可观察。调度间隔/超时由实现定义，不是恢复期限或存在性租约。业务分派及借用 payload retain 归应用。已接受工作没有取消操作，超时/丢 ACK 使执行不确定；控制完成使用回调，不提供返回 future 的 API。
 
+非瞬时协议校验失败停止自动注册恢复，暴露失败，并保留已接受的期望绑定。瞬时传输错误或确认注册缺失仍允许恢复。例如，注册成功后，ACK 的校验数据非法使服务路由不可用；随后连接恢复不能抹除已停止的选择。应用可以检查失败，再显式重试同一选择或清除它。这落实 RT-LIFE-02 的校验边界，不把连接可用当成注册成功。Java 回调顺序和重试入口见 [Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#3-服务注册和回调)；[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 覆盖非法校验、显式重试及可恢复失败。
+
 ## 7. 已确认取舍与验证
 
 | 决策 | 原因 | 重新考虑条件 |
@@ -85,5 +91,7 @@
 | Router 权威分桶与重连快照 | 删除、重建明确，不需要增量重放日志 | 快照规模或恢复时间超过实测预算 |
 | 全连接、最多一跳 Router | Router 数量较少，避免环路和广播放大 | Router 规模或拓扑需要多跳 |
 | 现有 Node 上的普通 Handler | 一个身份、连接系统及调用完成拥有方；装配在 RPC 外完成 | 缺少具体可复用的 RPC 能力 |
+
+持续负载同步与进程总资源预算仍未验证。建议下一步评估有界、有序的同步流水线，再根据测量决定是否批量发送；两者都不是已实现契约。后续设计仍须保持暂存不可见、连续 revision 校验、快照先于增量和 bind 仅确认本地的边界。有界队列不能无限承受到达速率大于排出速率；显式总量准入或背压策略会改变可观察的拒绝行为，需要规范与实现一起调整。索引和将编码移出状态锁可以保持行为，前提是保留冲突选择、捕获身份和关闭边界。没有发现证据证明已移除代际不可能再注册时，不能静默过期清除移除依据。Java 机制及测量入口记录在 Java 规范的审查章节。
 
 Java 机制、默认值及包布局见 [Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。[RouterIntegrationTest](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) 覆盖真实 TCP 调用/响应字段、广播、分区冲突、多分块快照与增量顺序、重连、切换和 Handler 异常。[可运行示例](../../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 为每个模拟进程装配一个应用拥有的 RPC Node。本地测试不是生产规模、集群安全或跨语言认证。自动发现/故障目标选择、持久化、远端取消与 Runtime 适配不属于 V1。

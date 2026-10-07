@@ -66,11 +66,10 @@ final class RouterEngine implements RpcHandler {
                 if (closed) return;
                 for (int id : configuredRouters) {
                     Peer p = routers.get(id);
-                    if (!rpc.isPeerConnected(id)) {
+                    if (!rpc.isPeerConnected(id) || rpc.peerSlotCount(id) != 1) {
                         if (p != null && p.sent) reset(id, p);
                         continue;
                     }
-                    if (rpc.peerSlotCount(id) != 1) continue;
                     p = routers.get(id);
                     if (p == null) { p = new Peer(0); routers.put(id, p); }
                     if (!p.sent) snapshot(id, p);
@@ -144,7 +143,7 @@ final class RouterEngine implements RpcHandler {
         }
     }
     public boolean isRouterReady(int id) {
-        synchronized (lock) { Peer p = routers.get(id); return !closed && rpc != null && rpc.isPeerConnected(id) && p != null && p.synchronizedIn && p.synchronizedOut && !failed.contains(id); }
+        synchronized (lock) { Peer p = routers.get(id); return !closed && rpc != null && rpc.peerSlotCount(id) == 1 && rpc.isPeerConnected(id) && p != null && p.synchronizedIn && p.synchronizedOut && !failed.contains(id); }
     }
     private void onConnected(int id) {
         if (!rpc.isPeerConnected(id)) return;
@@ -204,7 +203,7 @@ final class RouterEngine implements RpcHandler {
         if (closed) return;
         revision++;
         for (int id : List.copyOf(routers.keySet())) {
-            if (failed.contains(id) || !routers.get(id).sent || !rpc.isPeerConnected(id)) continue;
+            if (failed.contains(id) || !routers.get(id).sent || !rpc.isPeerConnected(id) || rpc.peerSlotCount(id) != 1) continue;
             ByteBuf b = control(op).writeLong(epoch).writeLong(revision);
             try { encode.accept(b); }
             catch (RuntimeException | Error error) { b.release(); throw error; }
@@ -247,7 +246,7 @@ final class RouterEngine implements RpcHandler {
             if (expectedRouter != epoch || senderEpoch == 0) return NOT_REGISTERED;
             if (configuredRouters.contains(source)) {
                 Peer p = routers.get(source);
-                return p != null && p.epoch == senderEpoch && p.revision == senderRevision && p.synchronizedIn && p.synchronizedOut ? 0 : NOT_REGISTERED;
+                return isRouterReady(source) && p.epoch == senderEpoch && p.revision == senderRevision ? 0 : NOT_REGISTERED;
             }
             NodeRegistration n = local.nodes.get(source);
             if (senderRevision != 0) throw new IllegalArgumentException("Service revision must be zero");
@@ -257,7 +256,7 @@ final class RouterEngine implements RpcHandler {
             Peer p = routers.get(source);
             long routerEpoch = b.readLong(); int target = b.readInt(); long targetEpoch = b.readLong();
             int id = b.readInt(), error = b.readInt(); end(b);
-            if (p == null || p.table == null || p.epoch != routerEpoch || id == 0 || error <= 0)
+            if (p == null || p.table == null || p.epoch != routerEpoch || rpc.peerSlotCount(source) != 1 || id == 0 || error <= 0)
                 throw new IllegalArgumentException("Invalid routed error");
             NodeRegistration n = local.nodes.get(target);
             if (n != null && n.nodeEpoch() == targetEpoch) forwardOwned(target, new RpcResponse(id, error, null, null));
@@ -283,7 +282,7 @@ final class RouterEngine implements RpcHandler {
         }
         if (op >= BEGIN && op <= UNBIND) {
             Peer p = routers.get(source);
-            if (p == null || p.epoch == 0 || p.epoch != b.readLong()) throw new IllegalArgumentException("Router epoch mismatch");
+            if (p == null || rpc.peerSlotCount(source) != 1 || p.epoch == 0 || p.epoch != b.readLong()) throw new IllegalArgumentException("Router epoch or Slot mismatch");
             switch (op) {
                 case BEGIN -> {
                     if (p.staging != null) throw new IllegalArgumentException("Repeated snapshot begin");
@@ -401,6 +400,8 @@ final class RouterEngine implements RpcHandler {
                 || (remote && (sourceTable == null || failed.contains(peerId)))
                 || (remote ? e.hops() != 1 || outer.requestId() != 0 : e.hops() != 0))
             throw new IllegalArgumentException("Unregistered/spoofed routed source");
+        // A retained bucket is queryable authority, not permission to forward during repair.
+        if (remote && !isRouterReady(peerId)) { fail(e, RpcErrorCodes.UNAVAILABLE); return; }
         if (!remote && e.message() instanceof RpcRequest r) {
             if (r.requestId() != 0) throw new IllegalArgumentException("Client inner requestId must be zero");
             RpcRequest assigned = new RpcRequest(r.command(), outer.requestId(), r.routeKey(), r.businessIdType(), r.businessId(), r.metadata(), r.body());
@@ -412,7 +413,7 @@ final class RouterEngine implements RpcHandler {
                 Location location = locate(n.nodeId());
                 if (location != null && location.router == rpc.nodeId()) deliver(e, location);
             }
-            if (!remote) for (var entry : routers.entrySet()) if (entry.getValue().table != null && entry.getValue().synchronizedOut && entry.getValue().synchronizedIn && rpc.isPeerConnected(entry.getKey()) && !failed.contains(entry.getKey())) {
+            if (!remote) for (var entry : routers.entrySet()) if (entry.getValue().table != null && isRouterReady(entry.getKey())) {
                 forwardData(entry.getKey(), copy(e, BROADCAST, 0, 0, 1));
             }
             return;
@@ -467,9 +468,12 @@ final class RouterEngine implements RpcHandler {
         if (source == null || source.node.nodeEpoch() != e.sourceEpoch()) return;
         if (source.router == rpc.nodeId()) forwardOwned(e.source(), new RpcResponse(r.requestId(), error, null, null));
         else {
-            // The control error returns to the exact source attachment without a binding lookup.
+            // Errors have no synchronization ACK dependency or intermediary pending call.
             ByteBuf b = control(DATA_ERROR).writeLong(epoch).writeInt(e.source()).writeLong(e.sourceEpoch()).writeInt(r.requestId()).writeInt(error);
-            sendControl(source.router, b);
+            try { forwardOwned(source.router, packet(b)); }
+            catch (RuntimeException failure) {
+                LOG.log(System.Logger.Level.WARNING, "Routed error send failed", failure);
+            }
         }
     }
     private static int sendError(RpcSendStatus status) {
