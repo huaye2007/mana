@@ -1,5 +1,8 @@
 package cn.managame.network.netty;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.network.connection.*;
 import cn.managame.network.connector.*;
 import cn.managame.network.error.NetworkException;
@@ -17,7 +20,7 @@ class ConnectRaceTest extends NetworkTestSupport {
         var group = new NioEventLoopGroup(1);
         AtomicReference<Channel> channel = new AtomicReference<>();
         CountDownLatch active = new CountDownLatch(1);
-        CompletableFuture<Throwable> outcome = new CompletableFuture<>();
+        Promise<Throwable> outcome = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         AtomicInteger outcomes = new AtomicInteger();
         AtomicReference<Thread> callbackThread = new AtomicReference<>();
         try (var blackhole = NetworkServer.builder().bindAddress(LOCAL).handler(new Probe()).build();
@@ -31,8 +34,8 @@ class ConnectRaceTest extends NetworkTestSupport {
             blackhole.start();
             URI uri = URI.create("ws://127.0.0.1:" + ((InetSocketAddress) blackhole.localAddress()).getPort() + "/game");
             client.connectAsync(uri, new ConnectCallback() {
-                public void onSuccess(Connection c) { outcomes.incrementAndGet(); outcome.completeExceptionally(new AssertionError("unexpected success")); }
-                public void onFailure(Throwable cause) { callbackThread.set(Thread.currentThread()); outcomes.incrementAndGet(); outcome.complete(cause); }
+                public void onSuccess(Connection c) { outcomes.incrementAndGet(); outcome.tryFailure(new AssertionError("unexpected success")); }
+                public void onFailure(Throwable cause) { callbackThread.set(Thread.currentThread()); outcomes.incrementAndGet(); outcome.trySuccess(cause); }
             });
             assertTrue(active.await(5, TimeUnit.SECONDS));
             client.close();
@@ -54,7 +57,7 @@ class ConnectRaceTest extends NetworkTestSupport {
         Probe probe = new Probe();
         AtomicReference<Channel> channel = new AtomicReference<>();
         CountDownLatch active = new CountDownLatch(1);
-        CompletableFuture<Boolean> interrupted = new CompletableFuture<>();
+        Promise<Boolean> interrupted = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         try (var blackhole = NetworkServer.builder().bindAddress(LOCAL).handler(new Probe()).build();
              var client = NetworkClient.builder().webSocket().handler(probe).pipeline(p -> {
                  channel.set(p.channel());
@@ -65,8 +68,8 @@ class ConnectRaceTest extends NetworkTestSupport {
             blackhole.start();
             URI uri = URI.create("ws://127.0.0.1:" + ((InetSocketAddress) blackhole.localAddress()).getPort() + "/");
             Thread thread = Thread.ofPlatform().start(() -> {
-                try { client.connect(uri); interrupted.complete(false); }
-                catch (NetworkException expected) { interrupted.complete(Thread.currentThread().isInterrupted()); }
+                try { client.connect(uri); interrupted.trySuccess(false); }
+                catch (NetworkException expected) { interrupted.trySuccess(Thread.currentThread().isInterrupted()); }
             });
             assertTrue(active.await(5, TimeUnit.SECONDS));
             thread.interrupt(); assertTrue(get(interrupted)); thread.join(5000);
@@ -203,7 +206,7 @@ class ConnectRaceTest extends NetworkTestSupport {
         var group = new NioEventLoopGroup(1);
         Probe probe = new Probe();
         CountDownLatch initializing = new CountDownLatch(1), resume = new CountDownLatch(1);
-        CompletableFuture<Throwable> failure = new CompletableFuture<>();
+        Promise<Throwable> failure = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         AtomicInteger outcomes = new AtomicInteger();
         try (var server = NetworkServer.builder().bindAddress(LOCAL).handler(new Probe()).build();
              var client = NetworkClient.builder().eventLoopGroup(group).handler(probe).pipeline(p -> {
@@ -219,9 +222,9 @@ class ConnectRaceTest extends NetworkTestSupport {
             client.connectAsync(server.localAddress(), new ConnectCallback() {
                 public void onSuccess(Connection c) {
                     outcomes.incrementAndGet(); c.close();
-                    failure.completeExceptionally(new AssertionError("Late success"));
+                    failure.tryFailure(new AssertionError("Late success"));
                 }
-                public void onFailure(Throwable cause) { outcomes.incrementAndGet(); failure.complete(cause); }
+                public void onFailure(Throwable cause) { outcomes.incrementAndGet(); failure.trySuccess(cause); }
             });
             assertTrue(initializing.await(5, TimeUnit.SECONDS));
             client.close();
@@ -242,7 +245,7 @@ class ConnectRaceTest extends NetworkTestSupport {
 
     @Test void interruptDuringOnConnectedClosesUndeliverableConnection() throws Exception {
         CountDownLatch callbackEntered = new CountDownLatch(1), resume = new CountDownLatch(1);
-        CompletableFuture<Boolean> interrupted = new CompletableFuture<>();
+        Promise<Boolean> interrupted = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         Probe probe = new Probe() {
             public void onConnected(Connection connection) {
                 super.onConnected(connection);
@@ -259,9 +262,9 @@ class ConnectRaceTest extends NetworkTestSupport {
              var client = NetworkClient.builder().handler(probe).build()) {
             server.start();
             Thread waiter = Thread.ofPlatform().start(() -> {
-                try { client.connect(server.localAddress()); interrupted.complete(false); }
-                catch (NetworkException error) { interrupted.complete(Thread.currentThread().isInterrupted()); }
-                catch (Throwable error) { interrupted.completeExceptionally(error); }
+                try { client.connect(server.localAddress()); interrupted.trySuccess(false); }
+                catch (NetworkException error) { interrupted.trySuccess(Thread.currentThread().isInterrupted()); }
+                catch (Throwable error) { interrupted.tryFailure(error); }
             });
             try {
                 assertTrue(callbackEntered.await(5, TimeUnit.SECONDS));
@@ -309,8 +312,8 @@ class ConnectRaceTest extends NetworkTestSupport {
     @Test void interruptBeforeChannelCreationClosesLateChannel() throws Exception {
         var group = new NioEventLoopGroup(1);
         CountDownLatch creating = new CountDownLatch(1), resume = new CountDownLatch(1);
-        CompletableFuture<Channel> created = new CompletableFuture<>();
-        CompletableFuture<Boolean> interrupted = new CompletableFuture<>();
+        Promise<Channel> created = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
+        Promise<Boolean> interrupted = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         Probe probe = new Probe();
         try (var client = NetworkClient.builder().eventLoopGroup(group).handler(probe).channelFactory(() -> {
             creating.countDown();
@@ -321,13 +324,13 @@ class ConnectRaceTest extends NetworkTestSupport {
                 throw new IllegalStateException(e);
             }
             Channel channel = new io.netty.channel.socket.nio.NioSocketChannel();
-            created.complete(channel);
+            created.trySuccess(channel);
             return channel;
         }).build()) {
             Thread waiter = Thread.ofPlatform().start(() -> {
-                try { client.connect(LOCAL); interrupted.complete(false); }
-                catch (NetworkException cause) { interrupted.complete(Thread.currentThread().isInterrupted()); }
-                catch (Throwable cause) { interrupted.completeExceptionally(cause); }
+                try { client.connect(LOCAL); interrupted.trySuccess(false); }
+                catch (NetworkException cause) { interrupted.trySuccess(Thread.currentThread().isInterrupted()); }
+                catch (Throwable cause) { interrupted.tryFailure(cause); }
             });
             try {
                 assertTrue(creating.await(5, TimeUnit.SECONDS));

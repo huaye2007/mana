@@ -1,5 +1,8 @@
 package cn.managame.network.netty;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.network.connection.*;
 import cn.managame.network.connector.*;
 import cn.managame.network.error.NetworkException;
@@ -40,14 +43,14 @@ class WebSocketContractTest extends NetworkTestSupport {
     @Test void fragmentsControlFramesAndTextRejection() throws Exception {
         Probe serverProbe = new Probe(), clientProbe = new Probe();
         AtomicReference<Channel> channel = new AtomicReference<>();
-        CompletableFuture<String> pong = new CompletableFuture<>();
+        Promise<String> pong = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         try (var server = NetworkServer.builder().bindAddress(LOCAL).webSocket("/game").handler(serverProbe).build();
              var client = NetworkClient.builder().webSocket().handler(clientProbe).pipeline(p -> {
                  channel.set(p.channel());
                  p.addBefore(WebSocketTransport.PROTOCOL, "observe-pong", new ChannelInboundHandlerAdapter() {
                      public void channelRead(ChannelHandlerContext ctx, Object message) {
                          if (message instanceof PongWebSocketFrame frame)
-                             pong.complete(frame.content().toString(StandardCharsets.UTF_8));
+                             pong.trySuccess(frame.content().toString(StandardCharsets.UTF_8));
                          ctx.fireChannelRead(message);
                      }
                  });

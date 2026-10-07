@@ -1,5 +1,8 @@
 package cn.managame.demo.examples.network;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.network.connection.*;
 import cn.managame.network.netty.*;
 import io.netty.channel.ChannelPipeline;
@@ -15,19 +18,19 @@ public final class NetworkEchoExample {
     public static void main(String[] args) throws Exception { System.out.println(roundTrip("hello game-network")); }
 
     public static String roundTrip(String message) throws Exception {
-        CompletableFuture<String> response = new CompletableFuture<>();
+        Promise<String> response = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         ConnectionHandler echo = new Handler() {
             public void onMessage(Connection connection, Object message) {
                 if (connection.write(message) != WriteStatus.ACCEPTED) connection.close();
             }
         };
         ConnectionHandler receiver = new Handler() {
-            public void onMessage(Connection connection, Object message) { response.complete((String) message); }
+            public void onMessage(Connection connection, Object message) { response.trySuccess((String) message); }
             public void onException(Connection connection, Throwable cause) {
-                response.completeExceptionally(cause); connection.close();
+                response.tryFailure(cause); connection.close();
             }
             public void onDisconnected(Connection connection) {
-                response.completeExceptionally(new IllegalStateException("Disconnected before response"));
+                response.tryFailure(new IllegalStateException("Disconnected before response"));
             }
         };
         try (NetworkServer server = NetworkServer.builder().bindAddress(new InetSocketAddress("127.0.0.1", 0))

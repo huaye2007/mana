@@ -7,6 +7,8 @@ Document type: **Language-independent specification**. Component: game-rpc. Java
 Companions: [Java 25 specification](OGBS-RPC-Java-25-Specification-1.0.md), [RPC Wire Profile](../rpc-wire.md).
 Normative dependencies: [Network](OGBS-Network-1.0.md), [Core](OGBS-Core-1.0.md).
 
+The Router integration review led to ordinary Handler assembly and component-owned protocol recovery; RPC has no upper-layer readiness/cleanup hooks. Finite admission remains a declared gap. See [Java integration review](OGBS-RPC-Java-25-Specification-1.0.md#rpc-router-review-2026-10-07).
+
 <a id="1-范围"></a>
 
 ## 1. Scope
@@ -83,6 +85,10 @@ Slots are transport details. Source Slot is only a reply hint, never part of bus
 <a id="6-发送选择"></a>
 
 ## 6. Send selection
+
+**R-EXT-01** Upper-layer composition MUST reuse the existing Node and transport, dispatching its owned messages and delegating ordinary RPC. RPC MUST NOT depend on routing semantics or own upper-layer protocol state. Availability inspection describes transport only, not process incarnation or service presence; external discovery owns instance existence. Transport loss alone does not cancel pending calls. The application owns composition and upper-layer closure; RPC owns its own admission, pending completion and resource barrier. No upper-layer readiness/cleanup notification is required. Language-specific assembly APIs belong to the Java specification.
+
+For example, an upper layer can recheck its protocol on reconnect without rebuilding the RPC Peer or failing an ordinary call waiting on that Peer. Loss itself has no lifecycle callback in the message handler; calls retain the existing response/timeout/removal/closure contract. Routing envelopes use ordinary notify and reply, rather than introducing a second send primitive.
 
 **R-SEND-01** For call/notify, nonzero routeKey starts at unsigned64(routeKey) mod slotCount; zero uses Peer-local round-robin. reply first tries the Request's actual source Slot, then starts from the caller-supplied routeKey or round-robin and scans circularly, skipping the already tried source Slot. requestId is never a routing input.
 

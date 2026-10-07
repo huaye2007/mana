@@ -4,6 +4,8 @@ public final class FrameworkErrorCodes {
     public static final int DATA_SAVE_FAILED = 4001, DATA_LOG_SAVE_FAILED = 4002;
     private FrameworkErrorCodes() {}
     public static final int SUCCESS = 0;
+    public static final int ROUTER_ROUTE_NOT_FOUND = 5001, ROUTER_BINDING_CONFLICT = 5002,
+        ROUTER_NOT_REGISTERED = 5003, ROUTER_INVALID_SERVICE = 5004;
     public static final int RPC_PEER_NOT_FOUND = 2001, RPC_UNAVAILABLE = 2002,
         RPC_TIMEOUT = 2003, RPC_PEER_REMOVED = 2004, RPC_NODE_CLOSED = 2005,
         RPC_HANDLER_ERROR = 2006, RPC_PROTOCOL_ERROR = 2007;

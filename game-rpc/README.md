@@ -18,6 +18,8 @@ Byte layout: [RPC Wire Profile](../docs/rpc-wire.md). Shared Metadata/error code
 
 ## Usage
 
+Configure the ordinary RpcHandler through the builder; its request/response/failure dispatch is fixed at Node construction. Peer availability/count snapshots support upper-layer checks without lifecycle listeners. [game-router](../game-router/README.md) uses that same Handler and call/notify/reply; the application explicitly closes routing and RPC. Router-owned protocol verification/recovery preserves shared Peers and ordinary pending calls. Discovery owns service presence. See [Java Handler composition](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#direct-forwarding-and-handler-composition).
+
 ```java
 try (RpcNode node = RpcNode.builder()
         .nodeId(1)
@@ -44,11 +46,11 @@ start/close are synchronous management operations and cannot run inside this Nod
 
 ## Examples and validation
 
-Runnable examples and execution tests live in [game-demo](../game-demo/README.md); the RPC artifact publishes only framework code. [RpcEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) demonstrates real local TCP/dynamic ports, body retain and callback decoding, executed successfully in root clean verify. Object dispatch/replies and Route callbacks are described in [Spring integration](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
+Runnable examples and execution tests live in [game-demo](../game-demo/README.md); the RPC artifact publishes only framework code. [RpcEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) demonstrates real local TCP/dynamic ports, body retain and callback decoding. Object dispatch/replies and Route callbacks are described in [Spring integration](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
 
 ```shell
 mvn -pl game-rpc -am test
 mvn clean verify
 ```
 
-Wire, routing, reference counts, completion races, real TCP, Peer recreation, recovery ownership and timeout isolation regressions pass: 32 RPC tests and root clean verify. Finite admission is deferred; production capacity and cross-language interoperability are unverified. Core supplies no discovery or RPC TLS/WS configuration; optional Runtime integration is in game-spring.
+Wire, reference counts, completion races, real TCP, Peer recreation, recovery ownership and timeout isolation have local contract tests. RouterRecoveryTest covers multi-Slot remote restart, callback reentry and explicit closure; RouterIntegrationTest covers resynchronization retaining ordinary in-flight calls. Integration changes require root clean verify. Finite call admission remains deferred; production capacity and cross-language interoperability are unverified. Optional Runtime integration is in game-spring; core has no discovery or RPC TLS/WS configuration.

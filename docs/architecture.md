@@ -64,6 +64,14 @@ Pipeline order is caller-provided SslHandler (optional, first) → write-error e
 
 ## RPC
 
+### Router composition on one RPC Node
+
+[game-router](../game-router/README.md) depends on game-rpc, composing a private ordinary RpcHandler on the process's existing Node before startup. GameRouter provides Router membership/queries; its service factory returns concrete ServiceRouting for callback-based registration, bindings and direct business send/reply methods. All connections use rpc.addPeer. RPC owns connections, Slots, IDs, pending calls and timeouts; Router owns authority, synchronization and next hops. External discovery owns service presence and explicitly removes exact Node incarnations; temporary connection loss preserves authority. The application owns Node lifecycle; dependency remains Router → RPC.
+
+The RPC integration is limited to handler composition, Node readiness/cleanup callbacks and availability/Slot-count snapshots. Sending reuses call/notify/reply. Routing owns synchronization retries and buffer cleanup; recovery never resets shared RPC Peers or cancels unrelated calls. RpcHandler itself remains a three-method message contract.
+
+Router peers use full mesh and one Slot per pair. Service registrations may use several Slots; binding authority survives transport loss and is removed by explicit discovery or unregister. Snapshot chunks and deltas use a bounded, peer-local acknowledged control stream; local bind success never waits for the cluster. Runnable [RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) and its execution test live in game-demo, which directly depends on game-router. Contracts: [Router standard](ogbs/OGBS-Router-1.0.md), [Java development](ogbs/OGBS-Router-Java-25-Specification-1.0.md), [Wire](rpc-wire.md#router-profile-v1).
+
 [game-rpc](../game-rpc/README.md) provides RpcNode Builder, a unified RpcHandler, and generic RpcCallback. RPC does not automatically interpret business bodies, restore Runtime Context, or invoke business callbacks; the application integration layer owns these tasks.
 
 addPeer registers active peers with a fixed number of slots. A valid inbound handshake may create a passive peer. Passive peers are reclaimed when they have neither connections nor PendingCalls and can be upgraded to active peers in place. Mutable peer/slot/call state remains package-private.

@@ -8,6 +8,7 @@
 
 - OGBS = Open Game Backend Specification，规范入口为 [OGBS 文档索引](docs/ogbs/README.zh-CN.md)。
 - Java 实现使用 JDK 25，Maven groupId 为 `cn.managame`，包名为 `cn.managame.*`，源码目录为 `cn/managame/`。
+- Java 异步 API 沿用组件的回调契约，不增加返回 future 的应用 API。只有一个实现时使用公开具体类；只有实际替代实现或集成需要时才拆分接口与实现。
 - 类按职责划分子包，公开 API 与内部实现分开。是否拆成 Maven 模块由独立发布、依赖边界和实际需求决定，不为每个子包机械创建 artifact。
 - Java Network 的连接接口与 Netty 实现在 `game-network` 内统一发布，按 connection、connector、error、netty 以及独立 http 包组织；属性直接使用 Netty AttributeKey。NetworkServer/NetworkClient 及其包级内部实现位于 netty，HttpServer/HttpServerBuilder 与包级 HTTP 处理位于 http，不包装长连接入口，不使用 ConnectionHandler。不再保留自定义 attribute 或 Acceptor/Connector 抽象。
 - Java RPC 按 node、message、call、transport、error、netty 分包；保留内部类的包级封装，不为拆包而扩大公共 API。

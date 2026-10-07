@@ -1,0 +1,89 @@
+# OGBS Router Specification 1.0
+
+**[English](OGBS-Router-1.0.md)** | [简体中文](OGBS-Router-1.0.zh-CN.md)
+
+Document type: language-independent Specification. Component: game-router. Companion: [Java 25 Development Specification](OGBS-Router-Java-25-Specification-1.0.md). Dependencies: [RPC](OGBS-RPC-1.0.md), [Core](OGBS-Core-1.0.md). Bytes: [Router Profile in RPC Wire Profile](../rpc-wire.md#router-profile-v2). Status: implemented Java reference; local TCP contract tests exist. Production capacity and cross-language interoperability are unverified.
+
+The reviewed assembly, callback lock, multi-Slot restart, registration-ACK recovery, discovery-removal and late-handler defects have code changes and permanent local regressions. Finite RPC pending admission, forwarding critical-section costs and production limits remain open. See [Java review resolution and remaining limits](OGBS-Router-Java-25-Specification-1.0.md#7-open-review-findings-2026-10-07).
+
+## 1. Responsibility and composition
+
+**RT-SCOPE-01** Router MUST build on RPC for sending, receiving, direct-Peer connections, Slots, call IDs, pending calls, timeouts and callbacks. A process has one RPC Node; installing routing MUST NOT create another Node or independent transport. An application may still use that same Node for ordinary direct RPC with other services. Router owns next-hop decisions and control state; the application owns RPC startup, shutdown and Peer configuration. Connecting a Router uses the same RPC Peer operation as connecting any other service. Router membership and service attachment identify routing roles; they MUST NOT create/remove RPC Peers or retain addresses/Slot configuration.
+
+**RT-SCOPE-02** V1 provides exact node addressing, dynamic `(serviceId, bindingKey)` addressing and service broadcast. Router peers form a full mesh; transit from one remote Router to another remote Router is prohibited. Router does not implement discovery, subscriptions, durable delivery, business retries, player state or Runtime serial execution. RPC success/timeout never proves exactly-once business execution.
+
+The confirmed architectural constraint is to keep composition simple and give each responsibility one owner:
+
+| Owner | Responsibility |
+| --- | --- |
+| RPC | Connections and Slots, message transport, call IDs, pending calls, timeouts and completion callbacks |
+| Router | Registration and binding state, Router synchronization, route selection and forwarding |
+| External service discovery | Service instance existence and incarnation information; authoritative instance removal events |
+| Application | Component assembly, startup/shutdown, Peer configuration and delivery of discovery changes to Router |
+
+Protocol registration means that a Router has accepted routing state; it does not replace discovery's decision about instance existence. A usable connection does not prove that the remote Router still holds a registration after restarting. Recovery must reconcile Router protocol state while retaining RPC's ownership of connections and call completion. Business placement and retries remain application responsibilities.
+
+Extend an existing owner's behavior when the responsibility fits there. A new layer or abstraction needs a concrete responsibility or integration boundary that the existing owners cannot express clearly; possible future extensibility alone is insufficient. These boundaries guide repairs to the open implementation defects without requiring another transport, connection API or call-completion mechanism.
+
+## 2. Node and binding model
+
+**RT-NODE-01** A Node registration is `(nodeId, nodeEpoch, serviceId)`. nodeId is nonzero uint32, nodeEpoch nonzero uint64, serviceId a positive int32. Each Node serves exactly one service and has one Router attachment, which may contain multiple RPC Slots. Router IDs and service Node IDs share one identity namespace. Deployment assigns IDs and fresh epochs; epochs distinguish attachment incarnations and are not clocks or leases.
+
+**RT-NODE-02** Transport availability MUST NOT determine service online/offline state. Multiple Slots are connections to one instance, not separate registrations. Intermediate Slot loss changes no routing state. Last-Slot loss temporarily prevents transport/protocol work but MUST retain the Router's authoritative Node registration and bindings. External discovery's exact-incarnation offline notification, explicit unregister, or authoritative snapshot removal clears them. Reconnection verifies the same registration and restores accepted desired keys without changing epoch. Switching Router requires a new epoch; delayed offline events MUST NOT remove a newer incarnation. An exact-incarnation discovery removal MUST fence later registration of that same incarnation, including when removal arrived before registration. Removal evidence has implementation-defined finite capacity and lifetime; it MUST NOT be silently evicted to admit stale registrations. Discovery must reapply its current state after a Router restart because routing state is not durable.
+
+**RT-BIND-01** Binding keys are uint64 values, including zero. The map key contains serviceId and bindingKey; the value contains only nodeId and nodeEpoch. Router MUST allow a Node to bind only its registered service. A bind by the same owner is idempotent. A different visible owner MUST produce BINDING_CONFLICT without overwriting that owner. Missing unbind is idempotent; unbind MUST condition removal on the exact owner/epoch and MUST NOT remove another owner's entry.
+
+**RT-BIND-02** Bind success means the local Router accepted the binding and attempted to enqueue its changes to Router peers. It MUST NOT wait for cluster application, imply persistence or guarantee immediate visibility from another Router. Losing a peer or rejecting its control stream does not roll back an accepted local bind. A missing route in the propagation interval remains a real miss.
+
+**RT-BIND-03** Business coordination owns exclusive placement. For abnormal simultaneous binds at isolated Routers, replicas MUST retain separate authoritative buckets and choose the same deterministic visible result: select the lowest unsigned nodeId among valid owners. For duplicate Node registrations, select the greatest unsigned nodeEpoch, then lowest unsigned owning Router ID; only bindings matching that selected Node incarnation/service are eligible. Conflicts MUST be diagnosed. The fallback is not distributed locking and business code MUST NOT depend on it for placement. Removing the winner can expose a still-bound losing owner.
+
+Example: Node 1 binds `(MATCH, 1001)` at A while isolated Node 2 binds it at B. Both local operations can succeed. After snapshots are exchanged, both resolve Node 1; unbinding Node 2 removes only B's entry. There is no election or compensating rollback.
+
+## 3. Authority and synchronization
+
+**RT-SYNC-01** Each Router owns its direct Node registrations and LocalBindings. It MUST publish only that local authority, never relay a merged RouteTable as authoritative. Remote state is partitioned by source Router. The readable table is reconstructed from local authority plus synchronized remote buckets; implementations need not physically maintain one merged map.
+
+**RT-SYNC-02** A new Router relationship or an invalidated synchronization stream MUST exchange a versioned identity, snapshot begin/counts, Node chunks, binding chunks and snapshot end. Node entries precede their binding entries. Capture the local snapshot before subsequent changes, enqueue the complete snapshot before those changes, and preserve stream order. Staging MUST remain invisible until its counts/owners are validated and end is applied. Bidirectional initialization completes before the relationship is considered ready for forwarding.
+
+Both Routers explicitly declare the other's routing membership independently of connection initiation. Ordinary direct RPC Peers MUST NOT automatically become Routers; undeclared Router handshakes are rejected. A declared Router with no ready RPC connection remains unavailable and initiates no connection itself. Removing membership drops that Router's visible bucket while leaving its RPC relationship under application control. Declare membership before connecting to avoid a rejected handshake and recovery cycle.
+
+**RT-SYNC-03** Subsequent register/remove/bind/unbind operations update only the source bucket. A Node removal clears all bindings matching that Node/epoch. Router transport loss retains its last committed bucket but makes synchronization unavailable. Discovery-driven membership removal deletes that bucket. Protocol recovery sends a fresh snapshot, replacing the committed view only after valid end. An epoch/revision check MAY preserve an unchanged committed relationship after a short reconnect. Consecutive local revisions detect missed deltas; a revision gap triggers a fresh snapshot rather than replay. Changes while no stream exists are included in that snapshot. V1 does not replay sequence gaps: invalid state, rejected control admission or failed completion invalidates the routing stream and triggers a fresh identity/snapshot exchange. Recovery MUST NOT reset the shared RPC Peer, change its configuration or cancel unrelated pending calls. Repeated identity restarts incoming staging; a synchronized recipient also sends its local snapshot so both directions recover. In-progress exchanges do not echo repeated identity indefinitely. Last committed authority stays visible during recovery, while forwarding waits for both fresh snapshots.
+
+**RT-SYNC-04** Snapshot and delta buffering MUST have implementation-defined capacity boundaries. Router control acknowledgements MAY pace a bounded stream; they confirm only application of that control message at one peer. Such acknowledgements MUST NOT change RT-BIND-02 into cluster-wide bind acknowledgement. Overflow abandons remote synchronization while retaining local authority.
+
+During partition, discovery membership and last acknowledged routes may remain visible even though a next hop is unavailable. A known route with an unavailable transport produces UNAVAILABLE rather than an invented offline/route miss. Views can be stale until explicit discovery removal or a fresh authoritative snapshot. There is no consensus, lease or strong partition consistency. Recovery converges when the mesh is connected and source state stops changing. Router restart reconstructs state through Node registration and peer snapshots; no durable route database exists.
+
+## 4. Forwarding and call completion
+
+**RT-DATA-01** Dynamic requests resolve once at the source Router to an exact Node/epoch. Physical requests address nodeId directly. A source Router forwards locally or to the selected destination's Router; a receiving Router delivers only to its local destination. Metadata, body, business identity, command, affinity and the original call ID MUST survive forwarding. Source identity is validated against the direct Node attachment; a synchronized trusted Router vouches for its forwarded source identity.
+
+Player-addressing example: the service owning player B binds `(PLAYER_SERVICE, playerBId)`. The service handling player A's authenticated request sends to that logical service/key without knowing B's instance ID or address. Router delivers to the owning service instance; that application's handler identifies B from the business request and dispatches to B's local player/session. The binding key selects an instance and is not automatically copied into the inner business identity. Routed sourceNodeId identifies a server Node, not player A; sender-player identity and authorization belong to the application. Client ingress, player/session lookup, final client delivery and offline storage are outside Router. Migration still requires updating bindings, and propagation gaps or stale in-flight routes do not guarantee delivery to a moved player.
+
+**RT-DATA-02** The original RPC Node owns a routed call's pending state and timeout. Intermediate Routers MUST NOT create another business call, assign another business requestId or correlate responses themselves. Control synchronization can use separate ordinary RPC calls. Responses target the original sourceNodeId and sourceEpoch, never a newly resolved binding; a stale destination attachment MUST reject delivery. Response acceptance does not prove the source still has a pending call.
+
+**RT-DATA-03** A dynamic miss drops Notify and returns ROUTE_NOT_FOUND for Call without deliberately waiting for timeout. Missing physical Nodes and unavailable next hops reuse RPC's PEER_NOT_FOUND/UNAVAILABLE meanings. Forwarding uses the existing RPC send result; ACCEPTED means local transport admission only. Failure to return an error because the source/return path vanished can still end in RPC timeout. Router provides no end-to-end send receipt. Remote error responses go to the response handler; local RPC failures go to the failure handler.
+
+Example: Room calls `(MATCH, playerId)`, Match receives the original source identity and later unbinds playerId. Match's response still returns to Room's exact Node/epoch. Switching/removing Room's attachment may lose that response; timeout does not undo Match's work. [Integration test](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) exercises this boundary.
+
+## 5. Broadcast
+
+**RT-BCAST-01** Broadcast is Notify-only and targets every currently visible Node of a service, including the source if it serves that service. The source Router fans out locally and sends one envelope to each ready Router. A receiving Router fans out only to its local matching Nodes and MUST NOT forward the broadcast to another Router. Each replica uses its own current registration view; no atomic membership snapshot spans the cluster.
+
+There is no subscription table, broadcast call, recipient aggregate result, replay or guaranteed delivery. A missing recipient or rejected hop is dropped independently. Acceptance by the first hop does not mean all recipients received the message.
+
+## 6. Switching, lifecycle and ownership
+
+**RT-LIFE-01** Normal switching removes all old bindings/registration at the old Router, then attaches to the new Router and binds the desired keys. An explicit detach may atomically perform the old unbind-all/removal. A failed selection with usable transport can be cleared through protocol detach; confirmation that its exact incarnation is already absent counts as successful cleanup and MUST NOT remove another incarnation. Routing detach MUST NOT remove the shared RPC Peer: the application may retain it for direct RPC or explicitly remove it after routing cleanup. Abnormal switching is allowed after the old attachment has lost all Slots; surviving Routers clear its bucket after discovery confirms that Router offline. The Node retains desired bindings across abnormal loss and explicitly chooses its new Router/epoch; no automatic Router selection is provided. Clearing a lost attachment also leaves RPC configuration to the application; subsequent old-Peer recovery MUST NOT restore the cleared attachment.
+
+**RT-LIFE-02** RPC owns its own lifecycle/resource barriers; the application owns component assembly and shutdown order. Routing MUST stop admitting state changes, fence late handlers and release owned tables/control buffers on explicit routing closure. The application then closes RPC; already-dispatched callbacks may finish under the RPC contract. Remote instance cleanup still requires discovery notification. Routing creates no endpoint or business executor, owns bounded protocol-recovery scheduling and stops it on closure. Recovery retries only idempotent registration/synchronization, never business execution. Active selections MUST reconcile remote Router replacement and failed registration even if transport stays available; connection availability is not registration evidence. Validation failure stops automatic registration retries and remains observable. Scheduling intervals and timeouts are implementation-defined, not recovery deadlines or presence leases. Business dispatch/borrowed payload retention belongs to the application. Accepted work has no cancellation operation; timeout/lost ACK leaves execution uncertain. Control completion uses callbacks, not future-returning APIs.
+
+## 7. Confirmed tradeoffs and validation
+
+| Decision | Rationale | Reconsider when |
+| --- | --- | --- |
+| Local bind acceptance, eventual replicas | Placement is business-owned; avoids a cluster coordinator | Placement must become atomic across partitions |
+| Per-Router authority and reconnect snapshots | Removal/rebuild is explicit; no delta replay log | Snapshot volume/recovery time exceeds measured budgets |
+| Full mesh and one Router hop | Small Router fleet, no loops or broadcast amplification | Router fleet or network topology needs multi-hop routing |
+| Ordinary Handler on the existing Node | One identity, connection system and call-completion owner; assembly outside RPC | A concrete reusable RPC capability is missing |
+
+Java mechanisms, defaults and packages belong to the [Java specification](OGBS-Router-Java-25-Specification-1.0.md). [RouterIntegrationTest](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) covers real TCP call/response fields, broadcast, partition conflict, multi-chunk snapshot/delta order, reconnect, failover and handler errors. [Runnable example](../../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) assembles one application-owned RPC Node per simulated process. Local tests are not production scale, mesh-security or cross-language certification. Automatic discovery/failover selection, persistence, remote cancellation and Runtime adaptation are outside V1.

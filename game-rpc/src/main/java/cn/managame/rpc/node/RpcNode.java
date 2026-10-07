@@ -59,6 +59,19 @@ public final class RpcNode implements AutoCloseable {
     }
     public static RpcNodeBuilder builder() { return new RpcNodeBuilder(); }
     public int nodeId() { return nodeId; }
+    /** Snapshot only: at least one bound connection is active; does not promise delivery. */
+    public boolean isPeerConnected(int remoteNodeId) {
+        RpcPeer peer = peers.get(remoteNodeId);
+        return state == State.RUNNING && peer != null && Arrays.stream(peer.slots).anyMatch(slot -> {
+            Connection connection = slot.connection.get();
+            return connection != null && connection.isActive();
+        });
+    }
+    /** Configured Slot count, or zero for an absent Peer. */
+    public int peerSlotCount(int remoteNodeId) {
+        RpcPeer peer = peers.get(remoteNodeId);
+        return peer == null ? 0 : peer.slots.length;
+    }
     public SocketAddress localAddress() {
         synchronized (lifecycleLock) { return server == null ? null : server.localAddress(); }
     }

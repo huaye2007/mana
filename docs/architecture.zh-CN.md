@@ -55,6 +55,14 @@ Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常�
 [game-demo](../game-demo/README.zh-CN.md) 统一提供 Spring 主应用和 `cn.managame.demo.examples.<component>` 下的独立组件入口/执行测试：TCP 字符串 echo、同步/异步 HTTP、Runtime HTTP 与双节点 RPC。模块直接依赖 game-spring 与 game-rpc，其余框架依赖由 game-spring 传递引入。独立入口不加载主应用或 MySQL；隔离 profile 防止其 HTTP Handler 被主应用扫描。框架不依赖 demo，不发布示例；这些入口演示既有两层规范，不是新框架组件。
 ## RPC
 
+### 在唯一 RPC Node 上组合 Router
+
+[game-router](../game-router/README.zh-CN.md) 依赖 game-rpc，在现有唯一 Node 启动前私有组合普通 RpcHandler。GameRouter 提供 Router 成员/查询，服务工厂返回具体 ServiceRouting，直接提供回调注册、绑定和业务收发。所有连接统一使用 rpc.addPeer。RPC 拥有连接、Slot、ID、pending 和超时，Router 拥有权威、同步与下一跳。外部发现拥有服务存在性并显式移除精确 Node 代际，暂时断线保留权威。应用拥有 Node 生命周期，依赖仍为 Router → RPC。
+
+RPC 接入仅包括 Handler 组合、Node 就绪/清理回调与可用性/Slot 数量快照；发送复用 call/notify/reply。路由拥有同步重试和缓冲清理，恢复不能重置共享 RPC Peer 或取消无关调用。RpcHandler 本身仍只有三个消息方法。
+
+Router Peer 使用全连接，每对单 Slot；服务注册可使用多 Slot，绑定权威在传输丢失后仍保留，仅通过显式服务发现或注销清理。快照分块与增量使用有限且具有 Peer 本地 ACK 的控制流，本地 bind 成功不等待集群。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v1)。
+
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
 
 主动 Peer 由 addPeer 注册，维护固定数量 Slot；合法入站握手可以创建被动 Peer。被动 Peer 无连接且无 PendingCall 时回收，也可以原地升级为主动 Peer。Peer/Slot/调用内部状态保持包级封装。

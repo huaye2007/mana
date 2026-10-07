@@ -56,7 +56,8 @@ Key 缺失与 boolean false 是不同状态。沿用旧 Key 时不得更改其�
 | 2000..2999 | game-rpc |
 | 3000..3999 | game-runtime |
 | 4000..4999 | game-data |
-| 5000..9999 | 后续框架组件预留 |
+| 5000..5999 | game-router |
+| 6000..9999 | 后续框架组件预留 |
 | 10000..2147483647 | 业务错误 |
 
 **C-ERR-02** RPC Response 的 errorCode 直接使用非负整数：0 成功；1..9999 框架预留；10000..2147483647 业务错误；最高位为 1 的值非法。取消旧草案的高位封装，框架与业务不能占用相同编号。远端任何合法 errorCode 都交给 RPC 统一响应处理器解释，不自动转为本地失败。
@@ -102,6 +103,17 @@ Key 缺失与 boolean false 是不同状态。沿用旧 Key 时不得更改其�
 Data 错误码用于后台持久化失败上下文；同步加载/操作/关闭异常形式见 [Data Java 开发规范](OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。
 
 具体哪个 API 返回或报告错误，由对应组件规范说明。常量存在不表示任何场景都会产生该错误；例如 RPC 握手失败主要关闭连接并走 Throwable 诊断通道。
+
+### Router 常量
+
+| 值 | 名称 | 含义 |
+| --- | --- | --- |
+| 5001 | ROUTER_ROUTE_NOT_FOUND | 没有可见的动态服务/key owner |
+| 5002 | ROUTER_BINDING_CONFLICT | 已存在不同 owner/附着关系 |
+| 5003 | ROUTER_NOT_REGISTERED | 控制来源不具有精确已注册附着关系 |
+| 5004 | ROUTER_INVALID_SERVICE | 绑定与 Node 唯一注册服务不匹配 |
+
+传输失败复用 RPC 的物理 Peer/不可用/超时错误。[Router](OGBS-Router-1.0.zh-CN.md) 定义本地 bind 接受、路由缺失及一致性边界；这些编号不增加自动 RPC 路由或 Metadata Key。
 
 ## 5. 实现与验证
 

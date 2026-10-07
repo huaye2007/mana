@@ -21,6 +21,8 @@
 
 RpcWire 是可独立使用的 Wire Profile 接入 API，不暴露可变 Peer/Slot/计时器。RPC 核心、Network 适配和编解码在同一 artifact 发布，不创建独立 netty artifact。旧草案 RpcNodeConfig、RpcDialer、EstablishmentOwnership、RpcRequestHandler、RpcErrors 不再提供。
 
+Router 接入遵循 [Router 的职责边界](OGBS-Router-1.0.zh-CN.md#1-职责与组合)。RPC 提供传输与调用能力；路由注册、绑定、同步以及发现代际的判断保留在 game-rpc 之外。只有现有 RPC 操作无法满足具体、可复用的需求时才新增公共集成 API。不能为了组织 Router 实现而向 RPC 引入 Router 专用的连接包装、状态或生命周期接口。
+
 ## 2. RpcNode 与 Builder
 
 ```java
@@ -36,6 +38,8 @@ SocketAddress localAddress();
 void addPeer(int nodeId, SocketAddress address, int slotCount);
 void removePeer(int nodeId);
 RpcSendStatus notify(int nodeId, RpcRequest request);
+boolean isPeerConnected(int nodeId);
+int peerSlotCount(int nodeId);
 <T> void call(int nodeId, RpcRequest request, RpcCallback<T> callback);
 <T> void call(int nodeId, RpcRequest request, long timeoutMillis, RpcCallback<T> callback);
 RpcSendStatus reply(int nodeId, int sourceSlotId, long routeKey, RpcResponse response);
@@ -60,9 +64,23 @@ V1 RpcNode 自己组装内部 TCP NetworkServer/NetworkClient，不复制 Networ
 
 start 一次性创建时间轮与自有 NIO groups，装配 client/server，同步 bind 成功后才 RUNNING。失败进入 CLOSED，清理部分资源后抛 RpcException，不复用实例。localAddress 在 bind 前为 null，可返回随机端口实际地址；关闭后可用于诊断，不表示仍监听。
 
-addPeer 只能在 RUNNING 调用；ID 非零且非自身、地址非 null、slotCount=1..255。相同配置幂等，地址/数量冲突抛 IllegalStateException。被动 Peer 可以原地升级。removePeer 未命中无操作，但 NEW/CLOSED 时仍抛生命周期异常。
+addPeer 要求 RUNNING、非零非自身 ID、非空地址、slotCount=1..255；相同配置幂等，地址/数量冲突抛 IllegalStateException。被动 Peer 可原地升级。removePeer 要求 RUNNING 和合法目标，未命中无操作。上层同步恢复不能重建共享 Peer 或改变普通调用的完成权。
 
-## 3. 消息与 ByteBuf 所有权
+<a id="直连转发与基础设施扩展"></a>
+<a id="直连转发与-handler-组合"></a>
+
+<a id="direct-forwarding-and-handler-composition"></a>
+<a id="handler-组合与-node-通知"></a>
+
+### Handler 组合与可用性查询
+
+RpcHandler 仅保留 onRequest、onResponse、onFail，由 RpcNodeBuilder.handler 在构造时固定。上层在 RPC 外组合/委托普通 Handler；不提供 Handler 修改、扩展 SPI、就绪监听器或清理监听器。发送继续使用现有 call/notify/reply。应用明确关闭上层自有资源和 Node；RPC close 仍是自身的同步资源屏障。
+
+isPeerConnected 不取得拓扑锁，扫描当前已绑定活动连接；NEW/CLOSED 返回 false。peerSlotCount 返回当前配置的 Slot 数，缺失返回零。这些快照可与恢复竞争，不能证明可写、投递、远端进程代际或上层注册。被动 Peer 可在传输丢失后消失。外部发现拥有服务存在性，单纯传输丢失不取消 pending 调用。
+
+[Router Java](OGBS-Router-Java-25-Specification-1.0.zh-CN.md) 描述普通 Handler 装配及 Router 自有协议维护。[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 覆盖上层重入、多 Slot 重启及显式关闭。RPC 不依赖该组件或它的测试。
+
+3. 消息与 ByteBuf 所有权
 
 ```java
 public record RpcRequest(
@@ -194,9 +212,9 @@ RpcWire 公开 configurePipeline、encodeRequest(request,assignedId,maxFrameSize
 - [RpcResilienceTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcResilienceTest.java)：Peer 重建、恢复权竞争、通知隔离/所有权、未完成握手关闭与重连配置。
 - [RpcExampleTest](../../game-demo/src/test/java/cn/managame/demo/examples/rpc/RpcExampleTest.java)：在 game-demo 中执行完整示例，命令为 mvn -pl game-demo -am test。
 
-2026-10-03 当前验证：根 mvn clean verify 通过全部七个组件/应用模块，包含 32 项 RPC 测试及可运行 RPC 示例。定向命令 mvn -pl game-rpc -am test；跨组件/依赖变更须根 clean verify。Windows 测试沿用 Network Selector TCP 唤醒兼容设置，生产不修改 JVM 属性。
+2026-10-03 历史验证：根 mvn clean verify 通过全部七个组件/应用模块，包含 32 项 RPC 测试及可运行 RPC 示例。定向命令 mvn -pl game-rpc -am test；跨组件/依赖变更须根 clean verify。Windows 测试沿用 Network Selector TCP 唤醒兼容设置，生产不修改 JVM 属性。
 
-未实现/暂缓：有限调用接纳、TLS/WS RPC Builder、发现、Router、业务重试、远端取消及持久投递。可选 Spring 解码/Runtime 投递/对象回复/Route 回调已在 RPC 核心之外实现。未验证：跨语言互操作、生产吞吐/内存、长期压力与公网部署。
+未实现/暂缓：有限调用接纳、TLS/WS RPC Builder、发现、业务重试、远端取消及持久投递。Router 已在独立 game-router 中基于现有 RPC Node 实现。可选 Spring 解码/Runtime 投递/对象回复/Route 回调已在 RPC 核心之外实现。未验证：跨语言互操作、生产吞吐/内存、长期压力与公网部署。
 
 <a id="91-审阅确认的缺陷与规模风险"></a>
 
@@ -219,3 +237,11 @@ Wire v1 没有 Node 代际字段；替换/重启 Node 后重置 ID，也可能�
 请求/响应处理器在连接 EventLoop 执行，阻塞会延迟同一 EventLoop 上其他连接。应用另行投递时须 retain/copy 借用 body，并覆盖接纳和拒绝路径的释放。接纳、字节预算及 Peer 间公平性需要依据测量确定边界，当前没有 API 提供这些约束。现有诊断不证明持续容量。
 
 可选诊断、独立 RPC drain 阶段与本地取消仍为扩展候选。可选 Spring Runtime 投递现已实现，不增加发现、业务重试、接收去重或持久投递。内部拆分及分配/flush 优化需测量依据，必须保持所有权、接纳与完成顺序。
+
+<a id="rpc-router-review-2026-10-07"></a>
+
+### 9.3 RPC/Router 集成审查（2026-10-07）
+
+已复现的拓扑监听器/服务 monitor 锁循环通过移除 RPC 钩子、将服务发送及应用完成移出路由状态保护来解决。Router 在 Node 构造时作为普通 Handler 提供。协议拥有的注册校验处理多个 Slot 保持传输连续可用时的远端 Router 替换；应用拥有的路由 close 在 RPC 资源关闭前限制晚到状态修改。详见 [Router 审查修复](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-尚未修复的审查结论2026-10-07) 及永久回归测试。
+
+RPC Node 只增加 Peer 可用性/数量只读查询；握手、发送、pending、超时和关闭机制保持原有实现。R-SEND-04 有限 pending 准入仍未实现。Router 独立服务控制 FIFO 已限制容量，但不能限制对可达慢 Peer 的普通/业务 RPC 调用。生产吞吐、内存和过载边界未验证；应优先按实际准入需求处理，不能把路由策略放入 RPC。

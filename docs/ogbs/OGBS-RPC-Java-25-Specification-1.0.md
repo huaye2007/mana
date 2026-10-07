@@ -25,6 +25,8 @@ RpcWire is an independently usable Wire Profile API, exposing no mutable Peer/Sl
 
 <a id="2-rpcnode-与-builder"></a>
 
+Router integration follows the [Router responsibility boundaries](OGBS-Router-1.0.md#1-responsibility-and-composition). RPC exposes transport and call capabilities; routing registration, binding, synchronization and discovery incarnation decisions stay outside game-rpc. Add a public integration API only when an existing RPC operation cannot meet a concrete reusable need. Do not introduce Router-specific connection wrappers, state or lifecycle interfaces into RPC to organize Router implementation.
+
 ## 2. RpcNode and Builder
 
 ```java
@@ -40,6 +42,8 @@ SocketAddress localAddress();
 void addPeer(int nodeId, SocketAddress address, int slotCount);
 void removePeer(int nodeId);
 RpcSendStatus notify(int nodeId, RpcRequest request);
+boolean isPeerConnected(int nodeId);
+int peerSlotCount(int nodeId);
 <T> void call(int nodeId, RpcRequest request, RpcCallback<T> callback);
 <T> void call(int nodeId, RpcRequest request, long timeoutMillis, RpcCallback<T> callback);
 RpcSendStatus reply(int nodeId, int sourceSlotId, long routeKey, RpcResponse response);
@@ -64,7 +68,19 @@ V1 RpcNode assembles internal TCP NetworkServer/NetworkClient without duplicatin
 
 One-shot start creates the timing wheel and owned NIO groups, assembles client/server, and enters RUNNING only after successful synchronous bind. Failure enters CLOSED, cleans partial resources, and throws RpcException; no reuse. localAddress is null before bind and exposes an allocated dynamic port afterward. After closure it is diagnostic, not proof of listening.
 
-addPeer requires RUNNING, nonzero non-self ID, nonnull address, and slotCount=1..255. Identical configuration is idempotent; address/count conflicts throw IllegalStateException. Passive Peers upgrade in place. Missing removePeer is a no-op but still rejects NEW/CLOSED lifecycle.
+addPeer requires RUNNING, nonzero non-self ID, nonnull address, and slotCount=1..255. Identical configuration is idempotent; address/count conflicts throw IllegalStateException. Passive Peers upgrade in place. removePeer requires RUNNING and valid target ID; missing Peer is a no-op. Upper-layer synchronization recovery must not recreate the shared Peer or alter completion ownership of ordinary calls.
+
+<a id="direct-forwarding-and-infrastructure-extensions"></a>
+<a id="direct-forwarding-and-handler-composition"></a>
+<a id="handler-composition-and-node-notifications"></a>
+
+### Handler composition and availability inspection
+
+RpcHandler retains only onRequest, onResponse and onFail and is fixed by RpcNodeBuilder.handler at construction. Upper layers compose/delegate an ordinary Handler outside RPC; no Handler mutation, extension SPI, readiness listener or cleanup listener is provided. Existing call/notify/reply remain the sending APIs. The application closes upper-layer owned resources and the Node explicitly; RPC close remains its own synchronous resource barrier.
+
+isPeerConnected scans currently bound active connections without taking the topology lock; NEW/CLOSED returns false. peerSlotCount returns current configured Slots or zero if absent. These snapshots can race with recovery and establish neither writability, delivery, remote process incarnation nor upper-layer registration. Passive Peer presence may disappear after transport loss. External discovery owns service existence; transport loss alone does not cancel pending calls.
+
+[Router Java](OGBS-Router-Java-25-Specification-1.0.md) documents ordinary Handler assembly and Router-owned protocol maintenance. [RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) covers upper-layer reentry, multi-Slot restart and explicit closure. RPC has no dependency on that component or its tests.
 
 <a id="3-消息与-bytebuf-所有权"></a>
 
@@ -87,7 +103,7 @@ Convenience Request constructors set requestId=0. command is nonzero; businessId
 | Boundary | Ownership |
 | --- | --- |
 | Argument/null/lifecycle validation failure | Caller keeps body |
-| Validated call/notify/reply | Consume exactly one body reference on every subsequent path |
+| Validated call/notify/reply/forward | Consume exactly one body reference on every subsequent path |
 | Missing Peer/no candidate connection | Release body directly without encoding |
 | Encoding success/failure | Encoder releases body; success leaves only final frame |
 | Network ACCEPTED | Transfer frame to Network; stop fallback immediately |
@@ -129,7 +145,7 @@ A RuntimeException from onRequest logs diagnostics; Call attempts an empty HANDL
 | Null required argument | NullPointerException |
 | Invalid argument, timeout, or Slot range | IllegalArgumentException |
 | Runtime API called in NEW/CLOSED | IllegalStateException |
-| notify/reply acceptance/missing Peer/unavailable | Three RpcSendStatus values |
+| notify/reply/forward acceptance/missing Peer/unavailable | Three RpcSendStatus values |
 | call missing Peer/no writable Slot | onFail(PEER_NOT_FOUND/UNAVAILABLE) |
 | timeout/remove/close | onFail(TIMEOUT/PEER_REMOVED/NODE_CLOSED) |
 | Encoding failure | RpcEncodeException, synchronous, body already consumed |
@@ -212,9 +228,9 @@ RpcWire exposes configurePipeline, encodeRequest(request,assignedId,maxFrameSize
 - [RpcResilienceTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcResilienceTest.java): Peer recreation, recovery ownership races, notification isolation/ownership, unfinished handshake closure, reconnect configuration.
 - [RpcExampleTest](../../game-demo/src/test/java/cn/managame/demo/examples/rpc/RpcExampleTest.java): complete example execution in game-demo; run mvn -pl game-demo -am test.
 
-Current validation on 2026-10-03: root mvn clean verify passes all seven component/application modules, including 32 RPC tests and the runnable RPC example. Focused command: mvn -pl game-rpc -am test. Cross-component/dependency changes require root clean verify. Windows tests reuse Network TCP Selector wakeup compatibility; production changes no JVM properties.
+Previous validation on 2026-10-03: root mvn clean verify passes all seven component/application modules, including 32 RPC tests and the runnable RPC example. Focused command: mvn -pl game-rpc -am test. Cross-component/dependency changes require root clean verify. Windows tests reuse Network TCP Selector wakeup compatibility; production changes no JVM properties.
 
-Unimplemented/deferred: finite call admission, TLS/WS RPC Builder, discovery, Router, business retries, remote cancellation and durable delivery. Optional Spring decoding/Runtime dispatch/typed replies/Route callbacks are implemented outside the RPC core. Unverified: cross-language interoperability, production throughput/memory, sustained stress and public-network deployment.
+Unimplemented/deferred: finite call admission, TLS/WS RPC Builder, discovery, business retries, remote cancellation and durable delivery. Router is implemented separately in game-router on the existing RPC Node. Optional Spring decoding/Runtime dispatch/typed replies/Route callbacks are implemented outside the RPC core. Unverified: cross-language interoperability, production throughput/memory, sustained stress and public-network deployment.
 
 <a id="91-审阅确认的缺陷与规模风险"></a>
 
@@ -237,3 +253,11 @@ Under the confirmed first-valid-binding-wins policy, simultaneous two-sided conn
 Request/response handlers run on connection EventLoops; blocking them delays other connections on the same EventLoop. Application dispatch elsewhere must retain/copy the borrowed body and release it on both acceptance and rejection paths. Admission, byte budgets and per-Peer fairness need measured limits; no current API supplies them. Existing diagnostics do not establish sustained capacity.
 
 Optional diagnostics, a separate RPC drain phase and local cancellation remain extension candidates. Optional Spring Runtime dispatch is now implemented; it does not add discovery, business retries, receiver deduplication or durable delivery. Internal decomposition and allocation/flush optimizations require measurements and must preserve ownership, acceptance and completion order.
+
+<a id="rpc-router-review-2026-10-07"></a>
+
+### 9.3 RPC/Router integration review (2026-10-07)
+
+The reproduced topology-listener/service-monitor lock cycle was removed by deleting the RPC hooks and moving service sending/application completion outside routing state protection. Router is supplied as an ordinary Handler at Node construction. Protocol-owned registration verification handles remote Router replacement even when multiple Slots keep transport continuously available; application-owned routing close fences late state mutation before RPC resource closure. See [Router review resolution](OGBS-Router-Java-25-Specification-1.0.md#7-open-review-findings-2026-10-07) and its permanent regression tests.
+
+Only read-only Peer availability/count queries were added to the RPC Node; handshake, send, pending, timeout and closure mechanisms retain their existing implementation. R-SEND-04 finite pending admission remains unimplemented. Router's separate service control FIFO is now bounded, but that does not bound ordinary/business RPC calls to a slow reachable Peer. Production throughput, memory and overload limits remain unverified; prioritize actual admission requirements without introducing routing policy into RPC.

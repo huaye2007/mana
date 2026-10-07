@@ -1,5 +1,8 @@
 package cn.managame.network.netty;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connector.ConnectCallback;
 import cn.managame.network.error.NetworkException;
@@ -15,13 +18,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class NativeTlsTest extends NetworkTestSupport {
     private static final class Result implements ConnectCallback {
-        final CompletableFuture<Throwable> failure = new CompletableFuture<>();
+        final Promise<Throwable> failure = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         final AtomicInteger count = new AtomicInteger();
         public void onSuccess(Connection connection) {
             count.incrementAndGet();
-            failure.completeExceptionally(new AssertionError("Unexpected connection success"));
+            failure.tryFailure(new AssertionError("Unexpected connection success"));
         }
-        public void onFailure(Throwable cause) { count.incrementAndGet(); failure.complete(cause); }
+        public void onFailure(Throwable cause) { count.incrementAndGet(); failure.trySuccess(cause); }
     }
 
     @ParameterizedTest @ValueSource(booleans = {false, true})
@@ -158,7 +161,7 @@ class NativeTlsTest extends NetworkTestSupport {
     @Test void tlsRejectsPlaintextBeforeHttpOrBusinessHandlers() throws Exception {
         Probe probe = new Probe();
         AtomicInteger httpMessages = new AtomicInteger();
-        CompletableFuture<Channel> accepted = new CompletableFuture<>();
+        Promise<Channel> accepted = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         try (var server = NetworkServer.builder().bindAddress(LOCAL).webSocket("/game").handler(probe)
                 .pipeline(p -> {
                     p.addFirst("ssl", serverTls.newHandler(p.channel().alloc()));
@@ -168,7 +171,7 @@ class NativeTlsTest extends NetworkTestSupport {
                             ctx.fireChannelRead(message);
                         }
                     });
-                    accepted.complete(p.channel());
+                    accepted.trySuccess(p.channel());
                 }).build(); var socket = new Socket()) {
             server.start();
             socket.connect(server.localAddress());

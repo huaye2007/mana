@@ -11,6 +11,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-core | 共享 Metadata、类型化 MetadataKey、统一框架错误码 |
 | game-network | TCP / 二进制 WebSocket Connection API、原生 TLS / WSS，以及独立 HTTP/1.1 HttpServer |
 | game-rpc | RpcNode、主动/被动 Peer、固定 Slot、握手、心跳、重连、call / notify / reply，以及 Netty Wire 编解码 |
+| [game-router](game-router/README.zh-CN.md) | 基于已有唯一 RpcNode 的路由：明确的附着/消息 API、全连接快照/增量、绑定及广播 |
 | game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
 | [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、HTTP/RPC 托管生命周期、对象 RPC 适配、初始化 Repository 注入、Runtime 停机排空 |
@@ -23,6 +24,7 @@ game-core ──────→ game-data
     ├──────────→ game-runtime ←──── game-network
     └──────────→ game-rpc     ←──── game-network
 game-rpc ───→ game-demo（独立示例）
+game-rpc ───→ game-router ───→ game-demo（路由示例）
 game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
 ```
 
@@ -32,13 +34,14 @@ Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包
 
 ## OGBS 规范文档
 
-每个框架组件必须配套标准规范和 Java 开发规范；当前六个组件的成对文档统一入口见 [OGBS 1.0 文档索引](docs/ogbs/README.zh-CN.md)。
+每个框架组件必须配套标准规范和 Java 开发规范；当前七个组件的成对文档统一入口见 [OGBS 1.0 文档索引](docs/ogbs/README.zh-CN.md)。
 
 | 组件 | 标准规范（语言无关） | Java 开发规范 |
 | --- | --- | --- |
 | game-core | [OGBS Core Specification](docs/ogbs/OGBS-Core-1.0.zh-CN.md) | [Core Java 开发规范](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md) |
 | game-network | [OGBS Network Specification](docs/ogbs/OGBS-Network-1.0.zh-CN.md) | [Network Java 开发规范](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) |
 | game-rpc | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.zh-CN.md) | [RPC Java 开发规范](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) |
+| game-router | [OGBS Router Specification](docs/ogbs/OGBS-Router-1.0.zh-CN.md) | [Router Java 开发规范](docs/ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md) |
 | game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java 开发规范](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) |
 | game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.zh-CN.md) | [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md) |
 | game-spring | [容器集成规范](docs/ogbs/OGBS-Spring-1.0.zh-CN.md) | [Spring Java 开发规范](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md) |
@@ -56,7 +59,7 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-当前根构建包含 game-core、game-network、game-rpc、game-runtime、game-data、game-spring、game-demo。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。可选 RPC→Runtime 集成已由 game-spring 提供，Data 使用由 Spring 应用演示。
+当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-spring、game-demo。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。可选 RPC→Runtime 集成已由 game-spring 提供，Data 使用由 Spring 应用演示。
 
 在 IDE 运行 [NetworkEchoExample](game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 
@@ -132,7 +135,7 @@ RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot�
 - Cron 支持六字段数字表达式（秒、分、时、日、月、周），支持 `* ? , - /`，周日为 1，默认 UTC。当前不支持 Quartz 的 `L/W/#`、名称与年份字段。
 - RPC 每 Node 一个 HashedWheelTimer，负责调用超时、握手超时和重连延迟；心跳由连接上的 IdleStateHandler 负责。调用超时从网络 ACCEPTED 后开始。
 - Network 回调与 RPC 完成回调应快速返回；耗时业务应投递到 Runtime。RPC Core 不自动解码响应，也不自动切换 Runtime Route。
-- 当前提供 Core、Network、RPC、Runtime、Data 实现与测试；RPC 包含真实 TCP 与重连测试，可选 Runtime 接入由 game-spring 提供，尚未进行生产容量基准测试。Spring 自动装配、协议代码生成、服务发现、Router、业务 codec 均为外围集成。
+- 当前提供 Core、Network、RPC、Router、Runtime、Data 实现与测试；RPC 包含真实 TCP 与重连测试，Router 在现有 RPC Node 上实现，可选 Runtime 接入由 game-spring 提供，尚未进行生产容量基准测试。Spring 自动装配、协议代码生成、服务发现、业务 codec 均为外围集成。
 
 详见 [架构与执行契约](docs/architecture.zh-CN.md) 和 [本仓库 RPC Wire Profile](docs/rpc-wire.zh-CN.md)。
 

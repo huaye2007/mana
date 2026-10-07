@@ -1,5 +1,8 @@
 package cn.managame.network.netty;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.network.connection.*;
 import cn.managame.network.connector.*;
 import cn.managame.network.error.NetworkException;
@@ -94,10 +97,10 @@ class NetworkContractTest extends NetworkTestSupport {
         try (var server = sb.build(); var client = cb.build()) {
             server.start();
             port.set(((InetSocketAddress) server.localAddress()).getPort());
-            CompletableFuture<Connection> result = new CompletableFuture<>();
+            Promise<Connection> result = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
             ConnectCallback callback = new ConnectCallback() {
-                public void onSuccess(Connection c) { order.add("success"); result.complete(c); }
-                public void onFailure(Throwable cause) { result.completeExceptionally(cause); }
+                public void onSuccess(Connection c) { order.add("success"); result.trySuccess(c); }
+                public void onFailure(Throwable cause) { result.tryFailure(cause); }
             };
             if (ws) client.connectAsync(URI.create((tls ? "wss" : "ws")
                     + "://127.0.0.1:" + port.get() + "/game"), callback);
@@ -173,7 +176,7 @@ class NetworkContractTest extends NetworkTestSupport {
         Probe probe = new Probe() {
             public void onConnected(Connection c) { super.onConnected(c); throw new IllegalStateException("connected"); }
         };
-        CompletableFuture<Thread> callbackThread = new CompletableFuture<>();
+        Promise<Thread> callbackThread = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         AtomicInteger failures = new AtomicInteger();
         AtomicReference<Channel> channel = new AtomicReference<>();
         try (var server = NetworkServer.builder().bindAddress(LOCAL).handler(new Probe()).build();
@@ -183,10 +186,10 @@ class NetworkContractTest extends NetworkTestSupport {
                 public void onSuccess(Connection c) {
                     assertEquals(1, probe.connections.get());
                     assertEquals(1, probe.errors.size());
-                    callbackThread.complete(Thread.currentThread());
+                    callbackThread.trySuccess(Thread.currentThread());
                     throw new IllegalStateException("callback");
                 }
-                public void onFailure(Throwable cause) { failures.incrementAndGet(); callbackThread.completeExceptionally(cause); }
+                public void onFailure(Throwable cause) { failures.incrementAndGet(); callbackThread.tryFailure(cause); }
             });
             assertTrue(channel.get() == null || channel.get().isRegistered());
             Thread thread = get(callbackThread);
@@ -310,10 +313,10 @@ class NetworkContractTest extends NetworkTestSupport {
                          }
                      })).build()) {
             server.start();
-            CompletableFuture<Connection> result = new CompletableFuture<>();
+            Promise<Connection> result = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
             client.connectAsync(server.localAddress(), new ConnectCallback() {
-                public void onSuccess(Connection connection) { result.complete(connection); }
-                public void onFailure(Throwable cause) { result.completeExceptionally(cause); }
+                public void onSuccess(Connection connection) { result.trySuccess(connection); }
+                public void onFailure(Throwable cause) { result.tryFailure(cause); }
             });
             ExecutionException failure = assertThrows(ExecutionException.class, () -> get(result));
             assertInstanceOf(NetworkException.class, failure.getCause());

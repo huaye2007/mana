@@ -1,5 +1,8 @@
 package cn.managame.network.netty;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.network.connection.*;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -74,7 +77,7 @@ abstract class NetworkTestSupport {
         assertNotNull(value, "Timed out waiting for network event");
         return value;
     }
-    static <T> T get(CompletableFuture<T> future) throws Exception { return future.get(5, TimeUnit.SECONDS); }
+    static <T> T get(Promise<T> future) throws Exception { return future.get(5, TimeUnit.SECONDS); }
     static final Consumer<ChannelPipeline> INTS = p -> {
         p.addLast(new FixedLengthFrameDecoder(4));
         p.addLast(new MessageToMessageDecoder<ByteBuf>() {

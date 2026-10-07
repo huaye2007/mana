@@ -1,5 +1,8 @@
 package cn.managame.demo.network;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.demo.common.serialization.ForyConfig;
 import cn.managame.demo.common.protocol.GameProtocols;
 import cn.managame.demo.common.runtime.GameRuntimeConfig;
@@ -25,7 +28,7 @@ import org.springframework.context.annotation.Profile;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.CompletableFuture;
+
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -76,7 +79,7 @@ class GamePacketNetworkTest {
 
     @Test void decodedPacketMessagesReachTheirHandlerMethodsOverRealTcp() throws Exception {
         var responses = new LinkedBlockingQueue<GamePacket>();
-        var disconnected = new CompletableFuture<Void>();
+        var disconnected = new DefaultPromise<Void>(GlobalEventExecutor.INSTANCE);
         var responseCount = new AtomicInteger();
         var connections = new ConcurrentLinkedQueue<Connection>();
         var boss = new NioEventLoopGroup(1);
@@ -88,7 +91,7 @@ class GamePacketNetworkTest {
                 responseCount.incrementAndGet();
                 responses.add((GamePacket) message);
             }
-            @Override public void onDisconnected(Connection connection) { disconnected.complete(null); }
+            @Override public void onDisconnected(Connection connection) { disconnected.trySuccess(null); }
             @Override public void onException(Connection connection, Throwable cause) {
                 connection.close();
             }

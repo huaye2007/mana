@@ -12,6 +12,7 @@ This file applies to the entire mana3 repository. For framework requirements, de
 
 - OGBS = Open Game Backend Specification. Start at the [OGBS documentation index](docs/ogbs/README.md).
 - Java uses JDK 25, Maven groupId `cn.managame`, packages `cn.managame.*`, and source directories under `cn/managame/`.
+- Java asynchronous APIs follow the component's callback contract. Do not introduce future-returning application APIs. Use concrete public classes when there is one implementation; add an interface/implementation split only for an actual substitution or integration requirement.
 - Organize subpackages by responsibility and separate public APIs from internal implementation. Create Maven modules for independent releases, dependency boundaries, or actual requirements, not mechanically for every subpackage.
 - Java Network publishes connection interfaces and Netty implementation together in `game-network`, organized into connection, connector, error, netty, and an independent http package. Attributes use Netty AttributeKey directly. NetworkServer/NetworkClient and their package-private implementation live in netty; HttpServer/HttpServerBuilder and package-private HTTP processing live in http without wrapping the long-connection entries or using ConnectionHandler. Do not retain custom attribute or Acceptor/Connector abstractions.
 - Java RPC uses node, message, call, transport, error, and netty packages. Preserve package-private internals; do not expand public APIs merely to split packages.

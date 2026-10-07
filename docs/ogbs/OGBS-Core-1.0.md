@@ -65,7 +65,8 @@ Other languages MUST obey Metadata encoding, ownership, lazy decoding, and share
 | 2000..2999 | game-rpc |
 | 3000..3999 | game-runtime |
 | 4000..4999 | game-data |
-| 5000..9999 | Reserved for future framework components |
+| 5000..5999 | game-router |
+| 6000..9999 | Reserved for future framework components |
 | 10000..2147483647 | Business errors |
 
 **C-ERR-02** RPC Response.errorCode directly uses nonnegative integers: 0 success, 1..9999 framework-reserved, 10000..2147483647 business errors; values with the top bit set are invalid. The old draft's high-bit wrapping is removed. Framework and business codes cannot share the same number. All valid remote codes go to RPC's unified response handler for interpretation, without automatic conversion to local failure.
@@ -117,6 +118,17 @@ This allocation follows the latest RPC design and replaces the unimplemented dra
 Data codes describe background persistence failures. See the [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.md) for synchronous load/operation/shutdown exceptions.
 
 Each component specifies which APIs return or report errors. A defined constant does not imply that every related event emits it; for example, RPC handshake failure primarily closes the connection and uses Throwable diagnostics.
+
+### Router constants
+
+| Value | Name | Meaning |
+| --- | --- | --- |
+| 5001 | ROUTER_ROUTE_NOT_FOUND | No visible dynamic service/key owner |
+| 5002 | ROUTER_BINDING_CONFLICT | Different owner/attachment already visible |
+| 5003 | ROUTER_NOT_REGISTERED | Control source lacks the exact registered attachment |
+| 5004 | ROUTER_INVALID_SERVICE | Binding does not match the Node's sole registered service |
+
+Router uses RPC's existing physical Peer/unavailable/timeout errors for transport failures. See [Router](OGBS-Router-1.0.md) for local bind acceptance, route-miss handling and consistency limits; these allocations add no automatic RPC routing or Metadata keys.
 
 <a id="5-实现与验证"></a>
 

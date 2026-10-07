@@ -100,6 +100,8 @@ stringKey uses JDK StandardCharsets.UTF_8 for String encoding/decoding; bytesKey
 
 ## 4. Shared error binding and compatibility
 
+FrameworkErrorCodes also publishes ROUTER_ROUTE_NOT_FOUND, ROUTER_BINDING_CONFLICT, ROUTER_NOT_REGISTERED and ROUTER_INVALID_SERVICE from Core's Router allocation. game-router's RouterErrorCodes references these constants; it defines neither a second numeric registry nor business Metadata keys. See [Router Java specification](OGBS-Router-Java-25-Specification-1.0.md) for reporting paths.
+
 Java FrameworkErrorCodes exposes public static final int constants for [Core's error allocation](OGBS-Core-1.0.md#4-frameworkerrorcode). Do not maintain a duplicate allocation table here. Defined values cannot be arbitrarily reordered; amend the standard before adding allocations, then update Java constants and consumers.
 
 The RPC implementation uses Core's 2001..2007 allocation, replacing the unimplemented draft. RpcErrorCodes references FrameworkErrorCodes only. errorCode has no high-bit wrapping: 0 success, 1..9999 framework, 10000..Integer.MAX_VALUE business; negative values are invalid. Old RPC constants have source/allocation changes and must not be mixed with the old draft. Runtime/Data allocations are unchanged.

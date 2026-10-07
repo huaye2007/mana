@@ -2,7 +2,9 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-根 Maven 构建中的普通 Spring 应用与统一示例模块，使用 JDK 25 和仓库父 POM。主应用位于 `cn.managame.demo`，独立运行入口及测试位于 `cn.managame.demo.examples.<component>`。直接框架依赖为 [game-spring](../game-spring/README.zh-CN.md) 与 game-rpc；Spring Context、Runtime、Data、Network、Core 通过 game-spring 传递引入，RPC 供独立示例使用。应用层 Fory、HikariCP、MySQL Driver 仍显式声明。框架模块不依赖此应用，也不发布示例类。
+路由示例：[RouterEchoExample](src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 跨两 Router 动态调用，每个模拟进程只有一个应用拥有的 RpcNode。GameRouter 装配具体 ServiceRouting，直接提供回调注册/绑定和业务发送/回复；连接 Router 与服务都使用 rpc.addPeer，并展示回复时 retain 借用 body。RouterExampleTest 验证执行。demo 在 Spring/RPC 之外直接依赖 game-router。见 [Router 标准](../docs/ogbs/OGBS-Router-1.0.zh-CN.md) 和 [Java 开发规范](../docs/ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)；该示例不启动 MySQL 或主 Spring 应用。
+
+根 Maven 构建中的普通 Spring 应用与统一示例模块，使用 JDK 25 和仓库父 POM。主应用位于 `cn.managame.demo`，独立运行入口及测试位于 `cn.managame.demo.examples.<component>`。直接框架依赖为 [game-spring](../game-spring/README.zh-CN.md)、game-rpc 与 game-router；Spring Context、Runtime、Data、Network、Core 通过 game-spring 传递引入，RPC 与 Router 供独立示例使用。应用层 Fory、HikariCP、MySQL Driver 仍显式声明。框架模块不依赖此应用，也不发布示例类。
 
 `org.apache.fory:fory-core:1.7.6` 在此应用内提供业务 body 的二进制序列化。按照 [Fory 的 JDK 配置说明](https://fory.apache.org/docs/object-serialization/java/)，在 IDE 中使用 JDK 25 启动 GameDemo 时增加 VM 参数 `--add-opens=java.base/java.lang.invoke=ALL-UNNAMED`；demo POM 已为 Surefire 测试配置该参数。
 

@@ -1,5 +1,8 @@
 package cn.managame.runtime;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.core.FrameworkErrorCodes;
 import cn.managame.runtime.context.*;
 import cn.managame.runtime.error.RuntimeDispatchException;
@@ -192,8 +195,8 @@ class HandlerDispatchTest {
             for (int i = 0; i < 20; i++) runtime.dispatch(connection(), new FieldRequest(7));
             for (int i = 0; i < 20; i++) assertEquals(7L, completed.poll(5, TimeUnit.SECONDS));
             // A later same-Route barrier confirms the final error callback completed.
-            var done = new CompletableFuture<Void>();
-            runtime.timer().schedule(1, 7, java.time.Duration.ZERO, () -> done.complete(null));
+            var done = new DefaultPromise<Void>(GlobalEventExecutor.INSTANCE);
+            runtime.timer().schedule(1, 7, java.time.Duration.ZERO, () -> done.trySuccess(null));
             done.get(5, TimeUnit.SECONDS);
             assertEquals(20, errors.size());
             assertTrue(errors.stream().allMatch(e -> e.errorCode() == FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR));

@@ -1,5 +1,8 @@
 package cn.managame.demo;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.core.FrameworkErrorCodes;
 import cn.managame.demo.bus.system.DemoTasks;
 import cn.managame.demo.bus.system.SystemHttpHandler;
@@ -32,7 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
+
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -77,9 +80,9 @@ class DemoServicesTest {
             var runtime = spring.getBean(GameRuntime.class);
             var tasks = spring.getBean(DemoTasks.class);
             var probe = (Probe) spring.getBean(SystemHttpHandler.class);
-            var observation = new CompletableFuture<TimerObservation>();
+            var observation = new DefaultPromise<TimerObservation>(GlobalEventExecutor.INSTANCE);
             runtime.timer().schedule(GameDomain.SYSTEM_ID, DemoTasks.ROUTE_KEY, Duration.ofSeconds(12), () ->
-                    observation.complete(new TimerObservation(tasks.status(),
+                    observation.trySuccess(new TimerObservation(tasks.status(),
                             Contexts.current(TimerContext.class), Thread.currentThread().isVirtual())));
             var server = spring.getBean(HttpServer.class);
             try (var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)

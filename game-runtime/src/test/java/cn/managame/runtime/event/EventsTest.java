@@ -1,5 +1,8 @@
 package cn.managame.runtime.event;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.core.Metadatas;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeBuilder;
@@ -80,14 +83,14 @@ class EventsTest {
     @Test void currentRuntimeWinsAndSameRouteInlinesWithIdentityAndContextRestoration() throws Exception {
         var ownListener = new Listener(); var otherListener = new Listener();
         var owner = runtime(ownListener); var other = runtime(otherListener); Events.bind(other);
-        var result = new CompletableFuture<Seen>();
-        var restored = new CompletableFuture<Context>();
+        var result = new DefaultPromise<Seen>(GlobalEventExecutor.INSTANCE);
+        var restored = new DefaultPromise<Context>(GlobalEventExecutor.INSTANCE);
         var source = new DefaultHandlerContext(1, 7, 4, 99, Metadatas.empty(), new Request(() -> {
             try {
                 Events.publish(new Notice(1, 7));
-                result.complete(ownListener.seen.poll());
-                restored.complete(Contexts.current());
-            } catch (Throwable error) { result.completeExceptionally(error); restored.completeExceptionally(error); }
+                result.trySuccess(ownListener.seen.poll());
+                restored.trySuccess(Contexts.current());
+            } catch (Throwable error) { result.tryFailure(error); restored.tryFailure(error); }
         }));
         owner.dispatch(source);
         Seen seen = result.get(5, TimeUnit.SECONDS);
@@ -120,11 +123,11 @@ class EventsTest {
     @Test void closedCurrentRuntimeDoesNotFallBackToAnOpenDefault() throws Exception {
         var owner = runtime(new Listener()); var otherListener = new Listener(); Events.bind(runtime(otherListener));
         var entered = new CountDownLatch(1); var proceed = new CountDownLatch(1);
-        var outcome = new CompletableFuture<Throwable>();
+        var outcome = new DefaultPromise<Throwable>(GlobalEventExecutor.INSTANCE);
         owner.dispatch(new DefaultHandlerContext(1, 7, new Request(() -> {
             entered.countDown();
-            try { proceed.await(); Events.publish(new Notice(1, 7)); outcome.complete(null); }
-            catch (Throwable error) { outcome.complete(error); }
+            try { proceed.await(); Events.publish(new Notice(1, 7)); outcome.trySuccess(null); }
+            catch (Throwable error) { outcome.trySuccess(error); }
         })));
         try {
             assertTrue(entered.await(5, TimeUnit.SECONDS)); owner.close(); proceed.countDown();
@@ -148,10 +151,10 @@ class EventsTest {
                     default -> throw new UnsupportedOperationException(method.getName());
                 });
         runtimes.add(gated); Events.bind(gated);
-        var done = new CompletableFuture<Void>();
+        var done = new DefaultPromise<Void>(GlobalEventExecutor.INSTANCE);
         Thread publisher = Thread.ofPlatform().start(() -> {
-            try { Events.publish(new Notice(1, 7)); done.complete(null); }
-            catch (Throwable error) { done.completeExceptionally(error); }
+            try { Events.publish(new Notice(1, 7)); done.trySuccess(null); }
+            catch (Throwable error) { done.tryFailure(error); }
         });
         try {
             assertTrue(selected.await(5, TimeUnit.SECONDS));

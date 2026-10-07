@@ -7,6 +7,8 @@
 配套：[Java 25 开发规范](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)、[RPC Wire Profile](../rpc-wire.zh-CN.md)。
 规范性依赖：[Network](OGBS-Network-1.0.zh-CN.md)、[Core](OGBS-Core-1.0.zh-CN.md)。
 
+Router 集成审查已落实为普通 Handler 装配及组件自有协议恢复；RPC 不提供上层就绪/清理钩子。有限准入仍为已声明缺口，详见 [Java 集成审查](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#rpc-router-review-2026-10-07)。
+
 ## 1. 范围
 
 RPC 用于内部服务器节点的直接通信，提供 call、notify、reply、固定多连接 Slot、握手、心跳、重连与本地调用完成管理。
@@ -71,6 +73,10 @@ Handshake 交换 magic/version/nodeId/slotId/slotCount；Heartbeat 无 payload�
 Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body、Metadata 或 Runtime Route。
 
 ## 6. 发送选择
+
+**R-EXT-01** 上层组合 MUST 复用现有 Node 与传输，分派拥有的消息并委托普通 RPC。RPC MUST NOT 依赖路由语义或拥有上层协议状态。可用性查询仅描述传输，不能表示进程代际或服务存在性；实例存在性归外部发现。单纯传输丢失不取消 pending。应用拥有装配及上层关闭；RPC 拥有自身准入、pending 完成和资源屏障。不要求上层就绪/清理通知；语言相关装配 API 归 Java 规范。
+
+例如，上层可在重连时重新校验自身协议，不必重建 RPC Peer，也不能因此失败同一 Peer 上等待的普通调用。消息 Handler 没有断线生命周期回调；调用仍遵循既有响应/超时/移除/关闭契约。路由 envelope 使用普通 notify、reply，不新增另一种发送原语。
 
 **R-SEND-01** call/notify 的 routeKey 非零时起点为 unsigned64(routeKey) mod slotCount；为零时使用 Peer 内 round-robin。reply 先尝试 Request 实际到达的来源 Slot；失败后使用调用方传回的 routeKey（或 round-robin）选起点，环形扫描并跳过已试过的来源 Slot。requestId 不参与路由。
 

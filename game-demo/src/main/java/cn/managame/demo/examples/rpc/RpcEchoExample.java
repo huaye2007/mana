@@ -1,5 +1,8 @@
 package cn.managame.demo.examples.rpc;
 
+import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.DefaultPromise;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import cn.managame.rpc.call.*;
 import cn.managame.rpc.message.*;
 import cn.managame.rpc.node.RpcNode;
@@ -31,10 +34,10 @@ public final class RpcEchoExample {
                 if (System.nanoTime() >= deadline) throw new TimeoutException("RPC peer did not become ready");
                 Thread.sleep(10);
             }
-            CompletableFuture<String> result = clientHandler.result;
+            Promise<String> result = clientHandler.result;
             client.call(1, new RpcRequest(2,
                     Unpooled.copiedBuffer("hello game-rpc", StandardCharsets.UTF_8)),
-                    (String text) -> result.complete(text));
+                    (String text) -> result.trySuccess(text));
             return result.get(5, TimeUnit.SECONDS);
         }
     }
@@ -50,19 +53,19 @@ public final class RpcEchoExample {
         public void onFail(int target, int command, int error, RpcCallback<?> callback) {}
     }
     private static final class ClientHandler implements RpcHandler {
-        final CompletableFuture<String> result = new CompletableFuture<>();
+        final Promise<String> result = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         public void onRequest(int source, int slot, RpcRequest request) {}
         @SuppressWarnings("unchecked")
         public void onResponse(int source, int command, RpcResponse response, RpcCallback<?> callback) {
             if (response.errorCode() != 0) {
-                result.completeExceptionally(new IllegalStateException("Remote error: " + response.errorCode()));
+                result.tryFailure(new IllegalStateException("Remote error: " + response.errorCode()));
                 return;
             }
             // This application binds command 2 to a String response.
             ((RpcCallback<String>) callback).onResponse(response.body().toString(StandardCharsets.UTF_8));
         }
         public void onFail(int target, int command, int error, RpcCallback<?> callback) {
-            result.completeExceptionally(new IllegalStateException("Local RPC error: " + error));
+            result.tryFailure(new IllegalStateException("Local RPC error: " + error));
         }
     }
 }

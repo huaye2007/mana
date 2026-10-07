@@ -14,6 +14,7 @@
 | game-spring | [容器集成规范](OGBS-Spring-1.0.zh-CN.md) | [Spring Java 开发规范](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md) | 已实现；可选普通 Spring 扫描、HTTP/RPC 配置与托管生命周期、对象 RPC 到 Runtime 适配、初始化 Repository 注入与停机排空 |
 | game-network | [Network Specification](OGBS-Network-1.0.zh-CN.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) | 已实现；TCP/TLS/WS/WSS 与独立 HTTP/1.1 服务端（同步/回调响应） |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.zh-CN.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) | 已实现；内部 TCP、多 Slot、调用、心跳/重连 |
+| game-router | [Router Specification](OGBS-Router-1.0.zh-CN.md) | [Router Java Development Specification](OGBS-Router-Java-25-Specification-1.0.zh-CN.md) | 已实现；现有 RPC Node 扩展、绑定、快照/增量及广播；生产容量未验证 |
 
 规范版本为 1.0，当前处于仓库草案阶段；Java 模块版本为 1.0.0-SNAPSHOT，基线 JDK 25。规范存在不代表所有能力均已实现或验证，各文档的状态与边界必须据实维护。
 
@@ -83,6 +84,8 @@ flowchart LR
     C --> D[game-data]
     C --> R[game-rpc]
     N[game-network] --> R
+    R --> GR[game-router]
+    GR --> E
     N --> RT
     RT --> S[game-spring]
     R -. optional .-> S
@@ -95,7 +98,7 @@ flowchart LR
     R --> A
 ```
 
-箭头由被依赖组件指向使用方。game-core 统一发布共享 Caffeine Java 依赖，由消费组件传递引入；缓存生命周期仍由各使用组件规范定义。当前根构建包含 Core、Runtime、Data、Network、RPC、Spring 集成和 [game-demo](../../game-demo/README.zh-CN.md)。game-demo 中的 Network/Runtime HTTP/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。可选 RPC→Runtime 接入由 game-spring 提供，MySQL Data 使用由主 Spring 应用演示。Runtime 为 HTTP 入口依赖 Network，支持显式 GET query/其他方法 JSON RouteKey 字段或提取方法，可选应用 HTTP Context 补充，以及返回响应或回调响应。Network 负责传输生命周期及发送，普通消息编解码/回复与 RPC 接入仍由应用负责。详见 [Runtime HTTP 语义](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 和 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
+箭头由被依赖组件指向使用方。game-core 统一发布共享 Caffeine Java 依赖，由消费组件传递引入；缓存生命周期仍由各使用组件规范定义。当前根构建包含 Core、Runtime、Data、Network、RPC、Router、Spring 集成和 [game-demo](../../game-demo/README.zh-CN.md)。game-demo 中的 Network/Runtime HTTP/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。可选 RPC→Runtime 接入由 game-spring 提供，MySQL Data 使用由主 Spring 应用演示。Runtime 为 HTTP 入口依赖 Network，支持显式 GET query/其他方法 JSON RouteKey 字段或提取方法，可选应用 HTTP Context 补充，以及返回响应或回调响应。Network 负责传输生命周期及发送，普通消息编解码/回复与 RPC 接入仍由应用负责。详见 [Runtime HTTP 语义](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 和 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 ## 版本与验证边界
 
