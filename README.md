@@ -96,6 +96,7 @@ Clock/Duration are from java.time; SystemCron is an application class. GameTime 
 ```java
 record Request(long id) {}
 record Response(long value) {}
+record Notification(String message) {}
 
 @Handler(domain = 1)
 class Requests {
@@ -103,11 +104,17 @@ class Requests {
     public void handle(HandlerContext context, Request request) {
         // Already executing serially within (domain=1, key=request.id).
     }
+
+    @HandlerMethod
+    public void handleNotification(HandlerContext context, Notification notification) {
+        // Handle a one-way notification.
+    }
 }
 
 ProtocolRegistry protocols = ProtocolRegistry.of(
         ProtocolDescriptor.request(1001, Request.class, Response.class),
-        ProtocolDescriptor.response(1001, Response.class));
+        ProtocolDescriptor.response(1001, Response.class),
+        ProtocolDescriptor.notify(1002, Notification.class));
 
 try (GameRuntime runtime = GameRuntimeBuilder.builder()
         .routeDomains(List.of(RouteDomain.of(1, "application-defined")))
@@ -117,10 +124,13 @@ try (GameRuntime runtime = GameRuntimeBuilder.builder()
         .handlers(List.of(new Requests()))
         .build()) {
     runtime.dispatch(new DefaultHandlerContext(1, 10001, new Request(10001)));
+    runtime.dispatch(new DefaultHandlerContext(1, 10001, new Notification("ready")));
 }
 ```
 
 The integration layer decodes messages and creates Context. Default Context implementations are extensible; the framework does not automatically read `getRoleId/getGuildId`. Use explicit field extraction such as `RouteKeyBinding.of(Request.class, Request::id)`.
+
+The runnable Java notification implementation is [RuntimeNotificationExample](game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeNotificationExample.java).
 
 <a id="network--rpc-接入"></a>
 

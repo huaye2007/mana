@@ -87,6 +87,7 @@ Clock/Duration 来自 java.time，SystemCron 是应用类。GameTime 修改整�
 ```java
 record Request(long id) {}
 record Response(long value) {}
+record Notification(String message) {}
 
 @Handler(domain = 1)
 class Requests {
@@ -94,11 +95,17 @@ class Requests {
     public void handle(HandlerContext context, Request request) {
         // 已在 (domain=1, key=request.id) 的串行执行范围内。
     }
+
+    @HandlerMethod
+    public void handleNotification(HandlerContext context, Notification notification) {
+        // 处理单向通知。
+    }
 }
 
 ProtocolRegistry protocols = ProtocolRegistry.of(
         ProtocolDescriptor.request(1001, Request.class, Response.class),
-        ProtocolDescriptor.response(1001, Response.class));
+        ProtocolDescriptor.response(1001, Response.class),
+        ProtocolDescriptor.notify(1002, Notification.class));
 
 try (GameRuntime runtime = GameRuntimeBuilder.builder()
         .routeDomains(List.of(RouteDomain.of(1, "application-defined")))
@@ -108,10 +115,13 @@ try (GameRuntime runtime = GameRuntimeBuilder.builder()
         .handlers(List.of(new Requests()))
         .build()) {
     runtime.dispatch(new DefaultHandlerContext(1, 10001, new Request(10001)));
+    runtime.dispatch(new DefaultHandlerContext(1, 10001, new Notification("ready")));
 }
 ```
 
 接入层自己解码消息并构造 Context。Context 默认实现可继承；框架不自动读取 `getRoleId/getGuildId`。需要提取消息字段时使用显式的 `RouteKeyBinding.of(Request.class, Request::id)`。
+
+可运行的 Java 通知处理实现见 [RuntimeNotificationExample](game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeNotificationExample.java)。
 
 ## Network / RPC 接入
 
