@@ -10,47 +10,60 @@ Status: current game-core Java 25 implementation contract. This document and Cor
 
 ## 1. Module and responsibilities
 
-Maven coordinates: cn.managame:game-core:1.0.0-SNAPSHOT. Requires JDK 25 without preview features. Public types live in cn.managame.core. There are no dependencies on Network, Runtime, Data, or RPC. game-core publishes the normal compile dependency `com.github.ben-manes.caffeine:caffeine:3.2.3` for shared use by dependent modules; Runtime and Data receive it transitively without separately declaring its version. See [Core POM](../../game-core/pom.xml). Core Metadata/error-code APIs create no caches, threads, or external resources. Cache users configure and own their component-specific lifecycle; the Java dependency does not add a new Core cache facade or change shared Metadata/error semantics.
+Maven coordinates: cn.managame:game-core:1.0.0-SNAPSHOT. Requires JDK 25 without preview features. Public types live in cn.managame.core. There are no dependencies on Network, Runtime, Data, or RPC. game-core has no third-party dependencies ([Core POM](../../game-core/pom.xml)); components declare the libraries they use themselves (Runtime declares Caffeine for its idle mailbox cache). Core Metadata/error-code APIs create no caches, threads, or external resources.
 
-Public types are Metadata, MetadataKey, MetadataCodec, MetadataBuilder, MetadataKeys, Metadatas, and FrameworkErrorCodes. Metadatas' encoded container and Builder implementation remain internal; language-layer separation does not create another Maven artifact.
+Public types are Metadata (with its nested Builder), MetadataKey, MetadataCodec and FrameworkErrorCodes. Metadata and MetadataKey are final classes: every Metadata instance has passed structure validation, so consumers such as the RPC encoder need not re-check it.
 
 <a id="2-metadata-api-与行为"></a>
 
 ## 2. Metadata API and behavior
 
 ```java
-public interface Metadata {
-    <T> T get(MetadataKey<T> key);
-    default <T> T get(MetadataKey<T> key, T defaultValue);
-    boolean contains(MetadataKey<?> key);
-    boolean isEmpty();
-    byte[] bytes();
+public final class Metadata {
+    public static Metadata empty();
+    public static Metadata wrap(byte[] encoded);
+    public static Builder builder();
+    public <T> T get(MetadataKey<T> key);
+    public <T> T get(MetadataKey<T> key, T defaultValue);
+    public boolean contains(MetadataKey<?> key);
+    public boolean isEmpty();
+    public byte[] bytes();
+
+    public static final class Builder {
+        public <T> Builder put(MetadataKey<T> key, T value);
+        public Metadata build();
+    }
+}
+
+public final class MetadataKey<T> {
+    public static <T> MetadataKey<T> of(int id, MetadataCodec<T> codec);
+    public static MetadataKey<Boolean> booleanKey(int id);
+    public static MetadataKey<Long> longKey(int id);
+    public static MetadataKey<Integer> intKey(int id);
+    public static MetadataKey<String> stringKey(int id);
+    public static MetadataKey<byte[]> bytesKey(int id);
+    public int id();
 }
 
 public interface MetadataCodec<T> {
     byte[] encode(T value);
     T decode(byte[] bytes, int offset, int length);
 }
-
-public interface MetadataBuilder {
-    <T> MetadataBuilder put(MetadataKey<T> key, T value);
-    Metadata build();
-}
 ```
 
-This is a signature summary; default method bodies are omitted. Construction utilities:
+Built-in keys and construction:
 
 | Method | Behavior |
 | --- | --- |
-| MetadataKeys.booleanKey(id) | 1 byte, false=0/true=1; other values or lengths throw IllegalArgumentException |
-| MetadataKeys.longKey(id) | 8-byte big-endian; decoding fails unless length is 8 |
-| MetadataKeys.intKey(id) | 4-byte big-endian; decoding fails unless length is 4 |
-| MetadataKeys.stringKey(id) | UTF-8 |
-| MetadataKeys.bytesKey(id) | Raw bytes |
-| MetadataKeys.of(id, codec) | Custom encoded type |
-| Metadatas.empty() | Empty Metadata |
-| Metadatas.wrap(encodedBytes) | Validate structure and wrap the original array without defensive copying |
-| Metadatas.builder() | Construct new Metadata |
+| MetadataKey.booleanKey(id) | 1 byte, false=0/true=1; other values or lengths throw IllegalArgumentException |
+| MetadataKey.longKey(id) | 8-byte big-endian; decoding fails unless length is 8 |
+| MetadataKey.intKey(id) | 4-byte big-endian; decoding fails unless length is 4 |
+| MetadataKey.stringKey(id) | UTF-8 |
+| MetadataKey.bytesKey(id) | Raw bytes |
+| MetadataKey.of(id, codec) | Custom encoded type |
+| Metadata.empty() | Empty Metadata |
+| Metadata.wrap(encodedBytes) | Validate structure and wrap the original array without defensive copying |
+| Metadata.builder() | Construct new Metadata |
 
 MetadataKey.id() returns the numeric Key. Distinct MetadataKey instances with the same id query the same wire entry. Definers own encoding consistency; there is no global Key registry.
 
@@ -59,11 +72,11 @@ Missing get returns null; the defaultValue overload returns that default. Codec 
 Builder forbids null values. Repeated put for an id replaces its previous Builder value, so build emits one entry for that Key. build assembles a new encoded array; subsequent Builder changes do not affect previously built Metadata.
 
 ```java
-var traceId = MetadataKeys.longKey(1024);
-var locale = MetadataKeys.stringKey(1025);
-var debugEnabled = MetadataKeys.booleanKey(1026);
-var retryCount = MetadataKeys.intKey(1027);
-Metadata metadata = Metadatas.builder()
+var traceId = MetadataKey.longKey(1024);
+var locale = MetadataKey.stringKey(1025);
+var debugEnabled = MetadataKey.booleanKey(1026);
+var retryCount = MetadataKey.intKey(1027);
+Metadata metadata = Metadata.builder()
     .put(traceId, 123456L)
     .put(locale, "zh-CN")
     .put(debugEnabled, true)
@@ -82,7 +95,7 @@ These IDs are application choices, not predefined framework fields. The default 
 
 Java byte[] is not immutable at the language level. wrap and bytes() share arrays, so callers must follow the standard's read-only convention. This implementation neither freezes arrays nor isolates them by copying. Builder stores codec-returned arrays at put and assembles a new array at build; callers/codecs must not concurrently modify encoded values before build.
 
-MetadataBuilder is not thread-safe. Built Metadata may be read concurrently while underlying bytes remain unchanged. Custom MetadataCodec concurrency is its provider's responsibility. get calls codecs lazily and propagates exceptions without general retry or caching.
+Metadata.Builder is not thread-safe. Built Metadata may be read concurrently while underlying bytes remain unchanged. Custom MetadataCodec concurrency is its provider's responsibility. get calls codecs lazily and propagates exceptions without general retry or caching.
 
 | Condition | Java behavior |
 | --- | --- |
@@ -114,8 +127,8 @@ Changes to Java signatures or exceptions should explain source compatibility. Ch
 
 ## 5. Sources and validation
 
-- [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java), [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java): public access interfaces.
-- [Metadatas](../../game-core/src/main/java/cn/managame/core/Metadatas.java), [MetadataKeys](../../game-core/src/main/java/cn/managame/core/MetadataKeys.java): structure checks, Builder, built-in codecs.
+- [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java): structure checks, lookup and Builder.
+- [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java): key validation and built-in codecs.
 - [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java): shared allocation binding.
 - [MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java): shared arrays, lazy decoding, malformed structure, boundaries, Builder snapshots, encoding vectors.
 

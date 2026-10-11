@@ -8,45 +8,58 @@
 
 ## 1. 模块与职责
 
-Maven 坐标为 cn.managame:game-core:1.0.0-SNAPSHOT，要求 JDK 25，无 preview 特性。公开类型位于 cn.managame.core；不依赖 Network、Runtime、Data、RPC。game-core 以普通 compile 依赖统一发布 `com.github.ben-manes.caffeine:caffeine:3.2.3`，Runtime 和 Data 通过 Core 传递引入，不单独声明版本；见 [Core POM](../../game-core/pom.xml)。Core 的 Metadata/错误码 API 不创建缓存、线程或外部资源。缓存使用方负责各自组件的配置和生命周期；Java 依赖调整不新增 Core 缓存包装 API，也不改变共享 Metadata/错误码语义。
+Maven 坐标为 cn.managame:game-core:1.0.0-SNAPSHOT，要求 JDK 25，无 preview 特性。公开类型位于 cn.managame.core；不依赖 Network、Runtime、Data、RPC。game-core 没有第三方依赖（见 [Core POM](../../game-core/pom.xml)）；各组件自行声明所用的库（Runtime 为空闲 Mailbox 缓存声明 Caffeine）。Core 的 Metadata/错误码 API 不创建缓存、线程或外部资源。
 
-公开类型包括 Metadata、MetadataKey、MetadataCodec、MetadataBuilder、MetadataKeys、Metadatas、FrameworkErrorCodes。Metadatas 的编码容器及 Builder 实现保持内部封装，不因语言分层额外拆出 Maven artifact。
+公开类型包括 Metadata（含嵌套 Builder）、MetadataKey、MetadataCodec、FrameworkErrorCodes。Metadata 与 MetadataKey 是 final 类：每个 Metadata 实例都已通过结构校验，RPC 编码器等使用方无需再次检查。
 
 ## 2. Metadata API 与行为
 
 ```java
-public interface Metadata {
-    <T> T get(MetadataKey<T> key);
-    default <T> T get(MetadataKey<T> key, T defaultValue);
-    boolean contains(MetadataKey<?> key);
-    boolean isEmpty();
-    byte[] bytes();
+public final class Metadata {
+    public static Metadata empty();
+    public static Metadata wrap(byte[] encoded);
+    public static Builder builder();
+    public <T> T get(MetadataKey<T> key);
+    public <T> T get(MetadataKey<T> key, T defaultValue);
+    public boolean contains(MetadataKey<?> key);
+    public boolean isEmpty();
+    public byte[] bytes();
+
+    public static final class Builder {
+        public <T> Builder put(MetadataKey<T> key, T value);
+        public Metadata build();
+    }
+}
+
+public final class MetadataKey<T> {
+    public static <T> MetadataKey<T> of(int id, MetadataCodec<T> codec);
+    public static MetadataKey<Boolean> booleanKey(int id);
+    public static MetadataKey<Long> longKey(int id);
+    public static MetadataKey<Integer> intKey(int id);
+    public static MetadataKey<String> stringKey(int id);
+    public static MetadataKey<byte[]> bytesKey(int id);
+    public int id();
 }
 
 public interface MetadataCodec<T> {
     byte[] encode(T value);
     T decode(byte[] bytes, int offset, int length);
 }
-
-public interface MetadataBuilder {
-    <T> MetadataBuilder put(MetadataKey<T> key, T value);
-    Metadata build();
-}
 ```
 
-以上是签名摘要，省略 default 方法体。创建工具：
+内置 Key 与构造方法：
 
 | 方法 | 行为 |
 | --- | --- |
-| MetadataKeys.booleanKey(id) | 1 字节，false=0、true=1；其他值或长度抛 IllegalArgumentException |
-| MetadataKeys.longKey(id) | 8 字节 big-endian；解码长度不是 8 时失败 |
-| MetadataKeys.intKey(id) | 4 字节 big-endian；解码长度不是 4 时失败 |
-| MetadataKeys.stringKey(id) | UTF-8 |
-| MetadataKeys.bytesKey(id) | 原始字节值 |
-| MetadataKeys.of(id, codec) | 自定义编码类型 |
-| Metadatas.empty() | 空 Metadata |
-| Metadatas.wrap(encodedBytes) | 校验结构，包装原数组，不做防御性复制 |
-| Metadatas.builder() | 构造新 Metadata |
+| MetadataKey.booleanKey(id) | 1 字节，false=0、true=1；其他值或长度抛 IllegalArgumentException |
+| MetadataKey.longKey(id) | 8 字节 big-endian；解码长度不是 8 时失败 |
+| MetadataKey.intKey(id) | 4 字节 big-endian；解码长度不是 4 时失败 |
+| MetadataKey.stringKey(id) | UTF-8 |
+| MetadataKey.bytesKey(id) | 原始字节值 |
+| MetadataKey.of(id, codec) | 自定义编码类型 |
+| Metadata.empty() | 空 Metadata |
+| Metadata.wrap(encodedBytes) | 校验结构，包装原数组，不做防御性复制 |
+| Metadata.builder() | 构造新 Metadata |
 
 MetadataKey.id() 返回数值 Key。不同 MetadataKey 实例只要 id 相同，就查询同一个 wire 条目；编码一致性由定义方负责，没有全局 Key 注册中心。
 
@@ -55,11 +68,11 @@ get 未命中返回 null，带 defaultValue 的重载在未命中时返回默认
 Builder 禁止 null value。重复 put 相同 id 会替换该 Builder 内原值；build 输出只有一个该 Key 的条目。build 重新组装编码数组，因此后续修改 Builder 不改变先前构造的 Metadata。
 
 ```java
-var traceId = MetadataKeys.longKey(1024);
-var locale = MetadataKeys.stringKey(1025);
-var debugEnabled = MetadataKeys.booleanKey(1026);
-var retryCount = MetadataKeys.intKey(1027);
-Metadata metadata = Metadatas.builder()
+var traceId = MetadataKey.longKey(1024);
+var locale = MetadataKey.stringKey(1025);
+var debugEnabled = MetadataKey.booleanKey(1026);
+var retryCount = MetadataKey.intKey(1027);
+Metadata metadata = Metadata.builder()
     .put(traceId, 123456L)
     .put(locale, "zh-CN")
     .put(debugEnabled, true)
@@ -76,7 +89,7 @@ int retries = metadata.get(retryCount, 0);
 
 Java byte[] 不具备语言级不可变性。wrap 与 bytes() 共享数组，调用方必须遵守标准中的只读约定；本实现不冻结数组，也不提供复制隔离。Builder 在 put 时保存 codec 返回的字节数组，在 build 时组装新数组；调用方及 codec 不得在 build 前并发修改这些编码值。
 
-MetadataBuilder 不保证并发安全。构建完成的 Metadata 在底层字节不被修改时可共享读取；自定义 MetadataCodec 是否支持并发由提供者保证。get 按需调用 codec，异常直接传播，不做通用重试或缓存。
+Metadata.Builder 不保证并发安全。构建完成的 Metadata 在底层字节不被修改时可共享读取；自定义 MetadataCodec 是否支持并发由提供者保证。get 按需调用 codec，异常直接传播，不做通用重试或缓存。
 
 | 情况 | Java 行为 |
 | --- | --- |
@@ -104,8 +117,8 @@ Java 方法签名或异常形式变更应说明源码兼容性；Metadata 字节
 
 ## 5. 源码与验证
 
-- [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java)、[MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java)：公开数据访问接口。
-- [Metadatas](../../game-core/src/main/java/cn/managame/core/Metadatas.java)、[MetadataKeys](../../game-core/src/main/java/cn/managame/core/MetadataKeys.java)：结构校验、Builder、内置 codec。
+- [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java)：结构校验、查询与 Builder。
+- [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java)：Key 校验与内置 codec。
 - [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java)：共享编号绑定。
 - [MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java)：共享数组、惰性解码、结构损坏、边界、Builder 快照及编码向量。
 

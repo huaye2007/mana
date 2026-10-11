@@ -12,6 +12,7 @@ import java.net.*;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import static cn.managame.rpc.error.RpcErrorCodes.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -94,7 +95,7 @@ class RpcResilienceTest extends RpcTestSupport {
             n.call(2, new RpcRequest(101, null), 150, CALLBACK);
             int oldId = n.peers.get(2).pending.keys().nextElement();
             old.close(); n.disconnected(old);
-            assertEquals(TIMEOUT, take(p.failures));
+            assertEquals(UNAVAILABLE, take(p.failures));
             await(() -> !n.peers.containsKey(2));
             Fake fresh = bind(n, 2, 0, 1);
             n.call(2, new RpcRequest(202, null), CALLBACK);
@@ -108,44 +109,32 @@ class RpcResilienceTest extends RpcTestSupport {
         }
     }
 
-    @Test void blockedTimeoutNotificationLeavesOtherDeadlinesLiveAndCloseWaits() throws Exception {
-        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
-        AtomicBoolean virtual = new AtomicBoolean(), closeRejected = new AtomicBoolean();
+    @Test void timeoutNotificationRunsOnTheTimerThreadAndCannotCloseTheNode() throws Exception {
+        AtomicReference<String> thread = new AtomicReference<>();
+        AtomicBoolean closeRejected = new AtomicBoolean();
         Probe p = new Probe() {
             @Override public void onFail(int target, int command, int error, RpcCallback<?> callback) {
                 if (command == 1 && error == TIMEOUT) {
-                    virtual.set(Thread.currentThread().isVirtual());
+                    thread.set(Thread.currentThread().getName());
                     try { node.close(); } catch (IllegalStateException expected) { closeRejected.set(true); }
-                    entered.countDown();
-                    try { release.await(); } catch (InterruptedException e) { throw new RuntimeException(e); }
                 }
                 super.onFail(target, command, error, callback);
             }
         };
-        RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p)
-                .handshakeTimeout(Duration.ofMillis(60)).build();
+        RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p).build();
         p.node = n; n.start();
-        ExecutorService closer = Executors.newSingleThreadExecutor();
         try {
             bind(n, 2, 0, 1);
             n.call(2, new RpcRequest(1, null), 30, CALLBACK);
-            assertTrue(entered.await(5, TimeUnit.SECONDS));
-            Fake silent = new Fake(); n.connected(silent);
-            n.call(2, new RpcRequest(2, null), 40, CALLBACK);
             assertEquals(TIMEOUT, take(p.failures));
-            await(() -> !silent.active);
-            n.call(2, new RpcRequest(3, null), CALLBACK);
+            assertTrue(thread.get().endsWith("-timer"), thread.get());
+            assertTrue(closeRejected.get());
+            n.call(2, new RpcRequest(2, null), CALLBACK);
             n.removePeer(2);
             assertEquals(PEER_REMOVED, take(p.failures));
-            Future<?> closing = closer.submit(n::close);
-            Thread.sleep(80);
-            assertFalse(closing.isDone());
-            release.countDown();
-            closing.get(5, TimeUnit.SECONDS);
-            assertEquals(TIMEOUT, take(p.failures));
-            assertTrue(virtual.get()); assertTrue(closeRejected.get());
-            assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty())); assertTrue(p.failures.isEmpty());
-        } finally { release.countDown(); n.close(); closer.close(); }
+            assertTrue(p.failures.isEmpty());
+            assertTrue(n.peers.values().stream().allMatch(peer -> peer.pending.isEmpty()));
+        } finally { n.close(); }
     }
 
     @Test void removePeerOnlyTouchesItsConnections() {

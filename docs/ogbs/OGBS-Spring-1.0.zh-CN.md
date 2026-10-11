@@ -20,7 +20,7 @@
 
 例如前缀 `/game` 将 `/game/status?id=7` 映射至已注册的 `/status`，保留相同的 `id=7` query；`/games/status` 和 `/game%2Fstatus` 不匹配。Handler 观察到前缀内的相对请求 URI。[HttpAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/runtime/HttpAssemblyTest.java) 验证监听生命周期、路径和引用所有权，Java 绑定定义配置项及默认值。
 
-**S-CLOSE-01**：管理上下文停机时先停止 Runtime 接纳和未来调度，等待已登记任务及后续回调，再关闭 Runtime 及网络/数据依赖。保持 [RT-DRAIN](OGBS-Runtime-1.0.zh-CN.md#103-停止接纳等待排空与观察统计) 边界：送达、未登记回调与持久化是独立阶段。遗失回调或业务挂起会使停机继续等待，本 Profile 不在固定期限后强制丢弃工作。
+**S-CLOSE-01**：管理上下文停机时先停止 Runtime 接纳和未来调度，等待已登记任务及后续回调，再关闭 Runtime 及网络/数据依赖。保持 [RT-DRAIN](OGBS-Runtime-1.0.zh-CN.md#103-停止接纳等待排空与观察统计) 边界：送达、未登记回调与持久化是独立阶段。等待受可配置的排空超时限制：超时（例如登记的回调永远没有完成或业务挂起）时，记录未完成的工作数量后仍关闭 Runtime，停机不会无限等待。此时仍在运行的工作被放弃，而不是被取消。
 
 例如已接纳的玩家 Handler 可在开始停机后继续更新 Repository，必须等待它及登记回调完成才能销毁 Repository，随后 Data 最终回写。玩家新请求在 Runtime 接纳处拒绝。禁止在该 Handler 自己的 Route 上关闭容器，否则会等待自身。
 

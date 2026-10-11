@@ -323,7 +323,7 @@ The [demo service example](../../game-demo/README.md#demo-runtime-services) comb
 
 **RT-CRON-01**: Validate Domain, Key, and expression at build. Calendar zone is explicit, UTC by default in this binding.
 
-**RT-CRON-02**: Cycle: read GameTime → calculate next calendar instant → register one-shot Timer → execute on Route → recalculate. Recalculate only after the method finishes. No real-time Tick or replay of every missed instant.
+**RT-CRON-02**: Cycle: read GameTime → calculate the next calendar instant after the later of now and the instant just planned → register one-shot Timer → execute on Route → recalculate. Recalculate only after the method finishes. Within one schedule an instant is planned at most once, even when the timer fires slightly before the business clock reaches it; explicit rescheduling starts again from the current GameTime. No real-time Tick or replay of every missed instant.
 
 **RT-CRON-03**: Report Timer/Cron business exceptions without implicit retry. Cron schedules another cycle after Route rejection or method exception.
 

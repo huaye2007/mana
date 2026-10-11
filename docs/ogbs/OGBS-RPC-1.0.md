@@ -42,7 +42,7 @@ It does not interpret business bodies or provide protocol registration, Runtime 
 
 **R-PEER-04** Active Peers are never automatically removed. Passive Peers are removed when they have neither connections nor PendingCalls. Cleanup and new same-ID handshake binding must serialize so cleanup cannot remove a newly established session. Removal does not ban future admission; later inbound handshakes may create a new Peer. Old asynchronous results must not revive or affect it.
 
-Example: retain a disconnected passive Peer while PendingCalls await responses, timeout, or removal. Reconnection can then return a response over another Slot. Completely idle Peers may be reclaimed.
+Example: a service crashes while ten calls to it are pending. When its last connection drops, the ten calls fail with UNAVAILABLE at once (R-TIME-02), the passive Peer has neither connections nor PendingCalls and is reclaimed, and a restarted service creates a new Peer on its next inbound handshake.
 
 <a id="3-消息"></a>
 
@@ -86,7 +86,7 @@ Slots are transport details. Source Slot is only a reply hint, never part of bus
 
 ## 6. Send selection
 
-**R-EXT-01** Upper-layer composition MUST reuse the existing Node and transport, dispatching its owned messages and delegating ordinary RPC. RPC MUST NOT depend on routing semantics or own upper-layer protocol state. Availability inspection describes transport only, not process incarnation or service presence; external discovery owns instance existence. Transport loss alone does not cancel pending calls. The application owns composition and upper-layer closure; RPC owns its own admission, pending completion and resource barrier. No upper-layer readiness/cleanup notification is required. Language-specific assembly APIs belong to the Java specification.
+**R-EXT-01** Upper-layer composition MUST reuse the existing Node and transport, dispatching its owned messages and delegating ordinary RPC. RPC MUST NOT depend on routing semantics or own upper-layer protocol state. Availability inspection describes transport only, not process incarnation or service presence; external discovery owns instance existence. Partial transport loss does not cancel pending calls; losing the Peer's last connection fails them (R-TIME-02). The application owns composition and upper-layer closure; RPC owns its own admission, pending completion and resource barrier. No upper-layer readiness/cleanup notification is required. Language-specific assembly APIs belong to the Java specification.
 
 For example, an upper layer can recheck its protocol on reconnect without rebuilding the RPC Peer or failing an ordinary call waiting on that Peer. Loss itself has no lifecycle callback in the message handler; calls retain the existing response/timeout/removal/closure contract. Routing envelopes use ordinary notify and reply, rather than introducing a second send primitive.
 
@@ -128,7 +128,7 @@ Design rationale: startup and final closure are infrequent management paths. Kee
 
 **R-TIME-01** Call timeout starts after network ACCEPTED using monotonic timing. A fast response can precede timeout registration; the registrar must detect completion and cancel the new timeout. Scheduling/load may delay delivery; no hard real-time guarantee.
 
-**R-TIME-02** Disconnection alone does not fail ACCEPTED PendingCalls immediately; await another Slot's response or timeout.
+**R-TIME-02** Losing one connection while the Peer still has another does not fail ACCEPTED PendingCalls: the response may arrive over another Slot. When the Peer's last connection is lost, its PendingCalls MUST fail immediately with UNAVAILABLE instead of waiting for the timeout; no connection is left to carry a response, and the remote side may or may not have executed the call. A response arriving later for such a call is dropped like any unmatched response.
 
 **R-TIME-03** removePeer first removes current topology, then terminates sessions, reconnection, and unfinished calls. Missing Peer is an idempotent no-op. Recreation starts an independent lifetime without migrating old calls.
 

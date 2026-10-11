@@ -125,10 +125,10 @@ public final class RpcWire {
     private static Metadata metadata(ByteBuf frame) {
         int length = frame.readUnsignedShort();
         require(frame, length);
-        if (length == 0) return Metadatas.empty();
+        if (length == 0) return Metadata.empty();
         byte[] bytes = new byte[length];
         frame.readBytes(bytes);
-        return Metadatas.wrap(bytes);
+        return Metadata.wrap(bytes);
     }
     private static void require(ByteBuf frame, int size) {
         if (frame.readableBytes() < size) throw new CorruptedFrameException("Truncated RPC payload");

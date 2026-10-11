@@ -28,7 +28,8 @@ class RuntimeLifecycleTest {
     @Configuration @EnableGameRuntime(basePackages = "cn.managame.spring.runtime.empty")
     static class Config {
         @Bean Owner owner() { return new Owner(); }
-        @Bean ProtocolProvider protocols() { return registry -> registry.register(Protocols.request(1, Request.class)); }
+        @Bean ProtocolRegistry protocols() { return ProtocolRegistry.of(ProtocolDescriptor.request(1, Request.class)); }
+        @Bean ProtocolRegistry moreProtocols() { return ProtocolRegistry.of(ProtocolDescriptor.notify(2, Resource.class)); }
         @Bean(destroyMethod = "close") Resource resource() { return new Resource(); }
         @Bean(destroyMethod = "close") RouteExecutor routeExecutor() { return RouteExecutors.virtualThreads(); }
         @Bean GameRuntimeConfigurer configurer(RouteExecutor executor) {
@@ -39,6 +40,8 @@ class RuntimeLifecycleTest {
     @Test void contextCloseWaitsForWorkBeforeOrdinaryListenersAndResourceDestruction() throws Exception {
         var spring = new AnnotationConfigApplicationContext(Config.class);
         var runtime = spring.getBean(GameRuntime.class); var resource = spring.getBean(Resource.class);
+        assertEquals(Request.class, runtime.protocols().get(ProtocolDescriptor.Type.REQUEST, 1).messageType());
+        assertEquals(Resource.class, runtime.protocols().get(ProtocolDescriptor.Type.NOTIFY, 2).messageType()); // registries merged
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var done = new AtomicBoolean();
         var listenerObserved = new AtomicBoolean();
         spring.addApplicationListener((ContextClosedEvent event) -> {
@@ -65,5 +68,22 @@ class RuntimeLifecycleTest {
         try (var restarted = new AnnotationConfigApplicationContext(Config.class)) {
             assertTrue(restarted.getBean(GameRuntime.class).stats().accepting());
         }
+    }
+    @Test void aCallbackThatNeverCompletesCannotBlockShutdownBeyondTheDrainTimeout() throws Exception {
+        var spring = new AnnotationConfigApplicationContext();
+        spring.getEnvironment().getPropertySources().addFirst(new org.springframework.core.env.MapPropertySource(
+                "drain", Map.of("game.runtime.drain-timeout-millis", "200")));
+        spring.register(Config.class); spring.refresh();
+        var runtime = spring.getBean(GameRuntime.class); var captured = new CountDownLatch(1);
+        runtime.dispatch(null, 9L, new Request(() -> {
+            runtime.callback(new RouteCallback<Object>() { // never completed
+                public void onSuccess(Object result) {} public void onFail(int error) {}
+            });
+            captured.countDown();
+        }));
+        assertTrue(captured.await(3, TimeUnit.SECONDS));
+        long started = System.nanoTime();
+        spring.close();
+        assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(3), "shutdown must not wait forever");
     }
 }

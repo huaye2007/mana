@@ -52,6 +52,8 @@ Documents must be self-contained and directly describe component responsibilitie
 
 Keep rationale and flow explanations in the relevant specification sections, not parallel Specs. Rationale explains clauses and does not independently add MUST requirements. Do not present undecided options as active requirements. Length does not establish completeness; real boundaries and failure paths do.
 
+Keep Java specifications concise: state the API contract (behavior, defaults, errors, threads, ownership) in short sentences, tables or lists. Do not narrate internal implementation steps, change history, migration notes or per-revision test counts; those belong in code comments, tests or commit messages.
+
 <a id="自主判断文档归属"></a>
 
 ## Decide documentation ownership autonomously

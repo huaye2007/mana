@@ -3,7 +3,7 @@ package cn.managame.runtime.event;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.concurrent.DefaultPromise;
 import io.netty.util.concurrent.GlobalEventExecutor;
-import cn.managame.core.Metadatas;
+import cn.managame.core.Metadata;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeBuilder;
 import cn.managame.runtime.context.*;
@@ -12,7 +12,8 @@ import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.executor.RouteExecutors;
 import cn.managame.runtime.handler.Handler;
 import cn.managame.runtime.handler.HandlerMethod;
-import cn.managame.runtime.protocol.Protocols;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.RouteDomain;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -47,11 +48,9 @@ class EventsTest {
                 .routeDomains(List.of(RouteDomain.of(1, "events")))
                 .routeExecutors(List.of(RouteExecutorBinding.of(RouteExecutors.virtualThreads(), 1)))
                 .eventHandlers(List.of(listener)).handlers(List.of(new Requests()))
-                .protocols(List.of(reg -> {
-                    reg.register(Protocols.request(1, Request.class));
-                    reg.register(Protocols.response(1, Response.class));
-                    reg.bindResponse(Request.class, Response.class);
-                })).build();
+                .protocols(ProtocolRegistry.of(
+                    ProtocolDescriptor.request(1, Request.class, Response.class),
+                    ProtocolDescriptor.response(1, Response.class))).build();
         runtimes.add(runtime);
         return runtime;
     }
@@ -85,7 +84,7 @@ class EventsTest {
         var owner = runtime(ownListener); var other = runtime(otherListener); Events.bind(other);
         var result = new DefaultPromise<Seen>(GlobalEventExecutor.INSTANCE);
         var restored = new DefaultPromise<Context>(GlobalEventExecutor.INSTANCE);
-        var source = new DefaultHandlerContext(1, 7, 4, 99, Metadatas.empty(), new Request(() -> {
+        var source = new DefaultHandlerContext(1, 7, 4, 99, Metadata.empty(), new Request(() -> {
             try {
                 Events.publish(new Notice(1, 7));
                 result.trySuccess(ownListener.seen.poll());

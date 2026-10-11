@@ -27,6 +27,9 @@ final class WriteBehindManager {
     private final PendingBuffer buffer;
     private final Map<EntityMeta, EntityMapper> mappers;
     private final List<LogRepository<?>> logs = new ArrayList<>();
+    private final List<Runnable> sweepers = new ArrayList<>();
+    private final long sweepNanos;
+    private long lastSweep = System.nanoTime();
     private final ScheduledExecutorService scheduler;
     private final ReentrantReadWriteLock admission = new ReentrantReadWriteLock();
     private final Object pipeline = new Object();
@@ -42,11 +45,12 @@ final class WriteBehindManager {
     private volatile DataSaveException closeFailure;
 
     WriteBehindManager(Map<EntityMeta,EntityMapper> mappers, Duration interval, int batchSize, Duration shutdownTimeout,
-                       DataErrorHandler handler, RetryPolicy retry) {
+                       Duration cacheExpire, DataErrorHandler handler, RetryPolicy retry) {
         this.mappers = Collections.unmodifiableMap(new LinkedHashMap<>(mappers));
         buffer = new PendingBuffer(mappers.keySet());
         this.batchSize = batchSize; this.handler = handler; this.retry = retry;
         intervalNanos = interval.toNanos(); shutdownNanos = shutdownTimeout.toNanos();
+        sweepNanos = Math.max(intervalNanos, cacheExpire.toNanos() / 4);
         var executor = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().daemon().name("game-data-flush").factory());
         executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         executor.setRemoveOnCancelPolicy(true);
@@ -66,18 +70,30 @@ final class WriteBehindManager {
     void record(EntityMeta meta, Object id, DataOperation operation, Object entity) {
         buffer.record(meta, id, operation, entity);
     }
-    /** Newest unsaved change for a cache miss; null when storage is current. */
-    Change unsaved(EntityMeta meta, Object id) { return buffer.unsaved(meta, id); }
-    PendingBuffer buffer() { return buffer; }
+    boolean pending(EntityMeta meta, Object id) { return buffer.pending(meta, id); }
+    Collection<Change> pending(EntityMeta meta) { return buffer.pending(meta); }
+    /** Cache eviction runs here between flushes, never while a claimed change is being saved. */
+    void addSweeper(Runnable sweeper) { sweepers.add(sweeper); }
 
     private void tick() {
         long start = System.nanoTime();
-        try { if (state == State.RUNNING) flush(); }
+        try { if (state == State.RUNNING) { flush(); sweep(); } }
         catch (Throwable e) { LOG.log(System.Logger.Level.ERROR, "Flush pipeline failed", e); }
         finally {
             if (state == State.RUNNING) {
                 try { scheduler.schedule(this::tick, Math.max(0, intervalNanos - (System.nanoTime() - start)), TimeUnit.NANOSECONDS); }
                 catch (RejectedExecutionException ignored) { /* close has stopped scheduling */ }
+            }
+        }
+    }
+    private void sweep() {
+        if (System.nanoTime() - lastSweep < sweepNanos) return;
+        synchronized (pipeline) {
+            if (state != State.RUNNING) return;
+            lastSweep = System.nanoTime();
+            for (Runnable sweeper : sweepers) {
+                try { sweeper.run(); }
+                catch (RuntimeException e) { LOG.log(System.Logger.Level.ERROR, "Cache sweep failed", e); }
             }
         }
     }
@@ -118,7 +134,7 @@ final class WriteBehindManager {
                                 default -> throw new AssertionError(op);
                             }
                         },
-                        c -> buffer.completed(meta, c),
+                        c -> {},
                         c -> { if (!buffer.requeue(meta, c)) drop(meta.entityType(), op, valueOf(op, c),
                                 new DataOperationException("Retryable change conflicts with a newer change"), 1); },
                         c -> valueOf(op, c));

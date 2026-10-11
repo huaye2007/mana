@@ -6,7 +6,10 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
-/** Internal log mapping bridge. Does not initialize schema or use EntityMapper. */
+/**
+ * Internal log mapping bridge; does not use EntityMapper. The base table is managed externally; a missing
+ * partition table is created from it on first use with {@code CREATE TABLE IF NOT EXISTS ... LIKE base}.
+ */
 public final class MysqlLogWriter {
     private final Class<?> type;
     private final MysqlAccess access;
@@ -57,6 +60,17 @@ public final class MysqlLogWriter {
         // One transaction per batch so a retried or split batch never duplicates log rows.
         String sql = MysqlEntityMeta.insertSql(table, fields);
         var rows = logs.stream().map(log -> MysqlEntityMeta.arguments(fields, log)).toList();
-        access.transaction(tx -> tx.batchUpdate(sql, rows));
+        try { access.transaction(tx -> tx.batchUpdate(sql, rows)); }
+        catch (MysqlException missing) {
+            if (table.equals(baseTable) || !missingTable(missing)) throw missing;
+            access.update("CREATE TABLE IF NOT EXISTS " + SqlNames.quote(table) + " LIKE " + SqlNames.quote(baseTable), new Object[0]);
+            access.transaction(tx -> tx.batchUpdate(sql, rows));
+        }
+    }
+    /** MySQL ER_NO_SUCH_TABLE (1146) or SQLState 42S02 anywhere in the cause chain. */
+    private static boolean missingTable(Throwable error) {
+        for (Throwable t = error; t != null; t = t.getCause())
+            if (t instanceof java.sql.SQLException sql && (sql.getErrorCode() == 1146 || "42S02".equals(sql.getSQLState()))) return true;
+        return false;
     }
 }

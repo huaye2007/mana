@@ -113,7 +113,7 @@ Task discovery reads Bean types without eagerly creating unrelated Beans or the 
 
 ## Fory business payloads
 
-[GameProtocols](src/main/java/cn/managame/demo/common/protocol/GameProtocols.java) is the single application definition of commands, message classes, and stable Fory type IDs. GameRuntimeConfig installs it through `builder.protocols(...)`; [ForyConfig](src/main/java/cn/managame/demo/common/serialization/ForyConfig.java) registers the same classes and type IDs before exposing one Spring-managed ThreadSafeFory. The current registrations are:
+[GameProtocols](src/main/java/cn/managame/demo/common/protocol/GameProtocols.java) is the single application definition of commands, message classes, and stable Fory type IDs. It exposes the resulting ProtocolRegistry as a Spring Bean, which game-spring passes to `builder.protocols(...)`; [ForyConfig](src/main/java/cn/managame/demo/common/serialization/ForyConfig.java) registers the same classes and type IDs before exposing one Spring-managed ThreadSafeFory. The current registrations are:
 
 | Request command | Message class | Fory type ID |
 | --- | --- | --- |
@@ -128,7 +128,7 @@ Commands and Fory type IDs are separate identities. Add a binding in GameProtoco
 [GamePacketHandler](src/main/java/cn/managame/demo/network/GamePacketHandler.java) is a Spring Bean injected with the shared serializer and Runtime. The server interprets incoming packets as REQUEST and resolves the expected class from Runtime's existing ProtocolRegistry before deserializing:
 
 ```java
-var protocol = protocols.get(ProtocolType.REQUEST, packet.getCommand());
+var protocol = protocols.get(ProtocolDescriptor.Type.REQUEST, packet.getCommand());
 if (protocol == null) {
     throw new IllegalArgumentException("Unknown request command: " + packet.getCommand());
 }

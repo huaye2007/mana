@@ -18,9 +18,8 @@ import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.executor.RouteExecutors;
 import cn.managame.runtime.handler.Handler;
 import cn.managame.runtime.handler.HandlerMethod;
-import cn.managame.runtime.protocol.ProtocolProvider;
-import cn.managame.runtime.protocol.ProtocolType;
-import cn.managame.runtime.protocol.Protocols;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.RouteCallback;
 import cn.managame.runtime.route.RouteDomain;
 import cn.managame.runtime.route.RouteKeyBinding;
@@ -47,14 +46,13 @@ class RuntimeTest {
     @Handler(domain=1) static class CustomHandlers {
         @HandlerMethod public void request(Request request,CustomContext context) { assertSame(context,Contexts.current()); request.run().run(); }
     }
-    static ProtocolProvider protocols=reg -> {
-        reg.register(Protocols.request(1,Request.class)); reg.register(Protocols.response(1,Response.class)); reg.bindResponse(Request.class,Response.class);
-    };
+    static ProtocolRegistry protocols=ProtocolRegistry.of(
+        ProtocolDescriptor.request(1,Request.class,Response.class), ProtocolDescriptor.response(1,Response.class));
     private final List<GameRuntime> runtimes=new ArrayList<>();
     private final List<RuntimeError> errors=new CopyOnWriteArrayList<>();
     GameRuntimeBuilder builder(RouteExecutor executor) {
         return GameRuntimeBuilder.builder().routeDomains(List.of(RouteDomain.of(1,"one"),RouteDomain.of(2,"two")))
-            .routeExecutors(List.of(RouteExecutorBinding.of(executor,1,2))).protocols(List.of(protocols))
+            .routeExecutors(List.of(RouteExecutorBinding.of(executor,1,2))).protocols(protocols)
             .handlers(List.of(new Handlers())).errorHandler(errors::add);
     }
     GameRuntime track(GameRuntime runtime) { runtimes.add(runtime); return runtime; }
@@ -62,13 +60,19 @@ class RuntimeTest {
     static void await(CountDownLatch latch) throws Exception { assertTrue(latch.await(5,TimeUnit.SECONDS)); }
     @Test void exactRegistriesAndBuildValidation() {
         var runtime=track(builder(RouteExecutors.virtualThreads()).routeKeys(List.of(RouteKeyBinding.of(Request.class,_ -> 42))).build());
-        assertEquals(Response.class,runtime.protocols().getResponseType(Request.class));
-        assertEquals(Request.class,runtime.protocols().get(ProtocolType.REQUEST,1).messageType());
-        assertEquals(Response.class,runtime.protocols().get(ProtocolType.RESPONSE,1).messageType());
+        assertEquals(Response.class,runtime.protocols().get(Request.class).responseType());
+        assertEquals(Request.class,runtime.protocols().get(ProtocolDescriptor.Type.REQUEST,1).messageType());
+        assertEquals(Response.class,runtime.protocols().get(ProtocolDescriptor.Type.RESPONSE,1).messageType());
         assertEquals(42,runtime.routeKeys().getRouteKey(new Request(() -> {})));
         assertEquals(0,runtime.routeKeys().getRouteKey(new Object()));
         assertThrows(IllegalArgumentException.class, () -> builder(RouteExecutors.virtualThreads()).routeExecutors(List.of()).build());
-        assertThrows(IllegalArgumentException.class, () -> builder(RouteExecutors.virtualThreads()).protocols(List.of(protocols,protocols)).build());
+        assertThrows(IllegalArgumentException.class, () -> ProtocolRegistry.of(ProtocolDescriptor.request(1,Request.class), ProtocolDescriptor.request(1,Response.class)));
+        assertThrows(IllegalArgumentException.class, () -> ProtocolRegistry.of(ProtocolDescriptor.request(1,Request.class), ProtocolDescriptor.notify(2,Request.class)));
+        assertThrows(IllegalArgumentException.class, () -> ProtocolRegistry.of(ProtocolDescriptor.request(1,Request.class,Response.class)));
+        assertThrows(IllegalArgumentException.class, () -> new ProtocolDescriptor(ProtocolDescriptor.Type.NOTIFY,3,Request.class,Response.class));
+        var distinct=ProtocolRegistry.of(ProtocolDescriptor.request(7,Request.class,Response.class), ProtocolDescriptor.response(8,Response.class));
+        assertEquals(Response.class,distinct.get(ProtocolDescriptor.Type.RESPONSE,8).messageType());
+        assertNull(distinct.get(ProtocolDescriptor.Type.RESPONSE,7));
         assertThrows(IllegalArgumentException.class, () -> builder(RouteExecutors.virtualThreads()).handlers(List.of(new Handlers(),new Handlers())).build());
         assertThrows(IllegalArgumentException.class, () -> builder(RouteExecutors.virtualThreads()).routeDomains(List.of(RouteDomain.of(1,"a"),RouteDomain.of(1,"b"))).build());
     }
@@ -86,7 +90,7 @@ class RuntimeTest {
     @Test void crossRouteSuccessFailureAndSourceRestoration() throws Exception {
         var runtime=track(builder(RouteExecutors.platformThreads(2)).build());
         CountDownLatch done=new CountDownLatch(2);
-        var metadata=Metadatas.builder().put(MetadataKeys.longKey(1),77L).build();
+        var metadata=Metadata.builder().put(MetadataKey.longKey(1),77L).build();
         HandlerContext[] source=new HandlerContext[1];
         source[0]=new DefaultHandlerContext(1,5,3,99,metadata,new Request(() -> {
             runtime.call(2,8,() -> {

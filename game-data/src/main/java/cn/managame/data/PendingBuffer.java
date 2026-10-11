@@ -4,13 +4,12 @@ import cn.managame.data.meta.EntityMeta;
 import cn.managame.data.error.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiConsumer;
 
 /**
  * Dirty state per entity id. Writers merge into {@code pending}; the single flush thread claims an
  * entry by conditional removal, so a newer record made after the claim stays pending for the next
- * flush and nothing is lost between iteration and removal. Claimed changes stay visible in
- * {@code inflight} until persisted or requeued, so a cache miss never reads storage older than memory.
+ * flush and nothing is lost between iteration and removal. Repositories never evict an entity that is
+ * pending, so loads never consult this buffer.
  */
 final class PendingBuffer {
     /** Identity equality is required: claim uses remove(id, change). */
@@ -25,10 +24,9 @@ final class PendingBuffer {
     record Claimed(Object id, Change change) {}
 
     private final Map<EntityMeta, ConcurrentHashMap<Object, Change>> pending = new LinkedHashMap<>();
-    private final Map<EntityMeta, ConcurrentHashMap<Object, Change>> inflight = new LinkedHashMap<>();
 
     PendingBuffer(Set<EntityMeta> metas) {
-        for (EntityMeta meta : metas) { pending.put(meta, new ConcurrentHashMap<>()); inflight.put(meta, new ConcurrentHashMap<>()); }
+        for (EntityMeta meta : metas) pending.put(meta, new ConcurrentHashMap<>());
     }
     Set<EntityMeta> metas() { return pending.keySet(); }
 
@@ -38,18 +36,15 @@ final class PendingBuffer {
 
     /** Claims every change currently pending for meta. Called only by the flush thread. */
     List<Claimed> claim(EntityMeta meta) {
-        var source = pending.get(meta); var target = inflight.get(meta);
+        var source = pending.get(meta);
         List<Claimed> claimed = new ArrayList<>();
         for (var entry : source.entrySet()) {
             Object id = entry.getKey(); Change change = entry.getValue();
-            target.put(id, change);                       // visible before it leaves pending
+            // Superseded entries stay pending: the newer change is saved by the next flush.
             if (source.remove(id, change)) claimed.add(new Claimed(id, change));
-            else target.remove(id, change);               // superseded; the newer change stays pending
         }
         return claimed;
     }
-    /** Persisted: storage now reflects this change. */
-    void completed(EntityMeta meta, Claimed claimed) { inflight.get(meta).remove(claimed.id(), claimed.change()); }
 
     /**
      * Retryable failure: merge the older claimed change underneath any newer pending change.
@@ -62,25 +57,14 @@ final class PendingBuffer {
             try { return combine(claimed.change(), newer); }
             catch (DataOperationException illegal) { legal[0] = false; return newer; }
         });
-        inflight.get(meta).remove(claimed.id(), claimed.change());
         return legal[0];
     }
 
-    /** Newest unsaved change for id, or null. Pending wins over inflight. */
-    Change unsaved(EntityMeta meta, Object id) {
-        Change change = pending.get(meta).get(id);
-        return change != null ? change : inflight.get(meta).get(id);
-    }
-    /** Visits each unsaved change of meta once, pending before inflight for the same id. */
-    void forEachUnsaved(EntityMeta meta, BiConsumer<Object, Change> visitor) {
-        Map<Object, Change> merged = new HashMap<>(inflight.get(meta));
-        merged.putAll(pending.get(meta));
-        merged.forEach(visitor);
-    }
+    boolean pending(EntityMeta meta, Object id) { return pending.get(meta).containsKey(id); }
+    Collection<Change> pending(EntityMeta meta) { return pending.get(meta).values(); }
     long size() {
         long count = 0;
         for (var map : pending.values()) count += map.size();
-        for (var map : inflight.values()) count += map.size();
         return count;
     }
 

@@ -28,7 +28,7 @@ game-rpc ───→ game-router ───→ game-demo (routing sample)
 game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
 ```
 
-game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. game-core publishes the shared Caffeine dependency for Runtime/Data cache use, with ownership defined in the [Core Java specification](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责). Runtime depends on game-core and game-network for HTTP annotations and Route integration; it does not depend on RPC, Spring, or business serialization.
+game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. game-core has no third-party dependencies; Runtime declares Caffeine for its idle mailbox cache. Runtime depends on game-core and game-network for HTTP annotations and Route integration; it does not depend on RPC, Spring, or business serialization.
 
 Network and RPC each publish one Maven artifact, with responsibility-based subpackages. Start at [game-network](game-network/README.md) and [game-rpc](game-rpc/README.md).
 
@@ -105,17 +105,15 @@ class Requests {
     }
 }
 
-ProtocolProvider protocols = registrar -> {
-    registrar.register(Protocols.request(1001, Request.class));
-    registrar.register(Protocols.response(1001, Response.class));
-    registrar.bindResponse(Request.class, Response.class);
-};
+ProtocolRegistry protocols = ProtocolRegistry.of(
+        ProtocolDescriptor.request(1001, Request.class, Response.class),
+        ProtocolDescriptor.response(1001, Response.class));
 
 try (GameRuntime runtime = GameRuntimeBuilder.builder()
         .routeDomains(List.of(RouteDomain.of(1, "application-defined")))
         .routeExecutors(List.of(
             RouteExecutorBinding.of(RouteExecutors.platformThreads(4), 1)))
-        .protocols(List.of(protocols))
+        .protocols(protocols)
         .handlers(List.of(new Requests()))
         .build()) {
     runtime.dispatch(new DefaultHandlerContext(1, 10001, new Request(10001)));
@@ -145,7 +143,7 @@ RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple s
 - `runtime.call()` must run inside that Runtime's Context. Success/failure callbacks return to the original Route and restore its Context. If that Route rejects dispatch, report the error without invoking the callback on another Route.
 - Same-Route serialization does not lock an entity across asynchronous work. Cross-Route results should be immutable values, snapshots, or independent DTOs.
 - Metadata shares `byte[]` by immutable-use convention. Wire format is `uint16 key + uint16 length + bytes`, with no type field. The Key codec runs only on reads.
-- RPC bodies use ByteBuf. Inbound callbacks borrow them; asynchronous use requires retain/copy. Outbound validation transfers one reference; encoding into a contiguous frame releases the body.
+- RPC bodies use ByteBuf. Inbound callbacks borrow them; asynchronous use requires retain/copy. Outbound validation transfers one reference; encoding copies bodies up to 2 KiB into the frame and references larger ones, releasing the body after the write.
 - Cron has six numeric fields (second, minute, hour, day, month, weekday), supports `* ? , - /`, uses Sunday=1 and UTC by default. Quartz `L/W/#`, names, and year fields are unsupported.
 - RPC uses one HashedWheelTimer per Node for call/handshake timeouts and reconnect delays; connection IdleStateHandler instances handle heartbeats. Call timeout starts after network ACCEPTED.
 - Network/RPC callbacks should return quickly; dispatch expensive work to Runtime. RPC core does not automatically decode responses or switch Runtime Routes.

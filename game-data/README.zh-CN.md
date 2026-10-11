@@ -12,7 +12,7 @@
 
 OGBS Data 的 Java 25 参考实现：Single/Group 缓存、异步批量写回、MySQL/JDBC、MongoDB，以及 MySQL 追加日志。
 
-Caffeine 3.2.3 通过 `game-core` 传递引入；Data 负责自身缓存及其生命周期。共享依赖的归属见 [Core Java 开发规范](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责)。
+Repository 缓存是一个内部小型 Map，从不淘汰有未保存变更的实体，因此加载无需合并待保存的写入；见[写回与淘汰](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#5-写回实现与适用边界)。
 
 - [语义规范](../docs/ogbs/OGBS-Data-1.0.zh-CN.md)
 - [Java 开发规范、默认配置与边界](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)
@@ -43,6 +43,6 @@ mvn -pl game-data -am test "-Dtest=DatabaseIntegrationTest" -Dsurefire.failIfNoS
 
 MySQL 使用专门的可丢弃测试数据库：测试创建并删除 ogbs_data_probe 表，检测到已有同名表会拒绝运行。Mongo 创建随机 ogbs_data_test_* 数据库并在结束后删除。不要指向生产库。
 
-2026-10-11 写回改为"认领 + 失败分类"后，game-data 的 51 项本地测试通过、2 项实机测试按环境条件跳过（该轮在 JDK 21 预览模式下逐模块编译运行，未经 Maven/JDK 25；以 `mvn clean verify` 结果为准）。H2、映射桩和 BSON 测试通过；真实 MySQL/MongoDB 测试需配置环境变量。可重试的保存失败会保留到下一轮，不可重试的坏行被拆出单独丢弃并报告，缓存未命中先读未保存变更；MySQL 驱动须保持 `useAffectedRows=false`。机制与边界见 Java 开发规范第 5 节。
+2026-10-11 写回改为"认领 + 失败分类"后，game-data 的 51 项本地测试通过、2 项实机测试按环境条件跳过（该轮在 JDK 21 预览模式下逐模块编译运行，未经 Maven/JDK 25；以 `mvn clean verify` 结果为准）。H2、映射桩和 BSON 测试通过；真实 MySQL/MongoDB 测试需配置环境变量。可重试的保存失败会保留到下一轮，不可重试的坏行被拆出单独丢弃并报告，有未保存变更的实体从不被淘汰；MySQL 驱动须保持 `useAffectedRows=false`。机制与边界见 Java 开发规范第 5 节。
 
 GameData.flush() 在保持开放的情况下处理两个缓冲区；稳定屏障需先暂停写入，历史最终失败仍抛 DataSaveException。GameData.stats() 提供待处理/日志/缓存/失败近似计数。直接修改实体仍需 update，不新增自动脏检测或快照。可选 [game-spring](../game-spring/README.zh-CN.md) 使用应用 DataSource 初始化 @Repository Bean。见 [Java flush 契约](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#11-显式-flush-与-datastats)。

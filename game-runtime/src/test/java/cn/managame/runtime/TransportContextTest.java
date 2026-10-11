@@ -1,7 +1,7 @@
 package cn.managame.runtime;
 
-import cn.managame.core.Metadatas;
-import cn.managame.core.MetadataKeys;
+import cn.managame.core.Metadata;
+import cn.managame.core.MetadataKey;
 import cn.managame.runtime.context.*;
 import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.error.RuntimeError;
@@ -9,7 +9,8 @@ import cn.managame.runtime.event.Event;
 import cn.managame.runtime.event.EventMethod;
 import cn.managame.runtime.executor.*;
 import cn.managame.runtime.handler.*;
-import cn.managame.runtime.protocol.Protocols;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.RouteCallback;
 import cn.managame.runtime.route.RouteDomain;
 import org.junit.jupiter.api.Test;
@@ -43,15 +44,14 @@ class TransportContextTest {
     GameRuntimeBuilder builder(RouteExecutor executor, List<RuntimeError> errors) {
         return GameRuntimeBuilder.builder().routeDomains(List.of(RouteDomain.of(1, "role"), RouteDomain.of(2, "guild")))
                 .routeExecutors(List.of(RouteExecutorBinding.of(executor, 1, 2)))
-                .protocols(List.of(r -> {
-                    r.register(Protocols.request(1, TcpMessage.class));
-                    r.register(Protocols.request(2, RpcMessage.class));
-                    r.register(Protocols.notify(3, LocalMessage.class));
-                })).handlers(List.of(new Handlers())).errorHandler(errors::add);
+                .protocols(ProtocolRegistry.of(
+                    ProtocolDescriptor.request(1, TcpMessage.class),
+                    ProtocolDescriptor.request(2, RpcMessage.class),
+                    ProtocolDescriptor.notify(3, LocalMessage.class))).handlers(List.of(new Handlers())).errorHandler(errors::add);
     }
 
     DefaultRpcHandlerContext rpc(int domain, long key, Object message, int requestId) {
-        return new DefaultRpcHandlerContext(domain, key, 7, 10001, Metadatas.empty(), message, -10, 254, -2, requestId);
+        return new DefaultRpcHandlerContext(domain, key, 7, 10001, Metadata.empty(), message, -10, 254, -2, requestId);
     }
 
     @Test void tcpAndRpcShareSerialRouteAndAdmittedContextsSurviveClose() throws Exception {
@@ -117,7 +117,7 @@ class TransportContextTest {
 
     @Test void nestedTcpAndDerivedContextsRestoreRpcWithoutCopyingTransportFields() {
         var errors = new ArrayList<RuntimeError>(); var observed = new ArrayList<Context>();
-        var metadata = Metadatas.builder().put(MetadataKeys.longKey(1), 77L).build();
+        var metadata = Metadata.builder().put(MetadataKey.longKey(1), 77L).build();
         class Events {
             @EventMethod public void notice(Notice event) { observed.add(Contexts.current(EventContext.class)); }
         }
@@ -155,20 +155,20 @@ class TransportContextTest {
     @Test void rpcEnvelopeRejectsInvalidOriginsButPreservesUnsignedWireBitPatterns() {
         var message = new RpcMessage(() -> {});
         assertThrows(IllegalArgumentException.class, () -> new DefaultRpcHandlerContext(1, 99, 7, 1,
-                Metadatas.empty(), message, 0, 0, 2, 1));
+                Metadata.empty(), message, 0, 0, 2, 1));
         for (int slot : List.of(-1, 255)) assertThrows(IllegalArgumentException.class,
-                () -> new DefaultRpcHandlerContext(1, 99, 7, 1, Metadatas.empty(), message, 10, slot, 2, 1));
+                () -> new DefaultRpcHandlerContext(1, 99, 7, 1, Metadata.empty(), message, 10, slot, 2, 1));
         assertThrows(IllegalArgumentException.class, () -> new DefaultRpcHandlerContext(1, 99, 7, 1,
-                Metadatas.empty(), message, 10, 0, 0, 1));
+                Metadata.empty(), message, 10, 0, 0, 1));
         assertThrows(IllegalArgumentException.class, () -> new DefaultRpcHandlerContext(1, 99, 256, 1,
-                Metadatas.empty(), message, 10, 0, 2, 1));
+                Metadata.empty(), message, 10, 0, 2, 1));
         assertSame(message, rpc(1, 99, message, -1).message());
     }
 
     @Test void rpcConvenienceEntrySelectsAnnotatedDomainAndPreservesEnvelope() {
         var errors = new ArrayList<RuntimeError>(); var calls = new AtomicInteger();
         try (var runtime = builder((d, k, task) -> { task.run(); return RouteExecuteStatus.ACCEPTED; }, errors).build()) {
-            var metadata = Metadatas.builder().put(MetadataKeys.intKey(1), 3).build();
+            var metadata = Metadata.builder().put(MetadataKey.intKey(1), 3).build();
             runtime.dispatchRpc(10, 2, 2, 33, 100, 1, 100, metadata, new RpcMessage(() -> {
                 var context = Contexts.current(RpcHandlerContext.class);
                 assertEquals(1, context.routeDomain()); assertEquals(10, context.sourceNodeId());

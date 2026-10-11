@@ -128,7 +128,7 @@ final class DefaultGameRuntime implements GameRuntime {
         }
     }
     public void dispatch(Connection connection, Object message) {
-        dispatch(connection, Metadatas.empty(), message);
+        dispatch(connection, Metadata.empty(), message);
     }
     public void dispatch(Connection connection, Metadata metadata, Object message) {
         Objects.requireNonNull(metadata);
@@ -158,13 +158,13 @@ final class DefaultGameRuntime implements GameRuntime {
         if (handler == null) throw failure(HANDLER_NOT_FOUND);
         var keyBinding = keys.get(message.getClass());
         long key = keyBinding == null ? 0 : extractKey(keyBinding, message);
-        dispatch(new DefaultClientHandlerContext(handler.domain(), key, businessIdType, businessId, Metadatas.empty(), message, connection));
+        dispatch(new DefaultClientHandlerContext(handler.domain(), key, businessIdType, businessId, Metadata.empty(), message, connection));
     }
     public void dispatch(Connection connection, long routeKey, Object message) {
         dispatch(connection, routeKey, 0, 0L, message);
     }
     public void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message) {
-        dispatch(connection, routeKey, businessIdType, businessId, Metadatas.empty(), message);
+        dispatch(connection, routeKey, businessIdType, businessId, Metadata.empty(), message);
     }
     public void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message) {
         requireAdmission();
@@ -195,7 +195,7 @@ final class DefaultGameRuntime implements GameRuntime {
         if (error != 0) throw failure(error);
     }
     private InvocationContext inherited(Context source) {
-        return source instanceof InvocationContext i ? i : new DefaultInvocationContext(0, 0, 0, 0, Metadatas.empty());
+        return source instanceof InvocationContext i ? i : new DefaultInvocationContext(0, 0, 0, 0, Metadata.empty());
     }
     private void publish(Event event) {
         Objects.requireNonNull(event); validate(event.routeDomain(), event.routeKey());

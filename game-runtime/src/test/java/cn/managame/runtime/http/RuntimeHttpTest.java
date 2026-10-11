@@ -8,7 +8,8 @@ import cn.managame.runtime.error.RuntimeError;
 import cn.managame.runtime.event.*;
 import cn.managame.runtime.executor.*;
 import cn.managame.runtime.handler.*;
-import cn.managame.runtime.protocol.Protocols;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.*;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -147,7 +148,7 @@ class RuntimeHttpTest {
             @HandlerMethod public void handle(Trigger request) { request.action().run(); }
         }
         var executor = new QueueExecutor(); var responses = new ArrayList<Result>();
-        try (var runtime = rawBuilder(executor).protocols(List.of(r -> r.register(Protocols.request(1, Trigger.class))))
+        try (var runtime = rawBuilder(executor).protocols(ProtocolRegistry.of(ProtocolDescriptor.request(1, Trigger.class)))
                 .handlers(List.of(new Owner())).httpHandlers(List.of(new BoundInputs())).build()) {
             runtime.dispatch(null, 7L, new Trigger(() -> responses.add(dispatchBody(runtime, "POST", "/string", "{\"id\":99}"))));
             runtime.shutdown();
@@ -382,7 +383,7 @@ class RuntimeHttpTest {
         var key = new AtomicLong(1);
         try (var runtime = builder(RouteExecutors.virtualThreads()).httpHandlers(List.of(handler))
                 .httpContextFactory((domain, selectedKey, request, callback) -> new DefaultHttpContext(domain, key.get(), request, callback))
-                .protocols(List.of(registrar -> registrar.register(Protocols.request(1, Message.class))))
+                .protocols(ProtocolRegistry.of(ProtocolDescriptor.request(1, Message.class)))
                 .handlers(List.of(new Messages())).eventHandlers(List.of(new Events())).build()) {
             try {
                 var first = dispatch(runtime, "GET", "/work"); assertTrue(handler.entered.await(5, TimeUnit.SECONDS));

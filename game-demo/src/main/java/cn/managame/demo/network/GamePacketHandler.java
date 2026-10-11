@@ -2,7 +2,7 @@ package cn.managame.demo.network;
 
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.protocol.ProtocolRegistry;
-import cn.managame.runtime.protocol.ProtocolType;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import org.apache.fory.ThreadSafeFory;
@@ -26,7 +26,7 @@ public class GamePacketHandler implements ConnectionHandler {
     @Override
     public void onMessage(Connection connection, Object message) {
         GamePacket packet = (GamePacket) message;
-        var protocol = protocols.get(ProtocolType.REQUEST, packet.getCommand());
+        var protocol = protocols.get(ProtocolDescriptor.Type.REQUEST, packet.getCommand());
         if (protocol == null) {
             throw new IllegalArgumentException("Unknown request command: " + packet.getCommand());
         }

@@ -1,7 +1,7 @@
 package cn.managame.runtime;
 
 import cn.managame.core.FrameworkErrorCodes;
-import cn.managame.core.Metadatas;
+import cn.managame.core.Metadata;
 import cn.managame.network.connection.Connection;
 import cn.managame.runtime.context.*;
 import cn.managame.runtime.error.RuntimeDispatchException;
@@ -27,14 +27,14 @@ class HandlerContextFactoryTest {
             }
         }
         var owner = new Owner(); var changed = new java.util.concurrent.atomic.AtomicBoolean();
-        var metadata = Metadatas.builder().put(cn.managame.core.MetadataKeys.intKey(1), 42).build();
+        var metadata = Metadata.builder().put(cn.managame.core.MetadataKey.intKey(1), 42).build();
         var errors = new ArrayList<RuntimeError>();
         try (var runtime = HandlerDispatchTest.builder(owner, (d, k, task) -> {
             task.run(); return RouteExecuteStatus.ACCEPTED;
         }, errors).handlerContextFactory((domain, connection, supplied, message) -> {
             assertSame(metadata, supplied);
             return new DefaultClientHandlerContext(domain, 99, 7, 10001,
-                    changed.get() ? Metadatas.empty() : supplied, message, connection);
+                    changed.get() ? Metadata.empty() : supplied, message, connection);
         }).build()) {
             var request = new HandlerDispatchTest.FieldRequest(1);
             runtime.dispatch(null, metadata, request); assertEquals(1, owner.received.size());
@@ -50,7 +50,7 @@ class HandlerContextFactoryTest {
     record Received(Object identity, HandlerContext context) {}
     static class CustomContext extends DefaultClientHandlerContext {
         CustomContext(int domain, long key, int type, long id, Object message, Connection connection) {
-            super(domain, key, type, id, Metadatas.empty(), message, connection);
+            super(domain, key, type, id, Metadata.empty(), message, connection);
         }
     }
     @Handler(domain = 1)
@@ -175,7 +175,7 @@ class HandlerContextFactoryTest {
             runtime.dispatch(null, 99L, 7, 10001L, request);
             runtime.dispatch(null, 98L, request);
             runtime.dispatch(null, 7, 10002L, request);
-            var context = new DefaultHandlerContext(1, 88, 9, 10003L, Metadatas.empty(), request);
+            var context = new DefaultHandlerContext(1, 88, 9, 10003L, Metadata.empty(), request);
             runtime.dispatch(context);
             assertEquals(List.of(99L, 98L, 42L, 88L), handler.contexts.stream().map(HandlerContext::routeKey).toList());
             assertEquals(List.of(10001L, 0L, 10002L, 10003L), handler.contexts.stream().map(HandlerContext::businessId).toList());
@@ -201,7 +201,7 @@ class HandlerContextFactoryTest {
             submissions.incrementAndGet(); t.run(); return RouteExecuteStatus.ACCEPTED;
         }, errors).handlerContextFactory((d, c, metadata, m) -> {
             factoryScopes.add(Contexts.currentOrNull());
-            return new DefaultClientHandlerContext(d, 99, 7, ((HandlerDispatchTest.FieldRequest) m).userId(), Metadatas.empty(), m, c);
+            return new DefaultClientHandlerContext(d, 99, 7, ((HandlerDispatchTest.FieldRequest) m).userId(), Metadata.empty(), m, c);
         }).build()) {
             handler.runtime = runtime; runtime.dispatch(null, new HandlerDispatchTest.FieldRequest(1));
             assertEquals(1, submissions.get()); assertEquals(2, contexts.size());

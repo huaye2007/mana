@@ -38,12 +38,12 @@ public final class DriverMongoAccess implements MongoAccess {
     @Override public void insertMany(String name, List<BsonDocument> documents) {
         if (!documents.isEmpty()) collection(name).insertMany(documents);
     }
-    @Override public void replaceMany(String name, List<BsonDocument> documents, boolean upsert) {
-        if (documents.isEmpty()) return;
+    @Override public long replaceMany(String name, List<BsonDocument> documents, boolean upsert) {
+        if (documents.isEmpty()) return 0;
         List<WriteModel<BsonDocument>> changes = new ArrayList<>();
         for (BsonDocument document : documents)
             changes.add(new ReplaceOneModel<>(new BsonDocument("_id", document.get("_id")), document, new ReplaceOptions().upsert(upsert)));
-        collection(name).bulkWrite(changes, new BulkWriteOptions().ordered(true));
+        return collection(name).bulkWrite(changes, new BulkWriteOptions().ordered(true)).getMatchedCount();
     }
     @Override public void deleteMany(String name, BsonDocument filter) { collection(name).deleteMany(filter); }
 }

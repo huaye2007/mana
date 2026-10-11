@@ -70,7 +70,7 @@ class GamePacketDispatchTest {
         try (var runtime = GameRuntimeBuilder.builder().routeDomains(List.of(RouteDomain.of(1, "demo")))
                 .routeExecutors(List.of(RouteExecutorBinding.of((d, k, t) -> {
                     tasks.add(t); return RouteExecuteStatus.ACCEPTED;
-                }, 1))).protocols(List.of(new GameProtocols())).handlers(List.of(handler))
+                }, 1))).protocols(new GameProtocols().registry()).handlers(List.of(handler))
                 .handlerContextFactory((domain, connection, metadata, message) -> GameDomain.fromId(domain)
                         .handlerContext(connection, metadata, message))
                 .build()) {

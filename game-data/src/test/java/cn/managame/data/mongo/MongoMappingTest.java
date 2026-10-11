@@ -44,7 +44,8 @@ class MongoMappingTest {
         public BsonDocument findOne(String name,BsonDocument filter) { this.filter=filter; return documents.isEmpty()?null:documents.getFirst(); }
         public List<BsonDocument> find(String name,BsonDocument filter) { this.filter=filter; return documents; }
         public void insertMany(String name,List<BsonDocument> docs) { documents=docs; operation="insert"; }
-        public void replaceMany(String name,List<BsonDocument> docs,boolean upsert) { documents=docs; this.upsert=upsert; operation="replace"; }
+        long matched=-1;
+        public long replaceMany(String name,List<BsonDocument> docs,boolean upsert) { documents=docs; this.upsert=upsert; operation="replace"; return matched<0?docs.size():matched; }
         public void deleteMany(String name,BsonDocument filter) { this.filter=filter; operation="delete"; }
     }
     @Test void bsonRoundTripKeepsGenericFieldsAndPrimaryIdentity() {
@@ -68,6 +69,9 @@ class MongoMappingTest {
         var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta);
         var task=new Task(); task.id=7;
         mapper.updateBatch(meta,List.of(task)); assertFalse(access.upsert);
+        access.matched=0; // the document is missing: the update must fail instead of disappearing
+        assertThrows(cn.managame.data.error.DataOperationException.class, () -> mapper.updateBatch(meta,List.of(task)));
+        access.matched=-1;
         mapper.deleteInsertBatch(meta,List.of(task)); assertTrue(access.upsert);
         assertEquals("replace",access.operation);
         mapper.deleteBatch(meta,List.of(7L,8L));

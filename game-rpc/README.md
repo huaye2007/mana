@@ -2,7 +2,7 @@
 
 **[English](README.md)** | [简体中文](README.zh-CN.md)
 
-Java 25 implementation of OGBS RPC, Maven cn.managame:game-rpc, depending on game-core and game-network. Provides internal TCP, multiple Slots, active/passive Peers, call/notify/reply, handshakes, heartbeats and reconnect with an additive random delay. Only one side of a pair calls addPeer; an optional shared secret adds HMAC handshake authentication, and writeBufferWaterMark, channelOption and transport configure the write-buffer bound, socket options and transport handlers such as TLS or flush consolidation. Node-wide IDs, notification isolation, recovery handoff and verification boundaries are in [Java section 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险). RPC core has no Runtime/business codec dependency; optional Spring adaptation belongs to game-spring.
+Java 25 implementation of OGBS RPC, Maven cn.managame:game-rpc, depending on game-core and game-network. Provides internal TCP, multiple Slots, active/passive Peers, call/notify/reply, handshakes, heartbeats and reconnect with an additive random delay. Only one side of a pair calls addPeer; an optional shared secret adds HMAC handshake authentication, and writeBufferWaterMark, channelOption and transport configure the write-buffer bound, socket options and transport handlers such as TLS (flush consolidation is built in). When a Peer loses its last connection, its pending calls fail at once with UNAVAILABLE. Node-wide IDs, notification isolation, recovery handoff and verification boundaries are in [Java section 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险). RPC core has no Runtime/business codec dependency; optional Spring adaptation belongs to game-spring.
 
 <a id="规范"></a>
 
@@ -34,7 +34,7 @@ try (RpcNode node = RpcNode.builder()
 }
 ```
 
-handler, encodedBody and MyResponse are application-supplied. addPeer maintains connections asynchronously; a call immediately afterward can report onFail(UNAVAILABLE), without waiting or retry. Finite call admission is deferred. Timeout notifications use owned virtual threads awaited by close, leaving the maintenance timer free. Reconnect base defaults to 1000ms, with a random addition up to one quarter of that base; reconnectRandomDelay(Duration.ZERO) selects fixed delay. Random delay spreads attempts; CAS handoff separately repairs recovery ownership races.
+handler, encodedBody and MyResponse are application-supplied. addPeer maintains connections asynchronously; a call immediately afterward can report onFail(UNAVAILABLE), without waiting or retry. Finite call admission is deferred. Timeout notifications run on the Node's timer thread; hand longer work to your own executor. Reconnect base defaults to 1000ms, with a random addition up to one quarter of that base; reconnectRandomDelay(Duration.ZERO) selects fixed delay. Random delay spreads attempts; CAS handoff separately repairs recovery ownership races.
 
 Entry points are in cn.managame.rpc.node; messages in message, handlers/callbacks in call, statuses in transport, errors in error, and wire binding in netty. Peer/Slot/PendingCall remain encapsulated internally.
 

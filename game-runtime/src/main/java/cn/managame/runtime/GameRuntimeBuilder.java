@@ -4,7 +4,7 @@ import cn.managame.runtime.error.RuntimeErrorHandler;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.executor.RouteExecutorBinding;
-import cn.managame.runtime.protocol.ProtocolProvider;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.RouteDomain;
 import cn.managame.runtime.route.RouteKeyBinding;
 import cn.managame.runtime.http.HttpContextFactory;
@@ -17,7 +17,7 @@ import java.util.*;
 public final class GameRuntimeBuilder {
     private List<RouteDomain> domains = List.of();
     private List<RouteExecutorBinding> executors = List.of();
-    private List<ProtocolProvider> providers = List.of();
+    private ProtocolRegistry protocols = ProtocolRegistry.empty();
     private List<RouteKeyBinding<?>> keys = List.of();
     private List<Object> handlers = List.of(), events = List.of(), crons = List.of();
     private List<HandlerArgumentBinding<?>> arguments = List.of();
@@ -36,7 +36,7 @@ public final class GameRuntimeBuilder {
     }
     public GameRuntimeBuilder routeDomains(Iterable<RouteDomain> v) { domains = copy(v); return this; }
     public GameRuntimeBuilder routeExecutors(Iterable<RouteExecutorBinding> v) { executors = copy(v); return this; }
-    public GameRuntimeBuilder protocols(Iterable<? extends ProtocolProvider> v) { providers = copy(v); return this; }
+    public GameRuntimeBuilder protocols(ProtocolRegistry v) { protocols = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder routeKeys(Iterable<RouteKeyBinding<?>> v) { keys = copy(v); return this; }
     public GameRuntimeBuilder handlers(Iterable<?> v) { handlers = copy(v); return this; }
     public GameRuntimeBuilder handlerArguments(Iterable<? extends HandlerArgumentBinding<?>> v) { arguments = copy(v); return this; }
@@ -50,7 +50,7 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder errorHandler(RuntimeErrorHandler v) { errors = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder cronZone(ZoneId v) { cronZone = Objects.requireNonNull(v); return this; }
     public GameRuntime build() {
-        return RuntimeCompiler.build(domains, executors, providers, keys, handlers, arguments, handlerContexts, events, crons,
+        return RuntimeCompiler.build(domains, executors, protocols, keys, handlers, arguments, handlerContexts, events, crons,
                 httpHandlers, httpContexts, httpResults, httpRequests, cronZone, errors);
     }
 }

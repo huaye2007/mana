@@ -71,7 +71,7 @@ class RpcCompositionTest {
             return builder -> builder.routeDomains(List.of(RouteDomain.of(1, "role")))
                     .routeExecutors(List.of(RouteExecutorBinding.of(executor, 1)));
         }
-        @Bean ProtocolProvider protocols() { return registry -> registry.register(Protocols.request(1, Request.class)); }
+        @Bean ProtocolRegistry protocols() { return ProtocolRegistry.of(ProtocolDescriptor.request(1, Request.class)); }
         @Bean GameRpcCodec codec() { return new GameRpcCodec() {
             public byte[] encode(Object message) { return ((Request) message).text().getBytes(StandardCharsets.UTF_8); }
             public <T> T decode(byte[] body, Class<T> type) { return type.cast(new Request(new String(body, StandardCharsets.UTF_8))); }

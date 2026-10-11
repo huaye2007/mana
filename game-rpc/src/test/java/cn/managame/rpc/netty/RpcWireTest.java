@@ -45,15 +45,15 @@ class RpcWireTest {
     }
 
     @Test void unsignedIdsAndMetadataRoundTrip() {
-        Metadata metadata = Metadatas.builder().put(MetadataKeys.stringKey(7), "hello").build();
+        Metadata metadata = Metadata.builder().put(MetadataKey.stringKey(7), "hello").build();
         ByteBuf encoded = RpcWire.encodeRequest(new RpcRequest(-1, Long.MIN_VALUE, 255, -1, metadata, null), -1, 1024);
         encoded.skipBytes(5);
         RpcRequest decoded = RpcWire.decodeRequest(encoded);
         assertEquals(-1, decoded.requestId());
         assertEquals(Long.MIN_VALUE, decoded.routeKey());
-        assertEquals("hello", decoded.metadata().get(MetadataKeys.stringKey(7)));
+        assertEquals("hello", decoded.metadata().get(MetadataKey.stringKey(7)));
         encoded.release();
-        assertEquals("hello", decoded.metadata().get(MetadataKeys.stringKey(7)));
+        assertEquals("hello", decoded.metadata().get(MetadataKey.stringKey(7)));
     }
 
     @Test void encodingFailuresConsumeBodyAndRespectTotalSize() {
@@ -64,16 +64,6 @@ class RpcWireTest {
         ByteBuf exact = RpcWire.encodeRequest(new RpcRequest(1, null), 1, 32);
         assertEquals(32, exact.readableBytes());
         exact.release();
-        Metadata broken = new Metadata() {
-            public <T> T get(MetadataKey<T> key) { return null; }
-            public boolean contains(MetadataKey<?> key) { return false; }
-            public boolean isEmpty() { return false; }
-            public byte[] bytes() { return new byte[] {0}; }
-        };
-        ByteBuf second = Unpooled.buffer().writeByte(3);
-        assertThrows(RpcEncodeException.class,
-                () -> RpcWire.encodeResponse(new RpcResponse(1, 0, broken, second), 1024));
-        assertEquals(0, second.refCnt());
     }
 
     @Test void fragmentationCoalescingAndOversizeDeclaration() {

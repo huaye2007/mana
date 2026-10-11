@@ -14,7 +14,7 @@ Component behavior and Java implementation are maintained separately in these sp
 
 Java 25 reference implementation of OGBS Data: Single/Group caches, asynchronous batch write-behind, MySQL/JDBC, MongoDB, and append-only MySQL logs.
 
-Caffeine 3.2.3 is supplied transitively by `game-core`; Data owns its caches and their lifecycle. Shared dependency ownership is defined in the [Core Java development specification](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责).
+Repository caches are a small internal map that never evicts an entity with unsaved changes, so loads never need to merge pending writes; see [write-back and eviction](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md#5-write-back-implementation-and-limits).
 
 - [Semantic specification](../docs/ogbs/OGBS-Data-1.0.md)
 - [Java development specification, defaults, and boundaries](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md)
@@ -47,6 +47,6 @@ mvn -pl game-data -am test "-Dtest=DatabaseIntegrationTest" -Dsurefire.failIfNoS
 
 Use a dedicated disposable MySQL test database. The test creates and drops ogbs_data_probe and refuses to run if it already exists. Mongo creates a random ogbs_data_test_* database and drops it afterward. Do not use production databases.
 
-After the 2026-10-11 change to claim-based write-back with failure classification, 51 local game-data tests passed and 2 live tests were skipped by environment (run per module with JDK 21 preview mode, not Maven/JDK 25; `mvn clean verify` is authoritative). H2, mapping-stub and BSON tests passed; real MySQL/MongoDB tests need their environment variables. Retryable save failures stay pending for the next pass, a non-retryable bad row is isolated, dropped and reported, and cache misses read unsaved changes first; keep the MySQL driver at `useAffectedRows=false`. See section 5 of the Java specification.
+After the 2026-10-11 change to claim-based write-back with failure classification, 51 local game-data tests passed and 2 live tests were skipped by environment (run per module with JDK 21 preview mode, not Maven/JDK 25; `mvn clean verify` is authoritative). H2, mapping-stub and BSON tests passed; real MySQL/MongoDB tests need their environment variables. Retryable save failures stay pending for the next pass, a non-retryable bad row is isolated, dropped and reported, and entities with unsaved changes are never evicted; keep the MySQL driver at `useAffectedRows=false`. See section 5 of the Java specification.
 
 GameData.flush() processes both buffers while staying open; quiesce writers for a stable barrier, and historical terminal failures still raise DataSaveException. GameData.stats() supplies approximate pending/log/cache/failure counts. Direct entity changes still require update; no automatic dirty tracking or snapshots. Optional [game-spring](../game-spring/README.md) initializes @Repository Beans from an application DataSource. See [Java flush contract](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md#11-explicit-flush-and-datastats).

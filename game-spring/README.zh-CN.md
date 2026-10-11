@@ -4,7 +4,7 @@
 
 Runtime、MySQL Data 与 RPC 的可选普通 Spring 集成，Java 25、Spring Context 7.0.9，不使用 Spring Boot，核心模块保持不依赖 Spring。
 
-使用 `@EnableGameRuntime(basePackages="my.game")` 发现 Handler/EventHandler/HttpHandler 和 Cron 对象，提供 ProtocolProvider 与 GameRuntimeConfigurer Bean 配置协议、Domain、执行器及业务身份策略。`@EnableGameData(basePackages="my.game")` 配合应用持有的 DataSource 初始化 `@Repository` Bean，可选 GameDataConfigurer 配置 codec/回写。Repository 保留字段/setter 注入，仍需满足 Data 的无参构造及直接泛型基类约束。
+使用 `@EnableGameRuntime(basePackages="my.game")` 发现 Handler/EventHandler/HttpHandler 和 Cron 对象，提供 ProtocolRegistry 与 GameRuntimeConfigurer Bean 配置协议、Domain、执行器及业务身份策略。`@EnableGameData(basePackages="my.game")` 配合应用持有的 DataSource 初始化 `@Repository` Bean，可选 GameDataConfigurer 配置 codec/回写。Repository 保留字段/setter 注入，仍需满足 Data 的无参构造及直接泛型基类约束。
 
 HTTP Handler Bean 同时启用托管 HTTP/1.1 监听器，通过普通 Spring 属性源加载以下配置即可，无需 builder、分发适配或关闭监听器：
 

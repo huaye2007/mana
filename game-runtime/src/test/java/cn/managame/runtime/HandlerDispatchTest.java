@@ -9,7 +9,8 @@ import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.error.RuntimeError;
 import cn.managame.runtime.executor.*;
 import cn.managame.runtime.handler.*;
-import cn.managame.runtime.protocol.Protocols;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.*;
 import cn.managame.network.connection.Connection;
 import org.junit.jupiter.api.Test;
@@ -46,10 +47,9 @@ class HandlerDispatchTest {
     static GameRuntimeBuilder builder(Object handler, RouteExecutor executor, List<RuntimeError> errors) {
         return GameRuntimeBuilder.builder().routeDomains(List.of(RouteDomain.of(1, "one"), RouteDomain.of(2, "two")))
                 .routeExecutors(List.of(RouteExecutorBinding.of(executor, 1, 2)))
-                .protocols(List.of(registrar -> {
-                    registrar.register(Protocols.request(1, FieldRequest.class));
-                    registrar.register(Protocols.request(2, MethodRequest.class));
-                })).handlers(List.of(handler)).errorHandler(errors::add);
+                .protocols(ProtocolRegistry.of(
+                    ProtocolDescriptor.request(1, FieldRequest.class),
+                    ProtocolDescriptor.request(2, MethodRequest.class))).handlers(List.of(handler)).errorHandler(errors::add);
     }
 
     @Test void automaticDispatchResolvesDomainAndKeyAndPreservesConnectionInContext() {

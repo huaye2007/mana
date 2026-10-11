@@ -45,7 +45,8 @@ class RouterIntegrationTest {
             // Save independent bytes, never the borrowed Network frame.
             ByteBuf body = r.body() == null ? null : Unpooled.copiedBuffer(r.body());
             requests.add(new RoutedRequest(incoming.sourceNodeId(), incoming.sourceNodeEpoch(),
-                    new RpcRequest(r.command(), r.requestId(), r.routeKey(), r.businessIdType(), r.businessId(), r.metadata(), body)));
+                    new RpcRequest(r.command(), r.requestId(), r.routeKey(), r.businessIdType(), r.businessId(), r.metadata(), body),
+                    incoming.originRouterId()));
             if (throwRequest) throw new IllegalStateException("business failure");
             if (echo && r.requestId() != 0) assertEquals(RpcSendStatus.ACCEPTED, client.reply(incoming,
                     new RpcResponse(r.requestId(), 0, r.metadata(), r.body() == null ? null : r.body().retain())));
@@ -132,7 +133,27 @@ class RouterIntegrationTest {
     static void connect(RouterFixture a, RouterFixture b) throws Exception {
         b.routing.registerRouter(a.rpc.nodeId());
         a.addRouter(b.rpcNode().nodeId(), b.rpcNode().localAddress());
-        await(() -> a.isRouterReady(b.rpcNode().nodeId()) && b.isRouterReady(a.rpcNode().nodeId()));
+        try { await(() -> a.isRouterReady(b.rpcNode().nodeId()) && b.isRouterReady(a.rpcNode().nodeId())); }
+        catch (AssertionError failure) { diag(a, b); diag(b, a); throw failure; }
+    }
+    static void diag(RouterFixture a, RouterFixture b) {
+        try {
+            int peer = b.rpcNode().nodeId();
+            Object engine = f(a.routing, "engine");
+            Object l = ((java.util.Map<?, ?>) f(engine, "links")).get(peer);
+            StringBuilder sb = new StringBuilder("DIAG " + a.rpcNode().nodeId() + "->" + peer + " conn=" + a.rpc.isPeerConnected(peer) + " slots=" + a.rpc.peerSlotCount(peer) + " link=" + (l != null));
+            if (l != null) {
+                for (String n : java.util.List.of("session", "seq", "pendingOps", "inEpoch", "inSession", "expectSeq", "brokenEpoch", "brokenSession", "live", "staging", "lastSync", "lastProgress", "lastSent"))
+                    sb.append(' ').append(n).append('=').append(f(l, n));
+                sb.append(" queue=").append(((java.util.Collection<?>) f(l, "queue")).size()).append(" pumping=").append(f(l, "pumping")).append(" retry=").append(f(l, "retryScheduled")).append(" now=").append(System.nanoTime());
+            }
+            System.out.println(sb);
+        } catch (Exception e) { System.out.println("DIAG failed " + e); }
+    }
+    static Object f(Object o, String name) throws Exception {
+        for (Class<?> c = o.getClass(); c != null; c = c.getSuperclass())
+            try { var fl = c.getDeclaredField(name); fl.setAccessible(true); return fl.get(o); } catch (NoSuchFieldException ignored) {}
+        throw new NoSuchFieldException(name);
     }
     static void await(BooleanSupplier condition) throws Exception {
         long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);

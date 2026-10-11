@@ -270,7 +270,7 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
         Envelope envelope; int next;
         synchronized (lock) {
             validate(mode, target, serviceId, request); next = router;
-            envelope = new Envelope(mode, rpc.nodeId(), epoch, target, 0, serviceId, key, 0, request);
+            envelope = new Envelope(mode, 0, rpc.nodeId(), epoch, target, 0, serviceId, key, 0, request);
         }
         RpcRequest out = data(envelope);
         try { return rpc.notify(next, out); }
@@ -296,7 +296,7 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
         Envelope envelope; int next;
         synchronized (lock) {
             validate(mode, target, serviceId, request); next = router;
-            envelope = new Envelope(mode, rpc.nodeId(), epoch, target, 0, serviceId, key, 0, request);
+            envelope = new Envelope(mode, 0, rpc.nodeId(), epoch, target, 0, serviceId, key, 0, request);
         }
         RpcRequest out = data(envelope);
         try {
@@ -313,7 +313,7 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
         Envelope envelope; int next;
         synchronized (lock) {
             attached(); next = router;
-            envelope = new Envelope(RESPONSE, rpc.nodeId(), epoch, request.sourceNodeId(),
+            envelope = new Envelope(RESPONSE, request.originRouterId(), rpc.nodeId(), epoch, request.sourceNodeId(),
                     request.sourceNodeEpoch(), 0, 0, 0, response);
         }
         RpcRequest out = data(envelope);
@@ -348,7 +348,7 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
             if (e.mode() != DIRECT || e.target() != rpc.nodeId() || e.targetEpoch() != epoch || e.hops() != 1)
                 throw new IllegalArgumentException("Delivery attachment mismatch");
         }
-        RoutedRequest incoming = new RoutedRequest(e.source(), e.sourceEpoch(), (RpcRequest) e.message());
+        RoutedRequest incoming = new RoutedRequest(e.source(), e.sourceEpoch(), (RpcRequest) e.message(), e.origin());
         try { handler.onRoutedRequest(incoming); }
         catch (RuntimeException error) {
             if (incoming.request().requestId() != 0) reply(incoming, new RpcResponse(incoming.request().requestId(), RpcErrorCodes.HANDLER_ERROR, null, null));

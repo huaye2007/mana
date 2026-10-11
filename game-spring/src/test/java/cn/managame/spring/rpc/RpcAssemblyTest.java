@@ -47,12 +47,10 @@ class RpcAssemblyTest {
             return builder -> builder.routeDomains(List.of(RouteDomain.of(1,"role")))
                     .routeExecutors(List.of(RouteExecutorBinding.of(executor,1)));
         }
-        @Bean ProtocolProvider protocols() { return registry -> {
-            registry.register(Protocols.request(1,Request.class));
-            registry.register(Protocols.response(1,Response.class));
-            registry.bindResponse(Request.class,Response.class);
-            registry.register(Protocols.request(2,Start.class));
-        }; }
+        @Bean ProtocolRegistry protocols() { return ProtocolRegistry.of(
+            ProtocolDescriptor.request(1,Request.class,Response.class),
+            ProtocolDescriptor.response(1,Response.class),
+            ProtocolDescriptor.request(2,Start.class)); }
         @Bean GameRpcCodec codec() { return new GameRpcCodec() {
             public byte[] encode(Object message) {
                 String text = message instanceof Request r ? r.text() : ((Response)message).text();
@@ -80,7 +78,7 @@ class RpcAssemblyTest {
         }
         @HandlerMethod public void start(Start request) {
             Context origin=Contexts.current();
-            rpc.getObject().call(request.target(),77,5,123,Metadatas.empty(),new Request("hello"),new RouteCallback<Response>() {
+            rpc.getObject().call(request.target(),77,5,123,Metadata.empty(),new Request("hello"),new RouteCallback<Response>() {
                 public void onSuccess(Response response) {
                     try { assertSame(origin,Contexts.current()); assertEquals(0,request.expectedError()); assertEquals("hello!",response.text()); }
                     catch(Throwable error) { errors.add(error); } finally { request.done().countDown(); }

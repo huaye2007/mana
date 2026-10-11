@@ -1,7 +1,7 @@
 package cn.managame.runtime;
 
 import cn.managame.core.FrameworkErrorCodes;
-import cn.managame.core.Metadatas;
+import cn.managame.core.Metadata;
 import cn.managame.runtime.context.*;
 import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.executor.RouteExecuteStatus;
@@ -55,7 +55,7 @@ class HandlerArgumentTest {
             var request = new HandlerDispatchTest.FieldRequest(42);
             runtime.dispatch(connection, 99L, 7, Long.MIN_VALUE, request);
             runtime.dispatch(connection, 7, 10001L, request);
-            var context = new DefaultClientHandlerContext(2, 88, 7, 0L, Metadatas.empty(), request, connection);
+            var context = new DefaultClientHandlerContext(2, 88, 7, 0L, Metadata.empty(), request, connection);
             runtime.dispatch(context);
             assertEquals(List.of("2/99", "2/42", "2/88"), routes);
             assertEquals(3, calls.get()); assertTrue(handler.received.isEmpty());

@@ -95,9 +95,9 @@ deleteGroup clears the original Map, so holders observe it empty. It covers know
 
 ## 5. Cache and persistence lifecycle
 
-**D-CACHE-01** Cache and pending changes are independent. Expiry never discards registered changes or forces persistence through eviction listeners. Repository access renews expiry; direct access through old Map/entity references does not. Fetch the current cached object through Repository for each business access.
+**D-CACHE-01** An entity or group with unsaved changes (including retryably failed changes kept for the next pass) MUST NOT be evicted; only clean entries expire after their idle time. Eviction never forces or owns persistence. Repository access renews the idle time; direct access through previously returned Map/entity references does not. Fetch the current cached object through Repository for each business access.
 
-**D-CACHE-02** A cache miss must first consult the entity's unsaved changes (including those being saved); when present, the in-memory change wins and storage older than memory must not be read. A Group load overlays the group's unsaved changes on the stored rows. Cache expiry therefore never rolls back unsaved modifications. Cache lifetime should still greatly exceed normal write delay to avoid repeated loads.
+**D-CACHE-02** Because dirty entries stay cached, a cache miss only ever concerns a key with nothing pending, so loading from storage returns current data and never rolls back unsaved modifications. Loads do not consult the pending changes. Eviction checks for pending changes atomically with mutations of the same key and runs only while no claimed change is being saved. A storage outage therefore keeps every dirty entity in memory until it is saved or dropped; cache lifetime should still greatly exceed normal write delay to avoid repeated loads.
 
 <a id="51-读取修改与保存是三个时点"></a>
 
@@ -117,9 +117,9 @@ Distinguish absence from load failure: zero rows may produce negative cache; con
 
 ### 5.2 Expiry combined with failure
 
-The pending set holds entity references independently, so expiry never cancels a save. While storage is unavailable, retryable changes stay pending; reading after expiry returns the same entity from the pending set instead of an older stored value.
+While storage is unavailable, retryable changes stay pending, so their entities stay cached past the idle time; a later read returns the same in-memory entity, never an older stored value.
 
-Changes that are finally dropped (section 7) no longer overlay: storage keeps its previous state, which is what a read after expiry returns. Every such drop goes through the error Handler so the application can repair it.
+A change that is finally dropped (section 7) leaves storage in its previous state and makes the entry clean again; once it expires, a read returns the stored state. Every such drop goes through the error Handler so the application can repair it.
 
 ## 6. Write-back and coalescing
 
@@ -227,7 +227,7 @@ State Mappers compile mappings and required structures during initialization. On
 
 MySQL: INSERT includes explicitly persistent fields; UPDATE saves all mutable fields excluding every identity field; DELETE uses primary key. DELETE_INSERT uses a small transaction covering batch deletion/insertion. Schema maintenance creates missing tables, adds fields/explicit indexes, but never drops fields/indexes or changes types. Obvious type/primary-key/same-name-index conflicts fail initialization. Group keys do not imply indexes.
 
-MongoDB: primary key maps to _id. INSERT is bulk insertion; UPDATE is full Document replacement without upsert; DELETE_INSERT is replacement upsert; DELETE uses primary-key sets. Create only missing collections and explicit ascending indexes; no SQL field migration.
+MongoDB: primary key maps to _id. INSERT and DELETE_INSERT are Document replacements with upsert; UPDATE is a replacement without upsert and fails when the document is missing, as a MySQL UPDATE matching no row does; DELETE uses primary-key sets. Create only missing collections and explicit ascending indexes; no SQL field migration.
 
 <a id="9-追加日志"></a>
 
@@ -235,7 +235,7 @@ MongoDB: primary key maps to _id. INSERT is bulk insertion; UPDATE is full Docum
 
 **D-LOG-01** Log supports only insert into an append queue, with no caching/coalescing/state EntityMapper/required state primary key. Accepted log fields, including partition fields, must not change.
 
-**D-LOG-02** V1 logs use MySQL via MysqlAccess without table/field/index maintenance. External log services manage schemas. Group by physical table before batch INSERT. Each periodic round uses a finite queue boundary so continuous production cannot block state persistence. Closure drains all accepted logs.
+**D-LOG-02** V1 logs use MySQL via MysqlAccess. The base table is managed by an external log service; the component does not add fields or indexes. A missing partition table is created on first use from the base table (`CREATE TABLE IF NOT EXISTS partition LIKE base`) and the insert is retried once; a missing base table remains an ordinary save failure. Group by physical table before batch INSERT. Each periodic round uses a finite queue boundary so continuous production cannot block state persistence. Closure drains all accepted logs.
 
 **D-LOG-03** Partitioning supports VALUE, DAY, MONTH, YEAR and at most one partition field. Without one, use the base table. Names are base + underscore + suffix. Time partitioning uses event time in an explicit zone; units/default zone/types are in the Java specification.
 
@@ -253,7 +253,7 @@ Create log and fix event time/partition value
 → success; retryable failure back to queue tail; non-retryable split, dropped and sent to the same error Handler
 ```
 
-Identical logs never coalesce. DAY/MONTH/YEAR use event time, not persistence-thread time; delayed cross-day logs still go to the original date's table. External systems prepare tables; missing tables enter normal save-failure handling.
+Identical logs never coalesce. DAY/MONTH/YEAR use event time, not persistence-thread time; delayed cross-day logs still go to the original date's table. Partition tables are created from the base table on first use; a missing base table enters normal save-failure handling.
 
 After insert returns, no log field may change, including nonpersistent partition fields. Without snapshots, mutation can change both content and destination and destroys reliable acceptance-time event records.
 
@@ -266,10 +266,10 @@ After insert returns, no log field may change, including nonpersistent partition
 | Explicit insert/update/delete | Clear intent, no proxies/dirty tracking | Automatic tracking or field patches needed |
 | Mutable entities and actual group Map | Direct memory access; Repository owns structural changes | Isolated views, immutable objects, snapshots needed |
 | Coalesce by EntityMeta and primary key | Shared Mappers without cross-type confusion | Identity model/dynamic mapping changes |
-| Independent cache/persistence; misses overlay unsaved changes | Eviction does not own saving and never rolls back | Multi-process strong consistency needed |
+| Dirty entries are never evicted; loads read storage only for clean keys | Eviction does not own saving and never rolls back; no overlay of pending changes | Multi-process strong consistency needed |
 | Keep transient failures, split and drop bad rows | Storage outages lose no data; one bad row neither drops others nor blocks forever | Durable failure queues or backoff needed |
 | Separate append logs, shared errors | Preserve events without state coalescing | Log queries/other backends needed |
-| No log Schema maintenance | Separate external log-management responsibility | Unified schema management needed |
+| Base log table managed externally; partitions created LIKE it | Daily partitions need no external job; schema stays externally owned | Unified schema management needed |
 
 No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, or multi-process consistency is promised. Such extensions need explicit behavior, capacity and recovery semantics, not just replacement containers.
 

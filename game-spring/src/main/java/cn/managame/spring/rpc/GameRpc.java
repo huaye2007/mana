@@ -1,7 +1,6 @@
 package cn.managame.spring.rpc;
 
 import cn.managame.core.Metadata;
-import cn.managame.core.Metadatas;
 import cn.managame.rpc.call.*;
 import cn.managame.rpc.message.*;
 import cn.managame.rpc.node.*;
@@ -59,8 +58,8 @@ public final class GameRpc implements AutoCloseable {
     /** Uses the registered request/response binding. Must be called on this Runtime's Route. */
     public <T> void call(int targetNodeId, long routeKey, int businessIdType, long businessId,
                          Metadata metadata, Object request, RouteCallback<T> callback) {
-        ProtocolDescriptor<?> protocol = requestProtocol(request);
-        Class<?> responseType = runtime.protocols().getResponseType(request.getClass());
+        ProtocolDescriptor protocol = requestProtocol(request);
+        Class<?> responseType = protocol.responseType();
         if (responseType == null) throw new IllegalArgumentException("No response binding: " + request.getClass());
         Objects.requireNonNull(callback);
         ByteBuf body = encode(request);
@@ -80,7 +79,7 @@ public final class GameRpc implements AutoCloseable {
 
     public RpcSendStatus notify(int targetNodeId, long routeKey, int businessIdType, long businessId,
                                 Metadata metadata, Object request) {
-        ProtocolDescriptor<?> protocol = requestProtocol(request);
+        ProtocolDescriptor protocol = requestProtocol(request);
         ByteBuf body = encode(request);
         try {
             return node.notify(targetNodeId, new RpcRequest(protocol.command(), routeKey, businessIdType,
@@ -98,14 +97,14 @@ public final class GameRpc implements AutoCloseable {
     /** Explicit context also supports delayed replies; transport buffers are never retained. */
     public RpcSendStatus reply(RpcHandlerContext context, Object response) {
         requireCall(context);
-        ProtocolDescriptor<?> request = runtime.protocols().get(ProtocolType.REQUEST, context.command());
-        Class<?> expected = request == null ? null : runtime.protocols().getResponseType(request.messageType());
+        ProtocolDescriptor request = runtime.protocols().get(ProtocolDescriptor.Type.REQUEST, context.command());
+        Class<?> expected = request == null ? null : request.responseType();
         if (response == null || expected != response.getClass())
             throw new IllegalArgumentException("Response does not match the request's registered response type");
         ByteBuf body = encode(response);
         try {
             return node.reply(context.sourceNodeId(), context.sourceSlotId(), context.routeKey(),
-                    new RpcResponse(context.requestId(), 0, Metadatas.empty(), body));
+                    new RpcResponse(context.requestId(), 0, Metadata.empty(), body));
         } catch (RuntimeException | Error failure) {
             if (body.refCnt() > 0) body.release();
             throw failure;
@@ -116,7 +115,7 @@ public final class GameRpc implements AutoCloseable {
         requireCall(context);
         if (errorCode <= 0) throw new IllegalArgumentException("errorCode must be positive");
         return node.reply(context.sourceNodeId(), context.sourceSlotId(), context.routeKey(),
-                new RpcResponse(context.requestId(), errorCode, Metadatas.empty(), null));
+                new RpcResponse(context.requestId(), errorCode, Metadata.empty(), null));
     }
 
     private void requireCall(RpcHandlerContext context) {
@@ -124,10 +123,10 @@ public final class GameRpc implements AutoCloseable {
         if (context.requestId() == 0) throw new IllegalArgumentException("Notify has no response");
     }
 
-    private ProtocolDescriptor<?> requestProtocol(Object request) {
+    private ProtocolDescriptor requestProtocol(Object request) {
         Objects.requireNonNull(request);
-        ProtocolDescriptor<?> protocol = runtime.protocols().get(request.getClass());
-        if (protocol == null || protocol.type() != ProtocolType.REQUEST)
+        ProtocolDescriptor protocol = runtime.protocols().get(request.getClass());
+        if (protocol == null || protocol.type() != ProtocolDescriptor.Type.REQUEST)
             throw new IllegalArgumentException("RPC input must be a registered REQUEST: " + request.getClass());
         return protocol;
     }
@@ -140,7 +139,7 @@ public final class GameRpc implements AutoCloseable {
 
     private final class Handler implements RpcHandler {
         public void onRequest(int sourceNodeId, int sourceSlotId, RpcRequest request) {
-            ProtocolDescriptor<?> protocol = runtime.protocols().get(ProtocolType.REQUEST, request.command());
+            ProtocolDescriptor protocol = runtime.protocols().get(ProtocolDescriptor.Type.REQUEST, request.command());
             if (protocol == null) throw new IllegalArgumentException("Unknown request command: " + request.command());
             Object message = decode(request.body(), protocol.messageType());
             runtime.dispatchRpc(sourceNodeId, sourceSlotId, request.command(), request.requestId(),

@@ -5,7 +5,6 @@ import cn.managame.runtime.context.DefaultClientHandlerContext;
 import cn.managame.network.connection.Connection;
 import cn.managame.demo.network.GameSession;
 import cn.managame.demo.bus.user.LoginReq;
-import cn.managame.core.Metadatas;
 import cn.managame.core.Metadata;
 
 /** Application-owned domains with explicit IDs; never use enum ordinal as a Route ID. */
@@ -39,7 +38,7 @@ public enum GameDomain {
 
     /** Application policy: each new domain explicitly chooses its routing and identity inputs. */
     public DefaultClientHandlerContext handlerContext(Connection connection, Object message) {
-        return handlerContext(connection, Metadatas.empty(), message);
+        return handlerContext(connection, Metadata.empty(), message);
     }
     public DefaultClientHandlerContext handlerContext(Connection connection, Metadata metadata, Object message) {
         return switch (this) {

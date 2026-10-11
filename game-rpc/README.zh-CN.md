@@ -2,7 +2,7 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-OGBS RPC 的 Java 25 实现，Maven cn.managame:game-rpc，依赖 game-core、game-network。提供内部 TCP、多 Slot、主动/被动 Peer、call/notify/reply、握手、心跳和带额外随机延迟的重连。一对节点只能有一方调用 addPeer；可配置共享密钥做 HMAC 握手鉴权，并通过 writeBufferWaterMark、channelOption、transport 配置写缓冲上限、socket 选项和 TLS/合并 flush 等传输 handler。Node 级 ID、通知隔离、恢复交接及验证边界见 [Java 规范 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。RPC 核心不依赖 Runtime/业务 codec，可选 Spring 适配由 game-spring 提供。
+OGBS RPC 的 Java 25 实现，Maven cn.managame:game-rpc，依赖 game-core、game-network。提供内部 TCP、多 Slot、主动/被动 Peer、call/notify/reply、握手、心跳和带额外随机延迟的重连。一对节点只能有一方调用 addPeer；可配置共享密钥做 HMAC 握手鉴权，并通过 writeBufferWaterMark、channelOption、transport 配置写缓冲上限、socket 选项和 TLS 等传输 handler（合并 flush 已内置）。Peer 失去最后一条连接时，其未完成调用立即以 UNAVAILABLE 失败。Node 级 ID、通知隔离、恢复交接及验证边界见 [Java 规范 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。RPC 核心不依赖 Runtime/业务 codec，可选 Spring 适配由 game-spring 提供。
 
 ## 规范
 
@@ -30,7 +30,7 @@ try (RpcNode node = RpcNode.builder()
 }
 ```
 
-handler、encodedBody、MyResponse 均由应用提供。addPeer 异步维护连接，刚注册时 call 可能立即 onFail(UNAVAILABLE)，不会等待或自动重试。有限 Call 接纳暂缓；超时通知使用自有、关闭时等待的虚拟线程，不阻塞维护时间轮。重连基础默认 1000ms，额外随机上限默认基础值的 1/4；reconnectRandomDelay(Duration.ZERO) 使用固定延迟。该配置分散重试，恢复权竞争另由 CAS 交接修复。
+handler、encodedBody、MyResponse 均由应用提供。addPeer 异步维护连接，刚注册时 call 可能立即 onFail(UNAVAILABLE)，不会等待或自动重试。有限 Call 接纳暂缓；超时通知在 Node 的计时器线程上执行，较长的处理应交给自己的执行器。重连基础默认 1000ms，额外随机上限默认基础值的 1/4；reconnectRandomDelay(Duration.ZERO) 使用固定延迟。该配置分散重试，恢复权竞争另由 CAS 交接修复。
 
 公开入口位于 cn.managame.rpc.node；消息在 message，Handler/Callback 在 call，状态在 transport，错误在 error，Wire 在 netty。Peer/Slot/PendingCall 均保持内部封装。
 

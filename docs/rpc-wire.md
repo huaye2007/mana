@@ -123,51 +123,57 @@ Response: requestId=9, errorCode=2006, empty Metadata/body:
 
 <a id="router-profile-v1"></a>
 <a id="router-profile-v2"></a>
+<a id="router-profile-v3"></a>
 
-## Router Profile v2 (opt-in RPC payload)
+## Router Profile v3 (opt-in RPC payload)
 
-[Router semantics](ogbs/OGBS-Router-1.0.md) and [Java binding](ogbs/OGBS-Router-Java-25-Specification-1.0.md) define roles/ownership. This section is the sole Router byte-layout definition. RPC framing, message types and handshake version remain unchanged. Router traffic uses Request.command **0x80000288** (Java **-2147483000**), reserved within routing-enabled Nodes; ordinary business commands must not use it there. Outer Metadata/business identity are empty/zero. Data Requests copy the inner request affinity; control Requests use routeKey=1.
+[Router semantics](ogbs/OGBS-Router-1.0.md) and [Java binding](ogbs/OGBS-Router-Java-25-Specification-1.0.md) define roles/ownership. This section is the sole Router byte-layout definition. RPC framing, message types and handshake version remain unchanged. Router traffic uses Request.command **0x80000288** (Java **-2147483000**), reserved within routing-enabled Nodes; ordinary business commands must not use it there. Outer Metadata/business identity are empty/zero. Data Requests copy the inner request affinity; other Router Requests use routeKey=1.
 
-Every Router request body starts with `profileVersion:uint8=2`, then `operation:uint8`. Other versions, unsupported operations, truncated/trailing control data, bad owners or snapshot counts are invalid. All integers are big-endian. nodeId/Router ID are nonzero uint32; epochs nonzero uint64; serviceId is uint32 restricted to 1..2147483647; bindingKey is unrestricted uint64.
+Every Router request body starts with `profileVersion:uint8=3`, then `operation:uint8`. Other versions, unsupported operations, truncated/trailing data, bad owners or snapshot counts are invalid. All integers are big-endian. nodeId/Router ID are nonzero uint32; epochs nonzero uint64; serviceId is uint32 restricted to 1..2147483647; bindingKey is unrestricted uint64.
 
-Node entry = `nodeId:uint32 + nodeEpoch:uint64 + serviceId:uint32` (16 bytes). Binding entry = `serviceId:uint32 + bindingKey:uint64 + nodeId:uint32 + nodeEpoch:uint64` (24 bytes).
+Node entry = `nodeId:uint32 + nodeEpoch:uint64 + serviceId:uint32` (16 bytes). Binding entry = `serviceId:uint32 + bindingKey:uint64 + nodeId:uint32 + nodeEpoch:uint64` (24 bytes). Stream header = `routerEpoch:uint64 + session:uint64 + seq:uint64` (24 bytes); Begin omits seq (16 bytes).
 
-| Op | Name | Fields after common two-byte header |
+| Op | Name | Fields after the common two-byte header |
 | --- | --- | --- |
-| 1 | RouterHandshake | routerEpoch:uint64 |
-| 2 | SnapshotBegin | routerEpoch:uint64, nodeCount:uint32, bindingCount:uint32, revision:uint64 |
-| 3 | SnapshotNodes | routerEpoch:uint64, count:uint16, count × Node entry |
-| 4 | SnapshotBindings | routerEpoch:uint64, count:uint16, count × Binding entry |
-| 5 | SnapshotEnd | routerEpoch:uint64 |
-| 6 | NodeAdd | routerEpoch:uint64, revision:uint64, Node entry |
-| 7 | NodeRemove | routerEpoch:uint64, revision:uint64, nodeId:uint32, nodeEpoch:uint64 |
-| 8 | RouteBind | routerEpoch:uint64, revision:uint64, Binding entry |
-| 9 | RouteUnbind | routerEpoch:uint64, revision:uint64, Binding entry |
+| 1 | Sync | requesterEpoch:uint64, knownEpoch:uint64, brokenSession:uint64 |
+| 2 | Begin | routerEpoch:uint64, session:uint64, nodeCount:uint32, bindingCount:uint32 |
+| 3 | Nodes | stream header, count:uint16, count × Node entry |
+| 4 | Bindings | stream header, count:uint16, count × Binding entry |
+| 5 | End | stream header |
+| 6 | Delta | stream header, count:uint16, count × delta operation |
+| 7 | State | stream header (seq = last sequence sent in the session) |
 | 10 | NodeRegister | Node entry |
 | 11 | NodeBind | nodeEpoch:uint64, serviceId:uint32, bindingKey:uint64 |
 | 12 | NodeUnbind | nodeEpoch:uint64, serviceId:uint32, bindingKey:uint64 |
 | 13 | NodeDetach | nodeEpoch:uint64 |
 | 14 | RoutedData | Data envelope below |
-| 15 | RoutedError | routerEpoch:uint64, targetNodeId:uint32, targetNodeEpoch:uint64, requestId:uint32, errorCode:uint32 |
-| 16 | Verify | expectedRouterEpoch:uint64, senderEpoch:uint64, senderRevision:uint64 |
+| 15 | RoutedError | targetNodeId:uint32, targetNodeEpoch:uint64, requestId:uint32, errorCode:uint32 |
+| 16 | Verify | expectedRouterEpoch:uint64, nodeEpoch:uint64, revision:uint64=0 |
 
-Router identity is the direct RPC Peer ID; handshake epoch plus the current connection relationship scopes its bucket. Ops 2..9/15 require that identity/epoch. Ops 10..13 are direct service-Node controls; NodeRegister.nodeId must equal the direct Peer. Snapshot Nodes precede bindings, which must reference a registered matching service/epoch. Counts at end must exactly match distinct staged entries. Chunk count is 1..256; Java count/capacity limits are in the Java specification.
+Delta operation = `kind:uint8` followed by: 1 NodeAdd → Node entry; 2 NodeRemove → nodeId:uint32 + nodeEpoch:uint64; 3 Bind → Binding entry; 4 Unbind → Binding entry. Chunk and Delta counts are 1..1024. Java capacity limits are in the Java specification.
 
-HELLO may restart routing synchronization on the same RPC connection. It discards incomplete incoming staging and requires a fresh BEGIN/chunks/END, preserving the last committed bucket until END. A fully synchronized recipient also starts its local snapshot; a recipient already exchanging snapshots does not repeatedly echo HELLO. This resets routing protocol state, never the RPC handshake, Peer or unrelated calls. This exchange uses the existing HELLO/snapshot operations and introduces no RPC message type.
+### Router synchronization stream (ops 1–7)
 
-State controls (ops 1–13 and 16) use ordinary nonzero-ID RPC Calls. Successful NodeRegister and Verify native RPC Responses carry exactly routerEpoch:uint64 (eight body bytes, no Router header); other successful controls have an empty body. Positive errorCode means rejection. NodeRegister returns NOT_REGISTERED for a discovery-removed incarnation. Verify checks receiver epoch and sender state: a Router sender requires a committed bidirectional relationship with the same senderEpoch and senderRevision; a service sender uses nodeEpoch, senderRevision=0 and requires matching registration. A mismatch/missing state returns NOT_REGISTERED; Verify never registers, changes authority or proves service presence. One state-control call per Router Peer is in flight, next state control follows its response. Both initialization streams exchange their own snapshots. No broadcast or business request is correlated by these controls. NodeBind's response still confirms only its local Router, not the other Routers' control responses.
+Ops 1–7 travel only between Routers that declared each other, as RPC Notifies (outer requestId=0) on the single Router Slot. A receiver ignores them from an undeclared Peer and rejects them as a Call or over a Peer with another Slot count. Router identity is the direct RPC Peer ID; routerEpoch identifies its incarnation. Nothing in the stream is acknowledged: one Slot delivers frames in order, so loss shows up only as a sequence gap.
 
-RoutedError (op 15) uses an ordinary RPC Notify with outer requestId=0, sent independently of the state-control FIFO and its ACKs. The payload requestId is the original nonzero business call ID. It creates no intermediary PendingCall, requires no ACK and is not retried; failed admission leaves the original call to its existing timeout. This changes no payload fields or Profile v2 version. Receivers also accept the older nonzero-outer-ID Call form and return the usual empty control ACK for that form; existing Profile v2 receivers already accept the Notify form. This compatibility applies to the error-return representation, not a new cross-language verification claim.
+The authority (the Router that owns the bucket) sends one session per peer: Begin, Nodes chunks, Bindings chunks, End, then Deltas and, while idle, State. Session numbers are nonzero and increase within one routerEpoch. Begin has no sequence; every later frame of the session carries the next sequence number starting at 1, and State repeats the last number used. The snapshot is captured atomically against local changes and every later change follows it as a Delta. Nodes precede Bindings; each binding must reference a staged Node with the same epoch and service. At End the staged counts must equal the Begin counts exactly; only then does the staged bucket replace the committed one.
 
-SnapshotBegin captures the source revision. Ops 6..9 advance it once per accepted local mutation (including idempotent controls), modulo 2^64; their revision must be the committed source revision plus one. End commits the captured revision together with the staged bucket. A gap rejects the stream and requires a fresh snapshot; no replay log is defined. Verify compares revisions to detect omitted deltas even when a short reconnect was not observed.
+The receiver tracks the current (epoch, session, expected seq). Frames of an older session of the same epoch are ignored. Begin starts staging unless it names the session the receiver already gave up (same epoch, session not newer than the broken one). Any other mismatch, a sequence gap, a State whose seq is not the last applied one, a malformed frame, connection loss, a staging snapshot that stops arriving or a silent stream breaks the replica: the committed bucket stays visible, and the receiver sends Sync with requesterEpoch = its own Router epoch and knownEpoch/brokenSession = the session it gave up (zero when it never had one). The authority answers Sync by starting a new session; it MAY ignore a Sync naming an older session when its current session started moments ago. The authority also starts a session by itself whenever the Slot is usable and it has none, and a receiver that is not live repeats Sync periodically, so recovery needs neither message to arrive first. A pending-change bound overflow also restarts the session. There is no replay log.
 
-Profile v2 is incompatible with the earlier v1 draft because snapshot/delta fields and NodeRegister ACK changed. Reject v1; upgrade routing peers together. RPC Wire framing (handshake now v2) and ordinary RPC messages are unchanged. The old Router-profile anchor is retained only for links.
+### Service controls (ops 10–13, 16)
+
+Service controls are ordinary nonzero-ID RPC Calls from a directly attached service to its home Router; their fields are unchanged from Profile v2. NodeRegister.nodeId must equal the direct Peer. Successful NodeRegister and Verify responses carry exactly routerEpoch:uint64 (eight body bytes, no Router header); other successful controls have an empty body. A positive errorCode is a rejection; NodeRegister returns NOT_REGISTERED for a discovery-removed incarnation. Verify succeeds only when expectedRouterEpoch is the receiver's epoch and the sender is registered with that nodeEpoch; revision must be zero. Verify never registers, changes authority or proves service presence. NodeBind's response confirms only the local Router. Routers do not send Verify to each other.
+
+### RoutedError (op 15)
+
+RoutedError is an RPC Notify (outer requestId=0) from the Router that detected a failure to the origin Router of the request, sent independently of the synchronization stream. requestId is the original nonzero business call ID and errorCode is positive. The receiver accepts it only from a declared Router and answers its local Node with a native positive-error Response only when targetNodeId/targetNodeEpoch is still registered there. It creates no intermediary PendingCall, requires no acknowledgement and is not retried; failed admission leaves the original call to its existing timeout.
 
 ### RoutedData envelope
 
 | Field | Width / meaning |
 | --- | --- |
 | mode | uint8: 1 exact Node request, 2 dynamic request, 3 service broadcast, 4 response |
+| originRouterId | uint32, Router the calling service is attached to; zero in a service's initial request |
 | sourceNodeId | uint32, original sending service Node |
 | sourceNodeEpoch | uint64, original source attachment |
 | targetNodeId | uint32, exact destination; zero before dynamic resolution or for broadcast |
@@ -177,10 +183,19 @@ Profile v2 is incompatible with the earlier v1 draft because snapshot/delta fiel
 | hops | uint8: 0 initial service-to-Router envelope, 1 resolved/forwarded envelope |
 | innerFrame | Complete RPC Request or Response frame, **including its own uint32 length and type** |
 
-Including the common two bytes, Router data overhead is 40 bytes before the inner frame. Its inner declared length must exactly cover the remaining bytes. Mode 4 requires an inner Response; modes 1..3 require a Request. Inner Metadata, command, identity, body and routeKey follow the ordinary RPC format; no business codec is added. Broadcast inner requestId must be zero. Dynamic mode is accepted only at the source Router, resolved once and becomes exact mode 1. Remote Routers never relay to another remote Router.
+Including the common two bytes, Router data overhead is 44 bytes before the inner frame. Its inner declared length must exactly cover the remaining bytes. Mode 4 requires an inner Response; modes 1..3 require a Request. Inner Metadata, command, identity, body and routeKey follow the ordinary RPC format; no business codec is added. Broadcast inner requestId must be zero. Dynamic mode is accepted only at the source Router, resolved once and becomes exact mode 1. Remote Routers never relay to another remote Router.
 
-Initial service requests have inner requestId=0; if the outer request is a Call, the source Router copies that outer assigned ID into the inner request. Forwarded/delivered envelopes are outer Notifies (ID=0) with the unchanged inner business ID. Initial source identity must match the direct service attachment. A synchronized trusted Router vouches for a forwarded source; a destination service checks its own exact target ID/epoch. Hops=1 marks forwarded/delivered state, not the number of physical network connections.
+Initial service requests have inner requestId=0; if the outer request is a Call, the source Router copies that outer assigned ID into the inner request and sets originRouterId to itself. Forwarded/delivered envelopes are outer Notifies (ID=0) with the unchanged inner business ID and a nonzero originRouterId. Initial source identity must match the direct service attachment. A declared Router vouches for a forwarded source; a destination service checks its own exact target ID/epoch.
 
-Service reply uses mode 4 and exact original source ID/epoch as target. Its source fields identify the responding service. Intermediate traffic remains Notify. At the source Router, the final native RPC Response uses the original requestId, **outer errorCode=0 and empty Metadata**, with a full Router version/op=14/mode=4 envelope in its body. The origin unwraps the inner response's actual business/framework error and Metadata after RPC claims pending completion. Router-generated failures instead use native positive outer errorCode with empty body; op 15 carries such an error between Routers when needed. Error requestId must be nonzero and errorCode positive. Neither form changes base RPC error encoding.
+Service reply uses mode 4, the exact original source ID/epoch as target and the originRouterId of the request it answers. Its source fields identify the responding service. The responder's Router forwards the reply directly to that origin Router (or delivers it locally); an originRouterId of zero makes it locate the target Router in its own view. At the origin Router, the final native RPC Response uses the original requestId, **outer errorCode=0 and empty Metadata**, with a full Router version/op=14/mode=4 envelope in its body. The caller unwraps the inner response's actual business/framework error and Metadata after RPC claims pending completion. Router-generated failures instead use a native positive outer errorCode with an empty body; op 15 carries such an error between Routers. Neither form changes base RPC error encoding.
 
-Handshake payload golden vector (epoch=0x0102030405060708): `02 01 0102030405060708`. [RouterWireTest](../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java) checks this vector, envelope length, field preservation and borrowed ownership. Mixed old/non-Router endpoints do not implement this opt-in command; no Router interoperability is implied by ordinary RPC v1 support. Cross-language Router interoperability remains unverified.
+Golden vectors (from [RouterWireTest](../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java)):
+
+| Frame | Bytes |
+| --- | --- |
+| Sync(requester 1, known 2, broken 3) | `03 01 0000000000000001 0000000000000002 0000000000000003` |
+| Begin(epoch 1, session 2, nodes 3, bindings 4) | `03 02 0000000000000001 0000000000000002 00000003 00000004` |
+| Delta(epoch 1, session 2, seq 3, Bind (5,6)→(7,8)) | `03 06 0000000000000001 0000000000000002 0000000000000003 0001 03 00000005 0000000000000006 00000007 0000000000000008` |
+| State(epoch 1, session 2, seq 9) | `03 07 0000000000000001 0000000000000002 0000000000000009` |
+
+The test also checks the envelope origin, the inner length prefix at offset 44, field preservation and borrowed ownership. Profile v3 is incompatible with v1 and v2: the stream operations, RoutedError and the data envelope changed. Reject other versions and upgrade routing participants together. RPC Wire framing and ordinary RPC messages are unchanged; the older anchors are kept only for links. Mixed old/non-Router endpoints do not implement this opt-in command, and cross-language Router interoperability remains unverified.

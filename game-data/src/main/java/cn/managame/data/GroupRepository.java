@@ -4,7 +4,6 @@ import cn.managame.data.error.*;
 import cn.managame.data.key.GroupKey;
 import cn.managame.data.mapper.EntityMapper;
 import cn.managame.data.meta.EntityMeta;
-import com.github.benmanes.caffeine.cache.*;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,41 +12,38 @@ public abstract class GroupRepository<K, E> {
     private EntityMeta meta;
     private EntityMapper mapper;
     private WriteBehindManager writer;
-    private LoadingCache<GroupKey, ConcurrentHashMap<K,E>> cache;
+    private EntityCache<GroupKey, ConcurrentHashMap<K,E>> cache;
     protected GroupRepository() {}
-    final long cachedEntries() { return cache.estimatedSize(); }
-    @SuppressWarnings("unchecked")
+    final long cachedEntries() { return cache.size(); }
     final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;
-        cache = Caffeine.newBuilder().expireAfterAccess(expiry).build(key -> {
-            // Collect unsaved changes before reading storage, then lay them over the loaded rows.
-            List<PendingBuffer.Change> unsaved = new ArrayList<>();
-            writer.buffer().forEachUnsaved(meta, (id, change) -> {
-                if (change.entity() != null && key.equals(meta.getGroupKey(change.entity()))) unsaved.add(change);
-            });
-            try {
-                var result = new ConcurrentHashMap<K,E>();
-                for (Object entity : this.mapper.loadGroup(meta, key)) {
-                    if (!key.equals(meta.getGroupKey(entity)))
-                        throw new DataLoadException("Mapper returned an entity from another group");
-                    if (result.putIfAbsent((K) meta.getMapKey(entity), (E) entity) != null)
-                        throw new DataLoadException("Duplicate MapKey in loaded group");
-                }
-                for (PendingBuffer.Change change : unsaved) {
-                    K mapKey = (K) meta.getMapKey(change.entity());
-                    if (change.operation() == DataOperation.DELETE) result.remove(mapKey);
-                    else result.put(mapKey, (E) change.entity());
-                }
-                return result;
-            } catch (Exception e) { throw new DataLoadException("Group load failed: " + meta.entityType(), e); }
-        });
+        cache = new EntityCache<>(expiry.toNanos());
+        writer.addSweeper(() -> cache.sweep(() -> {
+            Set<GroupKey> dirty = new HashSet<>();
+            for (PendingBuffer.Change change : writer.pending(meta)) dirty.add(meta.getGroupKey(change.entity()));
+            return dirty::contains;
+        }));
+    }
+    @SuppressWarnings("unchecked")
+    private ConcurrentHashMap<K,E> load(GroupKey key) {
+        // Only groups without unsaved changes are ever missing from the cache, so storage is current.
+        try {
+            var result = new ConcurrentHashMap<K,E>();
+            for (Object entity : mapper.loadGroup(meta, key)) {
+                if (!key.equals(meta.getGroupKey(entity)))
+                    throw new DataLoadException("Mapper returned an entity from another group");
+                if (result.putIfAbsent((K) meta.getMapKey(entity), (E) entity) != null)
+                    throw new DataLoadException("Duplicate MapKey in loaded group");
+            }
+            return result;
+        } catch (Exception e) { throw new DataLoadException("Group load failed: " + meta.entityType(), e); }
     }
     private void ready() {
         if (writer == null) throw new DataOperationException("Repository is not initialized");
         writer.ensureRunning();
     }
     public final Map<K,E> getGroup(GroupKey key) {
-        ready(); meta.validateGroupKey(key); return cache.get(key);
+        ready(); meta.validateGroupKey(key); return cache.get(key, this::load);
     }
     public final E get(GroupKey key, K mapKey) {
         ready();
@@ -55,8 +51,7 @@ public abstract class GroupRepository<K, E> {
             throw new DataOperationException("MapKey type mismatch");
         return getGroup(key).get(mapKey);
     }
-    private ConcurrentHashMap<K,E> loaded(GroupKey key) {
-        var group = cache.getIfPresent(key);
+    private static <G> G loaded(G group, GroupKey key) {
         if (group == null) throw new DataOperationException("Group must be loaded before mutation: " + key);
         return group;
     }
@@ -69,20 +64,22 @@ public abstract class GroupRepository<K, E> {
         GroupKey groupKey = meta.getGroupKey(entity);
         K mapKey = (K) meta.getMapKey(entity);
         Object id = meta.getId(entity);
-        writer.mutate(() -> {
-            var group = loaded(groupKey);
-            writer.record(meta, id, operation, entity); // deletes keep the entity for group overlay
+        writer.mutate(() -> cache.update(groupKey, current -> {
+            var group = loaded(current, groupKey);
+            writer.record(meta, id, operation, entity); // deletes keep the entity so sweeps can find its group
             if (operation == DataOperation.DELETE) group.remove(mapKey);
             else group.put(mapKey, entity);
-        });
+            return group;
+        }));
     }
     public final void deleteGroup(GroupKey key) {
         ready(); meta.validateGroupKey(key);
-        writer.mutate(() -> {
-            var group = loaded(key);
+        writer.mutate(() -> cache.update(key, current -> {
+            var group = loaded(current, key);
             for (E entity : group.values())
                 writer.record(meta, meta.getId(entity), DataOperation.DELETE, entity);
             group.clear();
-        });
+            return group;
+        }));
     }
 }

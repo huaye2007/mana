@@ -21,11 +21,17 @@ class LogContractTest {
     static final class ValueLogs extends LogRepository<ValueLog> {}
     static class Access implements MysqlAccess {
         List<String> sqls = new ArrayList<>(); List<List<Object[]>> batches = new ArrayList<>(); boolean fail;
+        Set<String> tables; List<String> ddl = new ArrayList<>(); // null tables: every table exists
         public <T> T queryOne(String s,Object[] a,RowMapper<T> m) { throw new AssertionError("Log must not query schema"); }
         public <T> List<T> query(String s,Object[] a,RowMapper<T> m) { throw new AssertionError("Log must not query schema"); }
-        public int update(String s,Object[] a) { throw new AssertionError("Log must not execute DDL"); }
+        public int update(String s,Object[] a) {
+            if (tables == null) throw new AssertionError("Log must not execute DDL");
+            ddl.add(s); tables.add(s.split("`")[1]); return 0;
+        }
         public int[] batchUpdate(String s,List<Object[]> a) {
             if (fail) throw new IllegalStateException("log storage");
+            if (tables != null && !tables.contains(s.split("`")[1]))
+                throw new MysqlException(s, new java.sql.SQLException("Table doesn't exist", "42S02", 1146));
             sqls.add(s); batches.add(a); return new int[a.size()];
         }
         /** Each log batch is atomic: the writer runs it inside one transaction. */
@@ -64,6 +70,14 @@ class LogContractTest {
         logs.insert(new Log(2,Instant.parse("2026-10-01T00:00:00Z").toEpochMilli(),"b"));
         assertThrows(DataSaveException.class,data::close);
         assertEquals(DataOperation.LOG_INSERT,failures.getFirst().operation());
+        assertEquals(1,access.batches.size());
+    }
+    @Test void missingPartitionTableIsCreatedFromTheBaseTable() {
+        var access=new Access(); access.tables=new HashSet<>(Set.of("actions"));
+        var data=GameDataBuilder.builder().logRepositories(access,Logs.class).build();
+        data.repository(Logs.class).insert(new Log(1,Instant.parse("2026-10-11T00:00:00Z").toEpochMilli(),"a"));
+        data.close();
+        assertEquals(List.of("CREATE TABLE IF NOT EXISTS `actions_202610` LIKE `actions`"),access.ddl);
         assertEquals(1,access.batches.size());
     }
     @Test void partitionTimezoneAndInvalidSuffix() {

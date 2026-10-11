@@ -80,8 +80,11 @@ final class HttpServerTransport extends ChannelDuplexHandler {
         if (message instanceof HttpRequest request) {
             HttpResponseStatus error = null;
             if (!request.decoderResult().isSuccess()) error = BAD_REQUEST;
-            else if (!request.protocolVersion().equals(HttpVersion.HTTP_1_1)) error = HTTP_VERSION_NOT_SUPPORTED;
-            else if (request.headers().getAll(HOST).size() != 1 || request.headers().get(HOST).isBlank()) error = BAD_REQUEST;
+            else if (!request.protocolVersion().equals(HttpVersion.HTTP_1_1)
+                    && !request.protocolVersion().equals(HttpVersion.HTTP_1_0)) error = HTTP_VERSION_NOT_SUPPORTED;
+            // HTTP/1.0 (for example nginx's default upstream protocol) may omit Host; 1.1 requires exactly one.
+            else if (request.headers().getAll(HOST).size() > 1 || (request.protocolVersion().equals(HttpVersion.HTTP_1_1)
+                    && (!request.headers().contains(HOST) || request.headers().get(HOST).isBlank()))) error = BAD_REQUEST;
             else if (request.method().equals(HttpMethod.CONNECT)) error = METHOD_NOT_ALLOWED;
             else if (request.headers().contains(UPGRADE)) error = BAD_REQUEST;
             if (error != null) {
@@ -188,7 +191,8 @@ final class HttpServerTransport extends ChannelDuplexHandler {
         ResponseCallback(ChannelHandlerContext ctx, FullHttpRequest request) {
             this.ctx = ctx;
             head = request.method().equals(HttpMethod.HEAD);
-            keepAlive = HttpUtil.isKeepAlive(request);
+            // HTTP/1.0 connections serve one request and then close.
+            keepAlive = request.protocolVersion().equals(HttpVersion.HTTP_1_1) && HttpUtil.isKeepAlive(request);
         }
 
         @Override public boolean onResponse(FullHttpResponse response) {

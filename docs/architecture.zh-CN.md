@@ -24,7 +24,7 @@ Java Network 接口与 Netty 实现在 game-network 内统一发布；RPC 依赖
 
 目录划分保留包级封装：Network 的 NettyConnection/NetworkChannelInitializer 留在 netty 包内，RPC 的 ConnectionSlot 留在 node 包内。调用方需要更新已迁移类型的 import。具体类型映射见 [Network Java 开发规范](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md) 和 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。
 
-游戏服务器内部 HTTP 在 game-network artifact 的 cn.managame.network.http 包中独立实现。HttpServer 自行管理 ServerBootstrap、监听、生命周期和请求/响应管线，不包装 TCP/WS 的 NetworkServer，不使用 Connection/ConnectionHandler。包内公开 HttpServer/HttpServerBuilder/HttpResponseCallback，HttpServerTransport 保持包级封装。健康检查、管理操作、路由和序列化由应用负责。初始 Profile 仅支持 HTTP/1.1、完整请求/响应 body、Keep-Alive、可配置请求限制及入站无数据超时。pipeline(...) 在聚合之后、可选兜底之前安装原生 HTTP 扩展（默认兜底为 404），包括应用选择的鉴权、CORS 和压缩。同步 handler 与 asyncHandler 回调共享逐连接顺序：等待响应会延迟后续请求处理及自动协议响应，不阻塞传输线程。可选外部有序执行器与 HTTP 扩展共享该上下文；异步使用请求需要独立所有权，晚到/重复回调响应释放。不新增客户端、HTTP/2、连接注册表或业务定时器。契约见 [HTTP Profile](ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) 与 [Java 绑定](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。HttpServerExample 位于 game-demo 的 cn.managame.demo.examples.network，无需新增 Maven 模块或依赖。
+游戏服务器内部 HTTP 在 game-network artifact 的 cn.managame.network.http 包中独立实现。HttpServer 自行管理 ServerBootstrap、监听、生命周期和请求/响应管线，不包装 TCP/WS 的 NetworkServer，不使用 Connection/ConnectionHandler。包内公开 HttpServer/HttpServerBuilder/HttpResponseCallback，HttpServerTransport 保持包级封装。健康检查、管理操作、路由和序列化由应用负责。Profile 支持 HTTP/1.1（HTTP/1.0 请求响应一次后关闭）、完整请求/响应 body、Keep-Alive、可配置请求限制及入站无数据超时。pipeline(...) 在聚合之后、可选兜底之前安装原生 HTTP 扩展（默认兜底为 404），包括应用选择的鉴权、CORS 和压缩。同步 handler 与 asyncHandler 回调共享逐连接顺序：等待响应会延迟后续请求处理及自动协议响应，不阻塞传输线程。可选外部有序执行器与 HTTP 扩展共享该上下文；异步使用请求需要独立所有权，晚到/重复回调响应释放。不新增客户端、HTTP/2、连接注册表或业务定时器。契约见 [HTTP Profile](ogbs/OGBS-Network-1.0.zh-CN.md#http-server-profile) 与 [Java 绑定](ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#native-http-server-api)。HttpServerExample 位于 game-demo 的 cn.managame.demo.examples.network，无需新增 Maven 模块或依赖。
 
 ## Runtime 包边界
 
@@ -61,21 +61,21 @@ Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常�
 
 RPC 接入仅包括普通 Handler 组合与可用性/Slot 数量快照，不提供 Node 就绪/清理回调或可变 Handler 钩子；发送复用 call/notify/reply。路由拥有协议维护、同步重试和缓冲清理，恢复不能重置共享 RPC Peer 或取消无关调用。RpcHandler 本身仍只有三个消息方法。
 
-Router Peer 使用全连接，每对单 Slot；服务注册可使用多 Slot，绑定权威在传输丢失后仍保留，仅通过显式服务发现或注销清理。快照分块与增量使用有限且具有 Peer 本地 ACK 的控制流，本地 bind 成功不等待集群。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v2)。
+Router Peer 使用全连接，每对单 Slot；服务注册可使用多 Slot，绑定权威在传输丢失后仍保留，仅通过显式服务发现或注销清理。每个 Router 把自己的桶以每方向一个有序、无确认的会话推送给其他 Router（先快照，再批量增量，序号连续）；出现缺口时保留最后提交的副本供查询，并请求新快照。本地桶和副本组成一个无锁索引，消息转发只是本地查表，不访问任何外部存储，也不等待同步；响应直接返回调用方所在 Router。本地 bind 成功不等待集群。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v3)。
 
 Spring 托管 RPC 通过 `GameRpcConfigurer.decorate/attach/detach` 在唯一 Node 上组合 Router：decorate 在 build 前用 GameRouter/ServiceRouting 包装 Runtime RpcHandler，attach 在 Node 启动前启动路由，detach 在 Node 关闭前关闭路由。直接 RpcHandlerContext/GameRpc 回复仍缺少来源附着 epoch 并使用原生直连回复，因此路由请求交给应用的 RouterHandler；将其解码进入 Runtime、精确路由回复（ServiceRouting.reply）以及捕获回调/drain 集成仍由应用实现，保留唯一 Node 和 Router → RPC 依赖。不能用第二个 Node 或把 Runtime 解码/分派移进 Router 来掩盖缺口。
 
-发现/放置集成也是应用工作，Router 示例没有提供：精确代际退役、Router 重启后的事件重放、成员移除和迁移执行隔离需要运维契约。epoch 的冲突排序不能单独证明时间新旧，绑定冲突的确定性解析也不会串行化跨进程业务执行。全连接会在每个 Router 复制全部权威桶；R 个 Router 使用 R×(R−1)/2 条成对连接，每个本地变更最多传播给 R−1 个 Peer。控制与业务帧共享单 Slot 和转发 monitor，同步就绪还会限制转发。这些是明确的小规模 Router 集群约束，生产成员数、内存及恢复预算仍未验证。[Router 审查](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits) 记录源码依据及待定集成决策。
+发现/放置集成也是应用工作，Router 示例没有提供：精确代际退役、Router 重启后的事件重放、成员移除和迁移执行隔离需要运维契约。epoch 的冲突排序不能单独证明时间新旧，绑定冲突的确定性解析也不会串行化跨进程业务执行。全连接会在每个 Router 复制全部权威桶；R 个 Router 使用 R×(R−1)/2 条成对连接，每个本地变更最多传播给 R−1 个 Peer。同步帧与业务帧共享单个 Router Slot；每次恢复都重发完整桶。这些是明确的小规模 Router 集群约束，生产成员数、内存及恢复预算仍未验证。[Router 审查](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits) 记录源码依据及待定集成决策。
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
 
-主动 Peer 由 addPeer 注册，维护固定数量 Slot；合法入站握手可以创建被动 Peer。被动 Peer 无连接且无 PendingCall 时回收。一对节点之间只能有一方调用 addPeer，另一方重复调用会抛异常，反向入站握手会被拒绝。配置共享密钥后握手带 HMAC 鉴权；RpcNodeBuilder 开放写缓冲水位、ChannelOption 和传输层 handler（TLS、合并 flush 等）。Peer/Slot/调用内部状态保持包级封装。
+主动 Peer 由 addPeer 注册，维护固定数量 Slot；合法入站握手可以创建被动 Peer。Peer 失去最后一条连接时，其 PendingCall 立即以 UNAVAILABLE 失败，被动 Peer 随之回收。一对节点之间只能有一方调用 addPeer，另一方重复调用会抛异常，反向入站握手会被拒绝。配置共享密钥后握手带 HMAC 鉴权；RpcNodeBuilder 开放写缓冲水位、ChannelOption 和传输层 handler（如 TLS；合并 flush 已内置）。Peer/Slot/调用内部状态保持包级封装。
 
 call/notify 按非零 routeKey 的无符号余数选起点，零值 round-robin；reply 优先实际来源 Slot，再按 routeKey 回退。首个 ACCEPTED 后不重发。requestId 仅在 Peer 内匹配调用，响应可以从任意 Slot 返回。
 
-每个 Node 一个 HashedWheelTimer 负责维护；超时业务通知在登记的虚拟线程执行，关闭等待其结束。Node 级 requestId 跨 Peer 重建保留，停止恢复链后重新检查空 Slot 并 CAS 获得恢复权。有限 Call 接纳暂缓，关闭仍逐 Peer 扫描全局连接。规范与验证见 [RPC Java 9.1](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
+每个 Node 一个 HashedWheelTimer 负责维护；超时通知在该计时器线程上执行，较长的处理由应用交给自己的执行器。Node 级 requestId 跨 Peer 重建保留，停止恢复链后重新检查空 Slot 并 CAS 获得恢复权。有限 Call 接纳暂缓，关闭仍逐 Peer 扫描全局连接。规范与验证见 [RPC Java 9.1](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。
 
-出站 ByteBuf body 经参数和生命周期校验后被消费，编码复制到单个连续 frame；入站 body 在回调内借用，需要 retain/copy 才能跨线程使用。消息使用只读 record，发送 ID 在内部编码时赋予，不公开 requestId setter。
+出站 ByteBuf body 经参数和生命周期校验后被消费，不超过 2 KiB 的 body 复制进帧，更大的 body 直接引用不复制；入站 body 在回调内借用，需要 retain/copy 才能跨线程使用。消息使用只读 record，发送 ID 在内部编码时赋予，不公开 requestId setter。
 
 start/close 只在管理上下文执行；关闭立即拒绝新工作，并等待已接纳 RPC 操作、自有网络与时间轮退出，不等待应用另行投递的业务。完整边界、默认值、取舍与验证见 [RPC 两层规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。
 
@@ -124,7 +124,7 @@ runtime.call 的 action 业务失败应作为正常结果返回。action 抛异�
 
 - 自定义 RouteExecutor 并显式绑定 Domain。
 - 客户端通过 ClientHandlerContext/DefaultClientHandlerContext 访问 Connection，RPC 通过 RpcHandlerContext/DefaultRpcHandlerContext 获取逻辑来源/关联信息；应用字段继承对应默认实现。公共 HandlerContext 包含消息和调用身份，可选 RPC 到 Runtime 接入由 game-spring 提供。
-- ProtocolProvider 可由外部生成器生成。
+- ProtocolRegistry 定义可由外部生成器生成。
 - MetadataKey 自带编码规则。
 - Netty pipeline 直接放入原生 Decoder/Encoder、IdleStateHandler、LoggingHandler、FlushConsolidationHandler。
 - RpcHandler 统一解码、解释远端错误并投递 Runtime；外部服务发现通过 addPeer/removePeer 更新拓扑。
@@ -139,7 +139,7 @@ Data 不依赖 Runtime 或 RPC；应用可在已有 Route 上串行业务访问�
 
 GameDataBuilder 校验 Repository/身份及映射、执行状态 Schema 初始化，再启动一条保存流水线。DataSource、MongoClient 由应用持有；GameDataBuilder.mysql(DataSource) 装配默认 JDBC Access/Mapper，默认 JSON 初始化绑定声明泛型和状态初始化实现类，可覆盖 codec，具体约定见 [Data Java §6.2](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding)；GameData.close 只停止自己的调度并同步排空写回/日志，最终保存失败抛 DataSaveException。停服先停止业务入口并等待已接纳业务，再关闭 GameData，最后关闭数据库客户端。
 
-Data 的写回线程以"条件移除"认领待保存变更，没有缓冲交换或固定等待；可重试的失败保留到下一轮，不可重试的坏行拆出后单独丢弃并报告，缓存未命中先读未保存变更，不会回档。没有 WAL 或容量背压。所有未验证的生产及实机边界见 [Data Java 开发规范](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。通用行为见 [Data Specification](ogbs/OGBS-Data-1.0.zh-CN.md)，共享保存错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
+Data 的写回线程以"条件移除"认领待保存变更，没有缓冲交换或固定等待；可重试的失败保留到下一轮，不可重试的坏行拆出后单独丢弃并报告，有未保存变更的实体从不被淘汰出缓存，因此重新加载不会读到旧数据。没有 WAL 或容量背压。所有未验证的生产及实机边界见 [Data Java 开发规范](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。通用行为见 [Data Specification](ogbs/OGBS-Data-1.0.zh-CN.md)，共享保存错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
 
 <a id="runtime-http-integration"></a>
 

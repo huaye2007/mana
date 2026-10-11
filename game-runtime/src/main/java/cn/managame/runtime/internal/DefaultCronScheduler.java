@@ -21,6 +21,7 @@ final class DefaultCronScheduler implements CronScheduler, AutoCloseable {
         long generation;
         boolean active;
         TimerRef timer;
+        Instant planned; // occurrence the current timer targets
         Entry(CronBinding binding) { this.binding = binding; }
     }
 
@@ -69,6 +70,7 @@ final class DefaultCronScheduler implements CronScheduler, AutoCloseable {
             requireOpen();
             stop(entry);
             entry.active = true;
+            entry.planned = null; // reschedule starts from the current GameTime
             try { arm(entry, entry.generation); }
             catch (RuntimeException | Error e) { stop(entry); throw e; }
         }
@@ -77,7 +79,11 @@ final class DefaultCronScheduler implements CronScheduler, AutoCloseable {
     // Called under entry's monitor. No user method executes while holding it.
     private void arm(Entry entry, long generation) {
         Instant now = Instant.ofEpochMilli(GameTime.currentTimeMillis());
-        Duration delay = Duration.between(now, entry.binding.schedule().next(now));
+        // A timer that fires slightly before its wall-clock occurrence must not plan that occurrence again.
+        Instant from = entry.planned != null && entry.planned.isAfter(now) ? entry.planned : now;
+        Instant next = entry.binding.schedule().next(from);
+        entry.planned = next;
+        Duration delay = Duration.between(now, next);
         entry.timer = timers.schedule(entry.binding.domain(), entry.binding.key(), delay,
             () -> fire(entry, generation), () -> advance(entry, generation));
     }

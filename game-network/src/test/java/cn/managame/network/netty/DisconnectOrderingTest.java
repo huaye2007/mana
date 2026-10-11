@@ -143,6 +143,10 @@ class DisconnectOrderingTest extends NetworkTestSupport {
             socket.shutdownOutput();
             try {
                 assertTrue(decodingLast.await(5, TimeUnit.SECONDS));
+                // onConnected is handed from the decoder executor to the EventLoop; let that hop finish first.
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (handler.order.isEmpty() && System.nanoTime() < deadline) Thread.sleep(1);
+                Thread.sleep(50); // inactivity, if it could overtake the decoder, would now be visible
                 assertEquals(List.of("connected"), handler.order,
                         "Physical inactivity must not overtake the queued decoder");
             } finally {

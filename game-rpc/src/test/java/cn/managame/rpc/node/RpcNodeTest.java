@@ -119,16 +119,33 @@ class RpcNodeTest extends RpcTestSupport {
         }
     }
 
-    @Test void passivePeerRetainedUntilTimeoutThenRemoved() throws Exception {
+    @Test void losingTheLastConnectionFailsPendingCallsAtOnceAndReleasesPassivePeer() throws Exception {
         Probe p = new Probe();
         try (RpcNode n = node(1, p)) {
             Fake c = bind(n, 2, 0, 1);
-            n.call(2, new RpcRequest(9, null), 30, CALLBACK);
+            n.call(2, new RpcRequest(9, null), 60_000, CALLBACK);
+            long started = System.nanoTime();
             c.close(); n.disconnected(c);
-            assertTrue(n.peers.containsKey(2));
-            assertEquals(TIMEOUT, take(p.failures));
-            await(() -> !n.peers.containsKey(2));
+            assertEquals(UNAVAILABLE, take(p.failures));
+            assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(1), "must not wait for the call timeout");
+            assertFalse(n.peers.containsKey(2));
+            receive(n, bind(n, 2, 0, 1), RpcWire.encodeResponse(new RpcResponse(1, 0, null, null), 1024));
+            assertTrue(p.responses.isEmpty() && p.failures.isEmpty()); // completed once
         }
+    }
+
+    @Test void largeBodiesAreReferencedNotCopied() {
+        ByteBuf body = Unpooled.buffer().writeZero(64 * 1024);
+        ByteBuf frame = RpcWire.encodeRequest(new RpcRequest(5, body), 9, 1 << 20);
+        try {
+            assertEquals(1, body.refCnt()); // ownership moved into the frame
+            assertEquals(4 + 28 + 64 * 1024, frame.readableBytes());
+            assertEquals(64 * 1024 + 28, frame.getInt(0));
+        } finally { frame.release(); }
+        assertEquals(0, body.refCnt());
+        ByteBuf small = Unpooled.buffer().writeZero(16);
+        RpcWire.encodeRequest(new RpcRequest(5, small), 9, 1 << 20).release();
+        assertEquals(0, small.refCnt());
     }
 
     @Test void onlyOneSideOfAPairMayAddPeer() {

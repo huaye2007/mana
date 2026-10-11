@@ -8,7 +8,7 @@
 
 ## 1. 职责与范围
 
-OGBS Network 定义可靠、有序、双向连接的传输建立、消息接纳、所有权、背压与生命周期。V1 提供 TCP、TLS TCP、Binary WebSocket、WSS，以及独立的 HTTP/1.1 服务端 Profile；UDP、KCP、QUIC 不在范围内。
+OGBS Network 定义可靠、有序、双向连接的传输建立、消息接纳、所有权、背压与生命周期。V1 提供 TCP、TLS TCP、Binary WebSocket、WSS，以及独立的 HTTP/1.1 服务端 Profile（HTTP/1.0 请求只服务一次）；UDP、KCP、QUIC 不在范围内。
 
 内部 HTTP 服务遵循 §9，独立于 §§2–7 的 Connection/Server/Client 模型。仅覆盖服务端；HTTP/2、框架 HTTP 客户端、流式响应和协议 Upgrade 不属于本 Profile。路由、健康检查、管理操作、鉴权和序列化由应用负责。用于 WebSocket Upgrade 的 HTTP 继续属于独立 WebSocket 传输的实现细节。
 
@@ -268,9 +268,9 @@ WebSocket 完整二进制消息与 TCP 入站字节片段的边界不同。应�
 
 ## 9. 内部 HTTP/1.1 服务端 Profile
 
-**N-HTTP-01 — 独立入口。** HTTP 服务拥有独立监听与请求/响应处理，不暴露长连接业务回调，也不要求 Connection 抽象。接受 HTTP/1.1 请求；不支持的版本以 505 终止，CONNECT 隧道以 405 终止，协议 Upgrade 以 400 终止。可选 TLS 保护 HTTP 字节流，不启用 HTTP/2 协商；不提供隐式 TLS context 或明文回退。
+**N-HTTP-01 — 独立入口。** HTTP 服务拥有独立监听与请求/响应处理，不暴露长连接业务回调，也不要求 Connection 抽象。接受 HTTP/1.1 与 HTTP/1.0 请求；HTTP/1.0 请求可省略 Host，只响应一次随后关闭连接；其他版本以 505 终止，CONNECT 隧道以 405 终止，协议 Upgrade 以 400 终止。可选 TLS 保护 HTTP 字节流，不启用 HTTP/2 协商；不提供隐式 TLS context 或明文回退。
 
-**N-HTTP-02 — 完整请求与限制。** 只有请求头与 body 完成解码、聚合后才交付，包括 chunked 请求内容。Binding 指定首行、请求头、聚合 body 的可配置正数上限。非法分帧、非法或超限的首行/请求头，以及缺失、空或重复的 Host 以 400 终止；body 超限以 413 终止。这些请求不进入应用处理。合法 Expect: 100-continue 在发送 body 前收到 100；声明的 body 超限立即收到 413，不支持的 expectation 收到 417。拒绝响应无 body，尝试写回后关闭。限制按请求生效，不是连接配额或全局内存边界。
+**N-HTTP-02 — 完整请求与限制。** 只有请求头与 body 完成解码、聚合后才交付，包括 chunked 请求内容。Binding 指定首行、请求头、聚合 body 的可配置正数上限。非法分帧、非法或超限的首行/请求头，重复的 Host，以及 HTTP/1.1 下缺失或为空的 Host 以 400 终止；body 超限以 413 终止。这些请求不进入应用处理。合法 Expect: 100-continue 在发送 body 前收到 100；声明的 body 超限立即收到 413，不支持的 expectation 收到 417。拒绝响应无 body，尝试写回后关闭。限制按请求生效，不是连接配额或全局内存边界。
 
 **N-HTTP-03 — 单一最终响应与顺序。** 每个接纳请求的应用处理提供一个完整最终响应，可以同步返回，也可以通过请求专属完成回调异步提供。等待异步响应不阻塞传输线程。同一连接按到达顺序串行处理请求并尝试响应，包括自动产生的 100/413/417；前一个完整响应写入完成前，不开始下一个请求的处理。不同连接可并发执行。除非请求或响应要求关闭，否则保持持久连接。决定关闭后，不执行后续流水线请求。兜底完整响应在出站扩展变换前规范化，原生响应分帧遵循 N-HTTP-08：HEAD 不发送 body；204 无 body 且不含 Content-Length；205 无 body 且长度为零；304 无 body，但可描述表示数据长度。流式响应、Upgrade 和应用返回临时响应仍不属于本 Profile。
 

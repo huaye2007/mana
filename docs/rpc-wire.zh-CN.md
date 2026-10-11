@@ -113,64 +113,79 @@ Response：requestId=9、errorCode=2006、Metadata/body 空：
 
 <a id="router-profile-v1"></a>
 <a id="router-profile-v2"></a>
+<a id="router-profile-v3"></a>
 
-## Router Profile v2（显式启用的 RPC payload）
+## Router Profile v3（显式启用的 RPC payload）
 
-[Router 语义](ogbs/OGBS-Router-1.0.zh-CN.md) 与 [Java 绑定](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md) 定义角色/所有权，本节是唯一 Router 字节定义。RPC framing、消息 type 与握手版本不变。Router 流量使用 Request.command **0x80000288**（Java **-2147483000**），在启用路由的 Node 内保留，普通业务不能使用此 command。外层 Metadata/业务身份为空/零。数据 Request 复制内层请求亲和字段，控制 Request 使用 routeKey=1。
+[Router 语义](ogbs/OGBS-Router-1.0.zh-CN.md) 与 [Java 绑定](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md) 定义角色/所有权，本节是唯一 Router 字节定义。RPC framing、消息 type 与握手版本不变。Router 流量使用 Request.command **0x80000288**（Java **-2147483000**），在启用路由的 Node 内保留，普通业务不能使用此 command。外层 Metadata/业务身份为空/零。数据 Request 复制内层请求亲和字段，其他 Router Request 使用 routeKey=1。
 
-每个 Router 请求 body 先写 `profileVersion:uint8=2`，再写 `operation:uint8`。其他版本、不支持的操作、截断/多余控制字节、非法 owner 或快照计数均非法。全部整数大端。nodeId/Router ID 为非零 uint32，epoch 为非零 uint64，serviceId 为限制在 1..2147483647 的 uint32，bindingKey 为任意 uint64。
+每个 Router 请求 body 先写 `profileVersion:uint8=3`，再写 `operation:uint8`。其他版本、不支持的操作、截断/多余字节、非法 owner 或快照计数均非法。全部整数大端。nodeId/Router ID 为非零 uint32，epoch 为非零 uint64，serviceId 为限制在 1..2147483647 的 uint32，bindingKey 为任意 uint64。
 
-Node 条目为 `nodeId:uint32 + nodeEpoch:uint64 + serviceId:uint32`（16 字节）；绑定条目为 `serviceId:uint32 + bindingKey:uint64 + nodeId:uint32 + nodeEpoch:uint64`（24 字节）。
+Node 条目为 `nodeId:uint32 + nodeEpoch:uint64 + serviceId:uint32`（16 字节）；绑定条目为 `serviceId:uint32 + bindingKey:uint64 + nodeId:uint32 + nodeEpoch:uint64`（24 字节）；流头为 `routerEpoch:uint64 + session:uint64 + seq:uint64`（24 字节），Begin 不含 seq（16 字节）。
 
 | Op | 名称 | 公共两字节头之后的字段 |
 | --- | --- | --- |
-| 1 | RouterHandshake | routerEpoch:uint64 |
-| 2 | SnapshotBegin | routerEpoch:uint64, nodeCount:uint32, bindingCount:uint32, revision:uint64 |
-| 3 | SnapshotNodes | routerEpoch:uint64, count:uint16, count × Node 条目 |
-| 4 | SnapshotBindings | routerEpoch:uint64, count:uint16, count × 绑定条目 |
-| 5 | SnapshotEnd | routerEpoch:uint64 |
-| 6 | NodeAdd | routerEpoch:uint64, revision:uint64, Node 条目 |
-| 7 | NodeRemove | routerEpoch:uint64, revision:uint64, nodeId:uint32, nodeEpoch:uint64 |
-| 8 | RouteBind | routerEpoch:uint64, revision:uint64, 绑定条目 |
-| 9 | RouteUnbind | routerEpoch:uint64, revision:uint64, 绑定条目 |
+| 1 | Sync | requesterEpoch:uint64, knownEpoch:uint64, brokenSession:uint64 |
+| 2 | Begin | routerEpoch:uint64, session:uint64, nodeCount:uint32, bindingCount:uint32 |
+| 3 | Nodes | 流头, count:uint16, count × Node 条目 |
+| 4 | Bindings | 流头, count:uint16, count × 绑定条目 |
+| 5 | End | 流头 |
+| 6 | Delta | 流头, count:uint16, count × 增量操作 |
+| 7 | State | 流头（seq = 本会话最后发送的序号） |
 | 10 | NodeRegister | Node 条目 |
 | 11 | NodeBind | nodeEpoch:uint64, serviceId:uint32, bindingKey:uint64 |
 | 12 | NodeUnbind | nodeEpoch:uint64, serviceId:uint32, bindingKey:uint64 |
 | 13 | NodeDetach | nodeEpoch:uint64 |
-| 14 | RoutedData | 下述数据 envelope |
-| 15 | RoutedError | routerEpoch:uint64, targetNodeId:uint32, targetNodeEpoch:uint64, requestId:uint32, errorCode:uint32 |
-| 16 | Verify | expectedRouterEpoch:uint64, senderEpoch:uint64, senderRevision:uint64 |
+| 14 | RoutedData | 见下方数据 envelope |
+| 15 | RoutedError | targetNodeId:uint32, targetNodeEpoch:uint64, requestId:uint32, errorCode:uint32 |
+| 16 | Verify | expectedRouterEpoch:uint64, nodeEpoch:uint64, revision:uint64=0 |
 
-Router 身份取直连 RPC Peer ID，握手 epoch 与当前连接关系限定其桶。Op 2..9/15 要求对应身份/epoch。Op 10..13 为直连服务 Node 控制，NodeRegister.nodeId 须等于直连 Peer。快照 Node 先于绑定，绑定须引用已注册且服务/epoch 匹配的 Node。结束时条数须精确等于暂存的不同条目数。分块条数为 1..256，Java 数量/容量上限见 Java 规范。
+增量操作为 `kind:uint8` 加：1 NodeAdd → Node 条目；2 NodeRemove → nodeId:uint32 + nodeEpoch:uint64；3 Bind → 绑定条目；4 Unbind → 绑定条目。分块和 Delta 的 count 为 1..1024。Java 容量限制见 Java 规范。
 
-HELLO 允许在同一 RPC 连接上重启路由同步：丢弃未完成的入站暂存，要求新的 BEGIN/分块/END；在 END 前保留最后提交的桶。已完成双向同步的接收方也启动自身快照；交换仍在进行的接收方不重复回送 HELLO。它只重置路由协议状态，不重置 RPC 握手、Peer 或无关调用，该交换使用现有 HELLO/快照操作，不引入 RPC 消息 type。
+### Router 同步流（op 1–7）
 
-状态控制（op 1–13 和 16）使用非零 ID 的普通 RPC Call。成功 NodeRegister 与 Verify 的原生 RPC Response body 恰好包含 routerEpoch:uint64（八字节，无 Router header）；其他成功控制 body 为空，正 errorCode 表示拒绝。NodeRegister 对发现已移除的代际返回 NOT_REGISTERED。Verify 校验接收方 epoch 与发送方状态：Router 发送方需要同 senderEpoch、senderRevision 的已提交双向关系；服务发送方使用 nodeEpoch、senderRevision=0，并要求匹配注册。状态不匹配/缺失返回 NOT_REGISTERED；Verify 不注册、不改变权威，也不证明服务存在性。每个 Router Peer 只有一个在途状态控制，下一个状态控制在前者响应后发送；两端交换各自快照，不通过控制关联广播或业务请求。NodeBind 只确认本地 Router，不等待其他 Router 确认。
+op 1–7 只在相互声明的 Router 之间、经单个 Router Slot 以 RPC Notify（外层 requestId=0）发送。接收方忽略来自未声明 Peer 的这些帧；以 Call 形式发送或来自其他 Slot 数 Peer 的帧被拒绝。Router 身份为直连 RPC Peer ID，routerEpoch 标识其代际。同步流没有任何确认：单个 Slot 按序投递，丢失只会表现为序号缺口。
 
-RoutedError（op 15）使用外层 requestId=0 的普通 RPC Notify，独立于状态控制 FIFO 及其 ACK 发送。payload 的 requestId 是原业务调用的非零 ID。不创建中间 PendingCall，不需要 ACK，也不重试；准入失败时仍由原调用的既有超时结束。不改变 payload 字段或 Profile v2 版本。接收方也接受旧的非零外层 ID Call 形式，并对该形式返回通常的空控制 ACK；现有 Profile v2 接收方已经支持 Notify 形式。这只说明错误返回表示的兼容性，不新增跨语言验证结论。
+权威方（拥有该桶的 Router）向每个 Peer 发送一个会话：Begin、Nodes 分块、Bindings 分块、End，之后是 Delta，空闲时发送 State。会话号非零，在同一 routerEpoch 内递增。Begin 不带序号；会话后续每帧携带从 1 开始的下一个序号，State 重复最后使用的序号。快照相对本地变更原子捕获，之后的每个变更以 Delta 跟随。Nodes 先于 Bindings；每个绑定必须引用已暂存且 epoch、服务一致的 Node。End 时暂存条数必须与 Begin 计数完全相等，随后暂存桶才替换已提交桶。
 
-SnapshotBegin 捕获来源 revision。操作 6..9 对每次已接受本地修改（含幂等控制）将其加一，按 2^64 取模；增量 revision 必须为已提交来源 revision 加一。End 将捕获版本与暂存桶一起提交。版本缺口拒绝同步流，要求新快照，不定义重放日志。Verify 比较版本，即使未观察到短暂重连也能发现遗漏增量。
+接收方记录当前（epoch, session, 期望 seq）。同一 epoch 下旧会话的帧被忽略。Begin 开始暂存，除非它就是接收方已放弃的会话（epoch 相同且会话号不比已损坏会话新）。其他不匹配、序号缺口、seq 不等于最后应用序号的 State、非法帧、连接丢失、暂存快照停止到达或同步流静默，都会使副本损坏：已提交桶仍可见，接收方发送 Sync，其中 requesterEpoch 为自身 Router epoch，knownEpoch/brokenSession 为已放弃的会话（从未有过时为零）。权威方收到 Sync 后开启新会话；若 Sync 指明的是旧会话且当前会话刚刚开始，MAY 忽略。只要 Slot 可用且没有会话，权威方也会主动开启会话；未就绪的接收方会周期性重发 Sync，因此恢复不依赖任一消息先到达。待发送变更超出上限时同样重启会话。没有重放日志。
 
-Profile v2 与早期 v1 草案不兼容：快照/增量字段及 NodeRegister ACK 已变化。拒绝 v1，路由参与方一起升级；RPC Wire framing 及普通 RPC 消息不变（握手已为 v2）。旧 Router-profile 锚点仅用于兼容链接。
+### 服务控制（op 10–13、16）
+
+服务控制是直连服务发往所属 Router 的普通非零 ID RPC Call，字段与 Profile v2 相同。NodeRegister.nodeId 必须等于直连 Peer。NodeRegister 和 Verify 成功时原生 RPC Response body 恰为 routerEpoch:uint64（八字节，无 Router 头）；其他成功控制 body 为空。正 errorCode 表示拒绝；被发现移除的代际 NodeRegister 返回 NOT_REGISTERED。Verify 仅在 expectedRouterEpoch 等于接收方 epoch 且发送方以该 nodeEpoch 注册时成功，revision 必须为零。Verify 不注册、不改变权威，也不证明服务在线。NodeBind 响应只确认本地 Router。Router 之间不发送 Verify。
+
+### RoutedError（op 15）
+
+RoutedError 是发现失败的 Router 向请求的 origin Router 发送的 RPC Notify（外层 requestId=0），独立于同步流。requestId 为原非零业务调用 ID，errorCode 为正数。接收方只接受来自已声明 Router 的 RoutedError，且仅当 targetNodeId/targetNodeEpoch 仍在本地注册时，向该 Node 返回原生正错误码 Response。它不创建中间 PendingCall，不需要确认，也不重试；准入失败时由原调用的既有超时结束。
 
 ### RoutedData envelope
 
 | 字段 | 宽度/含义 |
 | --- | --- |
 | mode | uint8：1 精确 Node 请求，2 动态请求，3 服务广播，4 响应 |
+| originRouterId | uint32，调用方服务所附着的 Router；服务初始请求中为零 |
 | sourceNodeId | uint32，原发送服务 Node |
 | sourceNodeEpoch | uint64，原来源附着关系 |
-| targetNodeId | uint32，精确目标；动态解析前及广播为零 |
-| targetNodeEpoch | uint64，精确解析/返回附着代际；解析前为零 |
-| serviceId | uint32，mode 2/3 必须提供，响应中未使用时为零 |
+| targetNodeId | uint32，精确目标；动态解析前或广播为零 |
+| targetNodeEpoch | uint64，精确解析/返回附着关系；解析前为零 |
+| serviceId | uint32，mode 2/3 必填；响应中为未使用的零 |
 | bindingKey | uint64，mode 2 使用 |
-| hops | uint8：0 服务到 Router 的初始消息，1 已解析/转发消息 |
-| innerFrame | 完整 RPC Request/Response 帧，**包含其自己的 uint32 length 和 type** |
+| hops | uint8：0 为服务到 Router 的初始 envelope，1 为已解析/已转发 |
+| innerFrame | 完整 RPC Request 或 Response 帧，**包含自身 uint32 长度与 type** |
 
-含公共两字节头，内层帧之前的 Router 数据开销为 40 字节。内层声明长度须精确覆盖剩余字节。mode 4 要求内层 Response，mode 1..3 要求 Request。内层 Metadata、command、身份、body、routeKey 使用普通 RPC 格式，不增加业务 codec。广播内层 requestId 须为零。动态 mode 只在来源 Router 接受，解析一次后转为精确 mode 1。远端 Router 不向另一个远端 Router 中继。
+含公共两字节在内，内层帧之前的 Router 数据开销为 44 字节。内层声明长度必须恰好覆盖剩余字节。mode 4 要求内层为 Response，mode 1..3 要求内层为 Request。内层 Metadata、command、身份、body 与 routeKey 按普通 RPC 格式，不增加业务 codec。广播内层 requestId 必须为零。动态 mode 只在来源 Router 接受，解析一次后变为精确 mode 1。远端 Router 不向另一远端 Router 转发。
 
-初始服务请求内层 requestId=0；外层为 Call 时，来源 Router 把外层分配的 ID 复制到内层请求。转发/投递消息外层均为 Notify（ID=0），内层业务 ID 保持不变。初始来源身份须匹配直连服务附着关系；已同步、受信任的 Router 为转发来源负责；目标服务检查精确的目标 ID/epoch。hops=1 表示已转发/投递状态，不是物理连接数。
+服务初始请求内层 requestId=0；若外层为 Call，来源 Router 将外层分配的 ID 复制到内层，并把 originRouterId 设为自身。转发/投递 envelope 为外层 Notify（ID=0），内层业务 ID 不变，originRouterId 非零。初始来源身份必须匹配直连服务附着关系；已声明的 Router 为转发来源担保；目标服务检查自身精确目标 ID/epoch。
 
-服务回复使用 mode 4，目标为原来源 ID/epoch，source 字段标识响应服务。中间仍通过 Notify 传输。来源 Router 最终发送的原生 RPC Response 使用原 requestId，**外层 errorCode=0、Metadata 空**，body 为完整 Router version/op=14/mode=4 envelope。原 RPC 取得 pending 完成权后，来源解包内层真正的业务/框架错误及 Metadata。Router 产生的错误则使用原生正外层 errorCode 和空 body；必要时 op 15 在 Router 间传递此类错误。错误 requestId 须非零，errorCode 须为正。这两种形式均不改变基础 RPC 错误编码。
+服务回复使用 mode 4，以原来源 ID/epoch 为目标，并带上所回复请求的 originRouterId；source 字段标识响应服务。响应方所在 Router 直接把回复转发到该 origin Router（或本地投递）；originRouterId 为零时由它在自身视图中定位目标 Router。在 origin Router，最终原生 RPC Response 使用原 requestId、**外层 errorCode=0、空 Metadata**，body 中为完整的 Router version/op=14/mode=4 envelope。调用方在 RPC 认领 pending 完成后解包内层响应的实际业务/框架错误与 Metadata。Router 生成的失败改用原生正外层 errorCode 和空 body；Router 之间用 op 15 传递此类错误。两种形式都不改变基础 RPC 错误编码。
 
-握手 payload 黄金向量（epoch=0x0102030405060708）：`02 01 0102030405060708`。[RouterWireTest](../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java) 验证向量、envelope 长度、字段保留及借用所有权。旧/未启用 Router 的端点不实现这一显式 command；普通 RPC v1 支持不意味着支持 Router 互通。Router 跨语言互通未验证。
+黄金向量（见 [RouterWireTest](../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java)）：
+
+| 帧 | 字节 |
+| --- | --- |
+| Sync(requester 1, known 2, broken 3) | `03 01 0000000000000001 0000000000000002 0000000000000003` |
+| Begin(epoch 1, session 2, nodes 3, bindings 4) | `03 02 0000000000000001 0000000000000002 00000003 00000004` |
+| Delta(epoch 1, session 2, seq 3, Bind (5,6)→(7,8)) | `03 06 0000000000000001 0000000000000002 0000000000000003 0001 03 00000005 0000000000000006 00000007 0000000000000008` |
+| State(epoch 1, session 2, seq 9) | `03 07 0000000000000001 0000000000000002 0000000000000009` |
+
+该测试还检查 envelope 的 origin、偏移 44 处的内层长度前缀、字段保留及借用所有权。Profile v3 与 v1、v2 不兼容：同步流操作、RoutedError 与数据 envelope 均已改变。拒绝其他版本，路由参与方需一起升级。RPC Wire framing 与普通 RPC 消息不变；旧锚点仅为保持链接而保留。旧版本或非 Router 端点不实现此显式启用的 command，跨语言 Router 互通仍未验证。

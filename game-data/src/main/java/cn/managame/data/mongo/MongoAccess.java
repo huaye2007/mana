@@ -13,6 +13,7 @@ public interface MongoAccess {
     BsonDocument findOne(String collection, BsonDocument filter);
     List<BsonDocument> find(String collection, BsonDocument filter);
     void insertMany(String collection, List<BsonDocument> documents);
-    void replaceMany(String collection, List<BsonDocument> documents, boolean upsert);
+    /** Replaces by _id in order and returns how many documents already existed (matched). */
+    long replaceMany(String collection, List<BsonDocument> documents, boolean upsert);
     void deleteMany(String collection, BsonDocument filter);
 }

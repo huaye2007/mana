@@ -56,8 +56,8 @@ public final class RpcNodeBuilder {
     }
     /**
      * Byte-level handlers installed before RPC framing on every connection, in call order: TLS
-     * (SslHandler via addFirst), FlushConsolidationHandler, traffic shaping, logging. RPC adds its
-     * frame decoder and heartbeat handler after them; do not decode or consume RPC frames here.
+     * (SslHandler via addFirst), traffic shaping, logging. RPC adds its flush consolidation, frame decoder
+     * and heartbeat handler after them; do not decode or consume RPC frames here.
      */
     public RpcNodeBuilder transport(Consumer<ChannelPipeline> configurer) { transports.add(Objects.requireNonNull(configurer)); return this; }
     /**

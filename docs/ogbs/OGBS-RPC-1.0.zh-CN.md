@@ -38,7 +38,7 @@ RPC 用于内部服务器节点的直接通信，提供 call、notify、reply、
 
 **R-PEER-04** 主动 Peer 不自动删除。被动 Peer 在无连接且无 PendingCall 时自动删除；清理与同 ID 新握手绑定必须串行仲裁，不能删除刚建立的会话。remove 不是禁止接入，后续合法入站可以创建新 Peer。旧 Peer 的异步结果不得复活或影响新 Peer。
 
-例：被动 Peer 全断但仍有 PendingCall，保留到响应、超时或移除完成；因此重连后可以经另一个 Slot 返回响应。若已完全空闲，则可清理。
+例：某服务崩溃时有十个发往它的调用未完成。其最后一条连接断开时，这十个调用立即以 UNAVAILABLE 失败（R-TIME-02）；被动 Peer 既无连接也无 PendingCall，随即被回收；服务重启后在下一次入站握手时创建新的 Peer。
 
 ## 3. 消息
 
@@ -74,7 +74,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 ## 6. 发送选择
 
-**R-EXT-01** 上层组合 MUST 复用现有 Node 与传输，分派拥有的消息并委托普通 RPC。RPC MUST NOT 依赖路由语义或拥有上层协议状态。可用性查询仅描述传输，不能表示进程代际或服务存在性；实例存在性归外部发现。单纯传输丢失不取消 pending。应用拥有装配及上层关闭；RPC 拥有自身准入、pending 完成和资源屏障。不要求上层就绪/清理通知；语言相关装配 API 归 Java 规范。
+**R-EXT-01** 上层组合 MUST 复用现有 Node 与传输，分派拥有的消息并委托普通 RPC。RPC MUST NOT 依赖路由语义或拥有上层协议状态。可用性查询仅描述传输，不能表示进程代际或服务存在性；实例存在性归外部发现。部分连接丢失不取消 pending；Peer 失去最后一条连接时 pending 失败（R-TIME-02）。应用拥有装配及上层关闭；RPC 拥有自身准入、pending 完成和资源屏障。不要求上层就绪/清理通知；语言相关装配 API 归 Java 规范。
 
 例如，上层可在重连时重新校验自身协议，不必重建 RPC Peer，也不能因此失败同一 Peer 上等待的普通调用。消息 Handler 没有断线生命周期回调；调用仍遵循既有响应/超时/移除/关闭契约。路由 envelope 使用普通 notify、reply，不新增另一种发送原语。
 
@@ -112,7 +112,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-TIME-01** call timeout 从网络 ACCEPTED 后开始，以单调时间机制计时。快速响应可以早于超时注册；注册者必须检测调用已结束并取消新建超时。调度/线程负载可延迟交付，不提供硬实时保证。
 
-**R-TIME-02** 单连接断开不立即失败已 ACCEPTED 的 PendingCall；等待其他 Slot 的响应或 timeout。
+**R-TIME-02** Peer 仍有其他连接时，断开其中一条不让已 ACCEPTED 的 PendingCall 失败：响应可能经其他 Slot 返回。Peer 失去最后一条连接时，其 PendingCall MUST 立即以 UNAVAILABLE 失败，不再等待超时：已没有连接可以送回响应，且远端可能执行过也可能没有执行。此后到达的该调用响应按未匹配响应丢弃。
 
 **R-TIME-03** removePeer 先从当前拓扑移除，再终止会话、重连和未完成调用；未命中幂等。remove 后重新创建是独立生命周期，旧调用不迁移。
 

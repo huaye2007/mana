@@ -1,5 +1,6 @@
 package cn.managame.data.mongo;
 
+import cn.managame.data.error.DataOperationException;
 import cn.managame.data.key.GroupKey;
 import cn.managame.data.mapper.EntityMapper;
 import cn.managame.data.meta.EntityMeta;
@@ -38,8 +39,13 @@ public final class MongoEntityMapper implements EntityMapper {
     @Override public void insertBatch(EntityMeta key, List<?> entities) { replace(key, entities, true); }
     @Override public void updateBatch(EntityMeta key, List<?> entities) { replace(key, entities, false); }
     @Override public void deleteInsertBatch(EntityMeta key, List<?> entities) { replace(key, entities, true); }
+    /** An update whose document is missing fails, like MySQL: silently succeeding would lose the change. */
     private void replace(EntityMeta key, List<?> entities, boolean upsert) {
-        var m = meta(key); access.replaceMany(m.collection, entities.stream().map(m::encode).toList(), upsert);
+        var m = meta(key);
+        long matched = access.replaceMany(m.collection, entities.stream().map(m::encode).toList(), upsert);
+        if (!upsert && matched != entities.size())
+            throw new DataOperationException("UPDATE matched " + matched + " of " + entities.size()
+                    + " documents in " + m.collection);
     }
     @Override public void deleteBatch(EntityMeta key, List<Object> ids) {
         var m = meta(key);

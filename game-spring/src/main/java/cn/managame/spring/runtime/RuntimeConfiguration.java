@@ -1,10 +1,11 @@
 package cn.managame.spring.runtime;
 
+import java.time.Duration;
 import cn.managame.runtime.*;
 import cn.managame.runtime.event.*;
 import cn.managame.runtime.handler.Handler;
 import cn.managame.runtime.http.HttpHandler;
-import cn.managame.runtime.protocol.ProtocolProvider;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
@@ -19,9 +20,9 @@ class RuntimeConfiguration {
     @Bean(destroyMethod = "close")
     GameRuntime gameRuntime(ApplicationContext context, ConfigurableListableBeanFactory beans,
                             ObjectProvider<GameRuntimeConfigurer> configurers,
-                            ObjectProvider<ProtocolProvider> protocols) {
+                            ObjectProvider<ProtocolRegistry> protocols) {
         var builder = GameRuntimeBuilder.builder()
-                .protocols(protocols.orderedStream().toList())
+                .protocols(ProtocolRegistry.of(protocols.orderedStream().flatMap(r -> r.descriptors().stream()).toList()))
                 .handlers(handlers(context, beans, Handler.class))
                 .eventHandlers(handlers(context, beans, EventHandler.class))
                 .httpHandlers(handlers(context, beans, HttpHandler.class))
@@ -33,7 +34,9 @@ class RuntimeConfiguration {
     }
 
     @Bean RuntimeDrainListener runtimeDrainListener(GameRuntime runtime, ApplicationContext context) {
-        return new RuntimeDrainListener(runtime, context);
+        long millis = context.getEnvironment().getProperty("game.runtime.drain-timeout-millis", Long.class, 60_000L);
+        if (millis <= 0) throw new IllegalArgumentException("game.runtime.drain-timeout-millis must be positive");
+        return new RuntimeDrainListener(runtime, context, Duration.ofMillis(millis));
     }
 
     private static List<Object> handlers(ApplicationContext context, ConfigurableListableBeanFactory beans,

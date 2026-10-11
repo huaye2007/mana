@@ -113,7 +113,7 @@ runtime.cron().reschedule(DemoTasks.class, "onCron");
 
 ## Fory 业务 body
 
-[GameProtocols](src/main/java/cn/managame/demo/common/protocol/GameProtocols.java) 是应用中协议号、消息类型及稳定 Fory 类型 ID 的唯一配置入口。GameRuntimeConfig 通过 `builder.protocols(...)` 注册它；[ForyConfig](src/main/java/cn/managame/demo/common/serialization/ForyConfig.java) 在暴露由 Spring 管理的共享 ThreadSafeFory 之前，注册相同的消息类型与类型 ID。当前注册为：
+[GameProtocols](src/main/java/cn/managame/demo/common/protocol/GameProtocols.java) 是应用中协议号、消息类型及稳定 Fory 类型 ID 的唯一配置入口。它把生成的 ProtocolRegistry 作为 Spring Bean 暴露，由 game-spring 传给 `builder.protocols(...)`；[ForyConfig](src/main/java/cn/managame/demo/common/serialization/ForyConfig.java) 在暴露由 Spring 管理的共享 ThreadSafeFory 之前，注册相同的消息类型与类型 ID。当前注册为：
 
 | 请求协议号 | 消息类型 | Fory 类型 ID |
 | --- | --- | --- |
@@ -128,7 +128,7 @@ LoginRes 单独注册为 RESPONSE 协议号 1003、Fory 类型 ID 4；服务端�
 [GamePacketHandler](src/main/java/cn/managame/demo/network/GamePacketHandler.java) 是注入共享序列化器和 Runtime 的 Spring Bean。服务端将入站 packet 视为 REQUEST，在反序列化前从 Runtime 既有 ProtocolRegistry 按协议号查询预期类型：
 
 ```java
-var protocol = protocols.get(ProtocolType.REQUEST, packet.getCommand());
+var protocol = protocols.get(ProtocolDescriptor.Type.REQUEST, packet.getCommand());
 if (protocol == null) {
     throw new IllegalArgumentException("Unknown request command: " + packet.getCommand());
 }

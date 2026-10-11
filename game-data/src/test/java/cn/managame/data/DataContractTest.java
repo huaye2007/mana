@@ -231,16 +231,33 @@ class DataContractTest {
             assertEquals(2, errors.getFirst().attempt()); assertEquals(0, data.stats().pendingChanges());
         } catch (DataSaveException expectedOnClose) { /* historical failure is reported again by close */ }
     }
-    @Test void evictedEntityWithUnsavedChangeReloadsFromMemoryNotStorage() throws Exception {
+    @Test void entitiesWithUnsavedChangesAreNeverEvicted() throws Exception {
         var mapper = new RecordingMapper(); mapper.saveFailure = true;
         var data = builder(mapper).retryPolicy(f -> true).flushInterval(Duration.ofMillis(10))
                 .cacheExpire(Duration.ofMillis(40)).shutdownTimeout(Duration.ZERO).errorHandler(f -> {}).build();
         try {
             var players = data.repository(Players.class); var p = new Player(1);
+            var tasks = data.repository(Tasks.class); tasks.getGroup(GroupKey.of(7L));
+            var task = new Task(5, 7, 1); tasks.insert(task);
             players.insert(p);
-            Thread.sleep(200);                             // expired while saves keep failing
+            Thread.sleep(200);                             // idle far beyond cacheExpire while saves keep failing
             assertSame(p, players.get(1L)); assertEquals(0, mapper.loads.get());
+            assertSame(task, tasks.get(GroupKey.of(7L), 1L)); assertEquals(1, mapper.groupLoads.get());
         } finally { assertThrows(DataSaveException.class, data::close); }
+    }
+    @Test void cleanIdleEntriesAreEvictedAndReloaded() throws Exception {
+        var mapper = new RecordingMapper();
+        try (var data = builder(mapper).flushInterval(Duration.ofMillis(10)).cacheExpire(Duration.ofMillis(40)).build()) {
+            var players = data.repository(Players.class);
+            players.insert(new Player(1));
+            assertNull(data.repository(Tasks.class).getGroup(GroupKey.of(7L)).get(1L));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while ((data.stats().singleCacheEntries() != 0 || data.stats().groupCacheEntries() != 0) && System.nanoTime() < deadline)
+                Thread.sleep(10);
+            assertEquals(0, data.stats().singleCacheEntries()); assertEquals(0, data.stats().groupCacheEntries());
+            assertEquals(List.of("INSERT"), mapper.events);  // saved before it became evictable
+            assertNull(players.get(1L)); assertEquals(1, mapper.loads.get()); // reloaded from storage
+        }
     }
     @Test void closeRetriesThenDropsAndReportsLeftovers() {
         var mapper = new RecordingMapper(); mapper.saveFailure = true;

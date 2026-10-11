@@ -67,8 +67,9 @@ class HttpServerTest {
             }
             assertEquals(2, borrowed.size());
             assertEquals("yes", borrowed.getFirst().trailingHeaders().get("X-Trailer"));
-            for (var response : transferred) assertEquals(0, response.refCnt());
-            for (var request : borrowed) assertEquals(0, request.refCnt());
+            // Release follows the handler's return on the EventLoop, which may run after the client sees the close.
+            for (var response : transferred) awaitReleased(response);
+            for (var request : borrowed) awaitReleased(request);
         }
     }
 
@@ -101,7 +102,7 @@ class HttpServerTest {
                 assertEquals(-1, wire.input.read());
             }
             assertEquals(3, calls.get(), "The request after closure must not reach native business handlers");
-            for (var request : consumed) assertEquals(0, request.refCnt());
+            for (var request : consumed) awaitReleased(request);
         }
     }
 
@@ -189,7 +190,6 @@ class HttpServerTest {
             server.start();
             assertRejected(server, "GET / HTTP/1.1\r\n\r\n", 400);
             assertRejected(server, "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", 400);
-            assertRejected(server, "GET / HTTP/1.0\r\n\r\n", 505);
             assertRejected(server, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 505);
             assertRejected(server, request("CONNECT", "example:80"), 405);
             assertRejected(server, "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\n\r\n", 400);
@@ -201,6 +201,21 @@ class HttpServerTest {
             assertRejected(server, "POST / HTTP/1.1\r\nHost: a\r\nExpect: strange\r\nContent-Length: 0\r\n\r\n", 417);
             assertRejected(server, "POST / HTTP/1.1\r\nHost: a\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n", 413);
             assertEquals(0, calls.get());
+        }
+    }
+
+    @Test void http10IsServedOnceThenClosedEvenWithKeepAlive() throws Exception {
+        try (var server = HttpServer.builder().bindAddress(LOCAL).handler(request -> response(HttpResponseStatus.OK, "ok")).build()) {
+            server.start();
+            for (String request : List.of("GET / HTTP/1.0\r\n\r\n", "GET / HTTP/1.0\r\nHost: a\r\nConnection: keep-alive\r\n\r\n")) {
+                try (var wire = new Wire(server)) {
+                    wire.send(request);
+                    Reply reply = wire.reply(false);
+                    assertEquals(200, reply.status()); assertEquals("ok", reply.body());
+                    assertEquals("close", reply.headers().get("connection"));
+                    assertEquals(-1, wire.input.read());
+                }
+            }
         }
     }
 
@@ -633,6 +648,11 @@ class HttpServerTest {
     private static String request(String method, String path) { return method + " " + path + " HTTP/1.1\r\nHost: local\r\n\r\n"; }
     private static FullHttpResponse response(HttpResponseStatus status, String body) {
         return new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status, Unpooled.copiedBuffer(body, StandardCharsets.UTF_8));
+    }
+    private static void awaitReleased(io.netty.util.ReferenceCounted value) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (value.refCnt() != 0 && System.nanoTime() < deadline) Thread.sleep(1);
+        assertEquals(0, value.refCnt());
     }
     private static void assertRejected(HttpServer server, String request, int status) throws Exception {
         try (var wire = new Wire(server)) {

@@ -134,6 +134,6 @@ Router uses RPC's existing physical Peer/unavailable/timeout errors for transpor
 
 ## 5. Implementation and validation
 
-Sources: [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java), [Metadatas](../../game-core/src/main/java/cn/managame/core/Metadatas.java), [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java).
+Sources: [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java), [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java), [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java).
 
 [MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java) covers shared arrays, lazy codecs, malformed structure, duplicate Keys, boundaries, endian vectors, Builder snapshots, boolean golden bytes/invalid values/missing defaults, and signed int32 boundaries.

@@ -5,6 +5,8 @@
 > 非规范性记录。现行契约以 OGBS 规范为准；本文保留审查过程、证据、探针结果和后续方案，便于追溯，不新增 MUST 要求。
 >
 > 后续变化（2026-10-11）：已补充 demo 缺失的 GameRpcConfig，DemoRpcBootstrapTest 可以编译并通过；Spring 托管 RPC 已可通过 `GameRpcConfigurer.decorate/attach/detach` 组合 GameRouter/ServiceRouting。路由请求进入 Runtime 及精确路由回复身份仍由应用实现。
+>
+> Router Profile v3（2026-10-11）取代下文关于同步的结论：每 Peer 带确认的控制 FIFO、Router 间 VERIFY、单一转发 monitor 及按就绪状态限制转发，已替换为无确认的有序会话流、无锁路由索引和经 origin Router 的返回路径。本地测量（单向延迟 1 ms/5 ms）：50,000 个绑定的快照耗时 193/259 ms（之前 763/2,430 ms）；约 0.9 s 内发出的 5,000 次 bind，在最后一次之后 10 ms 内即在另一 Router 可见（之前从开始起需 13.3 s/55 s）。详见 [Router 同步](../ogbs/OGBS-Router-1.0.zh-CN.md#3-权威状态与同步) 和 [Java 已知限制](../ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits)。
 
 <a id="router-java-review"></a>
 
@@ -62,9 +64,9 @@ RPC 暂缓的有限 pending 准入仍未实现。转发 monitor 仍覆盖编码/
 
 后续本地评估包含以下已解决偏差与剩余容量风险。忽略目录 `game-router/target/router-followup-review` 下的临时 TCP 探针提供初始本地证据，不是生产容量测试。错误返回阻塞与 Slot 重配偏差已由代码修复及永久回归替代，其余事项未实施。
 
-- **Router Peer 重配后可能保留非法 READY 状态（已解决）。** 原实现在重配成双 Slot 后仍报告 READY；现在按当前 Slot 数限制就绪、单播和广播，维护作废非法同步并保留查询，恢复单 Slot 后重新交换快照。第 2 节及永久回归 `routerSlotReconfigurationInvalidatesReadinessAndRequiresNewSnapshot` 定义、验证该边界。
+- **Router Peer 重配后可能保留非法 READY 状态（已解决）。** 原实现在重配成双 Slot 后仍报告 READY；现在按当前 Slot 数限制就绪、单播和广播，维护作废非法同步并保留查询，恢复单 Slot 后重新交换快照。第 2 节及永久回归 `routerSlotReconfigurationInvalidatesReadinessAndRequiresNewSnapshot` 定义、验证该边界。（Profile v3：`routerSlotReconfigurationStopsSynchronizationButKeepsReplicas`。）
 - **业务 Call pending 没有有限准入（已确认的现有 RPC 能力缺口）。** 真实本地 Router 将 10,000 个 Call 投递到只消费请求、不回复的服务。来源使用 60 秒调用超时；10,000 个调用全部留在其 RPC Peer pending Map，未发生准入失败。有界服务控制 FIFO 不限制这些业务调用，可写 TCP 也不表示响应能力。这确认的是准入机制缺失，不是内存溢出阈值或受支持吞吐。Node 级 Call 准入归 RPC 暂缓的 R-SEND-04；Router 应复用其完成语义，不另设业务 pending Map。参见 [RPC Java 规范](../ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)。 超时会移除 pending 并报告 TIMEOUT，晚到响应不会再次完成；这不表示永久泄漏。风险是超时前的并发积压，约为到达速率乘平均等待时间。
-- **路由错误等待同步 ACK（已解决）。** 初始探针暂扣 VERIFY ACK，在目标服务断开后观察到 DATA_ERROR 的 PEER_NOT_FOUND 排在同步队列中，200 ms Call 超时。错误返回现经 Notify 独立发送；Wire Profile 已记录其表示与旧 Call 的接收兼容性。永久回归 `routedErrorDoesNotWaitForSynchronizationAcknowledgement` 覆盖修复，不保证不可用返回链路的交付。
+- **路由错误等待同步 ACK（已解决）。** 初始探针暂扣 VERIFY ACK，在目标服务断开后观察到 DATA_ERROR 的 PEER_NOT_FOUND 排在同步队列中，200 ms Call 超时。错误返回现经 Notify 独立发送；Wire Profile 已记录其表示与旧 Call 的接收兼容性。永久回归 `routedErrorDoesNotWaitForSynchronizationAcknowledgement` 覆盖修复，不保证不可用返回链路的交付。（Profile v3 已没有同步 ACK，由 `responsesAndRoutedErrorsReturnToTheOriginRouterWithoutItsReplica` 取代该回归。）
 - **持续变更可能超过串行同步能力（协议推导的容量风险）。** 只有一个确认控制在途时，理想排出速率最多约为每秒 `1 / RTT` 个控制。多个服务可以持续产生注册、bind 和 unbind；它们本地成功不等待远端排出。总到达速率超过排出速率时，8,192 个控制的队列最终溢出，作废流并重新启动完整快照。在最大快照规模下，如果捕获期间没有 ACK 排出，留给后续变更的排队空间约为 3,892 个。持续过载可能反复破坏快照进度。现有收敛以来源状态停止变化为条件，持续负载恢复预算未验证。服务恢复逐键确认 bind，也会在期望集合恢复完成前保持出站业务路由不可用。
 - **每桶限制不构成进程资源预算（结构性、未实测的生产风险）。** Router 成员配置没有总量上限；每个 Peer 可以保留已提交桶、暂存另一桶并拥有编码控制队列。表还维护 owner 到 key 的索引。内存随来源桶数、并发恢复和 fan-out 增长，而不只受本地百万绑定限制。快照编码、冲突扫描和业务编码/fan-out 共用一个 monitor；这里阻塞会延迟共享 EventLoop 上的其他 RPC 连接。多个桶声称同一 key 时，`resolveKey` 可能产生 Router 桶数的平方级工作；服务整体查询扫描全部注册并重复定位 owner。选择索引或预算前，应测量字节数、monitor 持有时间和尾延迟。独立的十万对移除依据还是生命周期限制，因此发现事件变化也需要运维预算；用满后，新增移除会在清理其存活路由前被拒绝，这是第 2 节明确的设计边界。
 

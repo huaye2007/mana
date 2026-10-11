@@ -13,11 +13,7 @@ import cn.managame.runtime.handler.HandlerMethod;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.protocol.ProtocolDescriptor;
-import cn.managame.runtime.protocol.ProtocolProvider;
-import cn.managame.runtime.protocol.ProtocolRegistrar;
 import cn.managame.runtime.protocol.ProtocolRegistry;
-import cn.managame.runtime.protocol.ProtocolType;
-import cn.managame.runtime.protocol.Protocols;
 import cn.managame.runtime.route.RouteDomain;
 import cn.managame.runtime.route.RouteKeyBinding;
 import cn.managame.runtime.time.GameTime;
@@ -41,7 +37,7 @@ import java.util.*;
 public final class RuntimeCompiler {
     private RuntimeCompiler() {}
     public static GameRuntime build(List<RouteDomain> domains, List<RouteExecutorBinding> executors,
-            List<ProtocolProvider> providers, List<RouteKeyBinding<?>> keys,
+            ProtocolRegistry registry, List<RouteKeyBinding<?>> keys,
             List<Object> handlers, List<HandlerArgumentBinding<?>> arguments, HandlerContextFactory handlerContexts,
             List<Object> events, List<Object> crons,
             List<Object> httpHandlers, HttpContextFactory httpContexts, HttpResultCodec httpResults, HttpRequestCodec httpRequests,
@@ -54,7 +50,6 @@ public final class RuntimeCompiler {
             if (routes.putIfAbsent(domain, b.executor()) != null) throw invalid("Duplicate executor binding " + domain);
         }
         if (!routes.keySet().equals(ids)) throw invalid("Every domain needs exactly one executor");
-        Registry registry = new Registry(providers);
         Map<Class<?>, HandlerArgumentBinding<?>> argumentBindings = new HashMap<>();
         for (var argument : arguments) {
             if (registry.get(argument.type()) != null) throw invalid("Handler argument is also a protocol: " + argument.type());
@@ -95,7 +90,7 @@ public final class RuntimeCompiler {
                     }
                 }
                 if (messageType == null || registry.get(messageType) == null) throw invalid("Handler needs one registered message: " + m);
-                if (registry.get(messageType).type() == ProtocolType.RESPONSE) throw invalid("Response cannot be an inbound handler: " + m);
+                if (registry.get(messageType).type() == ProtocolDescriptor.Type.RESPONSE) throw invalid("Response cannot be an inbound handler: " + m);
                 validateMessageKey(entry.routeKey(), entry.routeKeyMethod());
                 boolean overrideKey = !entry.routeKey().isEmpty() || !entry.routeKeyMethod().isEmpty();
                 String keyField = overrideKey ? entry.routeKey() : annotation.routeKey();
@@ -269,41 +264,5 @@ public final class RuntimeCompiler {
     record CronKey(Class<?> type, String methodName) {}
     record CronBinding(CronKey id, int domain, long key, CronSchedule schedule, MethodHandle handle) {
         void invoke() throws Throwable { handle.invokeExact(); }
-    }
-    private static final class Registry implements ProtocolRegistry {
-        private record Key(ProtocolType type, int command) {}
-        private final Map<Key, ProtocolDescriptor<?>> byKey;
-        private final Map<Class<?>, ProtocolDescriptor<?>> byType;
-        private final Map<Class<?>, Class<?>> responses;
-        Registry(List<ProtocolProvider> providers) {
-            Map<Key, ProtocolDescriptor<?>> k = new HashMap<>();
-            Map<Class<?>, ProtocolDescriptor<?>> t = new HashMap<>();
-            Map<Class<?>, Class<?>> r = new HashMap<>();
-            ProtocolRegistrar registrar = new ProtocolRegistrar() {
-                public void register(ProtocolDescriptor<?> d) {
-                    Objects.requireNonNull(d);
-                    // Copy descriptors: a provider cannot mutate the frozen runtime registry.
-                    ProtocolDescriptor<?> frozen = switch (Objects.requireNonNull(d.type())) {
-                        case REQUEST -> Protocols.request(d.command(), d.messageType());
-                        case RESPONSE -> Protocols.response(d.command(), d.messageType());
-                        case NOTIFY -> Protocols.notify(d.command(), d.messageType());
-                    };
-                    if (k.putIfAbsent(new Key(frozen.type(), frozen.command()), frozen) != null || t.putIfAbsent(frozen.messageType(), frozen) != null)
-                        throw invalid("Duplicate protocol identity/class");
-                }
-                public void bindResponse(Class<?> request, Class<?> response) {
-                    if (r.putIfAbsent(Objects.requireNonNull(request), Objects.requireNonNull(response)) != null) throw invalid("Duplicate response binding");
-                }
-            };
-            providers.forEach(p -> p.register(registrar));
-            r.forEach((req, res) -> {
-                if (t.get(req) == null || t.get(req).type() != ProtocolType.REQUEST || t.get(res) == null || t.get(res).type() != ProtocolType.RESPONSE)
-                    throw invalid("Response binding must reference registered REQUEST and RESPONSE");
-            });
-            byKey = Map.copyOf(k); byType = Map.copyOf(t); responses = Map.copyOf(r);
-        }
-        public ProtocolDescriptor<?> get(ProtocolType type, int command) { return byKey.get(new Key(type, command)); }
-        public ProtocolDescriptor<?> get(Class<?> type) { return byType.get(type); }
-        public Class<?> getResponseType(Class<?> type) { return responses.get(type); }
     }
 }

@@ -107,7 +107,7 @@ public final class GameDataBuilder {
         }
         // No background resources exist until all mappings and schemas initialize successfully.
         for (var entry : mappers.entrySet()) entry.getValue().initialize(entry.getKey());
-        WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, shutdownTimeout, errorHandler, retryPolicy);
+        WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, shutdownTimeout, cacheExpire, errorHandler, retryPolicy);
         for (Prepared p : prepared) {
             if (p.repository() instanceof SingleRepository<?,?> repository)
                 repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire);

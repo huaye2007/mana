@@ -5,7 +5,8 @@ import cn.managame.runtime.timer.Cron;
 import java.time.*;
 import java.util.*;
 /** Six fields: second minute hour day-of-month month day-of-week (1=Sunday).
- * Supports *, ?, lists, ranges and steps. Zone is explicit; no catch-up execution. */
+ * Supports *, ?, lists, ranges and steps. At most one of the two day fields may be restricted (as in
+ * Quartz); the other must be * or ?. Zone is explicit; no catch-up execution. */
 final class CronSchedule {
     private final BitSet[] fields = new BitSet[6];
     private static final int[] MIN = {0,0,0,1,1,1}, MAX = {59,59,23,31,12,7};
@@ -14,6 +15,8 @@ final class CronSchedule {
         this.zone = Objects.requireNonNull(zone);
         String[] parts = expression.trim().split("\\s+");
         if (parts.length != 6) throw new IllegalArgumentException("Cron needs six fields");
+        if (!any(parts[3]) && !any(parts[5]))
+            throw new IllegalArgumentException("Cron restricts both day-of-month and day-of-week; use ? for one of them");
         for (int i = 0; i < 6; i++) {
             BitSet values = fields[i] = new BitSet(MAX[i] + 1);
             String part = parts[i];
@@ -37,6 +40,7 @@ final class CronSchedule {
             }
         }
     }
+    private static boolean any(String field) { return field.equals("*") || field.equals("?"); }
     Instant next(Instant after) {
         ZonedDateTime t = after.atZone(zone).plusSeconds(1).withNano(0);
         int endYear = t.getYear() + 8;

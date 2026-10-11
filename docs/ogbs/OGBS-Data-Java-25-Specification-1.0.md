@@ -2,32 +2,28 @@
 
 **[English](OGBS-Data-Java-25-Specification-1.0.md)** | [简体中文](OGBS-Data-Java-25-Specification-1.0.zh-CN.md)
 
-Document type: **Java Development Specification**. Standard: [OGBS Data Specification](OGBS-Data-1.0.md).
+Document type: **Java Development Specification**. Standard: [OGBS Data Specification](OGBS-Data-1.0.md), which defines the behavior; this document defines the Java API, defaults, exceptions, threads and validation.
 
-This document defines public Java APIs, defaults, exceptions, threads/resources, extensions, and validation. Implementations satisfy both documents, including behavior, not signatures alone. Fix implementation deviations; synchronize both layers for design changes. Pending/unverified capabilities are not completed features.
-
-Status: Java 25 reference implementation, Maven `cn.managame:game-data:1.0.0-SNAPSHOT`. Behavior is defined by the [Data Specification](OGBS-Data-1.0.md).
+Status: Java 25 reference implementation, Maven `cn.managame:game-data:1.0.0-SNAPSHOT`.
 
 <a id="1-模块与公共入口"></a>
 
 ## 1. Module and public entry points
 
-One game-data artifact contains Repository, Caffeine caching, write-back, MySQL/JDBC, MongoDB adaptation, and logs. Dependencies: game-core, with shared Caffeine supplied transitively as defined in the [Core Java specification](OGBS-Core-Java-25-Specification-1.0.md#1-模块与职责); MongoDB Sync Driver 5.5.1 is optional and must be explicitly included by Mongo applications. JDBC accepts an application-provided DataSource without selecting a pool; applications supply the MySQL JDBC Driver. Default JSON encoding depends on Jackson Databind 2.21.3, matching Runtime's version.
+One artifact contains repositories, caching, write-back, MySQL/JDBC, MongoDB and logs. Dependencies: game-core and Jackson Databind 2.21.3 (default JSON). The MongoDB Sync Driver 5.5.1 is optional; Mongo applications add it. JDBC uses an application-provided DataSource and MySQL driver; Data selects no pool.
 
 | Package | Responsibility |
 | --- | --- |
-| cn.managame.data | GameData, GameDataBuilder, three repositories; package-private PendingBuffer/WriteBehindManager |
+| cn.managame.data | GameData, GameDataBuilder, the three repository bases; package-private EntityCache, PendingBuffer, WriteBehindManager |
 | annotation / key | Identity annotations, GroupKey, MapKeys |
-| meta / mapper | Storage-SPI identity metadata, VarHandle access, EntityMapper |
-| codec / error | JSON/BINARY interfaces, internal default Jackson codec, exceptions, failure context, retries/error callbacks |
+| meta / mapper | EntityMeta (identity metadata for storage SPIs), EntityMapper |
+| codec / error | JSON/BINARY codecs, exceptions, DataFailure, RetryPolicy, DataErrorHandler |
 | mysql | SQL annotations, MysqlAccess, JdbcMysqlAccess, MysqlEntityMapper, log mapping |
 | mongo | BSON annotations, MongoAccess, DriverMongoAccess, MongoEntityMapper |
 
-MysqlEntityMeta, MysqlFieldMeta, MysqlSchema, MongoEntityMeta, and MongoValueCodec are package-private. MysqlLogWriter is an internal cross-package assembly bridge, not a business extension SPI. No RepositorySupport, CacheGroup, or Map view.
+<a id="2-repository-api"></a>
 
 ## 2. Repository API
-
-Signature summary:
 
 ```java
 public abstract class SingleRepository<K, E> {
@@ -49,53 +45,18 @@ public abstract class LogRepository<E> {
 }
 ```
 
-Business repositories directly extend a concrete parameterized base and have a no-argument constructor. Intermediate generic repositories, raw types, and unresolved variables are unsupported. build creates them; retrieve with `data.repository(Players.class)`. Register only one state Repository per entity type; duplicates reject before database initialization.
-
-Single K equals the boxed Id type. Group K is MapKey: boxed field type for one field, String for multiple fields. GroupKey object and annotation live in key/annotation packages; avoid ambiguous wildcard imports.
-
-expireAfterAccess caches: Single uses LoadingCache<K, CacheEntity<E>>, where entity=null represents absence; Group uses LoadingCache<GroupKey, ConcurrentHashMap<K,E>>. Only get/getGroup loads; mutations use getIfPresent. No capacity-eviction setting, manual eviction API, or wrapper view.
+A business repository directly extends one concrete parameterized base and has a no-argument constructor; intermediate generic repositories are unsupported. `build` creates it; obtain it with `data.repository(Players.class)`. One state repository per entity type. Single K is the boxed Id type; Group K is the boxed MapKey type, or String for a composite MapKey. Repositories are initialized only by the builder; extend EntityMapper for a custom backend.
 
 <a id="21-repository-直接持有依赖"></a>
-
-### 2.1 Repositories hold dependencies directly
-
-Business repositories declare concrete K/E; base classes implement final operations. SingleRepository and GroupRepository directly hold EntityMeta, EntityMapper, WriteBehindManager, and Caffeine cache, without SingleRepositorySupport/GroupRepositorySupport delegation.
-
-Package-private initialization:
-
-```java
-// SingleRepository / GroupRepository: internal assembly, not business API
-final void initialize(EntityMeta meta, EntityMapper mapper,
-                      WriteBehindManager writer, Duration expiry);
-
-// LogRepository: internal assembly
-final void initialize(MysqlLogWriter logWriter, WriteBehindManager writer);
-```
-
-Do not manually construct and inject repositories. Builder completes nonpublic initialization before admission. Extend EntityMapper for custom backends, not final CRUD methods.
-
-Spring integration belongs to applications, without a Spring dependency in game-data. The [game-demo adapter](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java) collects scanned singleton `@Repository` definitions for the three repository bases, registers their concrete types with Builder, and supplies `data.repository(type)` as each Spring Bean instance. It preserves names/qualifiers and Spring field/setter injection while ensuring Data initialization precedes injection callbacks and business access. The existing no-argument construction requirement remains; constructor dependency injection and non-singleton scopes are unsupported by this adapter. Repository Beans depend on GameData, which depends on the borrowed DataSource, so closure follows that dependency order. Validation: [DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) and [DataSpringWiringTest](../../game-demo/src/test/java/cn/managame/demo/DataSpringWiringTest.java). This is an application integration example, not a new framework initialization API.
-
 <a id="22-读写路径"></a>
 
-### 2.2 Read and mutation paths
+### 2.1 Cache and mutation paths
 
-Single.get validates initialization/running state and exact key type, then calls LoadingCache.get. Loader calls Mapper.load; null becomes CacheEntity negative cache, exceptions become DataLoadException. Neither direct null insertion into Caffeine nor exception-to-null conversion is allowed.
+Each repository holds one EntityCache: Single caches entity or confirmed absence (null) by id; Group caches the actual `ConcurrentHashMap<K,E>` by GroupKey. Only get/getGroup load; a missing key loads once while concurrent callers of that key wait. A load failure throws DataLoadException and is not cached as absence.
 
-Group.getGroup validates component count/types and loads the entire group. Loader checks each entity's group and detects duplicate MapKey via putIfAbsent. Group.get reads that cached group without a separate single-row SELECT path.
+A mutation validates state and identity, enters the admission read lock, and then runs inside `EntityCache.update` for its key: Group checks that the group is still cached, `writer.record` coalesces the intent (an illegal sequence throws and leaves the cache unchanged), then the cache entry or group Map changes. Running the record inside the cache's per-key atomic update is what makes eviction safe (section 5.1). Recording is not a field transaction: fields changed directly before the call are not rolled back. deleteGroup records a primary-key DELETE for each current member, then clears the original Map.
 
-Mutation order:
-
-```text
-Validate Repository state, arguments, and identity
-→ enter writer.mutate admission read lock and recheck RUNNING
-→ Group checks target is still cached
-→ writer.record coalesces intent (may reject invalid sequence)
-→ change cached entity/group Map
-→ leave admission scope
-```
-
-Record before cache mutation so invalid merges cannot replace the cached reference. This is not a field transaction: prior direct field changes do not roll back. deleteGroup records each current member's primary-key deletion then clears the original Map; no Mapper predicate-delete operation.
+Spring integration is application code: the [game-demo adapter](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java) registers scanned singleton `@Repository` beans with the builder and supplies `data.repository(type)` as the bean instance ([DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java), [DataSpringWiringTest](../../game-demo/src/test/java/cn/managame/demo/DataSpringWiringTest.java)).
 
 <a id="3-构建与生命周期"></a>
 
@@ -117,149 +78,93 @@ try (GameData data = GameDataBuilder.builder()
 }
 ```
 
-Applications provide DataSource, business classes, and archive/retry functions; ordinary JSON fields require no codec configuration. Implement JsonCodec only when replacing default formatting or type construction. DataMemoryDemo is not in the repository; database-free Mapper/Repository usage is in [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
-
-| Configuration | Default | Validation/meaning |
+| Configuration | Default | Meaning |
 | --- | --- | --- |
-| cacheExpire | 30 minutes | Positive and greater than flushInterval; deploy well above actual save delay |
-| flushInterval | 1 second | Positive monotonic target interval |
-| batchSize | 500 | Positive integer |
-| shutdownTimeout | 30 seconds | Nonnegative; how long close keeps retrying retryable failures before dropping and reporting them |
-| retryPolicy | RetryPolicy.transientFailures() | true keeps the change for the next pass; false splits, drops and reports; see section 5 |
-| errorHandler | System.Logger | Final-failure diagnostics; application archives failed data |
-| partitionZone | UTC | Explicit ZoneId; configurable, e.g. Asia/Shanghai |
-| mysql(DataSource) | Unconfigured | Borrows the DataSource; assembles JdbcMysqlAccess/MysqlEntityMapper for backend-free Repository registration |
-| jsonCodec(JsonCodec) | Default Jackson | Implicit MySQL state and logs without a log-specific override; null rejected |
-| binaryCodec(BinaryCodec) | None | Same scope; complex BINARY still requires a codec, null rejected |
-| logCodecs(json,binary) | Inherit the above | Overrides logs only; explicit null JSON selects default, null Binary means no codec |
+| cacheExpire | 30 min | Idle time before a clean entry is evicted; must exceed flushInterval |
+| flushInterval | 1 s | Target interval between persistence passes |
+| batchSize | 500 | Rows per batch |
+| shutdownTimeout | 30 s | How long close keeps retrying retryable failures before dropping and reporting them |
+| retryPolicy | RetryPolicy.transientFailures() | true keeps a failed change for the next pass; false splits, drops and reports (section 5) |
+| errorHandler | System.Logger | Receives dropped changes; archive them here |
+| partitionZone | UTC | Zone for DAY/MONTH/YEAR log partitions |
+| mysql(DataSource) | none | Borrowed DataSource for repositories registered without an explicit backend |
+| jsonCodec / binaryCodec | default Jackson / none | Codecs of the implicit MySQL mapper and of logs unless logCodecs overrides them |
+| logCodecs(json, binary) | inherited | Log-only codecs; null JSON selects the default |
 
-repositories/logRepositories also accept List<Class<?>>. Backend-free registrations resolve mysql(DataSource) at build, independent of setter/registration order. Missing DataSource rejects build with IllegalArgumentException; mysql(null) throws NullPointerException. Repeated mysql configuration uses the last DataSource without creating or owning a pool. Existing repositories(EntityMapper,...) and logRepositories(MysqlAccess,...) remain available and ignore the default MySQL configuration; explicit Mappers retain their constructor-supplied codecs. Validate repository generics, identity metadata, and log mapping first; state Mapper.initialize then compiles backend mappings and initializes Schema; assemble caches and start one persistence thread. Schema DDL has no aggregate rollback: earlier additions may survive later initialization failure. External resources are not taken over or closed.
+repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore mysql(DataSource). Registrations without a backend and no DataSource fail build with IllegalArgumentException. build validates repositories, identity and log mappings, then runs each state Mapper's initialize (mapping and schema; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
 
-GameData closes only its scheduler, not DataSource, MongoClient, or external Mapper. close may wait on database operations. Calling it from Mapper, RetryPolicy, or DataErrorHandler callbacks is synchronously rejected to avoid deadlock. All Repository access rejects after closure.
+GameData closes only its own thread, never the DataSource, MongoClient or Mapper. close may wait for database calls; calling close or flush from a Mapper, RetryPolicy or DataErrorHandler callback is rejected to avoid deadlock. After close every repository operation throws DataOperationException.
 
 <a id="31-build-的装配阶段"></a>
-
-### 3.1 build assembly stages
-
-| Stage | Work | Failure state |
-| --- | --- | --- |
-| Configuration | Positive nanosecond-representable Duration, cacheExpire > interval, positive integers | No persistence thread |
-| Repository parsing | Direct parameterized parent, concrete Entity, no-arg Repository constructor, duplicates | No partial GameData returned |
-| Identity/log compilation | EntityMeta/K match; MysqlLogWriter | No persistence started |
-| State Mapper.initialize | Backend mapping and Schema | Executed DDL not wholly rolled back |
-| WriteBehindManager creation | Pending tables, error/retry configuration, scheduler | Internal assembly only |
-| Repository initialization | Inject dependencies, create caches, register logs | No uninitialized Repository exposed |
-| GameData creation | Fixed class-to-instance mapping, periodic startup | Usable entry returned |
-
-Stage three does not validate every backend mapping; MySQL/Mongo do that in Mapper.initialize. A later mapping failure may follow an earlier successful Schema change. Correcting configuration and rebuilding does not undo prior tables/columns.
-
-Each repositories/logRepositories call appends bindings. A Mapper may serve multiple entities; one entity cannot have two state repositories. GameData.repository(type) only looks up registered instances. After closure it still returns a reference, but Repository operations reject instead of reinitializing.
-
 <a id="4-entity-与身份元数据"></a>
 
 ## 4. Entity and identity metadata
 
-Inherited persistent fields are supported; duplicate identity/storage names are checked across the hierarchy. State Entity requires an accessible no-arg constructor. Loading invokes its precompiled constructor and writes fields directly, without setters. Annotations are field-only; mapped fields are nonstatic/nonfinal. Startup uses reflection; runtime uses VarHandle. JPMS packages must be opened to the implementation module.
-
-Identity types: byte/short/int/long and wrappers, plus String; null prohibited. This restricted key domain is Java-binding-specific. Single-field order may be omitted; every multi-field order must be explicit/distinct, with Integer.MIN_VALUE indicating unspecified.
-
-`GroupKey.of(Object...)` stores the original array and precomputes hash without defensive copy. Callers must not mutate array/components. equals preserves types: 1L differs from 1. Read-only size()/valueAt(index) support Mappers without exposing a replaceable array.
-
-`MapKeys.of(a,b,...)` needs at least two nonnull integer/String values and rejects colons in strings. Simple joining only: no CompositeKey, escaping, or length protocol.
-
-EntityMeta is public Mapper SPI metadata without storage-annotation semantics. EntityMapper:
+Inherited fields are supported; annotations are on nonstatic, nonfinal fields. State entities need an accessible no-argument constructor; loading writes fields directly through VarHandles (open the package under JPMS). Identity fields are byte/short/int/long, their wrappers or String, never null. Composite keys need explicit, distinct `order` values. `GroupKey.of(Object...)` keeps its array without copying (do not mutate it) and compares typed values: `GroupKey.of(42L)` ≠ `GroupKey.of(42)`. `MapKeys.of(a, b, …)` joins at least two integer/String values with ':' and rejects ':' inside values.
 
 ```java
-void initialize(EntityMeta meta);
-Object load(EntityMeta meta, Object id);
-List<?> loadGroup(EntityMeta meta, GroupKey key);
-void insertBatch(EntityMeta meta, List<?> entities);
-void updateBatch(EntityMeta meta, List<?> entities);
-void deleteBatch(EntityMeta meta, List<Object> ids);
-void deleteInsertBatch(EntityMeta meta, List<?> entities);
+public interface EntityMapper {
+    void initialize(EntityMeta meta);
+    Object load(EntityMeta meta, Object id);
+    List<?> loadGroup(EntityMeta meta, GroupKey key);      // nonnull, empty for no rows
+    void insertBatch(EntityMeta meta, List<?> entities);
+    void updateBatch(EntityMeta meta, List<?> entities);
+    void deleteBatch(EntityMeta meta, List<Object> ids);
+    void deleteInsertBatch(EntityMeta meta, List<?> entities);
+}
 ```
 
 <a id="41-身份编译与存储编译的分工"></a>
 
-### 4.1 Identity compilation versus storage compilation
+EntityMeta holds identity and field access only; storage rules belong to each Mapper (an @Id without @Column is valid identity but rejected by MySQL mapping). A custom Mapper must keep entity types separate, never turn a load failure into absence, apply each batch atomically, and preserve causes.
 
-EntityMeta owns Single/Group identity, field access, and key types, not MySQL types or Mongo indexes. Identity-valid entities must also pass backend validation. For example, @Id without @Column is recognized as identity but rejected by MySQL mapping.
-
-Multi-field order must be explicit/unique, not contiguous 0,1,2. GroupKey.of(42L) differs from GroupKey.of(42); use matching boxed field types. Composite MapKeys must use the declared order without independent sorting.
-
-Mapper.loadGroup returns a nonnull list, empty for no rows. Repository defensively checks identity/MapKey but is not a complete validator for arbitrary third-party Mappers. Custom implementations must satisfy entity type, complete-group loading, batch, and exception contracts.
-
+<a id="5-write-back-implementation-and-limits"></a>
 <a id="5-写回实现与适用边界"></a>
 
 ## 5. Write-back implementation and limits
 
-Each EntityMeta has one pending table, `pending: ConcurrentHashMap<PrimaryId, Change>`, plus an `inflight` table for changes being saved. A Change holds the operation and the latest entity reference and compares by identity. record merges with `pending.compute` using the merge matrix: one compute per mutation, no extra lock.
+PendingBuffer keeps one `ConcurrentHashMap<id, Change>` per EntityMeta; a Change holds the operation and latest entity reference and compares by identity. `record` merges with one `compute` using the merge matrix of the standard. Each pass claims an entry by conditional removal `pending.remove(id, change)`: a change recorded after the claim creates a new entry for the next pass, so nothing is lost between traversal and removal, and a single persistence thread keeps older changes of an id ahead of newer ones.
 
-**Claim instead of swapping buffers.** The single saving thread walks pending and, for each `(id, change)`, first puts it into inflight and then conditionally removes it with `pending.remove(id, change)`. Success claims it. Failure means a newer record merged in after the walk read it; the inflight copy is withdrawn and the newer change waits for the next pass. A record arriving after the claim creates a new pending entry. There is therefore no window in which a write between traversal and clearing is lost, and no grace period or writer counter is needed. With one saving thread, an older change for an id always executes before a newer one.
+Failure handling. Mappers apply each batch atomically (MySQL in one transaction, Mongo by `_id` replacement), so a failed batch leaves no partial rows:
 
-**Cache misses consult unsaved changes first.** A Single load checks pending/inflight first and returns the in-memory entity (null for DELETE) without reading storage. A Group load collects the group's unsaved changes, reads storage, then overlays them. Cache expiry can therefore never roll back unsaved modifications. Group DELETE changes keep the entity reference so their group can be determined.
+1. RetryPolicy returns true (default: lost or refused connections, pool timeouts, I/O, lock wait timeout 1205, deadlock 1213, SQLState 08xxx/40xxx, Mongo network/timeout/primary changes): the batch merges back under any newer change and is retried next pass, without an attempt limit. Kept changes are bounded by the number of dirty entities.
+2. Not retryable and more than one row: the batch is split and rows run one by one, so the others still persist.
+3. Not retryable single row: dropped, counted in failedBatches, reported synchronously to DataErrorHandler (attempt 1 = single-row batch, 2 = isolated after splitting); later flush/close throw DataSaveException.
+4. Merging back conflicts with a newer change (an older DELETE then an UPDATE): the newer change wins; the older one is dropped and reported.
 
-**Failure classification.** Mappers apply each batch atomically (MySQL in one transaction, Mongo with `_id` upsert/replace), so a failed batch leaves no partial rows and can be retried or split safely:
+A MySQL UPDATE matching zero rows fails as a non-retryable single row (keep Connector/J's default `useAffectedRows=false`); a Mongo update whose document is missing fails the same way.
 
-1. `RetryPolicy.shouldRetry` returns true (default `RetryPolicy.transientFailures()`: lost/refused connections, pool timeouts, I/O, lock wait timeout 1205, deadlock 1213, SQLState 08xxx/40xxx, Mongo network/timeout/primary changes): the whole batch merges back into pending and is retried on the next flush, without an attempt limit. Kept changes are deduplicated by entity id, so they are bounded by the number of dirty entities, not by update count.
-2. Non-retryable with more than one row: the batch is split and rows execute one by one, so the other rows still persist; a single row's failure is classified again.
-3. Non-retryable single row: the change is dropped, counted in failedBatches, reported synchronously to DataErrorHandler (batch holds only that entity or id; attempt=1 means the batch was a single row, attempt=2 an isolated row after splitting), and later flush/close throw DataSaveException.
-4. If merging back conflicts with a newer change (for example an older DELETE followed by a business UPDATE), the newer change is kept and the older one is dropped and reported as in item 3.
+The saving thread reads entities without snapshots. Collections inside entities that business code modifies must be thread-safe; fields that must change consistently should be changed together before one update call. There is no WAL: a crash loses at most one flush interval plus kept failed changes.
 
-A MySQL UPDATE that matches zero rows fails (the row is missing; silent success would lose the change). It is not retryable and ends as a reported single row. This relies on matched-row counts: Connector/J's default `useAffectedRows=false` qualifies; do not enable `useAffectedRows=true`. SUCCESS_NO_INFO from `rewriteBatchedStatements=true` is not checked.
+### 5.1 Cache eviction
 
-The admission path takes a shared read lock and close takes the write lock to stop admission; the lock only orders shutdown against admitted operations and is not used for saving.
+An entry is evicted only when it has been idle for cacheExpire and has nothing pending. Eviction runs on the persistence thread after a pass and at most every max(flushInterval, cacheExpire/4), so no claimed change is in flight. Single checks `pending.containsKey(id)`; Group collects the GroupKeys of pending changes once per sweep (group deletes keep their entity for this). The sweep reads the clock before building that view and rechecks the idle time inside the per-key atomic operation, so a mutation the view misses happened later, refreshed its entry and keeps it. Reads refresh the access time at most once per min(cacheExpire/16, 1 s), so threads reading the same hot entity do not keep writing its cache line; eviction therefore waits cacheExpire plus that interval. Consequently a load never consults the buffer: a missing key has nothing pending and storage is current. During a storage outage dirty entities stay cached until saved or dropped.
 
-**Thread visibility.** The saving thread reads entity state at save time without snapshots. Collections modified by business code inside entities must be thread-safe to avoid concurrent-modification failures during serialization. Cross-field consistency (for example, saving between deducting gold and adding an item) is not guaranteed; the next pass writes the final state, and only a crash at that moment leaves an intermediate state. Fields that must be consistent should be changed together before one update call.
-
-Caches and log queues have no capacity limit and there is no WAL; a process crash loses at most one flush interval plus any kept failed changes.
-
-### 5.1 Data shape
-
-```text
-PendingBuffer
-  pending : EntityMeta → ConcurrentHashMap<PrimaryId, Change>   merged by business threads
-  inflight: EntityMeta → ConcurrentHashMap<PrimaryId, Change>   claimed, not yet saved
-
-Change (identity equality)
-  operation
-  entity (latest reference; null for a Single deleted by id)
-```
-
-The outer key is EntityMeta, not EntityMapper: players and guilds can share one MysqlEntityMapper with id=42 each, and their changes land in different tables.
-
-### 5.2 One flush timeline
+### 5.2 One pass
 
 ```text
 for each EntityMeta:
-  claim every pending entry (put into inflight, then conditional remove)
-  group as DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize
-  per batch: success → leave inflight
-             retryable failure → merge back into pending, leave inflight
-             non-retryable → split into rows; non-retryable row → drop and report
-logs: finite drain per pass, batched per partition table, failures classified the same way
-      (retryable logs go back to the queue tail)
-schedule the next pass after max(0, interval - pass duration)
+  claim every pending entry (conditional remove)
+  group as DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize; save or classify failures
+logs: finite drain, batched per partition table, failures classified the same way
+then evict idle clean cache entries (when due); next pass after max(0, interval − pass duration)
 ```
 
-The pipeline is mutually exclusive: periodic passes, explicit flush and close never run Mapper batches concurrently. Neither entity traversal order nor primary-key traversal order is business transaction order.
+Periodic passes, explicit flush and close never run Mapper batches concurrently.
 
-### 5.3 RetryPolicy and error callbacks
+### 5.3 RetryPolicy, errors and close
 
-RetryPolicy only chooses between keeping for the next pass and splitting/dropping; it never retries immediately within a pass and has no backoff thread, so retryable failures are retried at flushInterval. `RetryPolicy.never()` restores split-and-drop for every failure. A RetryPolicy that throws is treated as non-retryable. DataErrorHandler receives only dropped changes; it runs synchronously on the saving thread and can serialize the entity to a local dead-letter file for manual repair. Retryable failures only log one WARNING per pass and do not call DataErrorHandler.
+RetryPolicy only chooses between keeping for the next pass and splitting/dropping; there is no immediate retry or backoff thread. A RetryPolicy that throws counts as non-retryable. DataErrorHandler receives only dropped changes and runs on the saving thread, for example to write them to a local dead-letter file. Retryable failures log one WARNING per pass.
 
-### 5.4 Internal close barrier
+The admission read lock orders shutdown against mutations in progress. close takes the write lock to switch to CLOSING, stops scheduling and flushes until nothing is pending or shutdownTimeout elapses, then runs a final pass in which retryable failures are dropped and reported. Any drop during the lifetime makes close throw DataSaveException; repeated calls report the same failure. A database call that never returns also blocks close; set timeouts in the pool or driver.
 
-close switches to CLOSING under the admission write lock and stops periodic scheduling, then flushes repeatedly until nothing is pending or `shutdownTimeout` (default 30 seconds, waiting flushInterval between passes) elapses. It then switches to CLOSED for one final pass in which retryable failures are no longer kept: they are split, dropped and reported as in item 3, so DataErrorHandler can persist the entities. Any drop during the lifecycle makes close throw DataSaveException, and repeated calls report the same failure.
-
-Closing from a Mapper, policy or error callback on the saving thread is detected and rejected. A database call that never returns also blocks close; timeouts remain pool/driver configuration.
+<a id="6-mysql-mapping"></a>
+<a id="6-mysql-映射"></a>
 
 ## 6. MySQL mapping
 
 ```java
-@Table(name = "player_task", indexes = {
-    @Index(name = "idx_role_task", columnList = "role_id, task_id")
-})
+@Table(name = "player_task", indexes = { @Index(name = "idx_role_task", columnList = "role_id, task_id") })
 public class Task {
     @Id @Column private long id;
     @cn.managame.data.annotation.GroupKey @Column private long roleId;
@@ -268,165 +173,92 @@ public class Task {
 }
 ```
 
-Table.name is required. Only @Column persists; missing it on identity fields fails initialization. Default names convert camelCase to snake_case. Table/column/index names use ASCII letters/digits/underscore starting with letter/underscore, at most 64 MySQL characters. Long generated indexes are truncated with a stable hash. Quote identifiers with backticks and bind values.
+Only @Column fields persist; Table.name is required. Names default to snake_case, use ASCII letters, digits and '_' (≤64 characters) and are quoted with backticks; long generated index names are truncated with a stable hash.
 
-| Java DEFAULT type | MySQL | Automatic DEFAULT |
+| Java (DEFAULT) | MySQL | Default |
 | --- | --- | --- |
 | byte / short / int / long | TINYINT / SMALLINT / INT / BIGINT | 0 |
 | float / double / boolean | FLOAT / DOUBLE / TINYINT | 0 |
 | char / String | CHAR(1) / VARCHAR(255) | '' |
-| byte[] | BLOB | None |
+| byte[] | BLOB | none |
 
-Wrappers map identically. Primitives/identity columns are NOT NULL; others nullable. SQL NULL into primitive is a load error. TEXT accepts only String. JSON String is raw JSON; other types automatically use the default JsonCodec, replaceable with a custom codec. BINARY byte[] passes through; other types require BinaryCodec. Null bypasses codecs. DEFAULT rejects complex objects.
-
-`Column.defaultValue` is a trusted raw SQL DDL expression without automatic quoting. JSON/BINARY/TEXT infer no defaults. JsonCodec/BinaryCodec.decode receives java.lang.reflect.Type and returns Object, preserving generics such as List<Item>.
-
-Initialization compiles conversions, SELECT/INSERT/UPDATE/DELETE SQL, and parameter order. UPDATE excludes Id/GroupKey/MapKey; identity-only entities update as no-op. DELETE_INSERT encodes first, then deletes/inserts the batch in an explicit transaction.
-
-Schema queries information_schema and only adds missing structures. Existing columns get basic type checks, not full VARCHAR-length compatibility or default/nullable migration. Check single-column primary key and explicit index order/uniqueness; never infer GroupKey indexes. Deployment orchestration serializes schema migration.
-
-MysqlAccess provides queryOne/query/update/batchUpdate/transaction. queryOne returns null for zero rows and throws MysqlException for multiple rows; query returns an empty List. Write-back splits batches; Access does not split again. Transaction callback receives one-connection MysqlTransaction, commits success, rolls back exceptions, restores autoCommit, and closes; valid only on callback thread/scope.
-
-JdbcMysqlAccess obtains/releases a DataSource connection per operation. Ordinary operations follow DataSource autoCommit, normally configured true. MysqlException retains SQL, SQLException cause, sqlState()/vendorCode(). No low-level automatic retry or business database-error mapping.
+Primitives and identity columns are NOT NULL. TEXT accepts String only. JSON stores a String as raw JSON and other types through the JSON codec; BINARY passes byte[] through and needs a BinaryCodec for other types; DEFAULT rejects complex objects. `Column.defaultValue` is trusted raw DDL.
 
 <a id="61-预编译和运行期工作"></a>
 
-### 6.1 Precompilation and runtime work
+Initialization compiles column order, accessors, codecs and SQL. INSERT writes all columns without a preflight SELECT; UPDATE writes non-identity columns by primary key (identity-only entities skip it); DELETE uses the primary key; DELETE_INSERT encodes first and then deletes and inserts in one transaction. Schema initialization reads information_schema and only adds missing tables, columns and explicit indexes; it checks basic types, the single-column primary key and explicit index shape, but not VARCHAR length, defaults or nullability. GroupKey implies no index.
 
-Initialization fixes column order, VarHandles, value encoders, SQL templates, and indexes. Runtime reads/binds in that order without rescanning annotations or building business predicates.
-
-| Operation | Constraint |
-| --- | --- |
-| load | Unique primary-key query, construct Entity, write fields directly |
-| loadGroup | All group-key predicates, full group |
-| INSERT | All explicitly persistent columns; no preflight SELECT |
-| UPDATE | Locate by primary key, update nonidentity columns; no empty UPDATE |
-| DELETE | Primary key only, no entity read |
-| DELETE_INSERT | Encode current batch, then delete/insert in one small transaction |
-
-JdbcMysqlAccess is the database boundary, not coalescing/retry policy. Do not retain MysqlTransaction for asynchronous work; it is thread/scope-bound. Transactions cover their callback, not all flush work or multiple repositories automatically.
-
-Schema maintenance conservatively adds missing tables/columns/explicit indexes and rejects obvious conflicts. Deployment tools handle unsupported migrations. Successful initialization does not prove existing VARCHAR lengths/defaults/nullable exactly match Java declarations.
+MysqlAccess offers queryOne (null for no row, MysqlException for several), query, update, batchUpdate and transaction (one connection, commit on success, rollback on exception, valid only on the callback thread). JdbcMysqlAccess takes a connection per operation; MysqlException keeps the SQL, cause, `sqlState()` and `vendorCode()`. No automatic retries at this level.
 
 <a id="default-json-field-binding"></a>
 
-### 6.2 Default JSON field type binding
+### 6.1 Default JSON field binding
 
-JsonCodec.defaultCodec() returns the shared, immutable default Jackson configuration. JsonCodec.decoder(Type) binds a decoder during initialization; decoder(Type, Class<?> initializedType) additionally receives the state initializer's implementation class, or null. Existing custom codecs implementing encode/decode remain source compatible through default methods; they may override either decoder method and decide their representation. MysqlEntityMapper(access) and a null JSON codec use the default, as do log mappings. logCodecs overrides only logs; jsonCodec/binaryCodec configure the Builder's implicit MySQL Mapper and inherited log defaults.
-
-For state mappings containing non-String JSON columns, initialization constructs one temporary entity using its no-argument constructor and observes those field values. Default decoding specializes Jackson's JavaType from the complete field Type and non-null initializer class, then reuses an ObjectReader per field. Map<Integer,Long> initialized with new ConcurrentHashMap<>() therefore remains ConcurrentHashMap<Integer,Long>; ArrayList/LinkedHashSet initializers are similarly preserved. The prototype and its mutable values are not retained as loaded entities or shared collection defaults. Constructors and initializers must be deterministic and must not acquire external resources. Only top-level mapped JSON fields provide initializer classes; this is not recursive runtime subtype discovery. Log mapping constructs no prototype and does not require a no-arg log constructor.
-
-Null initial values use the declared Type and Jackson's normal container implementation. Erased/raw types cannot recover missing generics. Private fields are visible to the default codec; ordinary POJOs/records and nested declared collections are supported according to Jackson's constructors. JDK internal immutable wrappers, abstract classes, unusual constructors, and application-specific polymorphism may require custom codecs. Default decoding checks the initializer type and rejects a substituted implementation rather than silently changing it. It does not preserve arbitrary object identity or collection comparator/configuration beyond the type. Malformed input and trailing JSON tokens throw IllegalArgumentException with the cause; Repository load wraps it as DataLoadException without negative caching. Encoding failures use the existing save/retry/error path. SQL null bypasses the codec; String JSON remains raw text. Default typing is not enabled. JSON migration and existing stored payload compatibility remain the application's responsibility.
-
-Source and validation: [MysqlFieldMeta](../../game-data/src/main/java/cn/managame/data/mysql/MysqlFieldMeta.java), [MysqlMappingTest](../../game-data/src/test/java/cn/managame/data/mysql/MysqlMappingTest.java), and [MysqlBuilderTest](../../game-data/src/test/java/cn/managame/data/MysqlBuilderTest.java). Tests cover startup field binding, generic numeric keys/values, initializer container types, nested private objects, custom override, borrowed DataSource closure, writes/logs, and retrying a load after invalid JSON is corrected. H2 adapts MySQL metadata and stores JSON as CLOB in Builder tests; this verifies framework behavior, not native MySQL JSON/DDL integration.
+`JsonCodec.defaultCodec()` is the shared default Jackson configuration. For a state entity with non-String JSON columns, initialization builds one temporary entity and binds each field's decoder to its declared generic type plus the initializer's class: a `Map<Integer,Long>` field initialized with `new ConcurrentHashMap<>()` loads as ConcurrentHashMap<Integer,Long>. Constructors and initializers must be deterministic and acquire no resources. Null initializers use the declared type; raw types cannot recover generics; default typing is off. Malformed JSON or trailing tokens throw IllegalArgumentException, which a load reports as DataLoadException without negative caching. Custom codecs may override `decoder(Type)` or `decoder(Type, Class<?>)`. Sources and tests: [MysqlFieldMeta](../../game-data/src/main/java/cn/managame/data/mysql/MysqlFieldMeta.java), [MysqlMappingTest](../../game-data/src/test/java/cn/managame/data/mysql/MysqlMappingTest.java), [MysqlBuilderTest](../../game-data/src/test/java/cn/managame/data/MysqlBuilderTest.java).
 
 <a id="7-mongodb-映射"></a>
+<a id="71-与-mysql-的相同点和差异"></a>
 
 ## 7. MongoDB mapping
 
-Collection.name is required; only @Field persists. Default names use snake_case. Id is fixed _id; other names fail initialization. Only simple ASCII storage names. MongoIndex.fields uses database names, all ascending; no TTL/text/geo/partial indexes.
-
-MongoEntityMapper accepts MongoDatabase or MongoAccess. DriverMongoAccess uses its CodecRegistry directly, without JSON conversion. Supports scalars, byte[], List/Set/Collection, and Map<String/Integer/Long,V>, compiling nested values by Type. Applications configure codecs for concrete complex classes on MongoDatabase, e.g. POJO/custom Codec. Other parameterized custom classes explicitly fail initialization.
-
-Load uses no-arg construction + VarHandle. Missing fields retain constructor defaults; explicit BSON null cannot populate primitives. UPDATE uses ordered bulk replacement with upsert=false; DELETE_INSERT upsert=true; DELETE uses _id $in. Driver batches may partially succeed, affecting retry policy.
-
-<a id="71-与-mysql-的相同点和差异"></a>
-
-### 7.1 Similarities and differences from MySQL
-
-Both Mappers receive changes by EntityMeta/primary key and use unified failure handling, without pretending their database operations are identical:
+Collection.name is required; only @Field fields persist; the id is always `_id`. MongoIndex lists database field names, all ascending. MongoEntityMapper takes a MongoDatabase or a MongoAccess; DriverMongoAccess uses the database's CodecRegistry (scalars, byte[], collections and Map with String/Integer/Long keys; register codecs for other classes). Loading uses the no-argument constructor; missing fields keep constructor defaults.
 
 | Intent | MySQL | MongoDB |
 | --- | --- | --- |
-| UPDATE | All nonidentity columns | Complete Document replacement, upsert=false |
-| DELETE_INSERT | Small delete/insert transaction | Replacement, upsert=true |
-| Type extensions | JsonCodec / BinaryCodec | MongoDatabase CodecRegistry |
-| Schema initialization | Tables, columns, explicit indexes | Collections, explicit ascending indexes |
+| INSERT / DELETE_INSERT | INSERT / delete+insert transaction | ordered bulk replacement, upsert |
+| UPDATE | non-identity columns; 0 rows fails | ordered bulk replacement without upsert; a missing document fails |
+| DELETE | by primary key | `_id $in` |
+| Schema | tables, columns, explicit indexes | collections, explicit ascending indexes |
 
-Mongo replacement is not field-level $set; unmapped fields added externally are not preserved by contract. Ordered bulk is not a batch transaction: earlier operations may have succeeded and retries must handle that.
+`MongoAccess.replaceMany` returns the matched (already existing) count; MongoEntityMapper fails an update when it is smaller than the batch. Replacement is not `$set`: fields added outside the mapping are not preserved. An ordered bulk write is not a transaction; earlier documents of a failed batch may already be replaced, which a retry overwrites again.
+
+<a id="8-log"></a>
+<a id="81-drain-与分表的运行边界"></a>
+<a id="82-扩展实现时需要保留的边界"></a>
 
 ## 8. Log
 
-LogRepository requires neither Id nor no-arg constructor and does not call EntityMapper. @Table/@Column compiles INSERT mapping without querying/changing Schema; external services prepare tables.
+LogRepository needs neither Id nor no-argument constructor and does not use EntityMapper. @Table/@Column compile an INSERT. At most one @PartitionKey: VALUE takes an integer or String (suffix of ASCII letters, digits, '_'); DAY/MONTH/YEAR take epoch milliseconds (long) rendered in partitionZone as uuuuMMdd/uuuuMM/uuuu. Without a partition key the base table is used.
 
-At most one @PartitionKey, optionally nonpersistent. VALUE supports integers/String with ASCII alphanumeric/underscore suffixes. DAY/MONTH/YEAR requires long/Long Unix epoch milliseconds, rendered in partitionZone as uuuuMMdd/uuuuMM/uuuu. Without partitioning, use the base table.
-
-insert validates type/partition then enqueues in ConcurrentLinkedQueue without snapshots. Persistence drains batches, groups by physical table, and uses the same error/retry path. Do not mutate enqueued logs.
-
-<a id="81-drain-与分表的运行边界"></a>
-
-### 8.1 Drain and partition boundaries
-
-Each drain first observes a finite queue-count boundary, then polls by batchSize. Concurrent production can affect that observation, but the round never loops forever to catch up. Group each drained batch by physical table and execute each group through the same execute/error/retry path.
-
-A batch containing yesterday's and today's events yields two independent table INSERTs, not a cross-table transaction. close stops insertion then drains all remaining logs; bounded periodic work does not limit shutdown to one batch.
-
-Partition values are validated at admission but Java objects are not frozen. Later mutation may fail or misroute persistence, hence the prohibition on changing submitted logs.
-
-<a id="82-扩展实现时需要保留的边界"></a>
-
-### 8.2 Boundaries for extensions
-
-Custom EntityMapper distinguishes EntityMeta, never turns load failure into absence, defines partial-success/DELETE_INSERT semantics, and preserves causes. New backends update observable standard differences and Java mapping rules together.
-
-New codecs must not silently turn DEFAULT complex objects into JSON or discard generic Type information. New log backends, log Schema maintenance, capacity settings, failed-batch reinsertion, and strict buffer exchange are unimplemented extensions; a configuration example cannot claim support.
+insert validates type and partition and enqueues without copying; do not change a log after inserting it. Each pass drains a finite count, groups by physical table and inserts each group in one transaction; failures are classified as in section 5 (retryable logs go back to the queue tail). The base table is managed externally. When an insert fails because a partition table does not exist (MySQL 1146 / SQLState 42S02), the writer runs `CREATE TABLE IF NOT EXISTS partition LIKE base` and retries the insert once. close drains every accepted log.
 
 <a id="9-异常与验证"></a>
+<a id="91-错误扩展接口"></a>
+<a id="92-易错契约的测试定位"></a>
 
 ## 9. Exceptions and validation
 
-DataLoadException: storage load/invalid loaded results. DataOperationException: uninitialized/closed/unloaded group/illegal sequence. DataSaveException: final save failure discovered by close. Startup configuration/metadata errors generally use IllegalArgumentException; Schema/database errors retain underlying exceptions. Shared codes: [Core](OGBS-Core-1.0.md#data-constants).
-
-Verified: Repository/buffer contracts, real JDBC queries/transactions on H2 MySQL mode, SQL mapping/Schema generation, BSON CodecRegistry encoding/decoding, Mapper invocation contracts. H2 Schema tests use an information-table adaptation stub, not real MySQL validation. Mongo tests use recording MongoAccess, not server validation.
-
-[DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) enables real services through OGBS_DATA_MYSQL_URL / OGBS_DATA_MONGO_URI; skipped by default. Without these variables, real-service tests do not run. Actual MySQL/MongoDB servers, production performance, and prolonged recovery remain unverified.
-
-<a id="91-错误扩展接口"></a>
-
-### 9.1 Error extension interfaces
+DataLoadException: storage load failure or invalid loaded data. DataOperationException: not initialized, closed, group not loaded, illegal change sequence, Mongo update of a missing document. DataSaveException: a change was dropped (reported by flush/close). Configuration and metadata errors throw IllegalArgumentException; schema and database errors keep their exceptions. Error numbers: [Core](OGBS-Core-1.0.md#data-constants).
 
 ```java
-public record DataFailure(
-    int errorCode, Class<?> entityType, DataOperation operation,
-    List<?> batch, Throwable cause, int attempt) {}
-
-public interface RetryPolicy {
-    boolean shouldRetry(DataFailure failure);
-}
-public interface DataErrorHandler {
-    void onError(DataFailure failure);
-}
+public record DataFailure(int errorCode, Class<?> entityType, DataOperation operation,
+                          List<?> batch, Throwable cause, int attempt) {}
+public interface RetryPolicy { boolean shouldRetry(DataFailure failure); }
+public interface DataErrorHandler { void onError(DataFailure failure); }
 ```
 
-DataOperation includes INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT. It is the actual persistence intent, not necessarily the last Repository method: DELETE then INSERT reports DELETE_INSERT. DataErrorHandler receives only dropped single changes: attempt=1 means the batch was a single row, attempt=2 an isolated row after splitting.
+DataOperation (INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT) is the coalesced intent actually saved: DELETE then INSERT reports DELETE_INSERT. `RetryPolicy.transientFailures()` walks causes, next exceptions and suppressed exceptions; combine it as `f -> RetryPolicy.isTransient(f.cause()) || myRule(f)`. `RetryPolicy.never()` keeps nothing.
 
-Underlying causes are retained. The default `RetryPolicy.transientFailures()` walks the cause chain (including SQLException.getNextException and suppressed exceptions) using the rules in section 5; applications can combine it, for example `f -> RetryPolicy.isTransient(f.cause()) || myRule(f)`. `RetryPolicy.never()` disables keeping. Core alone allocates error numbers.
-
-<a id="92-易错契约的测试定位"></a>
-
-### 9.2 Tests for error-prone contracts
-
-| Contract | Test class and method |
+| Contract | Test |
 | --- | --- |
-| No preflight SELECT for insert/delete; no negative caching of failure | DataContractTest.negativeCacheDeleteAndInsertNeverSelect / loadFailuresAreNotNegativeCached |
-| Explicit group loading and original Map | DataContractTest.groupsRequireExplicitLoadAndReturnSameMap |
-| Group entity deletion by database primary key | DataContractTest.loadedGroupDeletesByDatabaseId |
-| Legal/illegal merge matrix | DataContractTest.legalMergeTable / illegalMergeTable |
-| Illegal INSERT preserves cached object | DataContractTest.illegalInsertDoesNotReplaceCachedEntity |
-| Phase order, batch splitting, no merge across passes | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossFlushes |
-| Retryable failures kept and merged with newer changes; default classification | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / defaultPolicyKeepsOnlyTransientFailures |
-| Non-retryable bad row isolated, other rows saved | DataContractTest.nonRetryableBadRowIsIsolatedFromItsBatch / finalFailureAndHandlerFailureDoNotStopLaterBatchesAndCloseReportsIt |
-| Evicted entity with unsaved change reloads from memory | DataContractTest.evictedEntityWithUnsavedChangeReloadsFromMemoryNotStorage |
-| close retries, then drops and reports leftovers | DataContractTest.closeRetriesThenDropsAndReportsLeftovers |
-| Closure awaits active pipeline and saves later changes | DataContractTest.closeWaitsForActivePipelineAndFlushesNextBuffer |
-| Callback closure rejected without deadlock | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
-| Log partition/drain without Schema initialization | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization |
-| Same log error Handler, continue later partitions | LogContractTest.logFailuresReachSameHandlerAndDoNotBlockLaterPartitions |
+| No preflight SELECT; load failures not cached | DataContractTest.negativeCacheDeleteAndInsertNeverSelect / loadFailuresAreNotNegativeCached |
+| Group must be loaded; same Map returned | DataContractTest.groupsRequireExplicitLoadAndReturnSameMap |
+| Merge matrix | DataContractTest.legalMergeTable / illegalMergeTable |
+| Batch order and splitting | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossFlushes |
+| Retryable kept, bad row isolated | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / nonRetryableBadRowIsIsolatedFromItsBatch |
+| Dirty entries never evicted; clean ones evicted and reloaded | DataContractTest.entitiesWithUnsavedChangesAreNeverEvicted / cleanIdleEntriesAreEvictedAndReloaded |
+| close retries, then drops and reports | DataContractTest.closeRetriesThenDropsAndReportsLeftovers |
+| Callback close rejected without deadlock | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
+| Log partitions, drain, partition creation | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization / missingPartitionTableIsCreatedFromTheBaseTable |
+| Mongo update of a missing document fails | MongoMappingTest |
 
-These entry points use in-memory Mappers and do not replace real database failure/compatibility tests. New guarantees require implementation and verification, not broader claims about existing tests.
+Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) runs against real servers when `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` are set and is skipped otherwise. Real MySQL/MongoDB behavior, production performance and long outages are unverified.
 
-## 11. Explicit flush and DataStats
+<a id="11-explicit-flush-and-datastats"></a>
+<a id="11-显式-flush-与-datastats"></a>
 
-`GameData.flush()` synchronously runs one pass on the existing pipeline: every change accepted before the call is claimed and saved, while changes written concurrently may wait for the next pass. Closed/closing Data and reentrant calls from persistence callbacks are rejected with DataOperationException. Afterwards any historical drop throws DataSaveException (even with an empty queue); retryable failures that remain kept also throw DataSaveException, but those changes stay pending for the next pass. JDBC/Mongo timeouts bound blocking; avoid running a service-wide flush on a busy game Route.
+## 10. Explicit flush and DataStats
 
-`GameData.stats()` returns DataStats: accepting, pendingChanges (pending plus inflight entries, including kept failed changes), queuedLogs, failedBatches (dropped changes, not retry counts), flushes (passes, excluding close's final pass), saveNanos, singleCacheEntries (including negative entries), groupCacheEntries (groups, not entities). Fields can change between reads. Log queue size is O(n); sample at management frequency. No exporter, HTTP management endpoint, hard queue limit, dirty detection or snapshot copying is installed implicitly. [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java) verifies claim semantics, statistics, callback rejection and historical failures. Real database durability/failure behavior requires configured integration services.
+`GameData.flush()` runs one pass synchronously: every change accepted before the call is saved, while changes written concurrently may wait for the next pass. It throws DataOperationException when closed or called from a persistence callback, and DataSaveException when any change was ever dropped or retryable failures remain kept (those stay pending). Avoid a service-wide flush on a busy game Route.
+
+`GameData.stats()` returns DataStats: accepting, pendingChanges (pending entries, including kept failures; changes claimed by a running pass are not counted), queuedLogs, failedBatches (dropped changes), flushes (passes, excluding close's final one), saveNanos, singleCacheEntries (including cached absence) and groupCacheEntries (groups, not entities). Values are approximate snapshots; queuedLogs is O(n).

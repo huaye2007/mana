@@ -28,7 +28,7 @@ game-rpc ───→ game-router ───→ game-demo（路由示例）
 game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
 ```
 
-game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。game-core 为 Runtime/Data 缓存统一发布 Caffeine 依赖，归属见 [Core Java 规范](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md#1-模块与职责)。Runtime 为 HTTP 注解与 Route 接入依赖 game-core 和 game-network，不依赖 RPC、Spring 或业务序列化。
+game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。game-core 没有第三方依赖；Runtime 为空闲 Mailbox 缓存自行声明 Caffeine。Runtime 为 HTTP 注解与 Route 接入依赖 game-core 和 game-network，不依赖 RPC、Spring 或业务序列化。
 
 Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包。Network 入口见 [game-network](game-network/README.zh-CN.md)；RPC 入口见 [game-rpc](game-rpc/README.zh-CN.md)。
 
@@ -96,17 +96,15 @@ class Requests {
     }
 }
 
-ProtocolProvider protocols = registrar -> {
-    registrar.register(Protocols.request(1001, Request.class));
-    registrar.register(Protocols.response(1001, Response.class));
-    registrar.bindResponse(Request.class, Response.class);
-};
+ProtocolRegistry protocols = ProtocolRegistry.of(
+        ProtocolDescriptor.request(1001, Request.class, Response.class),
+        ProtocolDescriptor.response(1001, Response.class));
 
 try (GameRuntime runtime = GameRuntimeBuilder.builder()
         .routeDomains(List.of(RouteDomain.of(1, "application-defined")))
         .routeExecutors(List.of(
             RouteExecutorBinding.of(RouteExecutors.platformThreads(4), 1)))
-        .protocols(List.of(protocols))
+        .protocols(protocols)
         .handlers(List.of(new Requests()))
         .build()) {
     runtime.dispatch(new DefaultHandlerContext(1, 10001, new Request(10001)));
@@ -131,7 +129,7 @@ RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot�
 - `runtime.call()` 必须在该 Runtime 的 Context 内调用。成功和失败回调都回原 Route、恢复原 Context；返回 Route 已拒绝时只报告错误，不在别的 Route 上执行回调。
 - 同 Route 串行不等于异步调用期间锁住实体。跨 Route 返回值应为不可变结果、快照或独立 DTO。
 - Metadata 的 `byte[]` 按不可变约定共享。Wire 为 `uint16 key + uint16 length + bytes`，不含类型字段。读取时才调用 Key 的 codec。
-- Java RPC body 使用 ByteBuf；入站回调内借用，异步使用必须 retain/copy。出站通过校验后接管一个引用，编码为连续帧并释放 body。
+- Java RPC body 使用 ByteBuf；入站回调内借用，异步使用必须 retain/copy。出站通过校验后接管一个引用，编码时不超过 2 KiB 的 body 复制进帧、更大的直接引用，写出后释放 body。
 - Cron 支持六字段数字表达式（秒、分、时、日、月、周），支持 `* ? , - /`，周日为 1，默认 UTC。当前不支持 Quartz 的 `L/W/#`、名称与年份字段。
 - RPC 每 Node 一个 HashedWheelTimer，负责调用超时、握手超时和重连延迟；心跳由连接上的 IdleStateHandler 负责。调用超时从网络 ACCEPTED 后开始。
 - Network 回调与 RPC 完成回调应快速返回；耗时业务应投递到 Runtime。RPC Core 不自动解码响应，也不自动切换 Runtime Route。

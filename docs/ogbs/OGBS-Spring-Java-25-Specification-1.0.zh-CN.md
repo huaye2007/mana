@@ -8,7 +8,7 @@
 
 `cn.managame.spring.runtime.EnableGameRuntime` 导入内部配置，扫描 Handler/EventHandler/HttpHandler 标记及声明/继承 Cron 方法的类。`String[] basePackages() default {}` 对应 ComponentScan.basePackages，空值使用被注解配置类的包，采用标准 Spring profile/名称规则，不需额外 Component。声明类型可识别的既有 Bean 产物也参与；不为推断任务类型初始化未知 FactoryBean 产物。发现结果构建时冻结，按目标对象身份去重；prototype 对象和可识别 Spring AOP 代理以 IllegalArgumentException 拒绝。Runtime 校验注解签名，包括非法 private 方法。Runtime 注解不包含 Spring 注解。
 
-函数式 Bean 扩展 `GameRuntimeConfigurer.configure(GameRuntimeBuilder)` 在收集 Handler/任务及全部 ProtocolProvider Bean 后按 Spring 顺序执行。Builder 集合方法替换列表，显式 configurer 可覆盖扫描结果。应用提供 Domain/RouteExecutor 绑定及接入身份策略。执行器宜为 destroyMethod="close" 的 Bean，确保启动失败后释放调用方资源；成功构建转移生命周期至 Runtime，内置 close 幂等。配置创建名为 gameRuntime 的单例，绑定 Events 供外部静态发布；绑定冲突时关闭新实例。Handler 构造器不能依赖正在构造的 Runtime，延迟 provider 只能启动完成后使用。
+函数式 Bean 扩展 `GameRuntimeConfigurer.configure(GameRuntimeBuilder)` 在收集 Handler/任务及全部 ProtocolRegistry Bean（合并为一个注册表）后按 Spring 顺序执行。Builder 集合方法替换列表，显式 configurer 可覆盖扫描结果。应用提供 Domain/RouteExecutor 绑定及接入身份策略。执行器宜为 destroyMethod="close" 的 Bean，确保启动失败后释放调用方资源；成功构建转移生命周期至 Runtime，内置 close 幂等。配置创建名为 gameRuntime 的单例，绑定 Events 供外部静态发布；绑定冲突时关闭新实例。Handler 构造器不能依赖正在构造的 Runtime，延迟 provider 只能启动完成后使用。
 
 ## 2. Data 注册
 
@@ -18,7 +18,7 @@
 
 ## 3. 停机
 
-内部 ContextClosedEvent 监听器使用 Ordered.HIGHEST_PRECEDENCE、supportsAsyncExecution=false。在 Spring 普通同步事件广播下只处理自身 Context，执行 Runtime.shutdown，以每次 30 秒间隔重复等待、无总超时，然后 Runtime.close。中断不放弃排空，结束后恢复中断状态。普通关闭监听器（例如 demo TCP 关闭）随后执行，再停止托管 HTTP 生命周期、销毁 Bean 和 Data 最终回写。不得安装更早/同优先级的资源关闭监听器、以自定义异步广播改变顺序，或在 Runtime Route 关闭 Context，否则违反 S-CLOSE-01。refresh 失败按 Spring 销毁清理。本模块持有托管 HTTP 监听器，不持有数据库池或额外业务线程。监听器可能在 refresh 最后生命周期阶段对外可达；其他生命周期若随后失败，Spring 关闭监听器及 Runtime，但此失败清理不保证优雅排空或响应投递。
+内部 ContextClosedEvent 监听器使用 Ordered.HIGHEST_PRECEDENCE、supportsAsyncExecution=false。在 Spring 普通同步事件广播下只处理自身 Context，执行 Runtime.shutdown，最多等待 `game.runtime.drain-timeout-millis`（默认 60000，须为正数）；未排空时记录包含未完成数量的 WARNING，然后执行 Runtime.close。中断会提前结束等待、关闭 Runtime 并恢复中断状态。普通关闭监听器（例如 demo TCP 关闭）随后执行，再停止托管 HTTP 生命周期、销毁 Bean 和 Data 最终回写。不得安装更早/同优先级的资源关闭监听器、以自定义异步广播改变顺序，或在 Runtime Route 关闭 Context，否则违反 S-CLOSE-01。refresh 失败按 Spring 销毁清理。本模块持有托管 HTTP 监听器，不持有数据库池或额外业务线程。监听器可能在 refresh 最后生命周期阶段对外可达；其他生命周期若随后失败，Spring 关闭监听器及 Runtime，但此失败清理不保证优雅排空或响应投递。
 
 ### 3.1 托管 HTTP
 
@@ -67,20 +67,20 @@ GameRpcCodec 提供 `byte[] encode(Object)` 和 `<T> T decode(byte[], Class<T>)`
 
 GameRpcConfigurer Bean 按 Spring 顺序执行。`configure(builder)` 在属性配置后调整 RpcNodeBuilder，此处设置的 handler 会被替换。随后 `decorate(handler)` 按同一顺序包装适配器的 Runtime RpcHandler（最后一个 configurer 位于最外层），返回值不得为 null；GameRouter.forRouterNode/forServiceNode 即通过它把托管 handler 作为 direct handler。build 之后、start 之前按顺序调用 `attach(node)`（例如 `routing.start(node)`）；attach 失败时逆序 detach 已成功的 configurer，并关闭未启动的 Node。生命周期停止时，在 Node 关闭前逆序调用 `detach(node)`（例如 `routing.close()`），失败只记录日志并继续关闭。路由请求进入 RouterHandler，而不是 runtime.dispatchRpc：其解码、Runtime 分发及精确路由回复（用保存的 RoutedRequest 调用 ServiceRouting.reply）仍由应用实现。`gameRpc` 持有 RpcNode 生命周期，`gameRpcNode` 暴露拓扑管理与 localAddress；内部 SmartLifecycle 在 singleton 初始化后以 Integer.MAX_VALUE phase 启动。Context.close 先按 S-CLOSE-01 排空 Runtime，再于生命周期停止阶段关闭 RPC，销毁幂等关闭。Context.stop 本身不是 Runtime 优雅停服，停止的 Node 不能重启。不要手动启停托管 Node，也不要通过它发送原始 call/notify/reply：内部回调关联由 GameRpc 管理，原始 API 使用独立 RpcNode。Handler 构造必须延迟获取 GameRpc（ObjectProvider 或后续 setter 使用），避免 Runtime/Handler/GameRpc 构造循环。
 
-入站 Call 和 Notify 按 ProtocolType.REQUEST 查 command；Notify 的 requestId 为零，不使用独立 NOTIFY 协议注册。未知 command、codec 异常及 Runtime 同步接纳/签名/Key 失败传播到 RpcHandler：Call 尝试 HANDLER_ERROR，Notify 仅诊断。有效对象将来源 Node/Slot、command/requestId、调用方 Key/业务身份及收到的原 Metadata 传给 runtime.dispatchRpc。注解 Domain 和普通 HandlerMethod 签名保持一致，不暴露或伪造物理 Connection。
+入站 Call 和 Notify 按 ProtocolDescriptor.Type.REQUEST 查 command；Notify 的 requestId 为零，不使用独立 NOTIFY 协议注册。未知 command、codec 异常及 Runtime 同步接纳/签名/Key 失败传播到 RpcHandler：Call 尝试 HANDLER_ERROR，Notify 仅诊断。有效对象将来源 Node/Slot、command/requestId、调用方 Key/业务身份及收到的原 Metadata 传给 runtime.dispatchRpc。注解 Domain 和普通 HandlerMethod 签名保持一致，不暴露或伪造物理 Connection。
 
 `GameRpc.call(targetNodeId, routeKey, businessIdType, businessId, metadata, request, RouteCallback<T>)` 要求当前处于该 Runtime 的 Route，且存在 REQUEST 到响应的注册绑定；调用方 T 须符合绑定。序列化请求后登记 runtime.callback，成功/失败均回到精确来源 Context/Route，包含立即无 Peer 拒绝。远端错误码及本地 RPC 失败进入 RouteCallback.onFail；成功响应无法解码则为 PROTOCOL_ERROR。登记回调后发生同步失败，以 UNAVAILABLE 完成预留再重新抛出；登记前的序列化/绑定失败仅抛异常，同步拒绝不遗留回调预留。续接由 Runtime 执行，不创建 Spring 业务执行器。此对象便利回调不暴露响应 Metadata；需要传输级响应 envelope 时使用独立原始 RpcNode。
 
 `GameRpc.notify(...)` 接受相同目标/Key/身份/Metadata/请求，返回 RpcSendStatus，无须当前 Route，也不能回复。`reply(response)` 从 Contexts.current(RpcHandlerContext.class) 获取上下文；`reply(context, response)` 允许保存不可变 envelope 做延迟回复，不保留传输 body。回复类型必须符合原请求注册的响应类，requestId 必须非零。`replyError(context, positiveCode)` 发送空错误响应。成功/失败回复的 Metadata 均为空。保留来源 Slot 优先和替换连接 fallback；ACCEPTED 仅代表传输接纳，不代表远端完成。业务 Handler 返回值不自动回复 RPC。异步 Handler 已接纳后的异常仍由普通 RuntimeErrorHandler 处理；需要错误回复时由业务显式发送，否则调用方可能超时。Runtime 外延迟应用工作不自动计入 drain。
 
-示例（ProtocolProvider 绑定 QueryReq 到 QueryRes）：
+示例（ProtocolRegistry 声明 `request(cmd, QueryReq.class, QueryRes.class)` 与 `response(cmd2, QueryRes.class)`）：
 
 ```java
 @Configuration
 @EnableGameRuntime(basePackages = "my.game")
 @EnableGameRpc
 class RpcConfig {
-    // 提供 GameRpcCodec、ProtocolProvider、RouteExecutor 和 GameRuntimeConfigurer。
+    // 提供 GameRpcCodec、ProtocolRegistry、RouteExecutor 和 GameRuntimeConfigurer。
 }
 
 @Handler(domain = ROLE)
@@ -127,7 +127,7 @@ demo 直接依赖 game-spring 和 game-rpc：game-spring 提供传递 Runtime/Da
 @EnableGameRuntime(basePackages = "my.game")
 @EnableGameData(basePackages = "my.game")
 class GameConfig {
-    // 提供 DataSource、ProtocolProvider、RouteExecutor 和 GameRuntimeConfigurer Bean。
+    // 提供 DataSource、ProtocolRegistry、RouteExecutor 和 GameRuntimeConfigurer Bean。
 }
 ```
 

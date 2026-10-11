@@ -117,6 +117,6 @@ Data 错误码用于后台持久化失败上下文；同步加载/操作/关闭�
 
 ## 5. 实现与验证
 
-源码：[Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java)、[Metadatas](../../game-core/src/main/java/cn/managame/core/Metadatas.java)、[FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java)。
+源码：[Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java)、[MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java)、[FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java)。
 
 测试：[MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java) 覆盖共享数组、惰性 codec、结构损坏、重复 Key、边界、大小端向量、Builder 快照、boolean 黄金字节/非法值/缺失默认值，以及 int32 有符号边界。

@@ -173,17 +173,32 @@ class CronSchedulerTest {
             }
         }
         runtime = builder((d, k, task) -> {
-            if (attempts.incrementAndGet() == 1) return RouteExecuteStatus.OVERLOADED;
+            if (attempts.incrementAndGet() == 1) {
+                set("2026-09-25T00:01:59.990Z"); // each occurrence is planned once: time moves on to the next one
+                return RouteExecuteStatus.OVERLOADED;
+            }
             queue.add(task);
             return RouteExecuteStatus.ACCEPTED;
         }, new BrokenJob()).build();
-        next().run(); // the next cycle after rejection is still delivered
+        Runnable delivered = next(); // the next cycle after rejection is still delivered
+        set("2026-09-25T00:02:59.990Z");
+        delivered.run();
         Runnable subsequent = next(); // the exception also preserves recurrence
         assertTrue(runtime.cron().cancel(BrokenJob.class, "tick"));
         subsequent.run();
         assertEquals(1, calls.get());
         assertEquals(List.of(ROUTE_EXECUTOR_OVERLOADED, RUNTIME_EXECUTION_ERROR),
             errors.stream().map(RuntimeError::errorCode).toList());
+    }
+
+    @Test void anOccurrenceIsNeverPlannedTwiceWhenTheTimerFiresEarly() throws Exception {
+        nearMinuteEnd();
+        Job job = new Job();
+        build(job);
+        Runnable first = next();   // 00:01:00, fired while the business clock still reads 00:00:59.990
+        first.run();               // re-planning from the same clock must not target 00:01:00 again
+        noTask();
+        assertEquals(1, job.calls.get());
     }
 
     @Test void keysUseDeclaringClassAndRescheduleAllReactivatesCancelledEntries() throws Exception {

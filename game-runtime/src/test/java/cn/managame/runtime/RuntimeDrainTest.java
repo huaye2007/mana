@@ -5,7 +5,8 @@ import cn.managame.runtime.context.*;
 import cn.managame.runtime.error.*;
 import cn.managame.runtime.executor.*;
 import cn.managame.runtime.handler.*;
-import cn.managame.runtime.protocol.Protocols;
+import cn.managame.runtime.protocol.ProtocolDescriptor;
+import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.*;
 import org.junit.jupiter.api.Test;
 import java.time.Duration;
@@ -32,7 +33,7 @@ class RuntimeDrainTest {
     GameRuntime runtime(RouteExecutor executor, List<RuntimeError> errors) {
         return GameRuntimeBuilder.builder().routeDomains(List.of(RouteDomain.of(1, "role")))
                 .routeExecutors(List.of(RouteExecutorBinding.of(executor, 1)))
-                .protocols(List.of(r -> r.register(Protocols.request(1, Request.class))))
+                .protocols(ProtocolRegistry.of(ProtocolDescriptor.request(1, Request.class)))
                 .handlers(List.of(new HandlerOwner())).errorHandler(errors::add).build();
     }
 
@@ -59,7 +60,7 @@ class RuntimeDrainTest {
 
     @Test void asynchronousCallbackReservesDrainAndRestoresOriginalMetadataAndIdentity() throws Exception {
         var queue = new QueueExecutor(); var bound = new AtomicReference<RouteCallback<Integer>>();
-        var delivered = new AtomicInteger(); var metadata = Metadatas.builder().put(MetadataKeys.intKey(1), 42).build();
+        var delivered = new AtomicInteger(); var metadata = Metadata.builder().put(MetadataKey.intKey(1), 42).build();
         var errors = new ArrayList<RuntimeError>();
         try (var runtime = runtime(queue, errors)) {
             runtime.dispatch(null, 7L, 1, 100L, metadata, new Request(() -> bound.set(runtime.callback(new RouteCallback<>() {
