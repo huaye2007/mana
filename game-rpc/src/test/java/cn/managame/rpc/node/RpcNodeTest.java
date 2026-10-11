@@ -131,16 +131,22 @@ class RpcNodeTest extends RpcTestSupport {
         }
     }
 
-    @Test void passiveUpgradePreservesIdentityAndConflictIsRejected() {
+    @Test void onlyOneSideOfAPairMayAddPeer() {
         try (RpcNode n = node(1, new Probe())) {
             Fake c = bind(n, 2, 0, 1);
             RpcPeer before = n.peers.get(2);
-            n.addPeer(2, LOCAL, 1);
+            assertThrows(IllegalStateException.class, () -> n.addPeer(2, LOCAL, 1));   // 2 already dialed us
             assertSame(before, n.peers.get(2));
-            n.addPeer(2, LOCAL, 1);
-            assertThrows(IllegalStateException.class, () -> n.addPeer(2, LOCAL, 2));
-            assertThrows(IllegalStateException.class,
-                    () -> n.addPeer(2, new java.net.InetSocketAddress("127.0.0.1", 12345), 1));
+            assertTrue(c.active);
+            // A locally dialed peer rejects an inbound handshake from the same node.
+            var unreachable = new java.net.InetSocketAddress("127.0.0.1", 1);
+            n.addPeer(3, unreachable, 1);
+            n.addPeer(3, unreachable, 1);                                            // idempotent
+            assertThrows(IllegalStateException.class, () -> n.addPeer(3, unreachable, 2));
+            Fake rejected = new Fake(); n.connected(rejected);
+            receive(n, rejected, RpcWire.encodeHandshake(new RpcHandshake(3, 0, 1)));
+            assertFalse(rejected.active);
+            assertNull(n.peers.get(3).slots[0].connection.get());
             n.removePeer(2);
             assertFalse(c.active);
             assertFalse(n.peers.containsKey(2));

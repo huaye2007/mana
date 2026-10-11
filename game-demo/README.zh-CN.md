@@ -224,6 +224,8 @@ POST /demo/echo 直接接收 String，POST /demo/dto 和 GET /demo/query 接收 
 
 在 IDE 中通过 game-demo classpath 运行对应 main。示例将响应等待限制为五秒，失败向调用方传播；这只是演示期限，不是生产配置。独立 RuntimeHttpExample.Methods 带隔离 profile，仅在示例入口中手动构造；正常主应用扫描不会注册这个 Handler，也不会增加 /echo、/lookup 路径。不要为 GameDemo 启用这个隔离 profile。
 
+托管 RPC 为可选配置：[GameRpcConfig](src/main/java/cn/managame/demo/common/rpc/GameRpcConfig.java) 只在刷新前已存在 `game.rpc.node-id` 时生效，导入 Fory 配置并提供 GameRpcCodec（按无类型反序列化后精确类型转换）。主应用不配置该属性时扫描会跳过它；拓扑仍在刷新后由应用调用 `RpcNode.addPeer`。[DemoRpcBootstrapTest](src/test/java/cn/managame/demo/DemoRpcBootstrapTest.java) 验证启动、codec 往返与监听端口释放。
+
 NetworkEchoExample 演示字符串编解码；若回传引用计数 body，则需独立 retain。HttpServerExample 在借用期内 retain echo body 给同步响应，HttpAsyncServerExample 先取得不可变 UTF-8 内容再提交给自有执行器。RuntimeHttpExample 展示 POST/body 与 GET/query Key，以及跨 Route 回调返回对象；异步回复不得读取已释放请求。RpcEchoExample 在两个本地节点上展示原始 RPC call/reply 与借用 body retain，不会为主应用自动启动 RPC 监听。业务对象 RPC 接入使用 [Spring RPC 适配](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
 
 五项独立入口执行测试与主应用测试一起通过 `mvn -pl game-demo -am clean verify` 或根 `mvn clean verify`。测试夹具限制 Netty 线程、启用泄漏检测并处理 Windows Selector TCP 唤醒兼容；生产入口不修改 JVM 系统属性。旧独立示例坐标与包名不保留别名，调用方改用 game-demo 和 cn.managame.demo.examples。跨语言互操作、公网部署及生产容量仍未验证。

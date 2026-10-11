@@ -110,8 +110,8 @@ try (GameData data = GameDataBuilder.builder()
         .flushInterval(Duration.ofSeconds(1))
         .batchSize(500)
         .errorHandler(failure -> archiveFailureSynchronously(failure))
-        .retryPolicy(failure -> isRetryable(failure.cause()))
-        .maxAttempts(3)
+        .retryPolicy(RetryPolicy.transientFailures())
+        .shutdownTimeout(Duration.ofSeconds(30))
         .build()) {
     PlayerRepository players = data.repository(PlayerRepository.class);
 }
@@ -124,8 +124,8 @@ Applications provide DataSource, business classes, and archive/retry functions; 
 | cacheExpire | 30 minutes | Positive and greater than flushInterval; deploy well above actual save delay |
 | flushInterval | 1 second | Positive monotonic target interval |
 | batchSize | 500 | Positive integer |
-| maxAttempts | 3 | Includes first attempt; positive; retry only when policy returns true |
-| retryPolicy | Always false | One execution by default; no built-in SQLState/Mongo classification |
+| shutdownTimeout | 30 seconds | Nonnegative; how long close keeps retrying retryable failures before dropping and reporting them |
+| retryPolicy | RetryPolicy.transientFailures() | true keeps the change for the next pass; false splits, drops and reports; see section 5 |
 | errorHandler | System.Logger | Final-failure diagnostics; application archives failed data |
 | partitionZone | UTC | Explicit ZoneId; configurable, e.g. Asia/Shanghai |
 | mysql(DataSource) | Unconfigured | Borrows the DataSource; assembles JdbcMysqlAccess/MysqlEntityMapper for backend-free Repository registration |
@@ -147,7 +147,7 @@ GameData closes only its scheduler, not DataSource, MongoClient, or external Map
 | Repository parsing | Direct parameterized parent, concrete Entity, no-arg Repository constructor, duplicates | No partial GameData returned |
 | Identity/log compilation | EntityMeta/K match; MysqlLogWriter | No persistence started |
 | State Mapper.initialize | Backend mapping and Schema | Executed DDL not wholly rolled back |
-| WriteBehindManager creation | Two buffers, error/retry configuration, scheduler | Internal assembly only |
+| WriteBehindManager creation | Pending tables, error/retry configuration, scheduler | Internal assembly only |
 | Repository initialization | Inject dependencies, create caches, register logs | No uninitialized Repository exposed |
 | GameData creation | Fixed class-to-instance mapping, periodic startup | Usable entry returned |
 
@@ -193,84 +193,66 @@ Mapper.loadGroup returns a nonnull list, empty for no rows. Repository defensive
 
 ## 5. Write-back implementation and limits
 
-Exactly two PendingBuffers precreate EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>. PendingChange stores operation and entity reference; DELETE stores no entity. Each record rereads volatile activeBuffer and coalesces through compute, never caching a buffer reference.
+Each EntityMeta has one pending table, `pending: ConcurrentHashMap<PrimaryId, Change>`, plus an `inflight` table for changes being saved. A Change holds the operation and the latest entity reference and compares by identity. record merges with `pending.compute` using the merge matrix: one compute per mutation, no extra lock.
 
-The sole persistence thread swaps A/B, waits a fixed 100ms grace, processes every old-buffer entity batch, reports final failures, then clears it. No cross-buffer merge. Next delay is max(0, interval - previous round duration), with no catch-up backlog of missed periods.
+**Claim instead of swapping buffers.** The single saving thread walks pending and, for each `(id, change)`, first puts it into inflight and then conditionally removes it with `pending.remove(id, change)`. Success claims it. Failure means a newer record merged in after the walk read it; the inflight copy is withdrawn and the newer change waits for the next pass. A record arriving after the claim creates a new pending entry. There is therefore no window in which a write between traversal and clearing is lost, and no grace period or writer counter is needed. With one saving thread, an older change for an id always executes before a newer one.
 
-**The fixed 100ms grace simplifies buffer switching; it is not a strict concurrency barrier.** A producer paused after obtaining the old buffer for longer than grace may miss traversal or race clear. There is no writer counter, sealed buffer, epoch, or third buffer, and no arbitrary-pause losslessness guarantee. record must remain short; applications serialize business entity access.
+**Cache misses consult unsaved changes first.** A Single load checks pending/inflight first and returns the in-memory entity (null for DELETE) without reading storage. A Group load collects the group's unsaved changes, reads storage, then overlays them. Cache expiry can therefore never roll back unsaved modifications. Group DELETE changes keep the entity reference so their group can be determined.
 
-Admission uses a shared read lock; close takes the write lock to close admission. This protects admitted-operation/shutdown races, not buffer switching or serialization of unrelated entities. close awaits the pipeline and handles both buffers; any remembered final failure throws DataSaveException, regardless of later successes.
+**Failure classification.** Mappers apply each batch atomically (MySQL in one transaction, Mongo with `_id` upsert/replace), so a failed batch leaves no partial rows and can be retried or split safely:
 
-Caches, log queues, and pending sets have no capacity limit. Sustained production above persistence rate grows memory. Capacity backpressure and production-capacity validation are unimplemented.
+1. `RetryPolicy.shouldRetry` returns true (default `RetryPolicy.transientFailures()`: lost/refused connections, pool timeouts, I/O, lock wait timeout 1205, deadlock 1213, SQLState 08xxx/40xxx, Mongo network/timeout/primary changes): the whole batch merges back into pending and is retried on the next flush, without an attempt limit. Kept changes are deduplicated by entity id, so they are bounded by the number of dirty entities, not by update count.
+2. Non-retryable with more than one row: the batch is split and rows execute one by one, so the other rows still persist; a single row's failure is classified again.
+3. Non-retryable single row: the change is dropped, counted in failedBatches, reported synchronously to DataErrorHandler (batch holds only that entity or id; attempt=1 means the batch was a single row, attempt=2 an isolated row after splitting), and later flush/close throw DataSaveException.
+4. If merging back conflicts with a newer change (for example an older DELETE followed by a business UPDATE), the newer change is kept and the older one is dropped and reported as in item 3.
 
-<a id="51-pendingbuffer-的数据形状"></a>
+A MySQL UPDATE that matches zero rows fails (the row is missing; silent success would lose the change). It is not retryable and ends as a reported single row. This relies on matched-row counts: Connector/J's default `useAffectedRows=false` qualifies; do not enable `useAffectedRows=true`. SUCCESS_NO_INFO from `rewriteBatchedStatements=true` is not checked.
 
-### 5.1 PendingBuffer shape
+The admission path takes a shared read lock and close takes the write lock to stop admission; the lock only orders shutdown against admitted operations and is not used for saving.
+
+**Thread visibility.** The saving thread reads entity state at save time without snapshots. Collections modified by business code inside entities must be thread-safe to avoid concurrent-modification failures during serialization. Cross-field consistency (for example, saving between deducting gold and adding an item) is not guaranteed; the next pass writes the final state, and only a crash at that moment leaves an intermediate state. Fields that must be consistent should be changed together before one update call.
+
+Caches and log queues have no capacity limit and there is no WAL; a process crash loses at most one flush interval plus any kept failed changes.
+
+### 5.1 Data shape
 
 ```text
-WriteBehindManager
-  activeBuffer ──→ A or B (volatile)
-  A: EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>
-  B: EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>
+PendingBuffer
+  pending : EntityMeta → ConcurrentHashMap<PrimaryId, Change>   merged by business threads
+  inflight: EntityMeta → ConcurrentHashMap<PrimaryId, Change>   claimed, not yet saved
 
-PendingChange
+Change (identity equality)
   operation
-  entityReference (null for DELETE)
+  entity (latest reference; null for a Single deleted by id)
 ```
 
-Outer keys are EntityMeta, not EntityMapper. Player and guild may share a MysqlEntityMapper and both have id=42; they need separate pending maps for separate tables. Every record rereads activeBuffer; compute coalesces each key without per-update deep copies.
-
-<a id="52-一轮-flush-的时间线"></a>
+The outer key is EntityMeta, not EntityMapper: players and guilds can share one MysqlEntityMapper with id=42 each, and their changes land in different tables.
 
 ### 5.2 One flush timeline
 
 ```text
-Record monotonic round start
-→ swap A/B; later producers use new active
-→ wait fixed 100ms
-→ traverse old buffer; split each EntityMeta into operation-phase batches
-→ execute/retry by policy/report final error for each batch
-→ clear processed old buffer
-→ bounded log drain for this round
-→ schedule after max(0, interval - elapsed)
+for each EntityMeta:
+  claim every pending entry (put into inflight, then conditional remove)
+  group as DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize
+  per batch: success → leave inflight
+             retryable failure → merge back into pending, leave inflight
+             non-retryable → split into rows; non-retryable row → drop and report
+logs: finite drain per pass, batched per partition table, failures classified the same way
+      (retryable logs go back to the queue tail)
+schedule the next pass after max(0, interval - pass duration)
 ```
 
-Pipeline exclusion prevents periodic and close-driven Mapper batches from running concurrently. Entity traversal is not business transaction order; ConcurrentHashMap key traversal is not update call order. Multi-entity ordering requirements cannot rely on traversal as a serial transaction.
+The pipeline is mutually exclusive: periodic passes, explicit flush and close never run Mapper batches concurrently. Neither entity traversal order nor primary-key traversal order is business transaction order.
 
-The grace failure example must remain documented: a thread takes old A and pauses; persistence switches to B, waits 100ms, traverses/clears A; the thread then writes A. Its change may miss the round or be erased by racing clear. Without strict completion handshake, arbitrary-pause safety is not claimed. A future counter/sealing/epoch protocol must update mechanics, performance tradeoffs, and concurrency tests, not merely remove this limitation.
+### 5.3 RetryPolicy and error callbacks
 
-<a id="53-批次错误与尝试次数"></a>
-
-### 5.3 Batch errors and attempts
-
-Semantic pseudocode, not an API:
-
-```text
-attempt = 1
-execute batch
-on failure:
-    create DataFailure with current attempt
-    if attempt < maxAttempts and RetryPolicy permits:
-        increment attempt and immediately retry same batch
-    else:
-        remember lifetime final failure
-        synchronously invoke DataErrorHandler
-        continue next batch
-```
-
-No backoff, jitter, or separate retry thread. RetryPolicy/DataErrorHandler run synchronously in the persistence pipeline and extend round duration. Policy failure adds diagnostics and becomes final failure; Handler failure logs and continues.
-
-Callbacks cannot structurally modify DataFailure.batch, but elements remain entity references, not immutable snapshots. DELETE batches contain IDs; writes/logs contain objects. Construct failure context only on actual failure; successful paths create no archive copies.
-
-<a id="54-close-的内部屏障"></a>
+RetryPolicy only chooses between keeping for the next pass and splitting/dropping; it never retries immediately within a pass and has no backoff thread, so retryable failures are retried at flushInterval. `RetryPolicy.never()` restores split-and-drop for every failure. A RetryPolicy that throws is treated as non-retryable. DataErrorHandler receives only dropped changes; it runs synchronously on the saving thread and can serialize the entity to a local dead-letter file for manual repair. Retryable failures only log one WARNING per pass and do not call DataErrorHandler.
 
 ### 5.4 Internal close barrier
 
-Under admission write lock, close enters CLOSING and blocks new mutate, stops future scheduling, awaits the active pipeline, processes older inactive buffer, active buffer, and all admitted logs, then enters CLOSED. Remembered runtime final failures cause DataSaveException, also on repeated close.
+close switches to CLOSING under the admission write lock and stops periodic scheduling, then flushes repeatedly until nothing is pending or `shutdownTimeout` (default 30 seconds, waiting flushInterval between passes) elapses. It then switches to CLOSED for one final pass in which retryable failures are no longer kept: they are split, dropped and reported as in item 3, so DataErrorHandler can persist the entities. Any drop during the lifecycle makes close throw DataSaveException, and repeated calls report the same failure.
 
-Mapper/policy/error callbacks on the persistence thread cannot close and wait for themselves; the framework detects/rejects this. A driver operation that never returns can keep close waiting indefinitely; applications configure database timeouts.
-
-<a id="6-mysql-映射"></a>
+Closing from a Mapper, policy or error callback on the saving thread is detected and rejected. A database call that never returns also blocks close; timeouts remain pool/driver configuration.
 
 ## 6. MySQL mapping
 
@@ -416,9 +398,9 @@ public interface DataErrorHandler {
 }
 ```
 
-DataOperation includes INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT. It is actual persistence intent, not necessarily the last Repository method: DELETE then INSERT reports DELETE_INSERT. attempt starts at 1; successful retry does not invoke the final error Handler.
+DataOperation includes INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT. It is the actual persistence intent, not necessarily the last Repository method: DELETE then INSERT reports DELETE_INSERT. DataErrorHandler receives only dropped single changes: attempt=1 means the batch was a single row, attempt=2 an isolated row after splitting.
 
-Retain underlying causes. Policies may inspect MysqlException sqlState/vendorCode or Mongo exceptions; no built-in retryable list. Core alone allocates error numbers.
+Underlying causes are retained. The default `RetryPolicy.transientFailures()` walks the cause chain (including SQLException.getNextException and suppressed exceptions) using the rules in section 5; applications can combine it, for example `f -> RetryPolicy.isTransient(f.cause()) || myRule(f)`. `RetryPolicy.never()` disables keeping. Core alone allocates error numbers.
 
 <a id="92-易错契约的测试定位"></a>
 
@@ -431,17 +413,20 @@ Retain underlying causes. Policies may inspect MysqlException sqlState/vendorCod
 | Group entity deletion by database primary key | DataContractTest.loadedGroupDeletesByDatabaseId |
 | Legal/illegal merge matrix | DataContractTest.legalMergeTable / illegalMergeTable |
 | Illegal INSERT preserves cached object | DataContractTest.illegalInsertDoesNotReplaceCachedEntity |
-| Phase order, batch splitting, no cross-buffer merge | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossBuffers |
-| Opt-in bounded retry, continue after failure | DataContractTest.retryIsOptInBoundedAndKeepsBatchContext / finalFailureAndHandlerFailureDoNotStopLaterBatchesAndCloseReportsIt |
-| Closure awaits active pipeline and next buffer | DataContractTest.closeWaitsForActivePipelineAndFlushesNextBuffer |
+| Phase order, batch splitting, no merge across passes | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossFlushes |
+| Retryable failures kept and merged with newer changes; default classification | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / defaultPolicyKeepsOnlyTransientFailures |
+| Non-retryable bad row isolated, other rows saved | DataContractTest.nonRetryableBadRowIsIsolatedFromItsBatch / finalFailureAndHandlerFailureDoNotStopLaterBatchesAndCloseReportsIt |
+| Evicted entity with unsaved change reloads from memory | DataContractTest.evictedEntityWithUnsavedChangeReloadsFromMemoryNotStorage |
+| close retries, then drops and reports leftovers | DataContractTest.closeRetriesThenDropsAndReportsLeftovers |
+| Closure awaits active pipeline and saves later changes | DataContractTest.closeWaitsForActivePipelineAndFlushesNextBuffer |
 | Callback closure rejected without deadlock | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | Log partition/drain without Schema initialization | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization |
 | Same log error Handler, continue later partitions | LogContractTest.logFailuresReachSameHandlerAndDoNotBlockLaterPartitions |
 
-These tests do not prove arbitrary-pause safety of 100ms grace or replace real database failure/compatibility tests. New guarantees require implementation and verification, not broader claims about existing tests.
+These entry points use in-memory Mappers and do not replace real database failure/compatibility tests. New guarantees require implementation and verification, not broader claims about existing tests.
 
 ## 11. Explicit flush and DataStats
 
-`GameData.flush()` synchronously serializes two existing buffer-rotation/flush passes with the persistence pipeline; each keeps the existing 100 ms grace period. The periodic worker can run between passes. Quiesce writers before calling for a stable barrier; live concurrent writes are not snapshot-isolated. GameData remains usable afterward. Closed/closing Data rejects with DataOperationException, as does reentrant flush on the persistence callback thread. Any historical terminal failure raises DataSaveException after processing, including when current queues are empty; it is not automatically retried by flush. Close still reports the same failure. JDBC/Mongo timeout policy determines blocking time; avoid running a service-wide flush on a busy gameplay Route.
+`GameData.flush()` synchronously runs one pass on the existing pipeline: every change accepted before the call is claimed and saved, while changes written concurrently may wait for the next pass. Closed/closing Data and reentrant calls from persistence callbacks are rejected with DataOperationException. Afterwards any historical drop throws DataSaveException (even with an empty queue); retryable failures that remain kept also throw DataSaveException, but those changes stay pending for the next pass. JDBC/Mongo timeouts bound blocking; avoid running a service-wide flush on a busy game Route.
 
-`GameData.stats()` returns DataStats: accepting, pendingChanges (coalesced entries across both buffers, possibly including a batch currently saving), queuedLogs, failedBatches (terminal failures, not retry attempts), flushes (rotation passes, not close's final processing), saveNanos (pass duration including grace), singleCacheEntries (including negative entries), groupCacheEntries (groups, not entities). Values can vary between reads. Log queue size traversal is O(n), so sample at management frequency rather than per message. No exporter, HTTP management endpoint, hard queue limit, dirty tracking, or snapshot copying is implicitly installed. [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java) validates both buffers, statistics, callback rejection and persistent failure history. Real database durability/fault behavior requires configured integration services.
+`GameData.stats()` returns DataStats: accepting, pendingChanges (pending plus inflight entries, including kept failed changes), queuedLogs, failedBatches (dropped changes, not retry counts), flushes (passes, excluding close's final pass), saveNanos, singleCacheEntries (including negative entries), groupCacheEntries (groups, not entities). Fields can change between reads. Log queue size is O(n); sample at management frequency. No exporter, HTTP management endpoint, hard queue limit, dirty detection or snapshot copying is installed implicitly. [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java) verifies claim semantics, statistics, callback rejection and historical failures. Real database durability/failure behavior requires configured integration services.

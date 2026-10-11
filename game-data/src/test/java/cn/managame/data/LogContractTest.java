@@ -28,7 +28,18 @@ class LogContractTest {
             if (fail) throw new IllegalStateException("log storage");
             sqls.add(s); batches.add(a); return new int[a.size()];
         }
-        public <T> T transaction(TransactionAction<T> a) { throw new AssertionError("Log must not transact"); }
+        /** Each log batch is atomic: the writer runs it inside one transaction. */
+        public <T> T transaction(TransactionAction<T> a) {
+            var outer = this;
+            try { return a.execute(new MysqlTransaction() {
+                public <R> R queryOne(String s,Object[] x,RowMapper<R> m) { return outer.queryOne(s,x,m); }
+                public <R> List<R> query(String s,Object[] x,RowMapper<R> m) { return outer.query(s,x,m); }
+                public int update(String s,Object[] x) { return outer.update(s,x); }
+                public int[] batchUpdate(String s,List<Object[]> x) { return outer.batchUpdate(s,x); }
+            }); }
+            catch (RuntimeException e) { throw e; }
+            catch (Exception e) { throw new IllegalStateException(e); }
+        }
     }
     @Test void closeDrainsPartitionsAndBatchesWithoutSchemaInitialization() {
         var access = new Access();

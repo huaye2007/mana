@@ -8,6 +8,8 @@ final class RpcConnectionContext {
     ConnectionSlot expectedSlot, slot;
     volatile Timeout timeout;
     final AtomicBoolean handshakeFinished = new AtomicBoolean();
+    /** Nonce sent in our initiating handshake; the reply must echo it. */
+    volatile byte[] sentNonce;
     boolean disconnected;
     void cancelHandshake() {
         handshakeFinished.set(true);

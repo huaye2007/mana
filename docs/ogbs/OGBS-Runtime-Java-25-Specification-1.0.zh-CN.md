@@ -473,8 +473,9 @@ interface RouteExecutor extends AutoCloseable {
 | --- | --- | --- |
 | RouteExecutors.platformThreads(workers) | 固定数量平台线程分片 | 每个分片默认 65,536 个等待任务 |
 | new StripedRouteExecutor(workers, queueCapacity) | 完整 Route 哈希到单线程分片 | 每分片等待队列；不含正在执行任务 |
-| RouteExecutors.virtualThreads() | 每个活跃 Route 一个串行 Mailbox | 默认总计 65,536 个未完成任务 |
-| new VirtualThreadRouteExecutor(capacity) | 活跃 Mailbox 由虚拟线程处理 | 所有 Route 合计，包含正在执行任务 |
+| RouteExecutors.virtualThreads() | 每个活跃 Route 一个串行 Mailbox | 默认总计 65,536 个未完成任务，单 Route 最多 1,024 个等待任务 |
+| new VirtualThreadRouteExecutor(capacity) | 活跃 Mailbox 由虚拟线程处理 | 所有 Route 合计，包含正在执行任务；单 Route 上限为 min(capacity, 1024) |
+| new VirtualThreadRouteExecutor(capacity, routeCapacity, idleTimeout) | 同上 | routeCapacity=1..capacity，单 Route 等待任务上限，不含正在执行的任务 |
 
 参数必须为正数。平台线程方案中不同 Route 可能落到同一分片并互相等待；虚拟线程方案保留空闲 Mailbox 以有界复用，不淘汰活跃工作；默认值与并发机制见 §7.3。
 
@@ -485,6 +486,8 @@ interface RouteExecutor extends AutoCloseable {
 假设 StripedRouteExecutor 有 2 个分片、每分片 queueCapacity=100。当分片 A 已有一个执行中任务和 100 个等待任务时，下一项映射到 A 的任务会过载；即使分片 B 空闲，也不借用 B 来打破 A 的排队边界。容量统计不包括正在执行的那个任务。
 
 VirtualThreadRouteExecutor(capacity=100) 则计算所有 Route 的未完成任务。若已有 99 个等待任务加 1 个执行中任务，容量已满；不能按“等待队列只有 99”再接受一个。虚拟线程数量不代表可无限接纳。
+
+单 Route 上限防止一个热点 Route（例如刷包的客户端）占满全局容量：capacity=100、routeCapacity=10 时，某个 Route 已有 10 个等待任务，它的下一项返回 OVERLOADED，其他 Route 仍可接纳。正在执行的任务不计入单 Route 等待数。连接级的速率限制（在解码前丢弃或断开）属于接入层，仍建议应用在网络管线中配置。
 
 同 Route 内联不经过上述容量检查，也不计入新的排队份额。递归触发同 Route Event/call 仍可能消耗调用栈，容量限制不会替业务防止无限递归。
 

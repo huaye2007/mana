@@ -2,7 +2,7 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-OGBS RPC 的 Java 25 实现，Maven cn.managame:game-rpc，依赖 game-core、game-network。提供内部 TCP、多 Slot、主动/被动 Peer、call/notify/reply、握手、心跳和带额外随机延迟的重连。Node 级 ID、通知隔离、恢复交接及验证边界见 [Java 规范 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。RPC 核心不依赖 Runtime/业务 codec，可选 Spring 适配由 game-spring 提供。
+OGBS RPC 的 Java 25 实现，Maven cn.managame:game-rpc，依赖 game-core、game-network。提供内部 TCP、多 Slot、主动/被动 Peer、call/notify/reply、握手、心跳和带额外随机延迟的重连。一对节点只能有一方调用 addPeer；可配置共享密钥做 HMAC 握手鉴权，并通过 writeBufferWaterMark、channelOption、transport 配置写缓冲上限、socket 选项和 TLS/合并 flush 等传输 handler。Node 级 ID、通知隔离、恢复交接及验证边界见 [Java 规范 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。RPC 核心不依赖 Runtime/业务 codec，可选 Spring 适配由 game-spring 提供。
 
 ## 规范
 

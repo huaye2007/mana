@@ -1,6 +1,6 @@
 <a id="本仓库-rpc-wire-profile-v1--2026-09-rpc-binding"></a>
 
-# Repository RPC Wire Profile v1 — 2026-09 RPC binding
+# Repository RPC Wire Profile v2 — 2026-10 RPC binding
 
 **[English](rpc-wire.md)** | [简体中文](rpc-wire.zh-CN.md)
 
@@ -27,16 +27,20 @@ Minimum frameLength=1. Java maxFrameSize **includes the four-byte length prefix*
 | Field | Width | Value |
 | --- | --- | --- |
 | magic | uint32 | 0x474e5352, retaining repository magic |
-| version | uint16 | 1 |
+| version | uint16 | 2 |
 | nodeId | uint32 | Nonzero and different from local ID |
 | slotId | uint8 | 0..slotCount-1 |
 | slotCount | uint8 | 1..255 |
+| timestamp | int64 | Sender Unix milliseconds; 0 without a secret |
+| nonce | 16 bytes | Sender random value; all zero without a secret |
+| peerNonce | 16 bytes | All zero from the initiator; the reply echoes the initiator's nonce |
+| mac | 32 bytes | With a secret, HMAC-SHA256(secret, every byte from magic through peerNonce); otherwise all zero |
 
-frameLength=13; full frame=17 bytes; no trailing data. Active side sends first. Passive side creates/reuses Peer and returns local identity with identical Slot information. Active side checks expected identity. Duplicate handshake, Slot conflict, count mismatch, or pre-handshake business/heartbeat frames close the candidate.
+frameLength=85; full frame=89 bytes; no trailing data. Only the side that called addPeer (the initiator) sends the first handshake. The passive side creates/reuses a passive Peer and returns local identity with identical Slot information. The initiator checks expected identity and requires the reply's peerNonce to equal the nonce it sent. Duplicate handshake, Slot conflict, count mismatch, pre-handshake business/heartbeat frames or a MAC mismatch close the candidate. An inbound handshake is also rejected when the receiver itself called addPeer for that nodeId: only one side of a pair may call addPeer.
 
-Handshake is not authentication. V1 RpcNode uses internal TCP; deployment network boundaries establish trust.
+**Authentication.** When a cluster's nodes share one secret, the passive side verifies the MAC, requires |local time − timestamp| within the allowed clock skew (Java default 60 seconds), and rejects a nonce seen again within that window; the initiator uses the echoed peerNonce to confirm the reply is fresh and answers this connection. A node without a secret accepts only all-zero MACs, so mismatched secret configuration fails to connect instead of silently skipping authentication. The MAC authenticates connection establishment only; it does not protect confidentiality or integrity of later frames. Use transport TLS when required.
 
-<a id="heartbeattype2"></a>
+The v2 handshake is incompatible with v1 (length and version differ); upgrade a cluster's nodes together. Request/Response/Heartbeat layouts are unchanged.
 
 ## Heartbeat (type=2)
 
@@ -73,7 +77,7 @@ Fixed overhead including type, excluding prefix: 28 bytes. requestId=0 means Not
 
 Fixed overhead including type, excluding prefix: 11 bytes. 0 means success; 1..9999 are reserved for framework errors; 10000..2147483647 are business errors. Core defines all numbers. Every valid response reaches unified RpcHandler; RPC does not translate remote errorCode into local onFail.
 
-Peer recreation within one local Node no longer resets ID allocation; see R-CALL-04 in the RPC Specification. This continuity changes no field, byte order or version. Wire v1 has no Node-incarnation field; full-wrap late replies and saved replies across local Node replacement require the documented deployment/application boundary.
+Peer recreation within one local Node no longer resets ID allocation; see R-CALL-04 in the RPC Specification. This continuity changes no field, byte order or version. Wire has no Node-incarnation field; full-wrap late replies and saved replies across local Node replacement require the documented deployment/application boundary.
 
 Read nonzero requestId first and claim PendingCall completion. Drop the rest of unmatched late/duplicate frames without parsing errorCode/Metadata. For matched responses, validate the remainder; corruption reports PROTOCOL_ERROR and closes the connection without losing completion notification.
 
@@ -96,7 +100,7 @@ No count/type. Duplicate/zero keys and truncated headers/values are invalid; unk
 Handshake: nodeId=0x01020304, slotId=2, slotCount=3:
 
 ```text
-0000000d 01 474e5352 0001 01020304 02 03
+00000055 01 474e5352 0002 01020304 02 03 (timestamp, nonce, peerNonce, mac: 72 zero bytes)
 ```
 
 Heartbeat:
@@ -157,7 +161,7 @@ RoutedError (op 15) uses an ordinary RPC Notify with outer requestId=0, sent ind
 
 SnapshotBegin captures the source revision. Ops 6..9 advance it once per accepted local mutation (including idempotent controls), modulo 2^64; their revision must be the committed source revision plus one. End commits the captured revision together with the staged bucket. A gap rejects the stream and requires a fresh snapshot; no replay log is defined. Verify compares revisions to detect omitted deltas even when a short reconnect was not observed.
 
-Profile v2 is incompatible with the earlier v1 draft because snapshot/delta fields and NodeRegister ACK changed. Reject v1; upgrade routing peers together. RPC Wire v1 framing/handshake and ordinary RPC messages are unchanged. The old Router-profile anchor is retained only for links.
+Profile v2 is incompatible with the earlier v1 draft because snapshot/delta fields and NodeRegister ACK changed. Reject v1; upgrade routing peers together. RPC Wire framing (handshake now v2) and ordinary RPC messages are unchanged. The old Router-profile anchor is retained only for links.
 
 ### RoutedData envelope
 

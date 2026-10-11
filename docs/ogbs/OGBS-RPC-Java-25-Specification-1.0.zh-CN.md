@@ -57,14 +57,18 @@ Builder 的 nodeId/address/handler 必填。nodeId 非零，int 保存 uint32 �
 | heartbeatInterval(Duration) | 10 秒 | 正 Duration 范围与 callTimeout 相同 |
 | heartbeatTimeout(Duration) | 30 秒 | 必须大于 interval |
 | maxFrameSize(int) | 4 MiB | >=32，包含长度前缀 |
+| writeBufferWaterMark(low, high) | Netty 默认 32 KiB / 64 KiB | 单连接出站缓冲超过 high 即不可写，send 跳到下一 Slot，全部不可写返回 UNAVAILABLE；内部链路通常应调大 |
+| channelOption(option, value) | 无 | 同时作用于出站和入站连接，例如 TCP_NODELAY、SO_SNDBUF |
+| transport(Consumer<ChannelPipeline>) | 无 | 在 RPC 分帧之前安装字节级 handler：SslHandler（addFirst）、FlushConsolidationHandler、流量整形、日志；不得解码或消费 RPC 帧 |
+| handshakeSecret(byte[] [, Duration]) | 无 | 至少 16 字节；同一集群必须相同；时钟偏差默认 60 秒 |
 
 Duration.toMillis 溢出同步抛 ArithmeticException；正延迟低于 1ms 或超过 Long.MAX_VALUE 纳秒抛 IllegalArgumentException，单次 timeoutMillis 范围相同。reconnectRandomDelay(Duration) 设置非负的额外随机延迟上限，默认 reconnectDelay/4 并截断到毫秒；零表示固定延迟。基础延迟加随机上限必须可表示为正 long 纳秒。每次重试均匀抽取含端点的整数毫秒值。例如基础 1000ms、随机上限 250ms，实际等待 1000..1250ms。该配置分散重试，与恢复权仲裁独立，不限制全局建连速率。当前不提供 maxPendingCalls，R-SEND-04 有限接纳仍暂缓实施。
 
-V1 RpcNode 自己组装内部 TCP NetworkServer/NetworkClient，不复制 Network 的 pipeline、TLS/WS、ChannelOption、EventLoopGroup 配置入口。
+RpcNode 自己组装内部 TCP NetworkServer/NetworkClient 与 EventLoopGroup；只开放 channelOption、writeBufferWaterMark 和 transport 三个入口，分帧、心跳和握手仍由 RPC 管理。不开放 WebSocket 或外部 EventLoopGroup。[RpcSecurityTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcSecurityTest.java) 验证 transport handler 位于 rpc-frame 之前且水位配置生效。
 
 start 一次性创建时间轮与自有 NIO groups，装配 client/server，同步 bind 成功后才 RUNNING。失败进入 CLOSED，清理部分资源后抛 RpcException，不复用实例。localAddress 在 bind 前为 null，可返回随机端口实际地址；关闭后可用于诊断，不表示仍监听。
 
-addPeer 要求 RUNNING、非零非自身 ID、非空地址、slotCount=1..255；相同配置幂等，地址/数量冲突抛 IllegalStateException。被动 Peer 可原地升级。removePeer 要求 RUNNING 和合法目标，未命中无操作。上层同步恢复不能重建共享 Peer 或改变普通调用的完成权。
+addPeer 要求 RUNNING、非零非自身 ID、非空地址、slotCount=1..255；相同配置幂等，地址/数量冲突抛 IllegalStateException。一对节点只能有一方调用 addPeer：对已有被动 Peer（对方已拨入）的节点调用抛 IllegalStateException；本地已有主动 Peer 时，同一节点的入站握手被拒绝并关闭。removePeer 要求 RUNNING 和合法目标，未命中无操作。上层同步恢复不能重建共享 Peer 或改变普通调用的完成权。
 
 <a id="直连转发与基础设施扩展"></a>
 <a id="直连转发与-handler-组合"></a>
@@ -176,9 +180,9 @@ Network 已保证客户端 onConnected 先于 ConnectCallback.onSuccess：前者
 
 每个 Node 一个 HashedWheelTimer，tick=10ms，负责调用/握手期限以及加入所配置随机延迟的重连调度，不直接执行超时业务通知。并发集合登记单独启动的虚拟通知线程；close 在 timer.stop 后等待剩余通知结束，不因中断放弃等待，并恢复中断状态。迟到计时登记不能逃出屏障。立即失败、响应和管理通知仍沿用原执行线程。各连接 IdleStateHandler 负责心跳，EventLoop 处理器须快速返回；timerThread 用于识别维护线程、防止自等待。
 
-Peer 为 ConcurrentHashMap<int,RpcPeer>。低频 start/close/add/remove/handshake 的拓扑修改使用生命周期锁；同 ID 被动创建、升级与清理用 compute 仲裁。热发送不获取生命周期锁。
+Peer 为 ConcurrentHashMap<int,RpcPeer>。低频 start/close/add/remove/handshake 的拓扑修改使用生命周期锁；同 ID 被动创建与清理用 compute 仲裁。热发送不获取生命周期锁。
 
-Slot 用 AtomicReference<Connection> 绑定/身份解绑，AtomicBoolean connecting 覆盖延迟、建连与握手。观察 Slot 已占用后停止恢复链时，先清除 connecting，再检查 Slot 为空、Peer 仍当前且目标有效，通过 CAS 重新获得恢复权。若解绑此前看到 true，停止方补上这次交接；若解绑看到 false 并自己获得恢复权，旧链 CAS 失败。被动 Peer 升级与观察到无目标而停止的恢复链也使用相同重新检查规则，避免升级获得目标后遗漏空 Slot。两条路径保持唯一恢复者。旧 Peer 任务检查 Map 对象身份，断线不清理在途调用。RpcResilienceTest 执行 10000 轮同步竞争回归，不代表容量压测。
+Slot 用 AtomicReference<Connection> 绑定/身份解绑，AtomicBoolean connecting 覆盖延迟、建连与握手。观察 Slot 已占用后停止恢复链时，先清除 connecting，再检查 Slot 为空、Peer 仍当前且目标有效，通过 CAS 重新获得恢复权。若解绑此前看到 true，停止方补上这次交接；若解绑看到 false 并自己获得恢复权，旧链 CAS 失败。两条路径保持唯一恢复者。旧 Peer 任务检查 Map 对象身份，断线不清理在途调用。RpcResilienceTest 执行 10000 轮同步竞争回归，不代表容量压测。
 
 原生 Netty AttributeKey 保存 RPC context。Node 全局记录全部自有连接，包含未关联入站握手。出站 expectedPeer/expectedSlot 发布与当前 Peer 检查同在 lifecycleLock 内，移除不会漏掉拓扑删除后才发布的关联。RpcPeer 无连接索引；detach 扫描全局集合中的 READY/expected 关联，再清理 Slot。关闭遍历仍为 O(P × C + S)，另计在途完成工作；大拓扑关闭延迟未验证，优化暂缓。
 
@@ -210,6 +214,7 @@ RpcWire 公开 configurePipeline、encodeRequest(request,assignedId,maxFrameSize
 - [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java)：Slot 回退、快速响应、调用竞争、ID 回绕碰撞、被动生命周期、心跳拒绝、握手超时、Handler 异常及关闭屏障。
 - [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java)：真实 TCP 双向通信、独立重连、跨 Slot 回复、主动恢复与被动升级。
 - [RpcResilienceTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcResilienceTest.java)：Peer 重建、恢复权竞争、通知隔离/所有权、未完成握手关闭与重连配置。
+- [RpcSecurityTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcSecurityTest.java)：相同密钥建连、密钥不一致/缺失不能建连、重放/过期/伪造/无证明握手被拒、transport 顺序与水位配置。
 - [RpcExampleTest](../../game-demo/src/test/java/cn/managame/demo/examples/rpc/RpcExampleTest.java)：在 game-demo 中执行完整示例，命令为 mvn -pl game-demo -am test。
 
 2026-10-03 历史验证：根 mvn clean verify 通过全部七个组件/应用模块，包含 32 项 RPC 测试及可运行 RPC 示例。定向命令 mvn -pl game-rpc -am test；跨组件/依赖变更须根 clean verify。Windows 测试沿用 Network Selector TCP 唤醒兼容设置，生产不修改 JVM 属性。
@@ -222,7 +227,7 @@ RpcWire 公开 configurePipeline、encodeRequest(request,assignedId,maxFrameSize
 
 Node 级 ID 分配保留跨 Slot/替换连接回复能力，同时避免同一 Node 中 Peer 重建立即复用旧 ID。[RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java) 通过真实 TCP 检查保存的旧回复不会完成新请求；[RpcResilienceTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcResilienceTest.java) 覆盖被动回收、超时通知隔离/关闭等待、未完成握手关闭、恢复权竞争与随机延迟边界。
 
-仅通过原物理 Connection 回复会让原连接断开后的有效回复无法交付，也无法修复维护线程阻塞或恢复权丢失。因此保留逻辑 Peer/Slot 回复模型，修复关联 ID 与并发交接，不改变 Wire v1。
+仅通过原物理 Connection 回复会让原连接断开后的有效回复无法交付，也无法修复维护线程阻塞或恢复权丢失。因此保留逻辑 Peer/Slot 回复模型，修复关联 ID 与并发交接，不改变 Wire。
 
 有限 Call 接纳（R-SEND-04）、入站握手/被动 Peer 上限仍未实现，按当前范围暂缓。Network 可写性不是已发送调用数量上限。关闭仍为每个 Peer 扫描全局连接；大规模关闭优化与诊断暂缓。随机延迟分散重试，但不限制全局尝试速率。这些剩余边界没有因构建通过而消失。
 
@@ -230,9 +235,9 @@ Node 级 ID 分配保留跨 Slot/替换连接回复能力，同时避免同一 N
 
 ### 9.2 验证边界与扩展候选
 
-Wire v1 没有 Node 代际字段；替换/重启 Node 后重置 ID，也可能接纳保存的旧回复。这是 R-CALL-04 已声明的 Node 生命周期边界，与现已通过 Node 级分配保护的同 Node 内 Peer 重建不同。若分配重置，单独加宽 ID 不能解决重启复用。应用 epoch 或明确版本化协议需独立设计，本次审阅不选定方案。
+Wire 没有 Node 代际字段；替换/重启 Node 后重置 ID，也可能接纳保存的旧回复。这是 R-CALL-04 已声明的 Node 生命周期边界，与现已通过 Node 级分配保护的同 Node 内 Peer 重建不同。若分配重置，单独加宽 ID 不能解决重启复用。应用 epoch 或明确版本化协议需独立设计，本次审阅不选定方案。
 
-已确认的“先合法绑定者获胜”策略下，两边同时建连可能各自绑定不同物理连接的入站一端，再将两条出站连接以重复 Slot 拒绝。恢复收敛需要永久真实 TCP 回归，覆盖同时 addPeer 和同时断开；此次审阅不证明永久活锁或生产发生率，也不恢复 Node-ID 仲裁方案。
+两端同时建连的问题已通过"只允许一方 addPeer"消除：主动 Peer 的 Slot 只接受本端出站连接，入站握手来自本端已 addPeer 的节点时直接拒绝。[RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java) 的 onlyOneSideOfAPairMayAddPeer 覆盖两个方向的拒绝。
 
 请求/响应处理器在连接 EventLoop 执行，阻塞会延迟同一 EventLoop 上其他连接。应用另行投递时须 retain/copy 借用 body，并覆盖接纳和拒绝路径的释放。接纳、字节预算及 Peer 间公平性需要依据测量确定边界，当前没有 API 提供这些约束。现有诊断不证明持续容量。
 
@@ -240,8 +245,6 @@ Wire v1 没有 Node 代际字段；替换/重启 Node 后重置 ID，也可能�
 
 <a id="rpc-router-review-2026-10-07"></a>
 
-### 9.3 RPC/Router 集成审查（2026-10-07）
+### 9.3 RPC/Router 集成边界
 
-已复现的拓扑监听器/服务 monitor 锁循环通过移除 RPC 钩子、将服务发送及应用完成移出路由状态保护来解决。Router 在 Node 构造时作为普通 Handler 提供。协议拥有的注册校验处理多个 Slot 保持传输连续可用时的远端 Router 替换；应用拥有的路由 close 在 RPC 资源关闭前限制晚到状态修改。详见 [Router 审查修复](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-尚未修复的审查结论2026-10-07) 及永久回归测试。
-
-RPC Node 只增加 Peer 可用性/数量只读查询；握手、发送、pending、超时和关闭机制保持原有实现。R-SEND-04 有限 pending 准入仍未实现。Router 独立服务控制 FIFO 已限制容量，但不能限制对可达慢 Peer 的普通/业务 RPC 调用。生产吞吐、内存和过载边界未验证；应优先按实际准入需求处理，不能把路由策略放入 RPC。
+Router 作为普通 Handler 在 Node 构造时组合；RPC 只为其增加 Peer 可用性/Slot 数量只读查询。R-SEND-04 有限 pending 准入仍未实现，Router 的服务控制 FIFO 不限制普通/业务调用。2026-10-07 审查过程见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)。

@@ -61,14 +61,18 @@ Builder requires nodeId/address/handler. nodeId is nonzero; int holds raw uint32
 | heartbeatInterval(Duration) | 10 seconds | Same positive duration range as callTimeout |
 | heartbeatTimeout(Duration) | 30 seconds | Greater than interval |
 | maxFrameSize(int) | 4 MiB | >=32, including length prefix |
+| writeBufferWaterMark(low, high) | Netty default 32 KiB / 64 KiB | A connection above high is unwritable; send moves to the next Slot and returns UNAVAILABLE when none is writable. Internal links usually need larger values |
+| channelOption(option, value) | none | Applies to outbound and inbound connections, for example TCP_NODELAY, SO_SNDBUF |
+| transport(Consumer<ChannelPipeline>) | none | Byte-level handlers installed before RPC framing: SslHandler (addFirst), FlushConsolidationHandler, traffic shaping, logging; must not decode or consume RPC frames |
+| handshakeSecret(byte[] [, Duration]) | none | At least 16 bytes; identical across a cluster; clock skew defaults to 60 seconds |
 
 Duration.toMillis overflow synchronously throws ArithmeticException. Positive durations below 1ms or beyond Long.MAX_VALUE nanoseconds throw IllegalArgumentException; per-call timeoutMillis follows the same range. reconnectRandomDelay(Duration) is a nonnegative additive random-delay maximum, default reconnectDelay/4 truncated to milliseconds; zero means fixed delay. The base plus maximum must fit positive long nanoseconds. Each retry samples an inclusive integer-millisecond value from zero to that maximum. For a 1000ms base and 250ms maximum, wait 1000..1250ms. This spreads retries and is independent of recovery ownership; it is no global attempt limit. maxPendingCalls is not provided; finite admission under R-SEND-04 remains deferred.
 
-V1 RpcNode assembles internal TCP NetworkServer/NetworkClient without duplicating Network's pipeline, TLS/WS, ChannelOption, or EventLoopGroup builder settings.
+RpcNode assembles its internal TCP NetworkServer/NetworkClient and EventLoopGroups. Only channelOption, writeBufferWaterMark and transport are exposed; framing, heartbeat and handshake stay owned by RPC. WebSocket and external EventLoopGroups are not exposed. [RpcSecurityTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcSecurityTest.java) verifies that transport handlers precede rpc-frame and the water mark applies.
 
 One-shot start creates the timing wheel and owned NIO groups, assembles client/server, and enters RUNNING only after successful synchronous bind. Failure enters CLOSED, cleans partial resources, and throws RpcException; no reuse. localAddress is null before bind and exposes an allocated dynamic port afterward. After closure it is diagnostic, not proof of listening.
 
-addPeer requires RUNNING, nonzero non-self ID, nonnull address, and slotCount=1..255. Identical configuration is idempotent; address/count conflicts throw IllegalStateException. Passive Peers upgrade in place. removePeer requires RUNNING and valid target ID; missing Peer is a no-op. Upper-layer synchronization recovery must not recreate the shared Peer or alter completion ownership of ordinary calls.
+addPeer requires RUNNING, nonzero non-self ID, nonnull address, and slotCount=1..255. Identical configuration is idempotent; address/count conflicts throw IllegalStateException. Only one side of a pair may call addPeer: calling it for a node that already dialed in (passive Peer) throws IllegalStateException, and an inbound handshake from a node with a local active Peer is rejected and closed. removePeer requires RUNNING and valid target ID; missing Peer is a no-op. Upper-layer synchronization recovery must not recreate the shared Peer or alter completion ownership of ordinary calls.
 
 <a id="direct-forwarding-and-infrastructure-extensions"></a>
 <a id="direct-forwarding-and-handler-composition"></a>
@@ -186,9 +190,9 @@ Network guarantees client onConnected before ConnectCallback.onSuccess. The form
 
 One HashedWheelTimer per Node, tick=10ms, handles call/handshake deadlines and delayed reconnect with the configured random addition. It never executes timeout business notifications inline. A concurrent set tracks separately started virtual notification threads; after timer.stop, close joins all remaining notifications uninterruptibly and restores interruption status. No late timer registration can escape this barrier. Immediate failures, responses and management notifications retain their execution threads. Per-connection IdleStateHandler handles heartbeats; EventLoop handlers must return quickly. timerThread records timer identity for self-wait prevention.
 
-Peers use ConcurrentHashMap<int,RpcPeer>. Low-frequency start/close/add/remove/handshake topology changes use a lifecycle lock. compute arbitrates same-ID passive creation, upgrade, and cleanup. Hot sends do not acquire the lifecycle lock.
+Peers use ConcurrentHashMap<int,RpcPeer>. Low-frequency start/close/add/remove/handshake topology changes use a lifecycle lock. compute arbitrates same-ID passive creation and cleanup. Hot sends do not acquire the lifecycle lock.
 
-Slot uses AtomicReference<Connection> for identity-aware bind/unbind and AtomicBoolean connecting across delay, connect and handshake. To stop a chain after seeing an occupied Slot, first clear connecting, then recheck empty/current/active-target and reacquire with CAS. If unbind previously saw connecting=true, the stopping chain repairs that lost handoff; if unbind saw false, it reacquires itself and the old chain CAS fails. Either path maintains one recovery owner. The same clear/recheck rule covers a passive Peer upgrade racing a chain that observed no target, avoiding an empty Slot with no recovery after the target is published. Old Peer tasks check map object identity; disconnection does not clear waiting calls. RpcResilienceTest exercises 10000 synchronized race rounds; this is a concurrency regression, not a capacity benchmark.
+Slot uses AtomicReference<Connection> for identity-aware bind/unbind and AtomicBoolean connecting across delay, connect and handshake. To stop a chain after seeing an occupied Slot, first clear connecting, then recheck empty/current/active-target and reacquire with CAS. If unbind previously saw connecting=true, the stopping chain repairs that lost handoff; if unbind saw false, it reacquires itself and the old chain CAS fails. Either path maintains one recovery owner. Old Peer tasks check map object identity; disconnection does not clear waiting calls. RpcResilienceTest exercises 10000 synchronized race rounds; this is a concurrency regression, not a capacity benchmark.
 
 Native Netty AttributeKey stores RPC context. Node tracks all owned connections globally, including unassociated inbound handshakes. Outbound expectedPeer/expectedSlot publication and the current-Peer check occur under lifecycleLock, so remove cannot miss an association published after its topology removal. RpcPeer has no connection index; detach scans the global set for READY/expected associations, then clears Slots. Closure traversal remains O(P × C + S) plus pending completion work. Large-topology shutdown latency is unverified and optimization is deferred.
 
@@ -226,6 +230,7 @@ RpcWire exposes configurePipeline, encodeRequest(request,assignedId,maxFrameSize
 - [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java): Slot fallback, fast responses, completion races, ID wrap/collision, passive lifetime, heartbeat rejection, handshake timeout, Handler exceptions, closure barrier.
 - [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java): real TCP bidirectional communication, independent reconnection, cross-Slot responses, active recovery, passive upgrade.
 - [RpcResilienceTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcResilienceTest.java): Peer recreation, recovery ownership races, notification isolation/ownership, unfinished handshake closure, reconnect configuration.
+- [RpcSecurityTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcSecurityTest.java): same-secret connection, mismatched/missing secrets never connect, replayed/stale/forged/proof-less handshakes rejected, transport order and water mark.
 - [RpcExampleTest](../../game-demo/src/test/java/cn/managame/demo/examples/rpc/RpcExampleTest.java): complete example execution in game-demo; run mvn -pl game-demo -am test.
 
 Previous validation on 2026-10-03: root mvn clean verify passes all seven component/application modules, including 32 RPC tests and the runnable RPC example. Focused command: mvn -pl game-rpc -am test. Cross-component/dependency changes require root clean verify. Windows tests reuse Network TCP Selector wakeup compatibility; production changes no JVM properties.
@@ -238,7 +243,7 @@ Unimplemented/deferred: finite call admission, TLS/WS RPC Builder, discovery, bu
 
 Node-wide ID allocation preserves cross-Slot/replacement-connection replies while preventing immediate ID reuse after same-Node Peer recreation. [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java) sends saved old business replies over real replacement TCP connections without completing fresh calls. [RpcResilienceTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcResilienceTest.java) covers passive recreation, timeout isolation/close ownership, unfinished-handshake closure, recovery ownership races and random-delay boundaries.
 
-Replying only through the original physical Connection would lose otherwise valid replies after its disconnection and would not repair maintenance blocking or lost recovery ownership. Preserve logical Peer/Slot replies and repair IDs and concurrent handoff without changing Wire v1.
+Replying only through the original physical Connection would lose otherwise valid replies after its disconnection and would not repair maintenance blocking or lost recovery ownership. Preserve logical Peer/Slot replies and repair IDs and concurrent handoff without changing Wire.
 
 Finite call admission (R-SEND-04) and inbound handshake/passive-Peer limits remain unimplemented and deferred. Network writability does not bound already-sent calls. Closure still scans global connections per Peer; large-topology closure optimization and diagnostics are deferred. Random retry delay spreads attempts but imposes no global rate limit. A passing build does not remove these limits.
 
@@ -246,9 +251,9 @@ Finite call admission (R-SEND-04) and inbound handshake/passive-Peer limits rema
 
 ### 9.2 Validation boundaries and extension candidates
 
-Wire v1 has no Node-incarnation field. Resetting IDs after replacing/restarting a Node can also admit saved old replies; this is the declared R-CALL-04 Node-lifetime boundary, distinct from same-Node Peer recreation, now protected by Node-wide allocation. Wider IDs alone do not fix restart reuse if allocation resets. An application epoch or explicitly versioned protocol needs its own design; this review selects neither.
+Wire has no Node-incarnation field. Resetting IDs after replacing/restarting a Node can also admit saved old replies; this is the declared R-CALL-04 Node-lifetime boundary, distinct from same-Node Peer recreation, now protected by Node-wide allocation. Wider IDs alone do not fix restart reuse if allocation resets. An application epoch or explicitly versioned protocol needs its own design; this review selects neither.
 
-Under the confirmed first-valid-binding-wins policy, simultaneous two-sided connections can each bind the incoming half of different physical connections, then reject both outgoing halves as duplicate Slots. Recovery convergence needs permanent real TCP coverage for simultaneous addPeer and simultaneous disconnection. This review does not establish permanent livelock or a production failure rate, and does not reintroduce Node-ID arbitration.
+Simultaneous two-sided connection is eliminated by allowing only one side to addPeer: an active Peer's Slots accept only this node's outbound connections, and an inbound handshake from a node this side dialed is rejected. onlyOneSideOfAPairMayAddPeer in [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java) covers both rejection directions.
 
 Request/response handlers run on connection EventLoops; blocking them delays other connections on the same EventLoop. Application dispatch elsewhere must retain/copy the borrowed body and release it on both acceptance and rejection paths. Admission, byte budgets and per-Peer fairness need measured limits; no current API supplies them. Existing diagnostics do not establish sustained capacity.
 
@@ -256,8 +261,6 @@ Optional diagnostics, a separate RPC drain phase and local cancellation remain e
 
 <a id="rpc-router-review-2026-10-07"></a>
 
-### 9.3 RPC/Router integration review (2026-10-07)
+### 9.3 RPC/Router integration boundary
 
-The reproduced topology-listener/service-monitor lock cycle was removed by deleting the RPC hooks and moving service sending/application completion outside routing state protection. Router is supplied as an ordinary Handler at Node construction. Protocol-owned registration verification handles remote Router replacement even when multiple Slots keep transport continuously available; application-owned routing close fences late state mutation before RPC resource closure. See [Router review resolution](OGBS-Router-Java-25-Specification-1.0.md#7-open-review-findings-2026-10-07) and its permanent regression tests.
-
-Only read-only Peer availability/count queries were added to the RPC Node; handshake, send, pending, timeout and closure mechanisms retain their existing implementation. R-SEND-04 finite pending admission remains unimplemented. Router's separate service control FIFO is now bounded, but that does not bound ordinary/business RPC calls to a slow reachable Peer. Production throughput, memory and overload limits remain unverified; prioritize actual admission requirements without introducing routing policy into RPC.
+Router is composed as an ordinary Handler at Node construction; RPC adds only read-only Peer availability/Slot count queries for it. R-SEND-04 finite pending admission remains unimplemented, and Router's service control FIFO does not bound ordinary/business calls. The 2026-10-07 review is recorded in the [review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration).

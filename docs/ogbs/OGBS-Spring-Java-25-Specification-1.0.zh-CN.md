@@ -65,7 +65,7 @@ POST `/game/echo`，body 为 `{"routeKey":7,"text":"hello"}`，选择 Domain 3 /
 
 GameRpcCodec 提供 `byte[] encode(Object)` 和 `<T> T decode(byte[], Class<T>)`，须支持传输/Route 并发调用，返回非 null 且符合精确注册类型的对象，返回数组/对象独立于传输缓冲区生命周期。业务序列化由应用决定，例如 Fory，没有框架业务序列化格式。适配器复制借用入站字节，并在 Runtime 接纳前同步解码；大型/慢解码仍会延迟传输 EventLoop。解码对象不能保存借用 ByteBuf。出站数组返回后交给适配器，消费前 codec 不得修改/复用。
 
-GameRpcConfigurer Bean 按 Spring 顺序在属性配置后调整 RpcNodeBuilder，最后由适配器安装 RpcHandler。`gameRpc` 持有 RpcNode 生命周期，`gameRpcNode` 暴露拓扑管理与 localAddress；内部 SmartLifecycle 在 singleton 初始化后以 Integer.MAX_VALUE phase 启动。Context.close 先按 S-CLOSE-01 排空 Runtime，再于生命周期停止阶段关闭 RPC，销毁幂等关闭。Context.stop 本身不是 Runtime 优雅停服，停止的 Node 不能重启。不要手动启停托管 Node，也不要通过它发送原始 call/notify/reply：内部回调关联由 GameRpc 管理，原始 API 使用独立 RpcNode。Handler 构造必须延迟获取 GameRpc（ObjectProvider 或后续 setter 使用），避免 Runtime/Handler/GameRpc 构造循环。
+GameRpcConfigurer Bean 按 Spring 顺序执行。`configure(builder)` 在属性配置后调整 RpcNodeBuilder，此处设置的 handler 会被替换。随后 `decorate(handler)` 按同一顺序包装适配器的 Runtime RpcHandler（最后一个 configurer 位于最外层），返回值不得为 null；GameRouter.forRouterNode/forServiceNode 即通过它把托管 handler 作为 direct handler。build 之后、start 之前按顺序调用 `attach(node)`（例如 `routing.start(node)`）；attach 失败时逆序 detach 已成功的 configurer，并关闭未启动的 Node。生命周期停止时，在 Node 关闭前逆序调用 `detach(node)`（例如 `routing.close()`），失败只记录日志并继续关闭。路由请求进入 RouterHandler，而不是 runtime.dispatchRpc：其解码、Runtime 分发及精确路由回复（用保存的 RoutedRequest 调用 ServiceRouting.reply）仍由应用实现。`gameRpc` 持有 RpcNode 生命周期，`gameRpcNode` 暴露拓扑管理与 localAddress；内部 SmartLifecycle 在 singleton 初始化后以 Integer.MAX_VALUE phase 启动。Context.close 先按 S-CLOSE-01 排空 Runtime，再于生命周期停止阶段关闭 RPC，销毁幂等关闭。Context.stop 本身不是 Runtime 优雅停服，停止的 Node 不能重启。不要手动启停托管 Node，也不要通过它发送原始 call/notify/reply：内部回调关联由 GameRpc 管理，原始 API 使用独立 RpcNode。Handler 构造必须延迟获取 GameRpc（ObjectProvider 或后续 setter 使用），避免 Runtime/Handler/GameRpc 构造循环。
 
 入站 Call 和 Notify 按 ProtocolType.REQUEST 查 command；Notify 的 requestId 为零，不使用独立 NOTIFY 协议注册。未知 command、codec 异常及 Runtime 同步接纳/签名/Key 失败传播到 RpcHandler：Call 尝试 HANDLER_ERROR，Notify 仅诊断。有效对象将来源 Node/Slot、command/requestId、调用方 Key/业务身份及收到的原 Metadata 传给 runtime.dispatchRpc。注解 Domain 和普通 HandlerMethod 签名保持一致，不暴露或伪造物理 Connection。
 
@@ -98,7 +98,23 @@ game.rpc.node-id=1
 game.rpc.port=9100
 ```
 
-Context.refresh 后按应用拓扑策略调用 `context.getBean(RpcNode.class).addPeer(2, address, 1)`。[RpcAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java) 验证真实 TCP Call/Notify、身份/来源、对象回复、未知协议错误、立即失败及精确 Route 恢复，以及远端错误/坏响应回调、同步拒绝预留回收、超时续接排空、托管端口释放和一次性生命周期。部署安全、发现与生产容量不在验证范围。
+在托管 Node 上组合服务角色 Router（路由请求如何进入 Runtime 由应用的 RouterHandler 决定）：
+
+```java
+@Bean GameRpcConfigurer routing(RouterHandler routed) {
+    return new GameRpcConfigurer() {
+        private ServiceRouting routing;
+        public void configure(RpcNodeBuilder builder) {}
+        public RpcHandler decorate(RpcHandler runtimeHandler) {
+            return routing = GameRouter.forServiceNode(SERVICE_ID, routed, runtimeHandler);
+        }
+        public void attach(RpcNode node) { routing.start(node); }
+        public void detach(RpcNode node) { routing.close(); }
+    };
+}
+```
+
+Context.refresh 后按应用拓扑策略调用 `context.getBean(RpcNode.class).addPeer(2, address, 1)`。[RpcCompositionTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcCompositionTest.java) 验证 decorate/attach/detach 顺序、向 Runtime handler 的委托以及 attach 失败后的清理。[RpcAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java) 验证真实 TCP Call/Notify、身份/来源、对象回复、未知协议错误、立即失败及精确 Route 恢复，以及远端错误/坏响应回调、同步拒绝预留回收、超时续接排空、托管端口释放和一次性生命周期。部署安全、发现与生产容量不在验证范围。
 
 ## 4. 使用与验证
 

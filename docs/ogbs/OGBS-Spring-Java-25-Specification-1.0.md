@@ -65,7 +65,7 @@ POST `/game/echo` with `{"routeKey":7,"text":"hello"}` selects Domain 3 / Key 7.
 
 GameRpcCodec exposes `byte[] encode(Object)` and `<T> T decode(byte[], Class<T>)`. It must support concurrent transport/Route callers, return nonnull values of the requested exact registered type, and return arrays/objects independent of transport-buffer lifetime. Business serialization is application policy (for example Fory), without a framework serialization format. The adapter copies borrowed inbound bytes and decodes synchronously before Runtime admission; large/slow decoding can still delay the transport EventLoop. Never retain borrowed ByteBufs in a decoded object. Outbound arrays become adapter-owned until consumed; the codec must not modify/reuse them after return.
 
-GameRpcConfigurer Beans configure RpcNodeBuilder in Spring order after properties. The adapter installs its RpcHandler last. `gameRpc` owns RpcNode lifecycle; `gameRpcNode` exposes topology management and localAddress, and an internal SmartLifecycle starts it at Integer.MAX_VALUE after singleton initialization. Context.close first drains Runtime through S-CLOSE-01, then closes RPC at lifecycle stop and idempotent destruction. Context.stop alone is not graceful Runtime shutdown; a stopped Node cannot restart. Do not start/close this managed Node or send raw call/notify/reply messages through it: its private callback correlation belongs to GameRpc. Use RpcNode separately for the raw API. Handler construction must defer GameRpc lookup (ObjectProvider or later setter use) to avoid a Runtime/Handler/GameRpc construction cycle.
+GameRpcConfigurer Beans run in Spring order. `configure(builder)` adjusts RpcNodeBuilder after properties; any handler set there is replaced. `decorate(handler)` then wraps the adapter's Runtime RpcHandler in the same order (the last configurer is outermost) and must return nonnull; this is how GameRouter.forRouterNode/forServiceNode receives the managed handler as its direct handler. After build and before start, `attach(node)` runs in order (for example `routing.start(node)`); a failing attach detaches earlier configurers in reverse and closes the unstarted Node. At lifecycle stop, `detach(node)` runs in reverse order before the Node closes (for example `routing.close()`); detach failures are logged and closing continues. Routed requests reach RouterHandler, not runtime.dispatchRpc: decoding them, Runtime dispatch and exact routed replies (ServiceRouting.reply with the saved RoutedRequest) remain application code. `gameRpc` owns RpcNode lifecycle; `gameRpcNode` exposes topology management and localAddress, and an internal SmartLifecycle starts it at Integer.MAX_VALUE after singleton initialization. Context.close first drains Runtime through S-CLOSE-01, then closes RPC at lifecycle stop and idempotent destruction. Context.stop alone is not graceful Runtime shutdown; a stopped Node cannot restart. Do not start/close this managed Node or send raw call/notify/reply messages through it: its private callback correlation belongs to GameRpc. Use RpcNode separately for the raw API. Handler construction must defer GameRpc lookup (ObjectProvider or later setter use) to avoid a Runtime/Handler/GameRpc construction cycle.
 
 Incoming Call and Notify command lookup uses ProtocolType.REQUEST; Notify uses requestId zero, not a separate NOTIFY protocol registration. Unknown commands, codec exceptions and synchronous Runtime admission/signature/Key failures propagate to RpcHandler's HANDLER_ERROR policy for Call and logging-only policy for Notify. Valid decoded requests pass source Node/Slot, command/requestId, caller Key/business identity and exact received Metadata to runtime.dispatchRpc. Annotation Domain selection and ordinary HandlerMethod signatures remain unchanged. No physical Connection is exposed or fabricated.
 
@@ -98,7 +98,23 @@ game.rpc.node-id=1
 game.rpc.port=9100
 ```
 
-After Context.refresh, call `context.getBean(RpcNode.class).addPeer(2, address, 1)` under application topology policy. [RpcAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java) exercises actual TCP Call/Notify, identity/origin, object replies, unknown-command errors, immediate failure and exact Route restoration, plus remote-error/malformed-response routing, synchronous rejection reservation cleanup, timeout continuation drain, managed port release and one-shot lifecycle. Deployment security, discovery and production capacity remain outside this verification.
+Composing a service-role Router on the managed Node (the application's RouterHandler decides how routed requests enter Runtime):
+
+```java
+@Bean GameRpcConfigurer routing(RouterHandler routed) {
+    return new GameRpcConfigurer() {
+        private ServiceRouting routing;
+        public void configure(RpcNodeBuilder builder) {}
+        public RpcHandler decorate(RpcHandler runtimeHandler) {
+            return routing = GameRouter.forServiceNode(SERVICE_ID, routed, runtimeHandler);
+        }
+        public void attach(RpcNode node) { routing.start(node); }
+        public void detach(RpcNode node) { routing.close(); }
+    };
+}
+```
+
+After Context.refresh, call `context.getBean(RpcNode.class).addPeer(2, address, 1)` under application topology policy. [RpcCompositionTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcCompositionTest.java) verifies decorate/attach/detach order, delegation to the Runtime handler, and cleanup after a failed attach. [RpcAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java) exercises actual TCP Call/Notify, identity/origin, object replies, unknown-command errors, immediate failure and exact Route restoration, plus remote-error/malformed-response routing, synchronous rejection reservation cleanup, timeout continuation drain, managed port release and one-shot lifecycle. Deployment security, discovery and production capacity remain outside this verification.
 
 ## 4. Usage and validation
 

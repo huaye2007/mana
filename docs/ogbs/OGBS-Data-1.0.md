@@ -97,7 +97,7 @@ deleteGroup clears the original Map, so holders observe it empty. It covers know
 
 **D-CACHE-01** Cache and pending changes are independent. Expiry never discards registered changes or forces persistence through eviction listeners. Repository access renews expiry; direct access through old Map/entity references does not. Fetch the current cached object through Repository for each business access.
 
-**D-CACHE-02** Cache lifetime must greatly exceed normal maximum write delay. It is not a durability barrier during unlimited retries. Prolonged database stalls, final save failure, or rereading after expiry may reload old database state. V1 provides no pending overlay, dirty-item pinning, or strong read/write consistency under arbitrary failure.
+**D-CACHE-02** A cache miss must first consult the entity's unsaved changes (including those being saved); when present, the in-memory change wins and storage older than memory must not be read. A Group load overlays the group's unsaved changes on the stored rows. Cache expiry therefore never rolls back unsaved modifications. Cache lifetime should still greatly exceed normal write delay to avoid repeated loads.
 
 <a id="51-读取修改与保存是三个时点"></a>
 
@@ -117,15 +117,13 @@ Distinguish absence from load failure: zero rows may produce negative cache; con
 
 ### 5.2 Expiry combined with failure
 
-Pending collections retain entity references independently; expiry does not cancel persistence. However, prolonged unavailability, final failure, or writes exceeding cache lifetime can cause later reads to load old values. V1 neither overlays pending state nor renews dirty entries forever.
+The pending set holds entity references independently, so expiry never cancels a save. While storage is unavailable, retryable changes stay pending; reading after expiry returns the same entity from the pending set instead of an older stored value.
 
-cacheExpire exceeding the configured interval is only startup validation, not perpetual safety. Actual save duration, access intervals, and failure handling define deployment limits. Applications choose retries/compensation; TTL cannot substitute for persistence confirmation.
-
-<a id="6-写回与合并"></a>
+Changes that are finally dropped (section 7) no longer overlay: storage keeps its previous state, which is what a read after expiry returns. Every such drop goes through the error Handler so the application can repair it.
 
 ## 6. Write-back and coalescing
 
-**D-WRITE-01** Coalesce only within the same entity metadata, primary key, and current batch buffer. Updates retain the latest supplied entity reference; DELETE retains only the key. Never merge across buffers.
+**D-WRITE-01** Coalesce only changes with the same entity metadata and primary key that the persistence pipeline has not yet claimed. Updates retain the latest supplied entity reference; DELETE keeps only the primary key (Group deletes also keep the entity to identify its group). A claimed change no longer merges with new changes; only when a retryable failure returns it does it merge as the older side.
 
 | Current | New operation | Result |
 | --- | --- | --- |
@@ -141,15 +139,15 @@ cacheExpire exceeding the configured interval is only startup validation, not pe
 
 Other combinations reject synchronously without replacing cache with the new object. INSERT→DELETE cancellation trusts the declaration that the entity is new; it does not inspect existing storage.
 
-**D-WRITE-02** Only one persistence pipeline runs at a time. Finish every old-buffer batch before processing the new buffer. Within each entity type, run DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize. No cross-type business transaction or atomicity.
+**D-WRITE-02** Only one persistence pipeline runs at a time. Each pass claims every change pending when it starts and finishes before the next pass; an older change for a primary key always executes before a newer one. Within each entity type execute DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize, each batch taking effect atomically in storage. No business transaction or atomicity spans entity types.
 
-**D-WRITE-03** Interval is a target start interval. If a round exceeds it, the next may start immediately without another full wait. Buffer-switch mechanics belong in implementation specifications; Java's fixed grace period is not cross-language consistency proof.
+**D-WRITE-03** Interval is a target start interval. If a pass exceeds it, the next may start immediately without another full wait. Claiming must be an atomic conditional removal: a change recorded after its claim stays for the next pass and is never lost to a race between claiming and clearing. Implementations must not rely on a fixed wait to ensure this.
 
 <a id="61-合并示例与拒绝理由"></a>
 
 ### 6.1 Merge examples and rejection rationale
 
-Same entity, primary key, and buffer:
+Same entity and primary key, before the pipeline claims the change:
 
 ```text
 insert(A) → update(B)       => one INSERT using B
@@ -166,65 +164,52 @@ DELETE_INSERT is delete-and-recreate intent with backend-specific implementation
 
 <a id="62-跨缓冲与跨批次"></a>
 
-### 6.2 Across buffers and batches
+### 6.2 Across passes and batches
 
-If insert entered the old buffer and delete enters the new one, they do not cancel: old INSERT precedes new DELETE. Identical final state can still involve two I/O operations and two failure opportunities.
+If an insert has been claimed by the current pass and a delete is recorded afterwards, they do not cancel: the INSERT is saved, then the DELETE runs in the next pass. Even with the same final database state, this can cause two real I/O operations and two failure opportunities.
 
-Within-entity phase ordering creates no transaction across entities. Player-currency UPDATE and reward-log INSERT may succeed/fail independently even within one GameData. batchSize controls the amount passed to Mapper, not an entire-round transaction.
-
-<a id="7-错误重试与关闭"></a>
+Phase order inside an entity is not a transaction across entities. Player gold UPDATE and reward log INSERT may succeed or fail separately; placing them in one GameData does not provide atomic commit. Batch size only controls Mapper input size and does not imply a whole-pass transaction boundary.
 
 ## 7. Errors, retries, and closure
 
-**D-ERROR-01** Background state/log failures share one mechanism carrying error code, entity/log type, operation, failed batch, cause, and attempt count. User policy chooses retries; framework bounds attempts. Default is no automatic retry.
+**D-ERROR-01** Background state/log failures share one error mechanism carrying error code, entity/log type, operation, failed data, cause and attempt. A retry policy classifies failures first: retryable (transient faults such as lost connections, pool timeouts, lock wait timeouts, deadlocks) changes stay for the next pass without an attempt limit; the default policy treats only such transient faults as retryable.
 
-**D-ERROR-02** After final failure reaches the error Handler, continue later batches. Never automatically reinsert into the active buffer or block forever. Isolate and diagnose Handler/retry-policy failures. No entity rollback. Ordinary batches may partially succeed or have unknown outcomes; retries must consider duplicate INSERT and idempotency.
+**D-ERROR-02** A non-retryable multi-row batch must be split into single rows so the other rows still persist; only a non-retryable single change is dropped, reported to the error Handler, and later work continues, so saving can never block permanently. Handler/policy failures must be isolated and diagnosed. Entities are not rolled back. Storage adapters must apply each batch atomically (transaction or idempotent upsert) so retries and splitting cannot duplicate rows after partial success. An UPDATE whose target row does not exist is a non-retryable failure and must not silently succeed.
 
-**D-ERROR-03** Successful paths create no failure snapshots. Handler synchronously borrows batch/entity references. Asynchronous failure archiving requires needed serialization/copy before callback return. Default diagnostics do not archive recoverable business data.
+**D-ERROR-03** No failure snapshot is made on the normal path. The Handler borrows dropped entity references synchronously; asynchronous archiving must serialize/copy before the callback returns. The default Handler only records diagnostics and does not replace business failure-data archiving.
 
-**D-CLOSE-01** close is a synchronous final-processing barrier: reject new state/log changes, stop periodic scheduling, await ongoing persistence, process both buffers and log queue, then close owned scheduling resources. Accepted changes reach success or final-failure handling before return. Stop business admission first.
+**D-CLOSE-01** close is a synchronous final barrier: reject new state/log changes, stop periodic scheduling, await ongoing persistence, then keep retrying kept changes within a bounded shutdown timeout. After the timeout one final pass treats retryable failures as non-retryable (split, drop, report), and close then releases its scheduling resources. Stop business ingress before close.
 
-**D-CLOSE-02** Any unrecovered final failure in accepted work makes close report save failure; empty queues alone do not imply persistence success. Continue other batches. close is idempotent; repeated failed closure still reports failure. Applications configure driver timeouts; close has no fixed completion deadline.
+**D-CLOSE-02** Any drop during the lifecycle makes close report save failure; an empty queue does not mean persistence succeeded. close is idempotent and repeated failed closes still report failure. Database driver timeouts are application configuration.
 
-**D-CLOSE-03** Process crashes may lose unwritten data. V1 has no WAL or crash recovery.
-
-<a id="71-从失败到最终处理"></a>
+**D-CLOSE-03** A process crash can lose data not yet written, including kept retryable changes. V1 provides no WAL or crash recovery.
 
 ### 7.1 From failure to final handling
 
 ```text
-Execute current batch
-  success → next batch
-  failure → create failure context
-          → attempts remain and policy permits: execute same batch again
-          → otherwise: invoke error Handler
-                       remember final failure
-                       continue next batch
+execute the current batch (atomically)
+  success → continue
+  retryable failure → put every change back into the pending set for the next pass
+  non-retryable failure:
+       single row → drop, call the error Handler, record the failure
+       several rows → execute row by row; each row's failure is classified again
 ```
 
-Maximum attempts includes the first execution. A maximum of 3 with an always-false policy still executes once. Policies may inspect causes; V1 neither classifies every exception as retryable nor guarantees failed batches wrote nothing.
+Kept changes are deduplicated by primary key, so they never exceed the number of dirty entities, regardless of update count. Returning changes merge with newer ones using the merge table; an illegal sequence keeps the newer change and drops and reports the older one as non-retryable.
 
-For example, retrying an INSERT batch whose first half committed may encounter duplicate keys. The callback provides the failed batch, not an inferred definitely-unwritten subset. Unknown outcomes require reconciliation, idempotency, or compensation, not assuming total failure.
+### 7.2 Error Handler responsibility
 
-<a id="72-错误处理器的责任范围"></a>
+The error Handler receives only dropped changes. It can alert, synchronously serialize to external failure storage (for example a local dead-letter file), or record information needed for manual recovery. Entity references remain the original mutable objects; independent failure records must copy or serialize before the callback returns. Handler exceptions cannot block later saves.
 
-### 7.2 Error handler responsibilities
+### 7.3 Successful close versus successful persistence
 
-Handlers may alert, synchronously serialize to external failure storage, or record recovery information. Entity references remain mutable originals; enqueueing references asynchronously does not capture failure-time state. Copy/serialize before return when independent records are required.
+close first stops mutation admission, then processes accepted work. If storage recovers within the shutdown timeout, kept changes are saved; otherwise they are reported through the error Handler, dropped, and close reports failure. A previous drop still makes close fail even with an empty queue.
 
-After return, processing continues without automatic reinsertion. Handler exceptions cannot block all later saves. Default logging is diagnostic, not a recoverable copy of failed data.
-
-<a id="73-关闭成功与持久化成功"></a>
-
-### 7.3 Successful closure versus successful persistence
-
-close closes admission before processing accepted work. New changes reject; accepted changes are not discarded because of shutdown. Even with empty queues, earlier final failures remain reported so closure cannot erase runtime data-loss risk.
-
-close neither stops upstream Runtime/network admission nor closes external database clients. Stop producers and tasks that may still call Repository before closing Data. Forced process termination has no normal-close guarantees.
+close does not stop upstream Runtime or network ingress and does not close external database clients. Stop business production and tasks that may still call Repositories, then close Data. Forced process termination has no normal close guarantee.
 
 ### 7.4 Explicit flush and diagnostics
 
-**D-FLUSH-01**: Explicit flush processes outstanding state buffers and log queues synchronously while keeping Data open. For a stable persistence barrier, first quiesce business writers. With concurrent writes, flush does not define a transaction/snapshot or guarantee that later writes are included. Accepted batches still follow coalescing, retry and terminal-failure handling. A prior unrecovered failure remains observable; empty queues and successful later batches do not erase it. Recursive flush from persistence/error callbacks rejects rather than deadlocking. Driver timeouts remain application configuration.
+**D-FLUSH-01**: Explicit flush synchronously runs one pass that claims every change accepted before the call, keeping Data open. Concurrent writes are not guaranteed to be included. A historical drop, or retryable changes still kept after the pass, makes flush report failure (kept changes wait for the next pass). Recursive flush from persistence/error callbacks is rejected to avoid deadlock. Driver timeouts remain application configuration.
 
 **D-DIAG-01**: Pending-change, queued-log, terminal-failed-batch and cache counts are approximate observations, not durable acknowledgements or memory limits. Group cache counts identify cached groups, not entities. Flush success confirms only the covered mapper operations, not a distributed transaction or protection against process loss before earlier write-back.
 
@@ -265,7 +250,7 @@ Create log and fix event time/partition value
 → obtain finite round boundary
 → drain batches and group by physical table
 → INSERT each group
-→ success or same error Handler after retries
+→ success; retryable failure back to queue tail; non-retryable split, dropped and sent to the same error Handler
 ```
 
 Identical logs never coalesce. DAY/MONTH/YEAR use event time, not persistence-thread time; delayed cross-day logs still go to the original date's table. External systems prepare tables; missing tables enter normal save-failure handling.
@@ -281,12 +266,12 @@ After insert returns, no log field may change, including nonpersistent partition
 | Explicit insert/update/delete | Clear intent, no proxies/dirty tracking | Automatic tracking or field patches needed |
 | Mutable entities and actual group Map | Direct memory access; Repository owns structural changes | Isolated views, immutable objects, snapshots needed |
 | Coalesce by EntityMeta and primary key | Shared Mappers without cross-type confusion | Identity model/dynamic mapping changes |
-| Independent cache/persistence | Eviction does not own save responsibility | Strong consistency during failure needed |
-| Bounded failure handling, user retries | One bad batch cannot block forever | Durable failure queues, replay, backoff needed |
+| Independent cache/persistence; misses overlay unsaved changes | Eviction does not own saving and never rolls back | Multi-process strong consistency needed |
+| Keep transient failures, split and drop bad rows | Storage outages lose no data; one bad row neither drops others nor blocks forever | Durable failure queues or backoff needed |
 | Separate append logs, shared errors | Preserve events without state coalescing | Log queries/other backends needed |
 | No log Schema maintenance | Separate external log-management responsibility | Unified schema management needed |
 
-No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, automatic failed-batch reinsertion, or multi-process consistency is promised. Such extensions need explicit behavior/capacity/recovery semantics; changing a container alone cannot establish them.
+No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, or multi-process consistency is promised. Such extensions need explicit behavior, capacity and recovery semantics, not just replacement containers.
 
 <a id="10-验证与已知范围"></a>
 
@@ -294,4 +279,4 @@ No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, 
 
 Contract tests: [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java), [LogContractTest](../../game-data/src/test/java/cn/managame/data/LogContractTest.java). Database mapping, JDBC transaction, and real-service test entries: [module README](../../game-data/README.md).
 
-Implementation is not production certification. Deployments evaluate fixed buffer grace, cross-thread mutable reads, unbounded queues, driver timeouts, and partial-success retries. Current real-service verification status is in the Java specification.
+Implementation is not production certification. Deployments evaluate cross-thread mutable reads, unbounded queues and driver timeouts; live database validation status is maintained in the Java implementation specification.

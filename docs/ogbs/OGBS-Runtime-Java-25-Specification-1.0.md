@@ -488,8 +488,9 @@ Statuses: ACCEPTED, OVERLOADED, CLOSED.
 | --- | --- | --- |
 | RouteExecutors.platformThreads(workers) | Fixed platform-thread shards | Default 65,536 waiting tasks per shard |
 | new StripedRouteExecutor(workers, queueCapacity) | Complete Route hashes to single-thread shard | Per-shard waiting queue, excluding running task |
-| RouteExecutors.virtualThreads() | Serial Mailbox per active Route | Default 65,536 unfinished tasks total |
-| new VirtualThreadRouteExecutor(capacity) | Virtual threads process active Mailboxes | All Routes combined, including running tasks |
+| RouteExecutors.virtualThreads() | Serial Mailbox per active Route | Default 65,536 unfinished tasks total, at most 1,024 waiting per Route |
+| new VirtualThreadRouteExecutor(capacity) | Virtual threads process active Mailboxes | All Routes combined, including running tasks; per-Route limit min(capacity, 1024) |
+| new VirtualThreadRouteExecutor(capacity, routeCapacity, idleTimeout) | Same | routeCapacity=1..capacity waiting tasks per Route, excluding the running task |
 
 Parameters must be positive. Different Routes on one platform shard wait for each other. Virtual-thread Mailboxes retain idle state for bounded reuse; active work cannot be evicted. Defaults and concurrency are defined in §7.3.
 
@@ -502,6 +503,8 @@ Both close without waiting and continue accepted tasks. Custom executors must ho
 With 2 StripedRouteExecutor shards and queueCapacity=100, shard A containing 1 running +100 waiting tasks rejects the next A task even if B is idle. Do not borrow B and break A's queue boundary. Running work is excluded from this capacity.
 
 VirtualThreadRouteExecutor(capacity=100) counts every unfinished task across Routes: 99 waiting +1 running is full. Virtual threads do not mean unlimited admission.
+
+The per-Route limit stops one hot Route (for example a flooding client) from consuming the shared capacity: with capacity=100 and routeCapacity=10, a Route holding 10 waiting tasks gets OVERLOADED for its next task while other Routes are still admitted. The running task does not count toward the per-Route waiting limit. Connection-level rate limiting (dropping or disconnecting before decoding) belongs to the access layer and should still be configured in the network pipeline.
 
 Same-Route inlining bypasses capacity checks and adds no queued share. Recursive same-Route Event/call still consumes stack; capacity does not prevent infinite recursion.
 

@@ -34,9 +34,8 @@ public final class MongoEntityMapper implements EntityMapper {
             filter.append(m.groups.get(i).name(), m.groups.get(i).codec().encode(group.valueAt(i)));
         return access.find(m.collection, filter).stream().map(m::decode).toList();
     }
-    @Override public void insertBatch(EntityMeta key, List<?> entities) {
-        var m = meta(key); access.insertMany(m.collection, entities.stream().map(m::encode).toList());
-    }
+    /** Upsert by _id: a batch retried after partial success cannot fail on duplicate keys. */
+    @Override public void insertBatch(EntityMeta key, List<?> entities) { replace(key, entities, true); }
     @Override public void updateBatch(EntityMeta key, List<?> entities) { replace(key, entities, false); }
     @Override public void deleteInsertBatch(EntityMeta key, List<?> entities) { replace(key, entities, true); }
     private void replace(EntityMeta key, List<?> entities, boolean upsert) {

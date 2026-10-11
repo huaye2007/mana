@@ -15,7 +15,8 @@ public final class GameDataBuilder {
     private record Prepared(Binding binding, Object repository, EntityMeta meta, MysqlLogWriter logWriter) {}
     private final List<Binding> bindings = new ArrayList<>();
     private Duration cacheExpire = Duration.ofMinutes(30), flushInterval = Duration.ofSeconds(1);
-    private int batchSize = 500, maxAttempts = 3;
+    private int batchSize = 500;
+    private Duration shutdownTimeout = Duration.ofSeconds(30);
     private ZoneId partitionZone = ZoneOffset.UTC;
     private JsonCodec jsonCodec;
     private BinaryCodec binaryCodec;
@@ -25,7 +26,7 @@ public final class GameDataBuilder {
     private DataSource mysqlSource;
     private DataErrorHandler errorHandler = f -> System.getLogger("cn.managame.data")
             .log(System.Logger.Level.ERROR, f.operation() + " failed for " + f.entityType(), f.cause());
-    private RetryPolicy retryPolicy = f -> false;
+    private RetryPolicy retryPolicy = RetryPolicy.transientFailures();
     private GameDataBuilder() {}
     public static GameDataBuilder builder() { return new GameDataBuilder(); }
     public GameDataBuilder mysql(DataSource source) { mysqlSource = Objects.requireNonNull(source); return this; }
@@ -50,7 +51,11 @@ public final class GameDataBuilder {
     public GameDataBuilder cacheExpire(Duration value) { cacheExpire = positive(value); return this; }
     public GameDataBuilder flushInterval(Duration value) { flushInterval = positive(value); return this; }
     public GameDataBuilder batchSize(int value) { if (value < 1) throw new IllegalArgumentException("batchSize"); batchSize = value; return this; }
-    public GameDataBuilder maxAttempts(int value) { if (value < 1) throw new IllegalArgumentException("maxAttempts"); maxAttempts = value; return this; }
+    /** How long close keeps retrying retryable failures before dropping and reporting the rest. */
+    public GameDataBuilder shutdownTimeout(Duration value) {
+        Objects.requireNonNull(value); if (value.isNegative()) throw new IllegalArgumentException("shutdownTimeout");
+        value.toNanos(); shutdownTimeout = value; return this;
+    }
     public GameDataBuilder retryPolicy(RetryPolicy value) { retryPolicy = Objects.requireNonNull(value); return this; }
     public GameDataBuilder errorHandler(DataErrorHandler value) { errorHandler = Objects.requireNonNull(value); return this; }
     public GameDataBuilder partitionZone(ZoneId value) { partitionZone = Objects.requireNonNull(value); return this; }
@@ -102,7 +107,7 @@ public final class GameDataBuilder {
         }
         // No background resources exist until all mappings and schemas initialize successfully.
         for (var entry : mappers.entrySet()) entry.getValue().initialize(entry.getKey());
-        WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, maxAttempts, errorHandler, retryPolicy);
+        WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, shutdownTimeout, errorHandler, retryPolicy);
         for (Prepared p : prepared) {
             if (p.repository() instanceof SingleRepository<?,?> repository)
                 repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire);

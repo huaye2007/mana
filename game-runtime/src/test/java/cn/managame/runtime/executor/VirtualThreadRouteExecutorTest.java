@@ -210,4 +210,20 @@ class VirtualThreadRouteExecutorTest {
             assertThrows(IllegalArgumentException.class, () -> new VirtualThreadRouteExecutor(1, value));
         assertThrows(NullPointerException.class, () -> new VirtualThreadRouteExecutor(1, null));
     }
+
+    @Test void routeCapacityRejectsOnlyTheHotRoute() throws Exception {
+        try (var executor = new VirtualThreadRouteExecutor(10, 2, Duration.ofMinutes(1))) {
+            var running = new CountDownLatch(1); var release = new CountDownLatch(1);
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 7, () -> { running.countDown(); awaitRelease(release); }));
+            assertTrue(running.await(5, TimeUnit.SECONDS));       // the running task no longer occupies the queue
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 7, () -> {}));
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 7, () -> {}));
+            assertEquals(RouteExecuteStatus.OVERLOADED, executor.tryExecute(1, 7, () -> {}));
+            var other = new CountDownLatch(1);
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 8, other::countDown));
+            assertTrue(other.await(5, TimeUnit.SECONDS));
+            release.countDown();
+        }
+        assertThrows(IllegalArgumentException.class, () -> new VirtualThreadRouteExecutor(4, 5, Duration.ofMinutes(1)));
+    }
 }

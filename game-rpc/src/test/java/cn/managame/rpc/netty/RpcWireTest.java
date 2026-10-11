@@ -30,7 +30,7 @@ class RpcWireTest {
         body.release();
 
         ByteBuf handshake = RpcWire.encodeHandshake(new RpcHandshake(0x01020304, 2, 3));
-        assertEquals("0000000d01474e53520001010203040203", ByteBufUtil.hexDump(handshake));
+        assertEquals("0000005501474e53520002010203040203" + "00".repeat(8 + 16 + 16 + 32), ByteBufUtil.hexDump(handshake));
         handshake.skipBytes(5);
         assertEquals(new RpcHandshake(0x01020304, 2, 3), RpcWire.decodeHandshake(handshake));
         handshake.release();

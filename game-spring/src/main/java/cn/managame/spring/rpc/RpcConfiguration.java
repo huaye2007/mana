@@ -7,6 +7,7 @@ import org.springframework.context.annotation.*;
 import org.springframework.core.env.Environment;
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
 class RpcConfiguration {
@@ -21,10 +22,11 @@ class RpcConfiguration {
         var builder = RpcNode.builder().nodeId(id).bindAddress(new InetSocketAddress(host, port));
         Long timeout = environment.getProperty("game.rpc.call-timeout-millis", Long.class);
         if (timeout != null) builder.callTimeout(Duration.ofMillis(timeout));
-        configurers.orderedStream().forEach(configurer -> configurer.configure(builder));
-        return new GameRpc(runtime, codec, builder);
+        List<GameRpcConfigurer> ordered = configurers.orderedStream().toList();
+        ordered.forEach(configurer -> configurer.configure(builder));
+        return new GameRpc(runtime, codec, builder, ordered);
     }
 
     @Bean(destroyMethod = "") RpcNode gameRpcNode(GameRpc rpc) { return rpc.node(); }
-    @Bean RpcNodeLifecycle gameRpcLifecycle(GameRpc rpc) { return new RpcNodeLifecycle(rpc.node()); }
+    @Bean RpcNodeLifecycle gameRpcLifecycle(GameRpc rpc) { return new RpcNodeLifecycle(rpc); }
 }

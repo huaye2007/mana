@@ -63,13 +63,13 @@ RPC 接入仅包括普通 Handler 组合与可用性/Slot 数量快照，不提�
 
 Router Peer 使用全连接，每对单 Slot；服务注册可使用多 Slot，绑定权威在传输丢失后仍保留，仅通过显式服务发现或注销清理。快照分块与增量使用有限且具有 Peer 本地 ACK 的控制流，本地 bind 成功不等待集群。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v2)。
 
-已实现的 Router 装配独立于 Spring 托管 RPC 适配。`GameRpc` 当前在 GameRpcConfigurer 执行后安装私有直连 RPC Handler，该 configurer 无法将 Router 组合到托管 Node。直接 RpcHandlerContext/GameRpc 回复也缺少来源附着 epoch，并使用原生直连回复。因此路由 Runtime 适配既需要 build 前的 Handler 组合，也需要精确路由回复身份，以及路由生命周期、捕获回调和 drain 集成。接入职责归应用或可选 game-spring 适配，保留唯一 Node 和 Router → RPC 依赖；同时启用两个组件并不实现该接入。不能用第二个 Node 或把 Runtime 解码/分派移进 Router 来掩盖缺口。
+Spring 托管 RPC 通过 `GameRpcConfigurer.decorate/attach/detach` 在唯一 Node 上组合 Router：decorate 在 build 前用 GameRouter/ServiceRouting 包装 Runtime RpcHandler，attach 在 Node 启动前启动路由，detach 在 Node 关闭前关闭路由。直接 RpcHandlerContext/GameRpc 回复仍缺少来源附着 epoch 并使用原生直连回复，因此路由请求交给应用的 RouterHandler；将其解码进入 Runtime、精确路由回复（ServiceRouting.reply）以及捕获回调/drain 集成仍由应用实现，保留唯一 Node 和 Router → RPC 依赖。不能用第二个 Node 或把 Runtime 解码/分派移进 Router 来掩盖缺口。
 
-发现/放置集成也是应用工作，Router 示例没有提供：精确代际退役、Router 重启后的事件重放、成员移除和迁移执行隔离需要运维契约。epoch 的冲突排序不能单独证明时间新旧，绑定冲突的确定性解析也不会串行化跨进程业务执行。全连接会在每个 Router 复制全部权威桶；R 个 Router 使用 R×(R−1)/2 条成对连接，每个本地变更最多传播给 R−1 个 Peer。控制与业务帧共享单 Slot 和转发 monitor，同步就绪还会限制转发。这些是明确的小规模 Router 集群约束，生产成员数、内存及恢复预算仍未验证。[Router 审查](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-尚未修复的审查结论2026-10-07) 记录源码依据及待定集成决策。
+发现/放置集成也是应用工作，Router 示例没有提供：精确代际退役、Router 重启后的事件重放、成员移除和迁移执行隔离需要运维契约。epoch 的冲突排序不能单独证明时间新旧，绑定冲突的确定性解析也不会串行化跨进程业务执行。全连接会在每个 Router 复制全部权威桶；R 个 Router 使用 R×(R−1)/2 条成对连接，每个本地变更最多传播给 R−1 个 Peer。控制与业务帧共享单 Slot 和转发 monitor，同步就绪还会限制转发。这些是明确的小规模 Router 集群约束，生产成员数、内存及恢复预算仍未验证。[Router 审查](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits) 记录源码依据及待定集成决策。
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
 
-主动 Peer 由 addPeer 注册，维护固定数量 Slot；合法入站握手可以创建被动 Peer。被动 Peer 无连接且无 PendingCall 时回收，也可以原地升级为主动 Peer。Peer/Slot/调用内部状态保持包级封装。
+主动 Peer 由 addPeer 注册，维护固定数量 Slot；合法入站握手可以创建被动 Peer。被动 Peer 无连接且无 PendingCall 时回收。一对节点之间只能有一方调用 addPeer，另一方重复调用会抛异常，反向入站握手会被拒绝。配置共享密钥后握手带 HMAC 鉴权；RpcNodeBuilder 开放写缓冲水位、ChannelOption 和传输层 handler（TLS、合并 flush 等）。Peer/Slot/调用内部状态保持包级封装。
 
 call/notify 按非零 routeKey 的无符号余数选起点，零值 round-robin；reply 优先实际来源 Slot，再按 routeKey 回退。首个 ACCEPTED 后不重发。requestId 仅在 Peer 内匹配调用，响应可以从任意 Slot 返回。
 
@@ -85,7 +85,7 @@ demo 通过业务 [GameDomain 枚举](../game-demo/src/main/java/cn/managame/dem
 
 Route identity 是完整的 domain + key，不是 worker/thread/executor。key=0 无效，其他 64 位值可用。Domain 为用户定义的正整数。
 
-默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 在 ConcurrentHashMap 持有活跃 FIFO mailbox，仅把完全空闲的 mailbox 放入 Caffeine 有界复用（默认 60 秒，缓存最大条数等于任务容量）。按 Key 的原子 Map 操作协调激活/排空，不使用执行器全局监视器。Caffeine 从 game-core 传递引入，使用默认被动维护，不配置过期调度器。过期 mailbox 不可复用，物理回收可等待后续缓存访问。两种实现均隔离任务异常并提供非阻塞 admission。
+默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 在 ConcurrentHashMap 持有活跃 FIFO mailbox，仅把完全空闲的 mailbox 放入 Caffeine 有界复用（默认 60 秒，缓存最大条数等于任务容量）。按 Key 的原子 Map 操作协调激活/排空，不使用执行器全局监视器。Caffeine 从 game-core 传递引入，使用默认被动维护，不配置过期调度器。过期 mailbox 不可复用，物理回收可等待后续缓存访问。虚拟线程执行器除总容量外还限制单 Route 等待任务数（默认 1024），一个热点 Route 只会让自己返回 OVERLOADED。两种实现均隔离任务异常并提供非阻塞 admission。
 
 Runtime 负责 same-route inline，Executor SPI 不感知 Context。同 Route 嵌套先执行内层任务，内层返回后恢复外层 Context。不同 Runtime 实例即使 domain/key 相同也不 inline。
 
@@ -139,7 +139,7 @@ Data 不依赖 Runtime 或 RPC；应用可在已有 Route 上串行业务访问�
 
 GameDataBuilder 校验 Repository/身份及映射、执行状态 Schema 初始化，再启动一条保存流水线。DataSource、MongoClient 由应用持有；GameDataBuilder.mysql(DataSource) 装配默认 JDBC Access/Mapper，默认 JSON 初始化绑定声明泛型和状态初始化实现类，可覆盖 codec，具体约定见 [Data Java §6.2](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding)；GameData.close 只停止自己的调度并同步排空写回/日志，最终保存失败抛 DataSaveException。停服先停止业务入口并等待已接纳业务，再关闭 GameData，最后关闭数据库客户端。
 
-Data 采用两个缓冲与固定 100ms 宽限期，接受超长线程停顿风险；没有 WAL 或容量背压。所有未验证的生产及实机边界见 [Data Java 开发规范](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。通用行为见 [Data Specification](ogbs/OGBS-Data-1.0.zh-CN.md)，共享保存错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
+Data 的写回线程以"条件移除"认领待保存变更，没有缓冲交换或固定等待；可重试的失败保留到下一轮，不可重试的坏行拆出后单独丢弃并报告，缓存未命中先读未保存变更，不会回档。没有 WAL 或容量背压。所有未验证的生产及实机边界见 [Data Java 开发规范](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。通用行为见 [Data Specification](ogbs/OGBS-Data-1.0.zh-CN.md)，共享保存错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
 
 <a id="runtime-http-integration"></a>
 

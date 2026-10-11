@@ -95,6 +95,7 @@ Do not elevate Java techniques into cross-language requirements. Do not document
 | Core Java development | [Core Java Development Specification](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md) |
 | RPC byte layout | [RPC Wire Profile](docs/rpc-wire.md) |
 | Component composition and build entry points | [Architecture overview](docs/architecture.md), [Project README](README.md) |
+| Review process, evidence, probes and follow-up proposals (non-normative) | `docs/reviews/<date>-<topic>.md`; specifications keep only current contracts and clearly labeled limits, linking to the record |
 
 Maintain one primary definition per rule and reference it elsewhere. Core's standard and Java development specification are separate: maintain shared semantics and Java bindings in their respective documents. Do not create parallel specifications to avoid editing existing ones.
 

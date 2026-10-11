@@ -38,7 +38,7 @@ It does not interpret business bodies or provide protocol registration, Runtime 
 
 **R-PEER-02** slotCount is fixed at 1..255 for a Peer lifetime. Each Slot is empty or holds one READY connection. Changing count requires a new Peer lifetime.
 
-**R-PEER-03** addPeer creates an active Peer with a target address and empty-Slot maintenance. Valid inbound handshakes may create passive Peers. addPeer upgrades a passive Peer in place, preserving connections, counters, and PendingCalls. When both sides maintain connections, the first valid binding wins; no Node-ID ordering arbitration.
+**R-PEER-03** addPeer creates an active Peer with a target address and empty-Slot maintenance; valid inbound handshakes create passive Peers. Only one side of a pair may call addPeer: addPeer for a node that already has a passive Peer must fail synchronously, and an inbound handshake from a node with a local active Peer must be rejected. Each Slot therefore has one dialing direction, and the two sides can never connect simultaneously and evict each other.
 
 **R-PEER-04** Active Peers are never automatically removed. Passive Peers are removed when they have neither connections nor PendingCalls. Cleanup and new same-ID handshake binding must serialize so cleanup cannot remove a newly established session. Removal does not ban future admission; later inbound handshakes may create a new Peer. Old asynchronous results must not revive or affect it.
 
@@ -52,7 +52,7 @@ Request contains command, requestId, routeKey, businessIdType, businessId, Metad
 
 Response contains nonzero requestId, errorCode, Metadata, and body, without command or routeKey. Retrieve command from local PendingCall. errorCode uses [Core's error space](OGBS-Core-1.0.md#4-frameworkerrorcode), with no high-bit marker.
 
-Handshake exchanges magic/version/nodeId/slotId/slotCount; Heartbeat has no payload. [Wire Profile](../rpc-wire.md) is the sole layout source.
+Handshake exchanges magic/version/nodeId/slotId/slotCount plus optional authentication fields (timestamp, nonce, peerNonce, MAC); Heartbeat has no payload. [Wire Profile](../rpc-wire.md) is the sole layout source.
 
 **R-MSG-01** After argument and lifecycle validation, the sender owns the releasable body, including unsent, encoding-failure, and missing-Peer paths. Validation failure leaves ownership with the caller. Inbound bodies are borrowed during receive callbacks; asynchronous use must extend lifetime through binding-defined ownership mechanisms. Share Metadata under Core's read-only contract.
 
@@ -68,7 +68,7 @@ Handshake exchanges magic/version/nodeId/slotId/slotCount; Heartbeat has no payl
 
 **R-HS-04** Duplicate handshakes, Request/Response/Heartbeat before READY, Slot conflicts, and handshake timeout terminate the candidate. Timeout and completion compete for the same completion right.
 
-**R-HS-05** Node-ID exchange is not authentication. Deployment supplies V1's trusted internal-network boundary; passive Peer creation is not authorization.
+**R-HS-05** Node-ID exchange alone is not authentication. With a shared secret, handshakes must carry an HMAC proof: the passive side verifies the MAC, clock skew and nonce uniqueness, and the initiator verifies that the reply echoes its nonce; any failure terminates the candidate. A node without a secret accepts only proof-less handshakes, so mismatched configurations cannot connect. Handshake authentication does not provide confidentiality or integrity of later frames; use transport TLS when required.
 
 <a id="5-slot-并发"></a>
 
@@ -92,7 +92,7 @@ For example, an upper layer can recheck its protocol on reconnect without rebuil
 
 **R-SEND-01** For call/notify, nonzero routeKey starts at unsigned64(routeKey) mod slotCount; zero uses Peer-local round-robin. reply first tries the Request's actual source Slot, then starts from the caller-supplied routeKey or round-robin and scans circularly, skipping the already tried source Slot. requestId is never a routing input.
 
-**R-SEND-02** Scan at most one cycle, skipping empty, non-READY, inactive, or unwritable connections. An unaccepted frame may move to another candidate; stop immediately on first ACCEPTED.
+**R-SEND-02** Scan at most one cycle, skipping empty, non-READY, inactive, or unwritable connections. An unaccepted frame may move to another candidate; stop immediately on first ACCEPTED. Each connection has a bounded outbound buffer; above it the connection counts as unwritable. The bound is binding configuration and prevents memory exhaustion.
 
 **R-SEND-03** ACCEPTED means local network acceptance, not delivery/execution. Never resend an accepted business frame after asynchronous write failure, disconnection, or timeout. Reconnection restores channels only.
 
@@ -112,7 +112,7 @@ Affinity does not guarantee global business ordering across connections. Applica
 
 **R-CALL-03** Response, timeout, removal, closure, and send failure compete for one completion right; notify at most once. Remove PendingCall and cancel timeout before invoking the unified handler. Handler failure cannot restore or recomplete it. Retain the admission reservation until its completion handler returns, including exceptional return; synchronous encoding/collision/write exceptions also release their reservation. Timeout business notifications must execute outside the shared maintenance timer so one slow notification cannot block other call/handshake deadlines or reconnection tasks. Notifications for different calls have no total-order guarantee.
 
-**R-CALL-04** requestId increments with uint32 wrap, skipping 0. Gaps are allowed; no Slot/Node/time encoding. Within one local Node lifetime, explicit removal or passive Peer reclamation must not reset allocation and immediately reuse old call IDs upon same-remote Peer recreation. Matching remains Peer-scoped; a binding may allocate IDs Node-wide. An occupied ID fails synchronously without replacing the old call or scanning for another ID. Deployments must keep unresolved remote response lifetime far below a full allocation wrap period; extreme responses delayed beyond a full wrap cannot be distinguished. Wire v1 has no Node-incarnation field and does not guarantee rejection of saved old business replies after replacing/restarting the local Node instance; such protection needs application epoch validation or a separately versioned protocol.
+**R-CALL-04** requestId increments with uint32 wrap, skipping 0. Gaps are allowed; no Slot/Node/time encoding. Within one local Node lifetime, explicit removal or passive Peer reclamation must not reset allocation and immediately reuse old call IDs upon same-remote Peer recreation. Matching remains Peer-scoped; a binding may allocate IDs Node-wide. An occupied ID fails synchronously without replacing the old call or scanning for another ID. Deployments must keep unresolved remote response lifetime far below a full allocation wrap period; extreme responses delayed beyond a full wrap cannot be distinguished. Wire has no Node-incarnation field and does not guarantee rejection of saved old business replies after replacing/restarting the local Node instance; such protection needs application epoch validation or a separately versioned protocol.
 
 **R-CALL-05** Drop the remaining unmatched Response frame without notification or creating a call; a nonzero requestId must be readable. After a match, malformed remaining data must fail the claimed call with PROTOCOL_ERROR and close the connection; removal must not lose notification.
 

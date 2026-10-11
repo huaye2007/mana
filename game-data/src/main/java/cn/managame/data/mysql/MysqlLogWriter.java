@@ -54,7 +54,9 @@ public final class MysqlLogWriter {
         return SqlNames.identifier(baseTable + "_" + suffix);
     }
     public void insert(String table, List<?> logs) {
-        access.batchUpdate(MysqlEntityMeta.insertSql(table, fields),
-                logs.stream().map(log -> MysqlEntityMeta.arguments(fields, log)).toList());
+        // One transaction per batch so a retried or split batch never duplicates log rows.
+        String sql = MysqlEntityMeta.insertSql(table, fields);
+        var rows = logs.stream().map(log -> MysqlEntityMeta.arguments(fields, log)).toList();
+        access.transaction(tx -> tx.batchUpdate(sql, rows));
     }
 }

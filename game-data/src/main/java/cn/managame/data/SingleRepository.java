@@ -19,6 +19,10 @@ public abstract class SingleRepository<K, E> {
     final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;
         cache = Caffeine.newBuilder().expireAfterAccess(expiry).build(key -> {
+            // An evicted entity with unsaved changes reloads from memory, never from older storage.
+            PendingBuffer.Change unsaved = writer.unsaved(meta, key);
+            if (unsaved != null)
+                return new CacheEntity<>(unsaved.operation() == DataOperation.DELETE ? null : (E) unsaved.entity());
             try { return new CacheEntity<>((E) this.mapper.load(meta, key)); }
             catch (Exception e) { throw new DataLoadException("Load failed: " + meta.entityType(), e); }
         });

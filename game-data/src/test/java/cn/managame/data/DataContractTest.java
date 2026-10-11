@@ -156,7 +156,7 @@ class DataContractTest {
             assertSame(original,players.get(1L));
         }
     }
-    @Test void batchesOrderedAndSplitAndNeverMergeAcrossBuffers() {
+    @Test void batchesOrderedAndSplitAndNeverMergeAcrossFlushes() {
         var mapper = new RecordingMapper();
         try (var data = builder(mapper).batchSize(2).build()) {
             var p = data.repository(Players.class);
@@ -182,13 +182,74 @@ class DataContractTest {
         assertThrows(DataOperationException.class, () -> data.repository(Players.class).update(new Player(3)));
         assertThrows(DataSaveException.class,data::close);
     }
-    @Test void retryIsOptInBoundedAndKeepsBatchContext() {
-        var mapper = new RecordingMapper(); mapper.saveFailure=true;
+    @Test void retryableFailureKeepsChangesUntilStorageRecovers() {
+        var mapper = new RecordingMapper(); mapper.saveFailure = true;
         var errors = new ArrayList<DataFailure>();
-        var data = builder(mapper).retryPolicy(f -> true).maxAttempts(2).errorHandler(errors::add).build();
-        data.repository(Players.class).insert(new Player(1));
-        assertThrows(DataSaveException.class,data::close);
-        assertEquals(2,mapper.attempts.get()); assertEquals(2,errors.getFirst().attempt());
+        try (var data = builder(mapper).retryPolicy(f -> true).errorHandler(errors::add).build()) {
+            var players = data.repository(Players.class); var p = new Player(1);
+            players.insert(p);
+            assertThrows(DataSaveException.class, data::flush);
+            assertEquals(1, data.stats().pendingChanges());
+            p.score = 7; players.update(p);              // merges with the kept INSERT
+            mapper.saveFailure = false; data.flush();
+            assertEquals(List.of("INSERT"), mapper.events); assertSame(p, mapper.batches.getFirst().getFirst());
+            assertEquals(0, data.stats().pendingChanges()); assertTrue(errors.isEmpty());
+        }
+    }
+    @Test void defaultPolicyKeepsOnlyTransientFailures() {
+        assertTrue(RetryPolicy.isTransient(new RuntimeException(new java.sql.SQLTransientConnectionException("pool"))));
+        assertTrue(RetryPolicy.isTransient(new java.sql.SQLException("deadlock", "40001", 1213)));
+        assertTrue(RetryPolicy.isTransient(new java.sql.SQLException("lost", "08S01")));
+        assertFalse(RetryPolicy.isTransient(new java.sql.SQLIntegrityConstraintViolationException("dup", "23000", 1062)));
+        assertFalse(RetryPolicy.isTransient(new java.sql.SQLException("too long", "22001", 1406)));
+        assertFalse(RetryPolicy.isTransient(new IllegalStateException("codec")));
+    }
+    @Test void nonRetryableBadRowIsIsolatedFromItsBatch() {
+        var mapper = new RecordingMapper(); var errors = new ArrayList<DataFailure>();
+        var bad = new Player(2);
+        mapper.beforeSave = () -> {};
+        EntityMapper failing = new EntityMapper() {
+            public void initialize(EntityMeta m) {}
+            public Object load(EntityMeta m, Object id) { return mapper.load(m, id); }
+            public List<?> loadGroup(EntityMeta m, GroupKey k) { return mapper.loadGroup(m, k); }
+            public void insertBatch(EntityMeta m, List<?> e) {
+                if (e.contains(bad)) throw new IllegalArgumentException("value too long");
+                mapper.insertBatch(m, e);
+            }
+            public void updateBatch(EntityMeta m, List<?> e) { mapper.updateBatch(m, e); }
+            public void deleteBatch(EntityMeta m, List<Object> e) { mapper.deleteBatch(m, e); }
+            public void deleteInsertBatch(EntityMeta m, List<?> e) { mapper.deleteInsertBatch(m, e); }
+        };
+        try (var data = GameDataBuilder.builder().repositories(failing, Players.class).flushInterval(Duration.ofMinutes(1))
+                .errorHandler(errors::add).build()) {
+            var players = data.repository(Players.class);
+            players.insert(new Player(1)); players.insert(bad); players.insert(new Player(3));
+            assertThrows(DataSaveException.class, data::flush);
+            assertEquals(2, mapper.batches.size());
+            assertTrue(mapper.batches.stream().allMatch(b -> b.size() == 1 && b.getFirst() != bad));
+            assertEquals(1, errors.size()); assertEquals(List.of(bad), errors.getFirst().batch());
+            assertEquals(2, errors.getFirst().attempt()); assertEquals(0, data.stats().pendingChanges());
+        } catch (DataSaveException expectedOnClose) { /* historical failure is reported again by close */ }
+    }
+    @Test void evictedEntityWithUnsavedChangeReloadsFromMemoryNotStorage() throws Exception {
+        var mapper = new RecordingMapper(); mapper.saveFailure = true;
+        var data = builder(mapper).retryPolicy(f -> true).flushInterval(Duration.ofMillis(10))
+                .cacheExpire(Duration.ofMillis(40)).shutdownTimeout(Duration.ZERO).errorHandler(f -> {}).build();
+        try {
+            var players = data.repository(Players.class); var p = new Player(1);
+            players.insert(p);
+            Thread.sleep(200);                             // expired while saves keep failing
+            assertSame(p, players.get(1L)); assertEquals(0, mapper.loads.get());
+        } finally { assertThrows(DataSaveException.class, data::close); }
+    }
+    @Test void closeRetriesThenDropsAndReportsLeftovers() {
+        var mapper = new RecordingMapper(); mapper.saveFailure = true;
+        var errors = new CopyOnWriteArrayList<DataFailure>();
+        var data = builder(mapper).retryPolicy(f -> true).shutdownTimeout(Duration.ofMillis(50)).errorHandler(errors::add).build();
+        var p = new Player(1); data.repository(Players.class).insert(p);
+        assertThrows(DataSaveException.class, data::close);
+        assertEquals(1, errors.size()); assertEquals(List.of(p), errors.getFirst().batch());
+        assertTrue(mapper.attempts.get() >= 2);
     }
     @Test void closeWaitsForActivePipelineAndFlushesNextBuffer() throws Exception {
         var mapper = new RecordingMapper();
@@ -226,7 +287,7 @@ class DataContractTest {
         catch (InterruptedException e) { throw new AssertionError(e); }
     }
 
-    @Test void explicitFlushDrainsBothBuffersAndExposesApproximateStatistics() {
+    @Test void explicitFlushSavesEverythingAcceptedBeforeItAndKeepsLaterChangesPending() {
         var mapper = new RecordingMapper();
         try (var data = builder(mapper).build()) {
             var players = data.repository(Players.class);
@@ -234,9 +295,11 @@ class DataContractTest {
             var once = new AtomicBoolean();
             mapper.beforeSave = () -> {
                 assertThrows(DataOperationException.class, data::flush);
-                if (once.compareAndSet(false, true)) players.insert(new Player(2));
+                if (once.compareAndSet(false, true)) players.insert(new Player(2)); // recorded after the claim
             };
             assertEquals(1, data.stats().pendingChanges()); data.flush();
+            assertEquals(List.of("INSERT"), mapper.events); assertEquals(1, data.stats().pendingChanges());
+            data.flush();
             assertEquals(List.of("INSERT", "INSERT"), mapper.events);
             assertEquals(0, data.stats().pendingChanges()); assertEquals(2, data.stats().singleCacheEntries());
             assertEquals(2, data.stats().flushes()); assertEquals(0, data.stats().failedBatches());

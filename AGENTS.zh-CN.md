@@ -83,6 +83,7 @@
 | Core Java 开发 | [Core Java 开发规范](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md) |
 | RPC 字节布局 | [RPC Wire Profile](docs/rpc-wire.zh-CN.md) |
 | 组件组合与构建入口 | [架构总览](docs/architecture.zh-CN.md)、[项目 README](README.zh-CN.md) |
+| 审查过程、证据、探针与后续方案（非规范） | `docs/reviews/<日期>-<主题>.md`；规范只保留现行契约和明确标注的限制，并链接到记录 |
 
 同一规则维护一个主要定义位置，其他文档引用它。Core 标准与 Java 开发规范已分离，修改时分别维护共享语义和 Java 绑定。不要创建平行版本的规范来回避修改现有文档。
 

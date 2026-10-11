@@ -47,6 +47,7 @@ Core is the sole source for shared Metadata and errors. [RPC Wire Profile](../rp
 4. Explain defaults, limits, failure paths, compatibility, and implementation/validation status, not only successful flows.
 5. Maintain one semantic text in complete English and Chinese versions; remove superseded conclusions/dead links without competing specifications. Former Java API documents use Java-25-Specification filenames.
 6. Documentation-only changes check pairs, naming, layering, and local links. Code changes test affected contracts; module changes run root mvn clean verify.
+7. Review process, evidence, temporary probe results and unadopted follow-up proposals go to non-normative records under [docs/reviews](../reviews/2026-10-07-router-rpc-review.md); specifications keep only current contracts and known limits.
 
 See [AGENTS.md](../../AGENTS.md) for collaboration rules. Mark complete runnable examples verified only after actually compiling and running them.
 

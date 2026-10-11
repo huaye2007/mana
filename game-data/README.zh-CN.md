@@ -43,6 +43,6 @@ mvn -pl game-data -am test "-Dtest=DatabaseIntegrationTest" -Dsurefire.failIfNoS
 
 MySQL 使用专门的可丢弃测试数据库：测试创建并删除 ogbs_data_probe 表，检测到已有同名表会拒绝运行。Mongo 创建随机 ogbs_data_test_* 数据库并在结束后删除。不要指向生产库。
 
-最新 `mvn -pl game-data -am clean verify` 已通过；game-data 的 45 项本地测试通过，2 项实机测试按环境条件跳过。根目录 `mvn clean verify` 仍被既有 RPC 测试引用已删除 API 的编译错误阻断。H2、映射桩和 BSON 测试已通过；真实 MySQL/MongoDB 测试因未配置对应环境变量而跳过。固定 100ms 双缓冲宽限期接受超长线程停顿风险，缓存 TTL 必须远大于写回延迟；这些约束及重试部分成功风险见 Java 开发规范 文档。
+2026-10-11 写回改为"认领 + 失败分类"后，game-data 的 51 项本地测试通过、2 项实机测试按环境条件跳过（该轮在 JDK 21 预览模式下逐模块编译运行，未经 Maven/JDK 25；以 `mvn clean verify` 结果为准）。H2、映射桩和 BSON 测试通过；真实 MySQL/MongoDB 测试需配置环境变量。可重试的保存失败会保留到下一轮，不可重试的坏行被拆出单独丢弃并报告，缓存未命中先读未保存变更；MySQL 驱动须保持 `useAffectedRows=false`。机制与边界见 Java 开发规范第 5 节。
 
 GameData.flush() 在保持开放的情况下处理两个缓冲区；稳定屏障需先暂停写入，历史最终失败仍抛 DataSaveException。GameData.stats() 提供待处理/日志/缓存/失败近似计数。直接修改实体仍需 update，不新增自动脏检测或快照。可选 [game-spring](../game-spring/README.zh-CN.md) 使用应用 DataSource 初始化 @Repository Bean。见 [Java flush 契约](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#11-显式-flush-与-datastats)。

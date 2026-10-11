@@ -11,7 +11,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 import java.util.function.LongSupplier;
 
-/** Active Routes stay pinned; Caffeine caches only idle mailboxes for bounded reuse. */
+/**
+ * Active Routes stay pinned; Caffeine caches only idle mailboxes for bounded reuse.
+ * Admission is bounded twice: {@code capacity} tasks across all Routes protects memory, and
+ * {@code routeCapacity} queued tasks per Route stops one hot Route (for example a flooding client)
+ * from consuming the shared capacity. Either limit returns OVERLOADED without blocking.
+ */
 public final class VirtualThreadRouteExecutor implements RouteExecutor {
     private record Route(int domain, long key) {}
     private static final class Mailbox {
@@ -21,12 +26,25 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
     private final Cache<Route, Mailbox> idleMailboxes;
     // High bit means closed; remaining bits count reserved, queued and running tasks.
     private final AtomicLong admission = new AtomicLong();
-    private final int capacity;
+    private final int capacity, routeCapacity;
+    /** Default per-Route queue limit used when none is given. */
+    public static final int DEFAULT_ROUTE_CAPACITY = 1024;
 
     public VirtualThreadRouteExecutor(int capacity) { this(capacity, Duration.ofMinutes(1)); }
-    public VirtualThreadRouteExecutor(int capacity, Duration idleTimeout) { this(capacity, idleTimeout, System::nanoTime); }
+    public VirtualThreadRouteExecutor(int capacity, Duration idleTimeout) {
+        this(capacity, Math.min(capacity, DEFAULT_ROUTE_CAPACITY), idleTimeout);
+    }
+    public VirtualThreadRouteExecutor(int capacity, int routeCapacity, Duration idleTimeout) {
+        this(capacity, routeCapacity, idleTimeout, System::nanoTime);
+    }
     VirtualThreadRouteExecutor(int capacity, Duration idleTimeout, LongSupplier ticker) {
+        this(capacity, Math.min(capacity, DEFAULT_ROUTE_CAPACITY), idleTimeout, ticker);
+    }
+    VirtualThreadRouteExecutor(int capacity, int routeCapacity, Duration idleTimeout, LongSupplier ticker) {
         if (capacity < 1) throw new IllegalArgumentException("capacity must be positive");
+        if (routeCapacity < 1 || routeCapacity > capacity)
+            throw new IllegalArgumentException("routeCapacity must be 1..capacity");
+        this.routeCapacity = routeCapacity;
         Objects.requireNonNull(idleTimeout); Objects.requireNonNull(ticker);
         long idleNanos;
         try { idleNanos = idleTimeout.toNanos(); }
@@ -44,7 +62,9 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
         boolean submitted = false;
         try {
             Route route = new Route(domain, key);
+            boolean[] full = {false};
             activeMailboxes.compute(route, (ignored, existing) -> {
+                if (existing != null && existing.queue.size() >= routeCapacity) { full[0] = true; return existing; }
                 Mailbox cached = existing == null ? idleMailboxes.asMap().remove(route) : existing;
                 Mailbox mailbox = cached == null ? new Mailbox() : cached;
                 mailbox.queue.addLast(task);
@@ -56,6 +76,7 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
                 }
                 return mailbox;
             });
+            if (full[0]) return RouteExecuteStatus.OVERLOADED;
             submitted = true; return RouteExecuteStatus.ACCEPTED;
         } finally { if (!submitted) admission.decrementAndGet(); }
     }

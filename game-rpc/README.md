@@ -2,7 +2,7 @@
 
 **[English](README.md)** | [简体中文](README.zh-CN.md)
 
-Java 25 implementation of OGBS RPC, Maven cn.managame:game-rpc, depending on game-core and game-network. Provides internal TCP, multiple Slots, active/passive Peers, call/notify/reply, handshakes, heartbeats and reconnect with an additive random delay. Node-wide IDs, notification isolation, recovery handoff and verification boundaries are in [Java section 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险). RPC core has no Runtime/business codec dependency; optional Spring adaptation belongs to game-spring.
+Java 25 implementation of OGBS RPC, Maven cn.managame:game-rpc, depending on game-core and game-network. Provides internal TCP, multiple Slots, active/passive Peers, call/notify/reply, handshakes, heartbeats and reconnect with an additive random delay. Only one side of a pair calls addPeer; an optional shared secret adds HMAC handshake authentication, and writeBufferWaterMark, channelOption and transport configure the write-buffer bound, socket options and transport handlers such as TLS or flush consolidation. Node-wide IDs, notification isolation, recovery handoff and verification boundaries are in [Java section 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#91-审阅确认的缺陷与规模风险). RPC core has no Runtime/business codec dependency; optional Spring adaptation belongs to game-spring.
 
 <a id="规范"></a>
 

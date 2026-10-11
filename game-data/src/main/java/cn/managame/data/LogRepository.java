@@ -21,9 +21,11 @@ public abstract class LogRepository<E> {
         logWriter.validate(log);
         writer.mutate(() -> queue.add(log));
     }
-    final void drain(WriteBehindManager manager, int batchSize) {
+    /** Returns how many logs were kept for the next flush after retryable failures. */
+    final int drain(WriteBehindManager manager, int batchSize) {
         // Capture a finite boundary: continuous producers cannot starve state persistence.
-        int remaining = queue.size();
+        int remaining = queue.size(), kept = 0;
+        List<E> retry = new ArrayList<>();
         while (remaining > 0) {
             List<E> batch = new ArrayList<>(Math.min(batchSize, remaining));
             while (batch.size() < batchSize && remaining-- > 0) {
@@ -34,11 +36,14 @@ public abstract class LogRepository<E> {
             for (E log : batch) {
                 try { partitions.computeIfAbsent(logWriter.table(log), ignored -> new ArrayList<>()).add(log); }
                 catch (Throwable cause) {
-                    manager.execute(logWriter.logType(), DataOperation.LOG_INSERT, List.of(log), ignored -> { throw new DataOperationException("Invalid log partition", cause); });
+                    manager.drop(logWriter.logType(), DataOperation.LOG_INSERT, log, new DataOperationException("Invalid log partition", cause), 1);
                 }
             }
-            partitions.forEach((table, logs) -> manager.execute(logWriter.logType(), DataOperation.LOG_INSERT, logs,
-                    values -> logWriter.insert(table, values)));
+            for (var partition : partitions.entrySet())
+                kept += manager.save(logWriter.logType(), DataOperation.LOG_INSERT, partition.getValue(),
+                        values -> logWriter.insert(partition.getKey(), values), saved -> {}, retry::add, log -> log);
         }
+        queue.addAll(retry); // retried on the next flush, after logs accepted meanwhile
+        return kept;
     }
 }

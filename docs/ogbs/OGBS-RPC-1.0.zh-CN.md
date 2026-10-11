@@ -34,7 +34,7 @@ RPC 用于内部服务器节点的直接通信，提供 call、notify、reply、
 
 **R-PEER-02** slotCount 在一个 Peer 生命周期中固定为 1..255。每个 Slot 仅有空或一个 READY 连接；改变数量必须开始新 Peer 生命周期。
 
-**R-PEER-03** addPeer 创建主动 Peer，持有目标地址并维护空 Slot。入站合法握手可以自动创建被动 Peer。被动 Peer 经 addPeer 原地升级，保留现有连接、计数器和 PendingCall；不替换对象。双方都主动维护时重复连接仍遵守首个合法绑定获胜，没有 Node ID 大小仲裁。
+**R-PEER-03** addPeer 创建主动 Peer，持有目标地址并维护空 Slot；入站合法握手自动创建被动 Peer。一对节点之间只能有一方调用 addPeer：对已有被动 Peer 的节点调用 addPeer 必须同步失败，本地已有主动 Peer 时收到同一节点的入站握手必须拒绝该连接。这样每个 Slot 只有一个建连方向，不存在两端同时建连互相踢掉的情况。
 
 **R-PEER-04** 主动 Peer 不自动删除。被动 Peer 在无连接且无 PendingCall 时自动删除；清理与同 ID 新握手绑定必须串行仲裁，不能删除刚建立的会话。remove 不是禁止接入，后续合法入站可以创建新 Peer。旧 Peer 的异步结果不得复活或影响新 Peer。
 
@@ -46,7 +46,7 @@ Request 含 command、requestId、routeKey、businessIdType、businessId、Metad
 
 Response 含非零 requestId、errorCode、Metadata、body，不重复 command 或 routeKey。响应解释所需 command 从本地 PendingCall 得到。errorCode 使用 [Core 错误码空间](OGBS-Core-1.0.zh-CN.md#4-frameworkerrorcode)，没有高位标记。
 
-Handshake 交换 magic/version/nodeId/slotId/slotCount；Heartbeat 无 payload。布局唯一来源为 [Wire Profile](../rpc-wire.zh-CN.md)。
+Handshake 交换 magic/version/nodeId/slotId/slotCount 及可选的鉴权字段（timestamp、nonce、peerNonce、MAC）；Heartbeat 无 payload。布局唯一来源为 [Wire Profile](../rpc-wire.zh-CN.md)。
 
 **R-MSG-01** 消息通过参数与生命周期校验后由发送端组件接管其可释放 body；未发送、编码失败、Peer 不存在等路径也必须回收。参数或生命周期校验失败不接管。入站 body 在接收回调期间借用；异步使用必须按实现提供的所有权机制延长寿命。Metadata 按 Core 只读约定共享。
 
@@ -60,7 +60,7 @@ Handshake 交换 magic/version/nodeId/slotId/slotCount；Heartbeat 无 payload�
 
 **R-HS-04** 重复握手、READY 前 Request/Response/Heartbeat、Slot 冲突和握手超时均结束候选连接。超时和握手完成必须竞争同一完成权。
 
-**R-HS-05** 节点 ID 交换不是认证。V1 内部网络信任边界由部署保证，不能把被动 Peer 自动创建当作授权。
+**R-HS-05** 节点 ID 交换本身不是认证。配置共享密钥时，握手必须携带 HMAC 证明：被动端校验 MAC、时间偏差与 nonce 不重复，发起方校验回复回显了自己的 nonce；任何一项失败都结束候选连接。未配置密钥的节点只接受不带证明的握手，密钥配置不一致的两端不能建立连接。握手鉴权不提供后续帧的机密性或完整性，需要时使用传输层 TLS。
 
 ## 5. Slot 并发
 
@@ -80,7 +80,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-SEND-01** call/notify 的 routeKey 非零时起点为 unsigned64(routeKey) mod slotCount；为零时使用 Peer 内 round-robin。reply 先尝试 Request 实际到达的来源 Slot；失败后使用调用方传回的 routeKey（或 round-robin）选起点，环形扫描并跳过已试过的来源 Slot。requestId 不参与路由。
 
-**R-SEND-02** 环形扫描最多一圈，跳过空、非 READY、inactive、不可写连接。未接纳的同一帧可以交给下一候选；首个 ACCEPTED 后立即停止。
+**R-SEND-02** 环形扫描最多一圈，跳过空、非 READY、inactive、不可写连接。未接纳的同一帧可以交给下一候选；首个 ACCEPTED 后立即停止。 每个连接的出站缓冲有上限，超过上限的连接视为不可写；上限由语言绑定配置，用于防止内存被耗尽。
 
 **R-SEND-03** ACCEPTED 只表示本地网络接纳，不保证交付/执行。接纳后即使发生异步写失败、断线或超时，也不得补发该业务帧。重连只恢复通道。
 
@@ -98,7 +98,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-CALL-03** 响应、超时、移除、关闭和发送失败争夺同一完成权，每次调用至多通知一次。交给统一响应处理器之前，必须移除 PendingCall 并取消超时；处理器异常不能重新完成或恢复调用。接纳额度保持到对应完成处理器返回，异常返回同样释放；同步编码、碰撞、写入异常也释放额度。超时业务通知必须在共享维护定时器之外执行，避免单条慢通知阻塞其他调用/握手期限及重连任务。不同调用的通知不保证全局顺序。
 
-**R-CALL-04** requestId 递增，uint32 回绕跳过 0；允许跳号，不编码 Slot、Node 或时间。同一本地 Node 生命周期内，显式删除或被动 Peer 回收不得重置分配，并在同远端 Peer 重建时立即复用旧调用 ID。匹配仍在 Peer 内完成；语言绑定可在 Node 范围分配 ID。碰到仍占用的 ID 必须同步失败，不能覆盖旧调用，也不扫描寻找其他 ID。部署需保证未完成远端回复的寿命远小于完整分配回绕周期；不能识别跨完整回绕周期的极端迟到响应。Wire v1 没有 Node 代际字段，不保证在替换/重启本地 Node 实例后拒绝保存的旧业务回复；此保护需要应用代际校验或另行版本化协议。
+**R-CALL-04** requestId 递增，uint32 回绕跳过 0；允许跳号，不编码 Slot、Node 或时间。同一本地 Node 生命周期内，显式删除或被动 Peer 回收不得重置分配，并在同远端 Peer 重建时立即复用旧调用 ID。匹配仍在 Peer 内完成；语言绑定可在 Node 范围分配 ID。碰到仍占用的 ID 必须同步失败，不能覆盖旧调用，也不扫描寻找其他 ID。部署需保证未完成远端回复的寿命远小于完整分配回绕周期；不能识别跨完整回绕周期的极端迟到响应。Wire 没有 Node 代际字段，不保证在替换/重启本地 Node 实例后拒绝保存的旧业务回复；此保护需要应用代际校验或另行版本化协议。
 
 **R-CALL-05** 未匹配的 Response 直接丢弃余下帧，不重复通知、不重新建调用；非零 requestId 必须可读。匹配后余下格式损坏时，必须以 PROTOCOL_ERROR 完成已认领调用并关闭连接，不能因已经移除而遗失通知。
 

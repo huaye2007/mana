@@ -36,15 +36,27 @@ public final class MysqlEntityMapper implements EntityMapper {
         for (int i = 0; i < args.length; i++) args[i] = group.valueAt(i);
         return access.query(m.selectGroup, args, m.rowMapper);
     }
+    // Every batch runs in one transaction: a failed batch leaves no partial rows, so it can be retried
+    // or split into single rows without duplicate-key failures. Encoding happens before the transaction.
     @Override public void insertBatch(EntityMeta key, List<?> entities) {
-        var m = meta(key); access.batchUpdate(m.insert, entities.stream().map(e -> MysqlEntityMeta.arguments(m.fields, e)).toList());
+        var m = meta(key); var rows = entities.stream().map(e -> MysqlEntityMeta.arguments(m.fields, e)).toList();
+        access.transaction(tx -> tx.batchUpdate(m.insert, rows));
     }
+    /** An UPDATE matching no row fails: the row is missing, so silently succeeding would lose the change. */
     @Override public void updateBatch(EntityMeta key, List<?> entities) {
         var m = meta(key); if (m.update == null) return;
-        access.batchUpdate(m.update, entities.stream().map(e -> MysqlEntityMeta.arguments(m.updateParameters, e)).toList());
+        var rows = entities.stream().map(e -> MysqlEntityMeta.arguments(m.updateParameters, e)).toList();
+        access.transaction(tx -> {
+            int[] counts = tx.batchUpdate(m.update, rows);
+            for (int i = 0; i < counts.length; i++)
+                if (counts[i] == 0) throw new MysqlException(m.update, new java.sql.SQLException(
+                        "UPDATE matched no row for id " + key.getId(entities.get(i)), "02000"));
+            return null;
+        });
     }
     @Override public void deleteBatch(EntityMeta key, List<Object> ids) {
-        access.batchUpdate(meta(key).delete, ids.stream().map(id -> new Object[]{id}).toList());
+        var m = meta(key); var rows = ids.stream().map(id -> new Object[]{id}).toList();
+        access.transaction(tx -> tx.batchUpdate(m.delete, rows));
     }
     @Override public void deleteInsertBatch(EntityMeta key, List<?> entities) {
         var m = meta(key);

@@ -1,4 +1,4 @@
-# 本仓库 RPC Wire Profile v1 — 2026-09 RPC binding
+# 本仓库 RPC Wire Profile v2 — 2026-10 RPC binding
 
 [English](rpc-wire.md) | **[简体中文](rpc-wire.zh-CN.md)**
 
@@ -23,14 +23,20 @@
 | 字段 | 宽度 | 值 |
 | --- | --- | --- |
 | magic | uint32 | 0x474e5352，沿用仓库 magic |
-| version | uint16 | 1 |
+| version | uint16 | 2 |
 | nodeId | uint32 | 非零且不等于本地 ID |
 | slotId | uint8 | 0..slotCount-1 |
 | slotCount | uint8 | 1..255 |
+| timestamp | int64 | 发送方 Unix 毫秒时间；未配置密钥时为 0 |
+| nonce | 16 字节 | 发送方随机数；未配置密钥时全 0 |
+| peerNonce | 16 字节 | 发起方为全 0；回复方回填发起方的 nonce |
+| mac | 32 字节 | 配置密钥时为 HMAC-SHA256(secret, magic..peerNonce 全部字节)；未配置时全 0 |
 
-frameLength=13，完整帧=17 字节，不允许尾随数据。主动端先发送；被动端创建/复用 Peer、回送本地身份和相同 Slot 信息。主动端核对预期身份。重复握手、Slot 冲突、slotCount 不一致、握手前业务帧/心跳均关闭候选连接。
+frameLength=85，完整帧=89 字节，不允许尾随数据。只有调用 addPeer 的一方（发起方）发送首个握手；被动端创建/复用被动 Peer，回送本地身份和相同 Slot 信息。发起方核对预期身份，并要求回复的 peerNonce 等于自己发送的 nonce。重复握手、Slot 冲突、slotCount 不一致、握手前业务帧/心跳、MAC 不匹配均关闭候选连接。若接收方本地已对该 nodeId 调用过 addPeer，入站握手同样被拒绝：一对节点之间只能有一方调用 addPeer。
 
-握手不是认证。V1 RpcNode 使用内部 TCP，接入可信性由部署网络边界保证。
+**鉴权。** 同一集群的节点配置相同密钥时，被动端验证 MAC，要求 |本地时间 − timestamp| 不超过允许的时钟偏差（Java 默认 60 秒），并拒绝偏差窗口内重复出现的 nonce；发起方通过 peerNonce 回显确认回复是对本连接的新鲜应答。未配置密钥的节点只接受 MAC 全 0 的握手，因此密钥配置不一致的两端无法建立连接，而不是静默跳过鉴权。MAC 只认证连接建立，不保护后续帧的机密性和完整性；需要时在传输层启用 TLS。
+
+v2 与 v1 握手不兼容（长度与 version 不同），集群内节点需一起升级；Request/Response/Heartbeat 布局不变。
 
 ## Heartbeat（type=2）
 
@@ -63,7 +69,7 @@ frameLength=13，完整帧=17 字节，不允许尾随数据。主动端先发�
 
 固定开销（含 type、不含前缀）11 字节。0 成功；1..9999 为框架预留；10000..2147483647 为业务错误。完整编号由 Core 定义。所有合法响应交给统一 RpcHandler，RPC 不根据错误码自动调用本地 onFail。
 
-同一本地 Node 内 Peer 重建不再重置 ID 分配，见 RPC Specification R-CALL-04；此连续性不改变字段、字节序或版本。Wire v1 没有 Node 代际字段，完整回绕迟到回复与跨本地 Node 替换的保存回复需遵守规范中的部署/应用边界。
+同一本地 Node 内 Peer 重建不再重置 ID 分配，见 RPC Specification R-CALL-04；此连续性不改变字段、字节序或版本。Wire 没有 Node 代际字段，完整回绕迟到回复与跨本地 Node 替换的保存回复需遵守规范中的部署/应用边界。
 
 接收 Response 先读取非零 requestId 并争取 PendingCall 完成权。无匹配的迟到/重复响应直接丢弃余下帧，不解析其错误码/Metadata；有匹配时继续校验，格式损坏交付 PROTOCOL_ERROR 并关闭连接，不能丢失完成通知。
 
@@ -84,7 +90,7 @@ value:bytes[valueLength]
 Handshake：nodeId=0x01020304、slotId=2、slotCount=3：
 
 ```text
-0000000d 01 474e5352 0001 01020304 02 03
+00000055 01 474e5352 0002 01020304 02 03 (timestamp、nonce、peerNonce、mac 共 72 个 0 字节)
 ```
 
 Heartbeat：
@@ -145,7 +151,7 @@ RoutedError（op 15）使用外层 requestId=0 的普通 RPC Notify，独立于�
 
 SnapshotBegin 捕获来源 revision。操作 6..9 对每次已接受本地修改（含幂等控制）将其加一，按 2^64 取模；增量 revision 必须为已提交来源 revision 加一。End 将捕获版本与暂存桶一起提交。版本缺口拒绝同步流，要求新快照，不定义重放日志。Verify 比较版本，即使未观察到短暂重连也能发现遗漏增量。
 
-Profile v2 与早期 v1 草案不兼容：快照/增量字段及 NodeRegister ACK 已变化。拒绝 v1，路由参与方一起升级；RPC Wire v1 framing/握手及普通 RPC 消息不变。旧 Router-profile 锚点仅用于兼容链接。
+Profile v2 与早期 v1 草案不兼容：快照/增量字段及 NodeRegister ACK 已变化。拒绝 v1，路由参与方一起升级；RPC Wire framing 及普通 RPC 消息不变（握手已为 v2）。旧 Router-profile 锚点仅用于兼容链接。
 
 ### RoutedData envelope
 

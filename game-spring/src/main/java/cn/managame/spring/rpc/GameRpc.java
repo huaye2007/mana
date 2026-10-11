@@ -11,7 +11,9 @@ import cn.managame.runtime.context.*;
 import cn.managame.runtime.protocol.*;
 import cn.managame.runtime.route.RouteCallback;
 import io.netty.buffer.*;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import static cn.managame.rpc.error.RpcErrorCodes.*;
 
 /** Typed RPC adapter; business methods and captured callbacks execute through Runtime Routes. */
@@ -19,11 +21,37 @@ public final class GameRpc implements AutoCloseable {
     private final GameRuntime runtime;
     private final GameRpcCodec codec;
     private final RpcNode node;
+    private final List<GameRpcConfigurer> configurers;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
-    GameRpc(GameRuntime runtime, GameRpcCodec codec, RpcNodeBuilder builder) {
+    /** Applies decorate in order, builds, then attach in order; a failed attach closes the built Node. */
+    GameRpc(GameRuntime runtime, GameRpcCodec codec, RpcNodeBuilder builder, List<GameRpcConfigurer> configurers) {
         this.runtime = Objects.requireNonNull(runtime);
         this.codec = Objects.requireNonNull(codec);
-        node = Objects.requireNonNull(builder).handler(new Handler()).build();
+        this.configurers = List.copyOf(configurers);
+        RpcHandler handler = new Handler();
+        for (GameRpcConfigurer configurer : this.configurers)
+            handler = Objects.requireNonNull(configurer.decorate(handler), "GameRpcConfigurer.decorate returned null");
+        node = Objects.requireNonNull(builder).handler(handler).build();
+        int attached = 0;
+        try {
+            for (GameRpcConfigurer configurer : this.configurers) { configurer.attach(node); attached++; }
+        } catch (RuntimeException | Error failure) {
+            closed.set(true);
+            detach(attached, failure);
+            try { node.close(); } catch (RuntimeException | Error cleanup) { failure.addSuppressed(cleanup); }
+            throw failure;
+        }
+    }
+
+    private void detach(int count, Throwable failure) {
+        for (int i = count - 1; i >= 0; i--) {
+            try { configurers.get(i).detach(node); }
+            catch (RuntimeException | Error error) {
+                if (failure != null) failure.addSuppressed(error);
+                else System.getLogger(GameRpc.class.getName()).log(System.Logger.Level.WARNING, "GameRpcConfigurer.detach failed", error);
+            }
+        }
     }
 
     RpcNode node() { return node; }
@@ -139,5 +167,9 @@ public final class GameRpc implements AutoCloseable {
         void fail(int code) { callback.onFail(code); }
     }
 
-    @Override public void close() { node.close(); }
+    /** Idempotent: detaches configurers in reverse order, then closes the Node. */
+    @Override public void close() {
+        if (closed.compareAndSet(false, true)) detach(configurers.size(), null);
+        node.close();
+    }
 }

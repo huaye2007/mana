@@ -36,9 +36,9 @@ class RpcIntegrationTest extends RpcTestSupport {
             a.call(2, new RpcRequest(44, 1, 0, 0, null, null), value -> {});
             take(pa.responses);
 
-            // Passive -> active upgrade retains the exact existing object and connections.
+            // Only one side of a pair dials: the passive side cannot also addPeer.
             RpcPeer passive = b.peers.get(1);
-            b.addPeer(1, a.localAddress(), 3);
+            assertThrows(IllegalStateException.class, () -> b.addPeer(1, a.localAddress(), 3));
             assertSame(passive, b.peers.get(1));
             b.removePeer(1);
             await(() -> b.peers.containsKey(1) && b.peers.get(1) != passive);

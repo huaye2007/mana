@@ -20,6 +20,11 @@ public abstract class GroupRepository<K, E> {
     final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;
         cache = Caffeine.newBuilder().expireAfterAccess(expiry).build(key -> {
+            // Collect unsaved changes before reading storage, then lay them over the loaded rows.
+            List<PendingBuffer.Change> unsaved = new ArrayList<>();
+            writer.buffer().forEachUnsaved(meta, (id, change) -> {
+                if (change.entity() != null && key.equals(meta.getGroupKey(change.entity()))) unsaved.add(change);
+            });
             try {
                 var result = new ConcurrentHashMap<K,E>();
                 for (Object entity : this.mapper.loadGroup(meta, key)) {
@@ -27,6 +32,11 @@ public abstract class GroupRepository<K, E> {
                         throw new DataLoadException("Mapper returned an entity from another group");
                     if (result.putIfAbsent((K) meta.getMapKey(entity), (E) entity) != null)
                         throw new DataLoadException("Duplicate MapKey in loaded group");
+                }
+                for (PendingBuffer.Change change : unsaved) {
+                    K mapKey = (K) meta.getMapKey(change.entity());
+                    if (change.operation() == DataOperation.DELETE) result.remove(mapKey);
+                    else result.put(mapKey, (E) change.entity());
                 }
                 return result;
             } catch (Exception e) { throw new DataLoadException("Group load failed: " + meta.entityType(), e); }
@@ -61,7 +71,7 @@ public abstract class GroupRepository<K, E> {
         Object id = meta.getId(entity);
         writer.mutate(() -> {
             var group = loaded(groupKey);
-            writer.record(meta, id, operation, operation == DataOperation.DELETE ? null : entity);
+            writer.record(meta, id, operation, entity); // deletes keep the entity for group overlay
             if (operation == DataOperation.DELETE) group.remove(mapKey);
             else group.put(mapKey, entity);
         });
@@ -71,7 +81,7 @@ public abstract class GroupRepository<K, E> {
         writer.mutate(() -> {
             var group = loaded(key);
             for (E entity : group.values())
-                writer.record(meta, meta.getId(entity), DataOperation.DELETE, null);
+                writer.record(meta, meta.getId(entity), DataOperation.DELETE, entity);
             group.clear();
         });
     }

@@ -91,7 +91,6 @@ Group.getGroup 先验证 GroupKey 的分量数量和类型，再加载整组。L
 
 先 record 后修改缓存，确保非法合并不会把缓存指向新对象。该顺序不是实体字段事务：调用者在 update 前已经改过的字段不会回滚。deleteGroup 按当前 Map 中实体逐个登记删除后清空原 Map，不调用 Mapper 的条件删除接口。
 
-
 ## 3. 构建与生命周期
 
 ```java
@@ -103,8 +102,8 @@ try (GameData data = GameDataBuilder.builder()
         .flushInterval(Duration.ofSeconds(1))
         .batchSize(500)
         .errorHandler(failure -> archiveFailureSynchronously(failure))
-        .retryPolicy(failure -> isRetryable(failure.cause()))
-        .maxAttempts(3)
+        .retryPolicy(RetryPolicy.transientFailures())
+        .shutdownTimeout(Duration.ofSeconds(30))
         .build()) {
     PlayerRepository players = data.repository(PlayerRepository.class);
 }
@@ -117,8 +116,8 @@ DataSource、业务类和失败归档/重试函数由应用提供；常见 JSON 
 | cacheExpire | 30 分钟 | 正值且大于 flushInterval；部署应远大于实际保存延迟 |
 | flushInterval | 1 秒 | 正值，单调时间目标周期 |
 | batchSize | 500 | 正整数 |
-| maxAttempts | 3 | 含第一次执行；正整数；只有 RetryPolicy 返回 true 才重试 |
-| retryPolicy | 总是 false | 默认执行一次，无内建 SQLState/Mongo 错误分类 |
+| shutdownTimeout | 30 秒 | 非负；close 持续重试可重试失败的最长时间，之后丢弃并报告 |
+| retryPolicy | RetryPolicy.transientFailures() | true 表示保留到下一轮重试，false 表示拆分后丢弃并报告；见第 5 节 |
 | errorHandler | System.Logger | 最终失败诊断；业务负责归档失败数据 |
 | partitionZone | UTC | 显式 ZoneId，可配置 Asia/Shanghai |
 | mysql(DataSource) | 未配置 | 借用 DataSource，为无 backend 参数的 Repository 注册建立 JdbcMysqlAccess/MysqlEntityMapper |
@@ -138,14 +137,13 @@ GameData 只关闭自己的调度资源，不关闭 DataSource、MongoClient 或
 | Repository 解析 | 直接参数化父类、具体 Entity、无参 Repository 构造、重复注册校验 | 不返回半成品 GameData |
 | 身份/日志预编译 | 状态 EntityMeta 与 K 匹配；日志 MysqlLogWriter | 不启动保存 |
 | 状态 Mapper.initialize | 编译后端映射、初始化 Schema | 已执行 DDL 不整体回滚 |
-| 创建 WriteBehindManager | 两个缓冲、错误/重试配置、调度资源 | 仅内部装配 |
+| 创建 WriteBehindManager | 待保存表、错误/重试配置、调度资源 | 仅内部装配 |
 | initialize Repository | 直接注入依赖、创建缓存；日志加入保存管理 | 不暴露未初始化 Repository |
 | GameData 建立 | 固定 Repository class 到实例映射，启动周期保存 | 返回可用入口 |
 
 注意第三阶段不意味着所有数据库映射都已经验证：MySQL/Mongo 的存储映射由对应 Mapper.initialize 完成。前一个实体 Schema 成功、后一个实体映射失败时，前一个实体的 DDL 可能已经生效。应用可以修正配置后重建，但不能期待自动撤销建表或补字段。
 
 repositories 和 logRepositories 的每次调用是追加绑定，不是替换。一个 Mapper 可以绑定多个实体，同一个实体不能注册两个状态 Repository。读取 GameData.repository(type) 只查已注册实例；关闭后仍可取得引用，但 Repository 的访问方法会拒绝使用，不会重新初始化。
-
 
 ## 4. Entity 与身份元数据
 
@@ -177,78 +175,67 @@ EntityMeta 负责 Single/Group 身份、字段访问以及键类型，不应包�
 
 Mapper.loadGroup 应返回非 null 集合，空组返回空集合；Repository 对身份和 MapKey 做防御检查，但不会把任意第三方 Mapper 变成完整验证器。自定义 Mapper 仍需遵守 load 的实体类型、loadGroup 的完整组、批量操作及异常契约。
 
-
 ## 5. 写回实现与适用边界
 
-固定两个 PendingBuffer，各自预创建 EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>；PendingChange 只保存操作与实体引用，DELETE 不保存实体。record 每次重新读取 volatile activeBuffer，使用 compute 按规范合并，不缓存 buffer 引用。
+每个 EntityMeta 只有一张待保存表：`pending: ConcurrentHashMap<PrimaryId, Change>`，外加一张正在保存表 `inflight`。Change 只保存操作与最新实体引用，按对象身份比较。record 用 `pending.compute` 按合并矩阵合并，写入路径只有一次 compute，没有额外锁。
 
-唯一保存线程交换 A/B，等待固定 100ms grace，处理旧缓冲全部实体批次，最终失败也上报后清空；不会跨缓冲合并。下一轮调度延迟为 max(0, interval - 上轮耗时)，不累计补跑历史周期。
+**认领而不是交换缓冲。** 唯一保存线程遍历 pending，对每条 `(id, change)` 先放入 inflight，再执行条件移除 `pending.remove(id, change)`：成功即认领；失败说明遍历后又有新的 record 合并进来，撤回 inflight，新的变更留给下一轮。认领之后才到达的 record 会在 pending 中生成新条目。因此不存在"遍历后、清空前写入而丢失"的窗口，也不需要宽限期或 writer 计数。保存线程只有一个，同一 id 的较旧变更总在较新变更之前执行。
 
-**100ms 固定宽限期用于简化缓冲切换，不是严格并发屏障。** 若业务线程取得旧缓冲后停顿超过宽限期，可能错过本轮遍历或被 clear 覆盖。实现没有 writer counter、sealed buffer、epoch 或第三缓冲，不宣称在任意线程暂停下无丢失。正常 record 必须短小，实体业务顺序由应用保证。
+**缓存未命中先查未保存变更。** Single 加载先查 pending/inflight，存在则直接返回内存中的实体（DELETE 返回 null），不读存储；Group 加载先收集属于该组的未保存变更，再读存储并覆盖。缓存过期淘汰因此不会把尚未保存的修改回档。Group 的 DELETE 变更保留实体引用，用于判断所属组。
 
-接纳路径使用共享读锁，close 使用写锁关闭接纳；该锁只解决停服与已经接纳操作的竞争，不参与缓冲切换、不串行化不同业务实体。close 等待 pipeline 后清理两缓冲，累计出现过的最终失败会使 close 抛 DataSaveException。批次最终失败不会因后续批次成功而恢复成关闭成功。
+**失败分类。** 每个批次由 Mapper 原子执行（MySQL 在一个事务内，Mongo 用按 `_id` 的 upsert/replace），失败的批次不会留下部分行，可以安全重试或拆分：
 
-缓存和日志队列/待保存集合不设容量上限。持续写入速度超过保存速度会增加内存占用；V1 未实现容量背压或生产容量验证。
+1. `RetryPolicy.shouldRetry` 返回 true（默认 `RetryPolicy.transientFailures()`：连接中断/拒绝、连接池超时、I/O、锁等待超时 1205、死锁 1213、SQLState 08xxx/40xxx、Mongo 网络/超时/主节点切换）：整批变更合并回 pending，下一轮再试，不限次数。保留的变更按实体 id 去重，数量上限是脏实体数，不随更新次数增长。
+2. 不可重试且批次多于一行：拆成单行逐条执行，其余行照常保存；单行再次失败时同样先判断是否可重试。
+3. 不可重试的单行：丢弃该变更，计入 failedBatches，同步调用 DataErrorHandler（batch 只含这一个实体或 id，attempt=1 表示整批即单行，attempt=2 表示拆分后的单行），并让后续 flush/close 抛 DataSaveException。
+4. 合并回 pending 时若与更新的变更构成非法序列（例如较旧的 DELETE 后业务又 UPDATE），保留较新的变更，较旧的按第 3 条丢弃并报告。
 
-### 5.1 PendingBuffer 的数据形状
+MySQL 的 UPDATE 匹配 0 行视为失败（行不存在，静默成功会丢失修改）；它不可重试，最终单行报告。该判断依赖驱动返回匹配行数：Connector/J 默认 `useAffectedRows=false` 满足要求，不要开启 `useAffectedRows=true`；`rewriteBatchedStatements=true` 返回的 SUCCESS_NO_INFO 不做判断。
+
+接纳路径使用共享读锁，close 使用写锁关闭接纳；该锁只解决停服与已接纳操作的竞争，不参与保存。
+
+**线程可见性。** 保存线程在保存时读取实体当前状态，不做快照。实体内被业务修改的集合须使用线程安全集合，避免序列化时并发修改异常；跨字段一致性（例如扣金币与加道具之间恰好被保存）不保证，下一轮保存会写入最终状态，只有恰在此时进程崩溃才会留下中间态。需要严格一致的字段应在同一次 update 前一次性改完。
+
+缓存和日志队列不设容量上限，没有 WAL；进程崩溃会丢失最多一个保存周期及当前保留的失败变更。
+
+### 5.1 数据形状
 
 ```text
-WriteBehindManager
-  activeBuffer ──→ A 或 B（volatile）
-  A: EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>
-  B: EntityMeta → ConcurrentHashMap<PrimaryId, PendingChange>
+PendingBuffer
+  pending : EntityMeta → ConcurrentHashMap<PrimaryId, Change>   业务线程 compute 合并
+  inflight: EntityMeta → ConcurrentHashMap<PrimaryId, Change>   保存线程认领后、落库前
 
-PendingChange
+Change（按对象身份比较）
   operation
-  entityReference（DELETE 为 null）
+  entity（最新实体引用；按 id 删除 Single 时为 null）
 ```
 
-外层键是 EntityMeta，不是 EntityMapper。玩家与公会可以共用一个 MysqlEntityMapper，并各自有 id=42；这两条变更必须落在不同表的不同 pending map。每次 record 重新读取 activeBuffer，同一主键通过 compute 合并；没有为每次 update 建立深拷贝。
+外层键是 EntityMeta，不是 EntityMapper：玩家与公会可以共用一个 MysqlEntityMapper 且各有 id=42，两条变更落在不同的表。
 
 ### 5.2 一轮 flush 的时间线
 
 ```text
-记录本轮单调开始时间
-→ A/B 交换：生产者后续写新 active
-→ 等待固定 100ms
-→ 遍历旧缓冲：每个 EntityMeta 按操作阶段切 batch
-→ 各 batch 执行、按用户策略重试或最终报错
-→ 清空已处理旧缓冲
-→ 对日志进行本轮有限 drain
-→ 按 max(0, interval - 本轮耗时) 安排下一轮
+对每个 EntityMeta：
+  认领 pending 中的全部条目（先入 inflight，再条件移除）
+  按 DELETE → DELETE_INSERT → INSERT → UPDATE 分组、按 batchSize 切批
+  每批：成功 → 移出 inflight
+        可重试失败 → 合并回 pending、移出 inflight
+        不可重试 → 拆单行；单行不可重试 → 丢弃并报告
+日志：本轮有限 drain，按分表成批写入，失败同样分类（可重试的日志放回队尾）
+按 max(0, interval - 本轮耗时) 安排下一轮
 ```
 
-保存 pipeline 互斥，周期调用与 close 不会同时执行 Mapper 批次。外层实体遍历次序不构成业务事务顺序；ConcurrentHashMap 内主键遍历顺序也不是更新调用顺序。需要依赖多实体操作顺序的业务不能把 batch 遍历当成串行事务。
+保存 pipeline 互斥，周期调用、显式 flush 与 close 不会同时执行 Mapper 批次。外层实体遍历次序与主键遍历次序都不是业务事务顺序。
 
-固定宽限期的失效例子必须保留在实现文档中：线程取得旧 A 后暂停；保存线程切到 B、等 100ms 并遍历/清空 A；暂停线程随后才写入 A。此时变更可能错过本轮，或与 clear 竞争被覆盖。当前设计没有严格完成握手，因此不能宣称任意暂停下无丢失。若未来改成计数/封存/epoch 协议，应同步更新此机制、性能取舍和并发验证，不能只删除限制说明。
+### 5.3 RetryPolicy 与错误回调
 
-### 5.3 批次错误与尝试次数
-
-以下为语义伪代码，不是可调用 API：
-
-```text
-attempt = 1
-执行 batch
-失败时:
-    构造 DataFailure（包含本次 attempt）
-    若 attempt < maxAttempts 且 RetryPolicy 同意:
-        attempt 加一，立即重试相同 batch
-    否则:
-        记住生命周期内发生过最终失败
-        同步调用 DataErrorHandler
-        继续下一 batch
-```
-
-当前没有退避、随机抖动或单独重试线程。RetryPolicy 和 DataErrorHandler 在保存流水线上同步执行，耗时会延长整轮写回。RetryPolicy 自身抛异常时附加诊断并转最终失败；DataErrorHandler 抛异常时记录后继续。
-
-DataFailure 的批次列表不允许回调修改其结构，但元素仍是实体引用，不是不可变快照。DELETE 批次携带 ID；实体写入和日志批次携带对象。只有实际失败时才构造失败上下文，成功路径不生成失败归档副本。
+RetryPolicy 只决定"保留到下一轮"还是"拆分/丢弃"，不在同一轮内立即重试，没有退避线程；可重试的失败按 flushInterval 自然间隔重试。`RetryPolicy.never()` 恢复"任何失败都拆分并丢弃"。RetryPolicy 自身抛异常视为不可重试。DataErrorHandler 只接收被丢弃的变更；它在保存线程同步执行，可以把实体序列化后写入本地文件作为死信，供人工补数据。可重试失败只在每轮结束时记录一条 WARNING，不调用 DataErrorHandler。
 
 ### 5.4 close 的内部屏障
 
-close 在接纳写锁内切为 CLOSING，阻止新的 mutate；停止后续周期调度，然后等待正在运行的 pipeline 完成，处理较旧的非活动缓冲、活动缓冲及全部已接纳日志，最后进入 CLOSED。运行期已经记录的最终失败也会使 close 抛 DataSaveException，重复调用仍报告该失败。
+close 在接纳写锁内切为 CLOSING，停止周期调度；随后反复 flush，直到没有待保存变更或超过 `shutdownTimeout`（默认 30 秒，两轮之间等待 flushInterval）。之后切为 CLOSED 做最后一轮：此时可重试的失败也不再保留，按第 3 条拆分、丢弃并报告，DataErrorHandler 拿到的实体可直接落盘。只要生命周期内发生过丢弃，close 抛 DataSaveException，重复调用仍报告该失败。
 
-不允许在保存线程执行的 Mapper/策略/错误回调里调用 close；否则会等待自己正在执行的流水线。框架检测并拒绝这种使用。外部数据库驱动调用若不返回，close 也可能一直等待，数据库 timeout 仍需要由应用配置。
-
+不允许在保存线程执行的 Mapper/策略/错误回调里调用 close，框架检测并拒绝。数据库驱动调用若不返回，close 也会等待，超时仍需由应用在连接池/驱动上配置。
 
 ## 6. MySQL 映射
 
@@ -302,7 +289,6 @@ JdbcMysqlAccess 是数据库访问边界，不负责 Repository 变更合并和�
 
 Schema 初始化属于保守增量维护：发现缺表/缺列/显式索引时补齐，发现明显冲突则失败。不支持的迁移由部署工具负责；不能因初始化成功就推断已有 VARCHAR 长度、默认值或 nullable 均与 Java 声明完全一致。
 
-
 <a id="default-json-field-binding"></a>
 
 ### 6.2 默认 JSON 字段类型绑定
@@ -336,7 +322,6 @@ MongoEntityMapper 可接收 MongoDatabase 或 MongoAccess。DriverMongoAccess �
 
 Mongo 的 replacement 不是字段级 $set，因此外部系统添加但不在映射中的 Document 字段不能依赖本组件替它保留。ordered bulk 也不是批次事务：前面操作可能已经成功，重试策略仍需处理部分成功。
 
-
 ## 8. Log
 
 LogRepository 不要求 Id 或无参构造，不调用 EntityMapper。使用 @Table/@Column 编译 INSERT 映射，不查询或修改 Schema；日志表由外部服务准备。
@@ -359,7 +344,6 @@ insert 先验证类型与分表值，再进入 ConcurrentLinkedQueue；不序列
 
 新增 codec 不应把 DEFAULT 复杂对象悄悄变成 JSON，也不应丢失字段 Type 的泛型信息。新增日志后端、日志 Schema 管理、缓存容量、失败回灌或严格缓冲交换协议，都属于尚未实现的扩展，不能通过添加一个配置示例就声称已支持。
 
-
 ## 9. 异常与验证
 
 DataLoadException：存储加载或加载结果非法。DataOperationException：未初始化、已关闭、组未加载、非法变更序列。DataSaveException：close 发现最终保存失败。启动配置/元数据错误通常为 IllegalArgumentException，Schema/数据库错误保留底层异常。共享失败码见 [Core](OGBS-Core-1.0.zh-CN.md#data-常量)。
@@ -367,7 +351,6 @@ DataLoadException：存储加载或加载结果非法。DataOperationException�
 已验证：Repository/缓冲契约测试、H2 MySQL 模式上的真实 JDBC 查询与事务、SQL 映射/Schema 生成、BSON CodecRegistry 编解码及 Mapper 调用契约。H2 的 Schema 测试使用信息表适配桩，不能等同 MySQL 实机验证；Mongo 测试使用记录型 MongoAccess，不能等同服务器验证。
 
 实机测试 [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) 由 OGBS_DATA_MYSQL_URL / OGBS_DATA_MONGO_URI 启用；默认跳过。未配置上述环境变量时不运行实机测试，当前尚未验证真实 MySQL/MongoDB 服务器、生产性能或长时间故障恢复。
-
 
 ### 9.1 错误扩展接口
 
@@ -384,9 +367,9 @@ public interface DataErrorHandler {
 }
 ```
 
-DataOperation 包括 INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT。这里的 operation 表示实际失败的持久化意图，未必等于最后一次 Repository 方法名，例如 DELETE 后 INSERT 合并后报告 DELETE_INSERT。attempt 从 1 开始；重试成功不会再调用最终错误 Handler。
+DataOperation 包括 INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT。这里的 operation 表示实际失败的持久化意图，未必等于最后一次 Repository 方法名，例如 DELETE 后 INSERT 合并后报告 DELETE_INSERT。DataErrorHandler 只收到被丢弃的单个变更：attempt=1 表示本身就是单行批次，attempt=2 表示拆分后的单行。
 
-异常诊断保留底层 cause。策略可据 MysqlException 的 sqlState/vendorCode 或 Mongo 驱动异常自行判断，框架不内置可重试错误清单。错误码的数值仍以 Core 为唯一来源，不在这里重新分配。
+异常诊断保留底层 cause。默认 `RetryPolicy.transientFailures()` 沿 cause 链（含 SQLException.getNextException 与 suppressed）识别瞬时错误，规则见第 5 节；应用可以组合自己的判断，例如 `f -> RetryPolicy.isTransient(f.cause()) || myRule(f)`。`RetryPolicy.never()` 关闭保留。错误码的数值仍以 Core 为唯一来源。
 
 ### 9.2 易错契约的测试定位
 
@@ -397,17 +380,20 @@ DataOperation 包括 INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT。这
 | 按数据库主键删除组内实体 | DataContractTest.loadedGroupDeletesByDatabaseId |
 | 合法/非法合并矩阵 | DataContractTest.legalMergeTable / illegalMergeTable |
 | 非法 INSERT 不替换缓存对象 | DataContractTest.illegalInsertDoesNotReplaceCachedEntity |
-| 阶段顺序、batch 切分、不跨缓冲合并 | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossBuffers |
-| 重试可选、次数有限、失败后继续处理 | DataContractTest.retryIsOptInBoundedAndKeepsBatchContext / finalFailureAndHandlerFailureDoNotStopLaterBatchesAndCloseReportsIt |
-| 关闭等待当前 pipeline 并处理下一缓冲 | DataContractTest.closeWaitsForActivePipelineAndFlushesNextBuffer |
+| 阶段顺序、batch 切分、不跨轮合并 | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossFlushes |
+| 可重试失败保留并与新变更合并、默认错误分类 | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / defaultPolicyKeepsOnlyTransientFailures |
+| 不可重试的坏行被拆出，其余行照常保存 | DataContractTest.nonRetryableBadRowIsIsolatedFromItsBatch / finalFailureAndHandlerFailureDoNotStopLaterBatchesAndCloseReportsIt |
+| 未保存的实体淘汰后从内存重新加载 | DataContractTest.evictedEntityWithUnsavedChangeReloadsFromMemoryNotStorage |
+| close 重试后丢弃并报告剩余变更 | DataContractTest.closeRetriesThenDropsAndReportsLeftovers |
+| 关闭等待当前 pipeline 并保存之后的变更 | DataContractTest.closeWaitsForActivePipelineAndFlushesNextBuffer |
 | 错误回调中关闭不死锁 | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | 日志分表、关闭 drain、不初始化 Schema | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization |
 | 日志失败使用同一 Handler 且继续后续分区 | LogContractTest.logFailuresReachSameHandlerAndDoNotBlockLaterPartitions |
 
-这些入口不能证明固定 100ms 宽限期在任意线程暂停下安全，也不能替代真实数据库的故障与兼容性验证。涉及这类保证的新增需求应增加相应实现及验证，而不是扩大现有测试结论。
+这些入口使用内存 Mapper，不能替代真实数据库的故障与兼容性验证。涉及新保证的需求应增加相应实现及验证，而不是扩大现有测试结论。
 
 ## 11. 显式 flush 与 DataStats
 
-`GameData.flush()` 通过既有持久化流水线串行执行两次缓冲区轮换/flush，每次保留 100 毫秒宽限期；周期任务可能在两次之间运行。需要稳定屏障时先暂停写入，并发写入没有快照隔离；调用后 GameData 继续可用。已关闭/关闭中的 Data 以及持久化回调线程的重入调用以 DataOperationException 拒绝。处理后若有任何历史最终失败，抛 DataSaveException，包括当前队列为空时；flush 不自动重试这些历史失败，close 仍报告相同失败。JDBC/Mongo 超时策略决定阻塞时间，避免在繁忙游戏 Route 执行整个服务的 flush。
+`GameData.flush()` 通过既有持久化流水线同步执行一轮：调用前已被接纳的全部变更都会被认领并保存；调用期间并发写入的变更可能留到下一轮。已关闭/关闭中的 Data 以及持久化回调线程的重入调用以 DataOperationException 拒绝。处理后若有任何历史丢弃，抛 DataSaveException（包括当前队列为空时）；若有可重试失败仍被保留，也抛 DataSaveException，但这些变更继续留在 pending 中等待下一轮。JDBC/Mongo 超时决定阻塞时间，避免在繁忙游戏 Route 上执行整个服务的 flush。
 
-`GameData.stats()` 返回 DataStats：accepting、pendingChanges（两个缓冲区合并后条目，可能包括正在保存的批次）、queuedLogs、failedBatches（最终失败，不是重试次数）、flushes（轮换次数，不包含 close 最终处理）、saveNanos（包括宽限期的流水线耗时）、singleCacheEntries（包括不存在的负缓存）、groupCacheEntries（组数，不是实体数）。字段读取间可能变化。日志队列 size 遍历为 O(n)，应按管理频率采样，不逐消息调用。不隐式安装 exporter、HTTP 管理接口、硬队列限制、脏检测或快照复制。[DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java) 验证两个缓冲区、统计、回调拒绝及历史失败。真实数据库持久性/故障行为需配置集成服务验证。
+`GameData.stats()` 返回 DataStats：accepting、pendingChanges（pending 与 inflight 条目数，包含被保留的失败变更）、queuedLogs、failedBatches（被丢弃的变更数，不是重试次数）、flushes（轮次，不包含 close 的最后一轮）、saveNanos、singleCacheEntries（包括不存在的负缓存）、groupCacheEntries（组数，不是实体数）。字段读取间可能变化。日志队列 size 遍历为 O(n)，应按管理频率采样。不隐式安装 exporter、HTTP 管理接口、硬队列限制、脏检测或快照复制。[DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java) 验证认领语义、统计、回调拒绝及历史失败。真实数据库持久性/故障行为需配置集成服务验证。
