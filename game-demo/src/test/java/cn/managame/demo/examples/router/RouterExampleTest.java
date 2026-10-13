@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class RouterExampleTest extends ExampleTestSupport {
-    @Test void oneRpcNodePerSimulatedProcessRunsDynamicRoutingExample() throws Exception {
+    @Test void oneRpcNodePerSimulatedProcessRelaysThroughStatelessRouters() throws Exception {
         assertEquals("hello game-router", RouterEchoExample.run());
     }
 }

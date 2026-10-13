@@ -18,29 +18,39 @@ public final class RuntimeNotificationExample {
     private RuntimeNotificationExample() {}
 
     public static void main(String[] args) {
+        System.out.println("Received notification: " + deliver("ready"));
+    }
+
+    /** Dispatches one notification and returns the text its handler received. */
+    public static String deliver(String message) {
         RouteExecutor executor = (domain, key, task) -> {
             task.run();
             return RouteExecuteStatus.ACCEPTED;
         };
-        var notification = new Notification("ready");
+        var handler = new Notifications();
 
         try (var runtime = GameRuntimeBuilder.builder()
                 .routeDomains(List.of(RouteDomain.of(1, "application-defined")))
                 .routeExecutors(List.of(RouteExecutorBinding.of(executor, 1)))
                 .protocols(ProtocolRegistry.of(ProtocolDescriptor.notify(1002, Notification.class)))
-                .handlers(List.of(new Notifications()))
+                .handlers(List.of(handler))
                 .build()) {
-            runtime.dispatch(new DefaultHandlerContext(1, 10001, notification));
+            runtime.dispatch(new DefaultHandlerContext(1, 10001, new Notification(message)));
         }
+        return handler.received;
     }
 
     public record Notification(String message) {}
 
+    // Instantiated directly by this standalone entry; excluded from GameDemo Bean discovery.
+    @org.springframework.context.annotation.Profile("standalone-runtime-notification-example-only")
     @Handler(domain = 1)
     public static final class Notifications {
+        private String received;
+
         @HandlerMethod
         public void handle(Notification notification) {
-            System.out.println("Received notification: " + notification.message());
+            received = notification.message();
         }
     }
 }

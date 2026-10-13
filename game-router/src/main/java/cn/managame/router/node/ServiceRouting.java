@@ -6,395 +6,303 @@ import cn.managame.rpc.message.*;
 import cn.managame.rpc.node.RpcNode;
 import cn.managame.rpc.transport.RpcSendStatus;
 import cn.managame.router.call.*;
-import cn.managame.router.route.*;
 import io.netty.buffer.ByteBuf;
 import java.util.*;
 import java.util.concurrent.*;
 import static cn.managame.router.node.RouterWire.*;
 
-/** Service registration, bindings and addressing on the process's existing RpcNode. */
+/**
+ * The service role on the process's existing RpcNode: sends routed messages through the declared Routers and
+ * receives what they deliver. Every service connects to every Router. On each connected Router this Node
+ * announces its incarnation and service (ATTACH) as soon as the connection is seen and again every second,
+ * so a restarted Router learns it again without any registration exchange. Targets are exact Node IDs;
+ * resolving a business key (a player, a room) to a Node belongs to the application.
+ *
+ * <p>Sends run on the caller and never wait for anything but RPC. A send picks one usable Router from the
+ * target and routeKey, so one key to one target keeps one path while the set of usable Routers does not
+ * change. A Router is usable once it has been connected for one announcement period, so the other Nodes
+ * have announced themselves there too; when none is, any connected Router is used. A call that a Router
+ * answers with PEER_NOT_FOUND or UNAVAILABLE was not delivered and is resent through another connected
+ * Router. A routed call's response returns through the Router that carried the call.
+ */
 public final class ServiceRouting implements RpcHandler, AutoCloseable {
     private static final System.Logger LOG = System.getLogger(ServiceRouting.class.getName());
-    private final Object lock = new Object();
-    private volatile RpcNode rpc;
-    private final RpcHandler directHandler;
-    private final ScheduledExecutorService maintenance = Executors.newSingleThreadScheduledExecutor(task -> {
-        Thread thread = new Thread(task, "service-routing-maintenance"); thread.setDaemon(true); return thread;
-    });
-    private final RouterHandler handler;
-    private final int service;
-    private final Set<Long> bindings = new HashSet<>();
-    private int router;
-    private long epoch, generation;
-    private long routerEpoch, lastVerification;
-    private boolean retryRegistration, wasConnected;
-    static final int MAX_CONTROLS = 8192;
-    private boolean registered, registering, closed, detaching, restoring;
-    private RpcCallback<Integer> registrationCallback;
-    private final ArrayDeque<Control> controls = new ArrayDeque<>();
-    private Control active;
-    private boolean pumping;
-    private int restoreRemaining, restoreError;
-    private Iterator<Long> restoringKeys = Collections.emptyIterator();
-    private static final class Control implements RpcCallback<Object> {
-        final long generation, key;
-        final int op;
-        final RpcCallback<Integer> callback;
-        final boolean restore;
-        Control(long generation, int op, long key, RpcCallback<Integer> callback, boolean restore) {
-            this.generation = generation; this.op = op; this.key = key; this.callback = callback; this.restore = restore;
-        }
-        @Override public void onResponse(Object ignored) {}
-    }
-    private record Business(int command, RpcCallback<?> callback) implements RpcCallback<Object> {
-        @Override public void onResponse(Object ignored) {}
-    }
-    ServiceRouting(int serviceId, RouterHandler handler, RpcHandler directHandler) {
-        if (serviceId <= 0) throw new IllegalArgumentException("serviceId must be positive");
-        service = serviceId; this.handler = Objects.requireNonNull(handler);
-        this.directHandler = Objects.requireNonNull(directHandler);
-    }
-    /** Starts routing maintenance on the existing Node. The application starts and closes RPC. */
-    public void start(RpcNode rpcNode) {
-        synchronized (lock) {
-            if (closed || rpc != null) throw new IllegalStateException("Routing already started or closed");
-            rpc = Objects.requireNonNull(rpcNode);
-            maintenance.scheduleWithFixedDelay(this::maintain, 100, 100, TimeUnit.MILLISECONDS);
-        }
-    }
-    private void maintain() {
-        try {
-            int id; boolean connected, lost;
-            synchronized (lock) {
-                if (closed || router == 0) return;
-                id = router; connected = rpc.isPeerConnected(id); lost = wasConnected && !connected;
-                wasConnected = connected;
-            }
-            if (lost) interrupt(id, RpcErrorCodes.UNAVAILABLE, false, true);
-            if (!connected) return;
-            synchronized (lock) {
-                if (closed || router != id || detaching || active != null || !controls.isEmpty()) return;
-                if (registered && !restoring && System.nanoTime() - lastVerification >= TimeUnit.SECONDS.toNanos(1)) {
-                    lastVerification = System.nanoTime();
-                    controls.addLast(new Control(generation, VERIFY, 0, null, false));
-                }
-            }
-            onConnected(id); pump();
-        } catch (RuntimeException error) { LOG.log(System.Logger.Level.WARNING, "Routing maintenance failed", error); }
-    }
-    public boolean isRegistered() { synchronized (lock) { return registered && !restoring && !closed && !detaching && rpc != null && rpc.isPeerConnected(router); } }
-    public Set<Long> bindings() { synchronized (lock) { return Set.copyOf(bindings); } }
-    public void register(int routerId, long nodeEpoch, RpcCallback<Integer> callback) {
-        if (rpc == null) throw new IllegalStateException("Start routing before registration");
-        if (routerId == 0 || routerId == rpc.nodeId() || nodeEpoch == 0)
-            throw new IllegalArgumentException("invalid registration");
-        Objects.requireNonNull(callback);
-        synchronized (lock) {
-            if (closed || (router != 0 && (router != routerId || epoch != nodeEpoch || registered || registering || restoring || registrationCallback != null)))
-                throw new IllegalStateException("Node closed or registration already active");
-            if (router == 0 && epoch != 0 && nodeEpoch == epoch) throw new IllegalArgumentException("New registration must use a new nodeEpoch");
-            router = routerId; epoch = nodeEpoch; generation++; registered = false; detaching = false;
-            retryRegistration = true; wasConnected = rpc.isPeerConnected(routerId);
-            registrationCallback = callback;
-        }
-        if (rpc.isPeerConnected(routerId)) onConnected(routerId);
-    }
-    private void onConnected(int id) {
-        if (!rpc.isPeerConnected(id)) return;
-        synchronized (lock) {
-            if (id != router || closed || detaching || registered || registering || !retryRegistration
-                    || active != null || !controls.isEmpty()) return;
-            registering = true; restoring = true; restoreRemaining = 0; restoreError = 0;
-            controls.addLast(new Control(generation, REGISTER, 0, null, false));
-        }
-        pump();
-    }
-    public void bind(long key, RpcCallback<Integer> callback) { binding(CLIENT_BIND, key, callback); }
-    public void unbind(long key, RpcCallback<Integer> callback) { binding(CLIENT_UNBIND, key, callback); }
-    private void binding(int op, long key, RpcCallback<Integer> callback) {
-        Objects.requireNonNull(callback);
-        synchronized (lock) { ready(); checkControlCapacity(); controls.addLast(new Control(generation, op, key, callback, false)); }
-        pump();
-    }
-    public void unregister(RpcCallback<Integer> callback) {
-        Objects.requireNonNull(callback);
-        synchronized (lock) {
-            if (closed || rpc == null || router == 0 || registering || restoring || detaching || registrationCallback != null)
-                throw new IllegalStateException("No settled Router selection");
-            if (!rpc.isPeerConnected(router)) throw new IllegalStateException("Use unregisterAfterLoss without transport");
-            checkControlCapacity(); detaching = true;
-            controls.addLast(new Control(generation, DETACH, 0, callback, false));
-        }
-        pump();
-    }
-    public void unregisterAfterLoss() {
-        int old;
-        synchronized (lock) {
-            if (router == 0 || rpc.isPeerConnected(router))
-                throw new IllegalStateException("Old Router must be disconnected");
-            old = router;
-        }
-        interrupt(old, RpcErrorCodes.PEER_REMOVED, true);
-    }
-    private void pump() {
-        synchronized (lock) { if (pumping) return; pumping = true; }
-        while (true) {
-            Control c;
-            int target;
-            ByteBuf body;
-            synchronized (lock) {
-                if (closed || active != null) { pumping = false; return; }
-                if (controls.isEmpty() && restoringKeys.hasNext())
-                    controls.addLast(new Control(generation, CLIENT_BIND, restoringKeys.next(), null, true));
-                if (controls.isEmpty()) { pumping = false; return; }
-                c = controls.removeFirst(); active = c; target = router;
-                body = control(c.op);
-                if (c.op == REGISTER) node(body, new NodeRegistration(rpc.nodeId(), epoch, service));
-                else if (c.op == VERIFY) body.writeLong(routerEpoch).writeLong(epoch).writeLong(0);
-                else {
-                    body.writeLong(epoch);
-                    if (c.op != DETACH) body.writeInt(service).writeLong(c.key);
-                }
-            }
-            try { rpc.call(target, packet(body), c); }
-            catch (RuntimeException error) { complete(c, RpcErrorCodes.NODE_CLOSED); }
-            catch (Error error) { synchronized (lock) { pumping = false; } throw error; }
-            finally { if (body.refCnt() > 0) body.release(); }
-        }
-    }
-    private void complete(Control c, int error) {
-        if (c.op == VERIFY) {
-            int id;
-            synchronized (lock) {
-                if (active != c || c.generation != generation) return;
-                active = null; id = router;
-            }
-            if (error != 0) interrupt(id, error, false, true, c.generation);
-            pump(); return;
-        }
-        RpcCallback<Integer> registration = null;
-        boolean registrationDone = false;
-        int registrationId = 0, registrationError = error, controlRouter;
-        synchronized (lock) {
-            if (active != c || c.generation != generation) return;
-            active = null; controlRouter = router;
-            if (c.op == REGISTER) {
-                registering = false; registered = error == 0 && !closed;
-                retryRegistration = error == 0 || transientError(error);
-                lastVerification = System.nanoTime();
-                if (registered) {
-                    restoreRemaining = bindings.size();
-                    restoringKeys = bindings.iterator();
-                }
-                registrationDone = !registered || restoreRemaining == 0;
-            } else if (c.restore) {
-                if (error != 0 && restoreError == 0) restoreError = error;
-                if (error != 0) { restoreRemaining = 1; restoringKeys = Collections.emptyIterator(); }
-                registrationDone = --restoreRemaining == 0;
-                registrationError = restoreError;
-                if (restoreError != 0) { registered = false; retryRegistration = transientError(restoreError)
-                        || restoreError == cn.managame.router.error.RouterErrorCodes.NOT_REGISTERED; }
-            } else if (c.op == DETACH) {
-                detaching = false;
-                if (error == 0) { router = 0; registered = false; generation++; bindings.clear(); }
-            } else if (error == 0) {
-                if (c.op == CLIENT_BIND) bindings.add(c.key); else bindings.remove(c.key);
-            }
-            if (registrationDone) {
-                restoring = false; registrationId = router;
-                registration = registrationCallback; registrationCallback = null;
-            }
-        }
-        try {
-            deliver(c.callback, error);
-            if (!c.restore && c.op != REGISTER && error == cn.managame.router.error.RouterErrorCodes.NOT_REGISTERED)
-                interrupt(controlRouter, error, false, true, c.generation);
-            if (registrationDone) {
-                deliver(registration, registrationError);
-                registrationEvent(registrationId, registrationError);
-            }
-        } finally { pump(); }
-    }
-    private void interrupt(int id, int error, boolean clear) {
-        interrupt(id, error, clear, false);
-    }
-    private void interrupt(int id, int error, boolean clear, boolean preserveRegistration) {
-        interrupt(id, error, clear, preserveRegistration, null);
-    }
-    private void interrupt(int id, int error, boolean clear, boolean preserveRegistration, Long expectedGeneration) {
-        List<Control> abandoned;
-        RpcCallback<Integer> registration;
-        boolean report;
-        synchronized (lock) {
-            if (id != router || router == 0 || (expectedGeneration != null && generation != expectedGeneration)) return;
-            if (clear && error == RpcErrorCodes.PEER_REMOVED && rpc.isPeerConnected(id))
-                throw new IllegalStateException("Old Router recovered before unregister");
-            boolean recoverable = transientError(error)
-                    || error == cn.managame.router.error.RouterErrorCodes.NOT_REGISTERED;
-            generation++; report = registering || restoring || (!clear && registered && !recoverable);
-            registered = false; registering = false; restoring = false; detaching = false;
-            // Transport recovery cannot revive a selection stopped by protocol validation.
-            retryRegistration = retryRegistration && !clear && !closed && recoverable;
-            restoringKeys = Collections.emptyIterator();
-            abandoned = new ArrayList<>(controls); controls.clear();
-            if (active != null) { abandoned.addFirst(active); active = null; }
-            registration = preserveRegistration ? null : registrationCallback;
-            if (!preserveRegistration) registrationCallback = null;
-            if (clear) router = 0;
-        }
-        for (Control c : abandoned) deliver(c.callback, error);
-        deliver(registration, error);
-        if (report) registrationEvent(id, error);
-    }
-    private static void deliver(RpcCallback<Integer> callback, int error) {
-        if (callback == null) return;
-        try { callback.onResponse(error); }
-        catch (RuntimeException failure) { LOG.log(System.Logger.Level.WARNING, "Router control callback failed", failure); }
-    }
-    private void registrationEvent(int id, int error) {
-        try { handler.onRegistration(id, error); }
-        catch (RuntimeException failure) { LOG.log(System.Logger.Level.WARNING, "Router registration handler failed", failure); }
-    }
-    private void checkControlCapacity() {
-        if (controls.size() >= MAX_CONTROLS) throw new RejectedExecutionException("Routing control queue is full");
-    }
-    private static boolean transientError(int error) {
-        return error == RpcErrorCodes.UNAVAILABLE || error == RpcErrorCodes.PEER_NOT_FOUND
-                || error == RpcErrorCodes.PEER_REMOVED || error == RpcErrorCodes.TIMEOUT;
+    private static final long TICK_MILLIS = 100, ATTACH_NANOS = TimeUnit.SECONDS.toNanos(1), WARMUP_NANOS = ATTACH_NANOS;
+
+    /** A declared Router. attached and lastAttach belong to the attach thread; senders read up and upSince. */
+    private static final class Link {
+        final int id;
+        boolean attached;           // ATTACH accepted on the current connection
+        long lastAttach;
+        volatile long upSince;      // when the attach thread first saw the current connection
+        volatile boolean up;
+        Link(int id) { this.id = id; }
     }
 
-    public RpcSendStatus notifyNode(int nodeId, RpcRequest request) { return notify(DIRECT, nodeId, 0, 0, request); }
-    public RpcSendStatus notifyBinding(int serviceId, long key, RpcRequest request) { return notify(DYNAMIC, 0, serviceId, key, request); }
-    public RpcSendStatus broadcast(int serviceId, RpcRequest request) { return notify(BROADCAST, 0, serviceId, 0, request); }
-    private RpcSendStatus notify(int mode, int target, int serviceId, long key, RpcRequest request) {
-        Envelope envelope; int next;
-        synchronized (lock) {
-            validate(mode, target, serviceId, request); next = router;
-            envelope = new Envelope(mode, 0, rpc.nodeId(), epoch, target, 0, serviceId, key, 0, request);
+    private final int service;
+    private final long epoch;
+    private final RouterHandler handler;
+    private final RpcHandler direct;
+    private volatile Link[] routers = {};               // declared Routers, ascending ID; replaced, never mutated
+    private volatile RpcNode rpc;
+    private volatile boolean closed;
+    private ScheduledExecutorService attacher;
+
+    /**
+     * @param serviceId the one service this Node serves, positive
+     * @param nodeEpoch nonzero incarnation of this Node; a restarted process uses a new one
+     * @param handler receives routed requests and the completions of routed calls
+     * @param directHandler receives every other RPC request, response and failure of the Node
+     */
+    public ServiceRouting(int serviceId, long nodeEpoch, RouterHandler handler, RpcHandler directHandler) {
+        if (serviceId <= 0 || nodeEpoch == 0) throw new IllegalArgumentException("invalid service or nodeEpoch");
+        service = serviceId; epoch = nodeEpoch;
+        this.handler = Objects.requireNonNull(handler); direct = Objects.requireNonNull(directHandler);
+    }
+
+    // ================================================================ lifecycle and Routers
+
+    /** Associates the application-owned Node once and starts announcing it; it starts no networking. */
+    public synchronized void start(RpcNode rpcNode) {
+        Objects.requireNonNull(rpcNode);
+        if (closed || rpc != null) throw new IllegalStateException("Routing already started or closed");
+        rpc = rpcNode;
+        attacher = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread t = new Thread(task, "service-routing"); t.setDaemon(true); return t;
+        });
+        attacher.scheduleWithFixedDelay(this::attach, 0, TICK_MILLIS, TimeUnit.MILLISECONDS);
+    }
+    /** Declares a Router. The application connects to it separately with RpcNode.addPeer. */
+    public synchronized void addRouter(int routerId) {
+        RpcNode node = running();
+        if (routerId == 0 || routerId == node.nodeId()) throw new IllegalArgumentException("invalid Router ID");
+        if (link(routerId) != null) return;
+        Link[] next = Arrays.copyOf(routers, routers.length + 1);
+        next[next.length - 1] = new Link(routerId);
+        Arrays.sort(next, Comparator.comparingInt(l -> l.id));
+        routers = next;
+    }
+    /** Stops using a Router and withdraws this Node from it; the RPC Peer is left to the application. */
+    public synchronized void removeRouter(int routerId) {
+        RpcNode node = running();
+        if (link(routerId) == null) return;
+        routers = Arrays.stream(routers).filter(l -> l.id != routerId).toArray(Link[]::new);
+        // On the announcing thread, so no announcement already under way can follow the withdrawal.
+        try { attacher.execute(() -> { if (node.isPeerConnected(routerId)) RouterWire.notify(node, routerId, detach(epoch)); }); }
+        catch (RejectedExecutionException closing) { /* close withdraws from connected Routers itself */ }
+    }
+    /** Stops announcing and withdraws this Node from connected Routers. Idempotent; close the RpcNode afterwards. */
+    @Override public void close() {
+        RpcNode node; ScheduledExecutorService stopping;
+        synchronized (this) {
+            if (closed) return;
+            closed = true; node = rpc; stopping = attacher;
         }
-        RpcRequest out = data(envelope);
-        try { return rpc.notify(next, out); }
-        finally { if (out.body().refCnt() > 0) out.body().release(); }
+        if (stopping != null) {
+            stopping.shutdown();
+            try { stopping.awaitTermination(1, TimeUnit.SECONDS); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        }
+        if (node != null) for (Link l : routers) if (node.isPeerConnected(l.id)) RouterWire.notify(node, l.id, detach(epoch));
+    }
+    private RpcNode running() {
+        RpcNode node = rpc;
+        if (node == null) throw new IllegalStateException("Start routing first");
+        if (closed) throw new IllegalStateException("Routing closed");
+        return node;
+    }
+    private Link link(int routerId) {
+        for (Link l : routers) if (l.id == routerId) return l;
+        return null;
+    }
+    /** Announces this Node on every connected Router whose connection is new or whose last announcement is a second old. */
+    private void attach() {
+        try {
+            if (closed) return;
+            long now = System.nanoTime();
+            for (Link l : routers) {
+                if (!rpc.isPeerConnected(l.id)) { l.attached = false; l.up = false; continue; }
+                if (!l.up) { l.upSince = now; l.up = true; }
+                if (l.attached && now - l.lastAttach < ATTACH_NANOS) continue;
+                if (RouterWire.notify(rpc, l.id, RouterWire.attach(epoch, service)) == RpcSendStatus.ACCEPTED) {
+                    l.attached = true; l.lastAttach = now;
+                }
+            }
+        } catch (RuntimeException error) { LOG.log(System.Logger.Level.WARNING, "Router attachment failed", error); }
+    }
+
+    // ================================================================ sending (caller's thread)
+
+    public RpcSendStatus notifyNode(int nodeId, RpcRequest request) {
+        RpcNode node = validate(request, nodeId != 0);
+        int router = router(node, nodeId, request.routeKey());
+        return send(node, router, data(DIRECT, node.nodeId(), epoch, service, nodeId, 0, 0, request));
+    }
+    /** Every Node of the service attached to the chosen Router, including this one if it serves that service. */
+    public RpcSendStatus broadcast(int serviceId, RpcRequest request) {
+        RpcNode node = validate(request, serviceId > 0);
+        int router = router(node, -serviceId, request.routeKey());
+        return send(node, router, data(BROADCAST, node.nodeId(), epoch, service, 0, 0, serviceId, request));
     }
     public <T> void callNode(int nodeId, RpcRequest request, RpcCallback<T> callback) {
-        call(DIRECT, nodeId, 0, 0, request, 0, callback);
-    }
-    public <T> void callBinding(int serviceId, long key, RpcRequest request, RpcCallback<T> callback) {
-        call(DYNAMIC, 0, serviceId, key, request, 0, callback);
+        call(nodeId, request, 0, callback);
     }
     public <T> void callNode(int nodeId, RpcRequest request, long timeoutMillis, RpcCallback<T> callback) {
-        if (timeoutMillis <= 0) throw new IllegalArgumentException("timeout must be positive");
-        call(DIRECT, nodeId, 0, 0, request, timeoutMillis, callback);
+        if (timeoutMillis <= 0 || timeoutMillis > Long.MAX_VALUE / 1_000_000) throw new IllegalArgumentException("invalid timeout");
+        call(nodeId, request, timeoutMillis, callback);
     }
-    public <T> void callBinding(int serviceId, long key, RpcRequest request, long timeoutMillis, RpcCallback<T> callback) {
-        if (timeoutMillis <= 0) throw new IllegalArgumentException("timeout must be positive");
-        call(DYNAMIC, 0, serviceId, key, request, timeoutMillis, callback);
-    }
-    private <T> void call(int mode, int target, int serviceId, long key, RpcRequest request, long timeout, RpcCallback<T> callback) {
+    private <T> void call(int nodeId, RpcRequest request, long timeoutMillis, RpcCallback<T> callback) {
         Objects.requireNonNull(callback);
-        if (timeout < 0 || timeout > Long.MAX_VALUE / 1_000_000) throw new IllegalArgumentException("invalid timeout");
-        Envelope envelope; int next;
-        synchronized (lock) {
-            validate(mode, target, serviceId, request); next = router;
-            envelope = new Envelope(mode, 0, rpc.nodeId(), epoch, target, 0, serviceId, key, 0, request);
-        }
-        RpcRequest out = data(envelope);
-        try {
-            Business completion = new Business(request.command(), callback);
-            if (timeout == 0) rpc.call(next, out, completion);
-            else rpc.call(next, out, timeout, completion);
-        } finally { if (out.body().refCnt() > 0) out.body().release(); }
+        RpcNode node = validate(request, nodeId != 0);
+        int router = router(node, nodeId, request.routeKey());
+        RpcRequest out = data(DIRECT, node.nodeId(), epoch, service, nodeId, 0, 0, request);
+        Call c = new Call(nodeId, request.command(), callback, timeoutMillis, out.routeKey(), out.body().retainedDuplicate());
+        try { c.start(node, router, out.body()); }
+        catch (RuntimeException | Error error) { c.release(); throw error; }
     }
-    /** Reply targets the original physical Node/epoch, even after its dynamic binding changed. */
+    /** Answers a routed call through the Router that delivered it, to the exact calling incarnation. */
     public RpcSendStatus reply(RoutedRequest request, RpcResponse response) {
         Objects.requireNonNull(request); Objects.requireNonNull(response);
         if (request.request().requestId() == 0 || request.request().requestId() != response.requestId())
             throw new IllegalArgumentException("response ID must match a routed call");
-        Envelope envelope; int next;
-        synchronized (lock) {
-            attached(); next = router;
-            envelope = new Envelope(RESPONSE, request.originRouterId(), rpc.nodeId(), epoch, request.sourceNodeId(),
-                    request.sourceNodeEpoch(), 0, 0, 0, response);
-        }
-        RpcRequest out = data(envelope);
-        try { return rpc.notify(next, out); }
-        finally { if (out.body().refCnt() > 0) out.body().release(); }
+        RpcNode node = running();
+        return send(node, request.routerId(), data(RESPONSE, node.nodeId(), epoch, service,
+                request.sourceNodeId(), request.sourceNodeEpoch(), 0, response));
     }
-    private void validate(int mode, int target, int serviceId, RpcRequest request) {
+    private RpcNode validate(RpcRequest request, boolean target) {
         Objects.requireNonNull(request);
-        if (request.requestId() != 0 || (mode == DIRECT ? target == 0 : serviceId <= 0))
-            throw new IllegalArgumentException("invalid routed request/target");
-        ready();
+        if (request.requestId() != 0 || !target) throw new IllegalArgumentException("invalid routed request/target");
+        return running();
     }
-    private void ready() {
-        attached();
-        if (restoring) throw new IllegalStateException("Bindings are still being restored");
+    /** The Router for a first attempt; with none connected, the first declared Router, so RPC reports it unavailable. */
+    private int router(RpcNode node, int target, long routeKey) {
+        Link[] all = routers;
+        if (all.length == 0) throw new IllegalStateException("No Router declared");
+        int id = pick(node, all, target, routeKey, null);
+        return id != 0 ? id : all[0].id;
     }
-    private void attached() {
-        if (closed || rpc == null || !registered || detaching || !rpc.isPeerConnected(router)) throw new IllegalStateException("Node has no active Router registration");
-    }
-    @Override public void onRequest(int source, int slot, RpcRequest request) {
-        if (request.command() != COMMAND) { directHandler.onRequest(source, slot, request); return; }
-        routedRequest(source, slot, request);
-    }
-    private void routedRequest(int source, int slot, RpcRequest request) {
-        if (request.command() != COMMAND) throw new IllegalArgumentException("Non-Router request reached routing extension");
-        Envelope e;
-        synchronized (lock) {
-            if (closed || source != router || !registered || request.requestId() != 0) throw new IllegalArgumentException("Invalid Router delivery");
-            ByteBuf b = request.body().duplicate();
-            if (operation(b) != DATA) throw new IllegalArgumentException("Client accepts only Router data");
-            e = data(b);
-            if (e.mode() != DIRECT || e.target() != rpc.nodeId() || e.targetEpoch() != epoch || e.hops() != 1)
-                throw new IllegalArgumentException("Delivery attachment mismatch");
+    /**
+     * Picks from the target and routeKey among connected Routers that have been up for an announcement period,
+     * else among all connected ones, skipping {@code tried}; 0 when none is connected.
+     */
+    private static int pick(RpcNode node, Link[] all, int target, long routeKey, int[] tried) {
+        int[] warm = new int[all.length], up = new int[all.length];
+        int warmCount = 0, upCount = 0;
+        long now = System.nanoTime();
+        for (Link l : all) {
+            if ((tried != null && contains(tried, l.id)) || !node.isPeerConnected(l.id)) continue;
+            up[upCount++] = l.id;
+            if (l.up && now - l.upSince >= WARMUP_NANOS) warm[warmCount++] = l.id;
         }
-        RoutedRequest incoming = new RoutedRequest(e.source(), e.sourceEpoch(), (RpcRequest) e.message(), e.origin());
+        if (upCount == 0) return 0;
+        long h = (routeKey ^ ((long) target << 32)) * 0x9E3779B97F4A7C15L;
+        int hash = (int) (h ^ (h >>> 32));
+        return warmCount > 0 ? warm[Math.floorMod(hash, warmCount)] : up[Math.floorMod(hash, upCount)];
+    }
+    private static boolean contains(int[] ids, int id) {
+        for (int i : ids) if (i == id) return true;
+        return false;
+    }
+    private static RpcSendStatus send(RpcNode node, int router, RpcRequest out) {
+        try { return node.notify(router, out); }
+        catch (RuntimeException | Error error) { release(out.body()); throw error; }
+    }
+
+    /**
+     * A routed call in flight. It keeps a reference to its encoded frame until it completes, so a call that a
+     * Router could not deliver can be resent unchanged through another Router.
+     */
+    private final class Call implements RpcCallback<Object> {
+        final int target, command;
+        final RpcCallback<?> callback;
+        final long timeoutMillis, routeKey;
+        private ByteBuf frame;
+        private int[] tried = {};
+        Call(int target, int command, RpcCallback<?> callback, long timeoutMillis, long routeKey, ByteBuf frame) {
+            this.target = target; this.command = command; this.callback = callback;
+            this.timeoutMillis = timeoutMillis; this.routeKey = routeKey; this.frame = frame;
+        }
+        @Override public void onResponse(Object ignored) {}
+        /** Starts one attempt; {@code body} shares the frame's reference count and is consumed. */
+        void start(RpcNode node, int router, ByteBuf body) {
+            ByteBuf held = frame;
+            RpcRequest out = packet(routeKey, body);
+            try {
+                if (timeoutMillis == 0) node.call(router, out, this);
+                else node.call(router, out, timeoutMillis, this);
+            } catch (RuntimeException | Error error) {
+                // RPC releases what it took; when it threw before taking the body, both references are still held.
+                if (held.refCnt() > 1) body.release();
+                throw error;
+            }
+        }
+        /** Resends through a connected Router not tried yet; false when there is none or the attempt cannot start. */
+        boolean resend(int failedRouter) {
+            RpcNode node = rpc;
+            if (closed || node == null || frame == null) return false;
+            tried = Arrays.copyOf(tried, tried.length + 1);
+            tried[tried.length - 1] = failedRouter;
+            int router = pick(node, routers, target, routeKey, tried);
+            if (router == 0) return false;
+            try { start(node, router, frame.retainedDuplicate()); return true; }
+            catch (RuntimeException failure) { LOG.log(System.Logger.Level.WARNING, "Routed call resend failed", failure); return false; }
+        }
+        void release() {
+            ByteBuf f = frame; frame = null;
+            if (f != null) f.release();
+        }
+    }
+
+    // ================================================================ RpcHandler (Netty threads)
+
+    @Override public void onRequest(int source, int slot, RpcRequest request) {
+        if (request.command() != COMMAND) { direct.onRequest(source, slot, request); return; }
+        RpcNode node = rpc;
+        if (node == null || request.requestId() != 0) throw new IllegalArgumentException("Invalid Router delivery");
+        if (closed || link(source) == null) {
+            // A Router this Node does not use still delivers here: an earlier DETACH was lost or overtaken.
+            RouterWire.notify(node, source, detach(epoch));
+            throw new IllegalArgumentException("Router delivery from an undeclared Router");
+        }
+        ByteBuf b = request.body().duplicate();
+        if (operation(b) != DATA) throw new IllegalArgumentException("Services accept only routed data");
+        Data d = data(b);
+        if (d.mode() == RESPONSE || d.target() != node.nodeId() || d.targetEpoch() != epoch)
+            throw new IllegalArgumentException("Delivery for another Node incarnation");
+        RoutedRequest incoming = new RoutedRequest(d.source(), d.sourceEpoch(), d.request(), source);
         try { handler.onRoutedRequest(incoming); }
         catch (RuntimeException error) {
-            if (incoming.request().requestId() != 0) reply(incoming, new RpcResponse(incoming.request().requestId(), RpcErrorCodes.HANDLER_ERROR, null, null));
+            int id = incoming.request().requestId();
+            if (id != 0) {
+                try { reply(incoming, new RpcResponse(id, RpcErrorCodes.HANDLER_ERROR, null, null)); }
+                catch (RuntimeException replyFailure) { error.addSuppressed(replyFailure); }
+            }
             throw error;
         }
     }
     @Override public void onResponse(int source, int command, RpcResponse response, RpcCallback<?> callback) {
-        if (callback instanceof Control c) {
-            int error = response.errorCode();
-            if (c.op == DETACH && error == cn.managame.router.error.RouterErrorCodes.NOT_REGISTERED) error = 0;
-            synchronized (lock) {
-                if (closed || active != c || c.generation != generation) return;
-                if (error == 0 && (c.op == REGISTER || c.op == VERIFY)) {
-                    ByteBuf body = response.body();
-                    if (body == null || body.readableBytes() != 8 || body.getLong(body.readerIndex()) == 0) error = RpcErrorCodes.PROTOCOL_ERROR;
-                    else if (c.op == VERIFY && body.getLong(body.readerIndex()) != routerEpoch) error = cn.managame.router.error.RouterErrorCodes.NOT_REGISTERED;
-                    else routerEpoch = body.getLong(body.readerIndex());
-                }
-            }
-            complete(c, error);
-        } else if (callback instanceof Business c) {
-            if (response.errorCode() != 0) { handler.onResponse(source, c.command, response, c.callback); return; }
-            Envelope e;
-            try {
-                ByteBuf b = response.body().duplicate();
-                if (operation(b) != DATA) throw new IllegalArgumentException("Invalid routed response");
-                e = data(b);
-                synchronized (lock) {
-                    if (source != router || e.mode() != RESPONSE || e.target() != rpc.nodeId() || e.targetEpoch() != epoch
-                            || ((RpcResponse) e.message()).requestId() != response.requestId()) throw new IllegalArgumentException("Response attachment mismatch");
-                }
-            } catch (RuntimeException malformed) {
-                handler.onFail(source, c.command, RpcErrorCodes.PROTOCOL_ERROR, c.callback);
-                return;
-            }
-            handler.onResponse(e.source(), c.command, (RpcResponse) e.message(), c.callback);
-        } else directHandler.onResponse(source, command, response, callback);
+        if (!(callback instanceof Call c)) { direct.onResponse(source, command, response, callback); return; }
+        int error = response.errorCode();
+        // A positive outer error comes from the Router itself and has no envelope. These two mean "not delivered".
+        if ((error == RpcErrorCodes.PEER_NOT_FOUND || error == RpcErrorCodes.UNAVAILABLE) && c.resend(source)) return;
+        c.release();
+        if (error != 0) { handler.onResponse(c.target, c.command, response, c.callback); return; }
+        RpcResponse inner;
+        try {
+            ByteBuf b = response.body().duplicate();
+            if (operation(b) != DATA) throw new IllegalArgumentException("Invalid routed response");
+            Data d = data(b);
+            if (d.mode() != RESPONSE || d.source() != c.target || d.target() != rpc.nodeId() || d.targetEpoch() != epoch
+                    || d.requestId() != response.requestId()) throw new IllegalArgumentException("Response for another call");
+            inner = d.response();
+        } catch (RuntimeException malformed) {
+            handler.onFail(c.target, c.command, RpcErrorCodes.PROTOCOL_ERROR, c.callback);
+            return;
+        }
+        handler.onResponse(c.target, c.command, inner, c.callback);
     }
     @Override public void onFail(int target, int command, int error, RpcCallback<?> callback) {
-        if (callback instanceof Control c) complete(c, error);
-        else if (callback instanceof Business c) handler.onFail(target, c.command, error, c.callback);
-        else directHandler.onFail(target, command, error, callback);
-    }
-    @Override public void close() {
-        int old;
-        synchronized (lock) { if (closed) return; closed = true; old = router; restoringKeys = Collections.emptyIterator(); bindings.clear(); maintenance.shutdownNow(); }
-        interrupt(old, RpcErrorCodes.NODE_CLOSED, true);
+        if (callback instanceof Call c) { c.release(); handler.onFail(c.target, c.command, error, c.callback); }
+        else direct.onFail(target, command, error, callback);
     }
 }

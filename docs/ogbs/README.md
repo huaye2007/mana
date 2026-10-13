@@ -16,7 +16,7 @@ Every component requires both a **language-independent specification** and a **J
 | game-spring | [Container Integration Specification](OGBS-Spring-1.0.md) | [Spring Java Development Specification](OGBS-Spring-Java-25-Specification-1.0.md) | Implemented; optional plain Spring discovery, managed HTTP/RPC configuration/lifecycle, typed RPC-to-Runtime adaptation, initialized Repository injection and shutdown drain |
 | game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS and independent HTTP/1.1 server with synchronous/callback responses |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.md) | Implemented; internal TCP, multiple Slots, calls, heartbeat/reconnection |
-| game-router | [Router Specification](OGBS-Router-1.0.md) | [Router Java Development Specification](OGBS-Router-Java-25-Specification-1.0.md) | Implemented; extension on the existing RPC Node, bindings, snapshots/deltas and broadcasts; production capacity unverified |
+| game-router | [Router Specification](OGBS-Router-1.0.md) | [Router Java Development Specification](OGBS-Router-Java-25-Specification-1.0.md) | Implemented; stateless relay on the existing RPC Node, exact Node addressing and broadcast; production capacity unverified |
 
 Specifications are version 1.0 repository drafts; Java modules are 1.0.0-SNAPSHOT on JDK 25. A specification's existence does not establish implementation or validation of every capability. Maintain status and limits accurately.
 

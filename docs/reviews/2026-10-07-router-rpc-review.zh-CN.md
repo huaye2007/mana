@@ -4,9 +4,11 @@
 
 > 非规范性记录。现行契约以 OGBS 规范为准；本文保留审查过程、证据、探针结果和后续方案，便于追溯，不新增 MUST 要求。
 >
+> 后续变化（2026-10-13）：Router 已改为无状态中继；下文关于注册、绑定、同步的内容及相关发现不再适用，见 [2026-10-13 记录](2026-10-13-router-forwarding-review.zh-CN.md)。
+>
 > 后续变化（2026-10-11）：已补充 demo 缺失的 GameRpcConfig，DemoRpcBootstrapTest 可以编译并通过；Spring 托管 RPC 已可通过 `GameRpcConfigurer.decorate/attach/detach` 组合 GameRouter/ServiceRouting。路由请求进入 Runtime 及精确路由回复身份仍由应用实现。
 >
-> Router Profile v3（2026-10-11）取代下文关于同步的结论：每 Peer 带确认的控制 FIFO、Router 间 VERIFY、单一转发 monitor 及按就绪状态限制转发，已替换为无确认的有序会话流、无锁路由索引和经 origin Router 的返回路径。本地测量（单向延迟 1 ms/5 ms）：50,000 个绑定的快照耗时 193/259 ms（之前 763/2,430 ms）；约 0.9 s 内发出的 5,000 次 bind，在最后一次之后 10 ms 内即在另一 Router 可见（之前从开始起需 13.3 s/55 s）。详见 [Router 同步](../ogbs/OGBS-Router-1.0.zh-CN.md#3-权威状态与同步) 和 [Java 已知限制](../ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits)。
+> Router Profile v3（2026-10-11）取代下文关于同步的结论：每 Peer 带确认的控制 FIFO、Router 间 VERIFY、单一转发 monitor 及按就绪状态限制转发，已替换为无确认的有序会话流、无锁路由索引和经 origin Router 的返回路径。本地测量（单向延迟 1 ms/5 ms）：50,000 个绑定的快照耗时 193/259 ms（之前 763/2,430 ms）；约 0.9 s 内发出的 5,000 次 bind，在最后一次之后 10 ms 内即在另一 Router 可见（之前从开始起需 13.3 s/55 s）。详见 [Router 同步](../ogbs/OGBS-Router-1.0.zh-CN.md) 和 [Java 已知限制](../ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits)。
 
 <a id="router-java-review"></a>
 
@@ -16,7 +18,7 @@ RPC 的 Handler 修改、就绪和清理钩子已移除，由普通 Handler 装�
 
 RPC 暂缓的有限 pending 准入仍未实现。转发 monitor 仍覆盖编码/发送、快照/冲突扫描；resolveKey 可能重复扫描 Router 来源桶。生产内存/吞吐及持续分区/溢出恢复未验证。移除限制有容量上限，且不跨 Router epoch 持久化，需要发现重放和容量规划。进一步索引、流式快照生成或可配置预算需要实测需求；不引入新的通用扩展框架。
 
-同日后续发现的偏差已有实现修复及 [RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 永久回归。入站 DATA 使用与出站转发相同的就绪限制，恢复时保留已提交查询但拒绝业务投递。非瞬时 VERIFY 失败停止注册恢复、暴露错误，并保留期望绑定供显式重试；传输重连不能复活已停止的选择。测试覆盖 Notify/广播/Call/响应拒绝、普通 RPC 连续可用、重新同步后的投递、非法/非瞬时校验 ACK、排队回调完成、显式重试和瞬时错误/NOT_REGISTERED 恢复。这些调整落实 RT-SYNC-03 和 RT-LIFE-02，不替换其契约。临时评估探针已由这些维护中的验证入口替代。
+同日后续发现的偏差已有实现修复及 RouterRecoveryTest（2026-10-13 已删除） 永久回归。入站 DATA 使用与出站转发相同的就绪限制，恢复时保留已提交查询但拒绝业务投递。非瞬时 VERIFY 失败停止注册恢复、暴露错误，并保留期望绑定供显式重试；传输重连不能复活已停止的选择。测试覆盖 Notify/广播/Call/响应拒绝、普通 RPC 连续可用、重新同步后的投递、非法/非瞬时校验 ACK、排队回调完成、显式重试和瞬时错误/NOT_REGISTERED 恢复。这些调整落实 RT-SYNC-03 和 RT-LIFE-02，不替换其契约。临时评估探针已由这些维护中的验证入口替代。
 
 修复验证：`mvn -pl game-router -am test` 通过，Router 共 37 个测试，两轮审查共新增十个回归场景。最新两项回归在修复前的错误返回、就绪实现上均失败。根 `mvn clean verify` 中 Router 和其他框架模块通过，但 game-demo 测试编译因现有 DemoRpcBootstrapTest 导入缺失的 GameRpcConfig 而失败。已确认改动前 HEAD 同样具有该过期导入且缺少对应源码。前一轮审查中，RouterEchoExample.run 使用清理重建后的类独立编译/执行，返回 `hello game-router`。这不代表根目录完整验证成功；无关的示例启动测试编译问题仍未解决。
 

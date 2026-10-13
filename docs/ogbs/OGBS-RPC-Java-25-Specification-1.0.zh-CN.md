@@ -92,7 +92,7 @@ command 非零，businessIdType 为 0..255；响应要求 requestId 非零且 er
 | 参数、null 或生命周期校验失败 | 调用方保留 body |
 | 校验通过的 call/notify/reply | 之后每条路径恰好消费一个 body 引用 |
 | Peer 不存在或无候选连接 | 不编码，直接释放 body |
-| 编码（成功或失败） | 编码器消费 body；成功时只剩帧 |
+| 编码（成功或失败） | 编码器消费 body；成功时只剩帧。超过 2 KiB 的 body 成为帧的一部分，帧写出前其引用计数仍为正：调用返回后绝不能再释放 body，只有在校验阶段抛出异常时才由调用方释放 |
 | Network 返回 ACCEPTED | 帧归 Network 所有，不再回退 |
 | 所有连接都拒绝 | RPC 释放帧 |
 | 入站 onRequest/onResponse | body 为借用；异步使用前需 retain 或复制 |
@@ -177,4 +177,4 @@ close 返回后不再有待完成调用、连接、计时器或自有通知线�
 <a id="92-后续审阅与扩展候选"></a>
 <a id="rpc-router-review-2026-10-07"></a>
 
-剩余边界：没有有限调用准入（R-SEND-04），也不限制入站握手与被动 Peer 数量；关闭时按 Peer 扫描全部连接；wire 不携带 Node 代际，新进程重新从头分配 ID 时可能匹配到对端保存的旧回复（R-CALL-04）。Handler 运行在 EventLoop 上，阻塞会拖慢该 EventLoop 上的所有连接。未实现：TLS/WebSocket Builder 选项、服务发现、业务重试、远端取消、持久投递。未验证：跨语言互通、生产吞吐与内存。Router 在现有 Node 上组合，除普通 API 外只使用 `isPeerConnected`/`peerSlotCount`（见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)）。
+剩余边界：没有有限调用准入（R-SEND-04），也不限制入站握手与被动 Peer 数量；关闭时按 Peer 扫描全部连接；wire 不携带 Node 代际，新进程重新从头分配 ID 时可能匹配到对端保存的旧回复（R-CALL-04）。Handler 运行在 EventLoop 上，阻塞会拖慢该 EventLoop 上的所有连接。未实现：TLS/WebSocket Builder 选项、服务发现、业务重试、远端取消、持久投递。未验证：跨语言互通、生产吞吐与内存。Router 在现有 Node 上组合，除普通 API 外只使用 `isPeerConnected`（见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)）。

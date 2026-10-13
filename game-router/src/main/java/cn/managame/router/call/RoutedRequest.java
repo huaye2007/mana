@@ -4,16 +4,12 @@ import cn.managame.rpc.message.RpcRequest;
 import java.util.Objects;
 
 /**
- * Borrowed request plus its exact source attachment. originRouterId is the Router the caller is attached
- * to; replies return there directly. Save these identity fields for deferred replies.
+ * A borrowed routed request with its exact source: the sending Node, its incarnation, and the Router that
+ * delivered it. A reply returns through that Router to that incarnation; keep these fields for a later reply.
  */
-public record RoutedRequest(int sourceNodeId, long sourceNodeEpoch, RpcRequest request, int originRouterId) {
+public record RoutedRequest(int sourceNodeId, long sourceNodeEpoch, RpcRequest request, int routerId) {
     public RoutedRequest {
-        if (sourceNodeId == 0 || sourceNodeEpoch == 0) throw new IllegalArgumentException("invalid source attachment");
+        if (sourceNodeId == 0 || sourceNodeEpoch == 0 || routerId == 0) throw new IllegalArgumentException("invalid routed source");
         Objects.requireNonNull(request);
-    }
-    /** Without an origin Router the reply is located through the replying Router's routing index. */
-    public RoutedRequest(int sourceNodeId, long sourceNodeEpoch, RpcRequest request) {
-        this(sourceNodeId, sourceNodeEpoch, request, 0);
     }
 }

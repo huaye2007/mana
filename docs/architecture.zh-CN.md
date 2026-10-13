@@ -57,15 +57,13 @@ Pipeline 为调用方提供的 SslHandler（可选，首位）→ 发送异常�
 
 ### 在唯一 RPC Node 上组合 Router
 
-[game-router](../game-router/README.zh-CN.md) 依赖 game-rpc，在现有唯一 Node 启动前私有组合普通 RpcHandler。GameRouter 提供 Router 成员/查询，服务工厂返回具体 ServiceRouting，直接提供回调注册、绑定和业务收发。所有连接统一使用 rpc.addPeer。RPC 拥有连接、Slot、ID、pending 和超时，Router 拥有权威、同步与下一跳。外部发现拥有服务存在性并显式移除精确 Node 代际，暂时断线保留权威。应用拥有 Node 生命周期，依赖仍为 Router → RPC。
+[game-router](../game-router/README.zh-CN.md) 依赖 game-rpc，在现有唯一 Node 启动前组合普通 RpcHandler。两个具体类就是两个角色：GameRouter 是无状态中继，ServiceRouting 是服务（声明 Router、按 Node ID 发送、回复与接收投递）。所有连接统一使用 rpc.addPeer：每个服务连接所有 Router，Router 之间互不连接。RPC 拥有连接、Slot、ID、pending 和超时；Router 只做中继。应用拥有 Node 生命周期，依赖仍为 Router → RPC。
 
-RPC 接入仅包括普通 Handler 组合与可用性/Slot 数量快照，不提供 Node 就绪/清理回调或可变 Handler 钩子；发送复用 call/notify/reply。路由拥有协议维护、同步重试和缓冲清理，恢复不能重置共享 RPC Peer 或取消无关调用。RpcHandler 本身仍只有三个消息方法。
+Router 只保存每个已连接 Node 声明的身份（epoch、服务），连接断开即删除；它没有路由表、注册、副本、线程或定时器。服务在每条新连接上及每秒声明一次自己，因此重启、增加或移除 Router 都不需要恢复协议。发送方自行把业务键（玩家、房间）解析为 Node ID，并按目标与 routeKey 为每条消息选择一个已连接 Router；调用的响应经承载该调用的 Router 返回。RPC 接入仅包括普通 Handler 组合与连接可用性快照；发送复用 call/notify/reply。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v4)。
 
-Router Peer 使用全连接，每对单 Slot；服务注册可使用多 Slot，绑定权威在传输丢失后仍保留，仅通过显式服务发现或注销清理。每个 Router 把自己的桶以每方向一个有序、无确认的会话推送给其他 Router（先快照，再批量增量，序号连续）；出现缺口时保留最后提交的副本供查询，并请求新快照。本地桶和副本组成一个无锁索引，消息转发只是本地查表，不访问任何外部存储，也不等待同步；响应直接返回调用方所在 Router。本地 bind 成功不等待集群。[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 和执行测试在 game-demo，其直接依赖 game-router。契约：[Router 标准](ogbs/OGBS-Router-1.0.zh-CN.md)、[Java 开发](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)、[Wire](rpc-wire.zh-CN.md#router-profile-v3)。
+Spring 托管 RPC 通过 `GameRpcConfigurer.decorate/attach/detach` 在唯一 Node 上组合 Router：decorate 在 build 前用 GameRouter/ServiceRouting 包装 Runtime RpcHandler，attach 在 Node 启动前启动路由，detach 在 Node 关闭前关闭路由。路由请求交给应用的 RouterHandler；将其解码进入 Runtime、用保存的 RoutedRequest 经 ServiceRouting.reply 回复以及捕获回调/drain 集成仍由应用实现，保留唯一 Node 和 Router → RPC 依赖。不能用第二个 Node 或把 Runtime 解码/分派移进 Router 来掩盖缺口。
 
-Spring 托管 RPC 通过 `GameRpcConfigurer.decorate/attach/detach` 在唯一 Node 上组合 Router：decorate 在 build 前用 GameRouter/ServiceRouting 包装 Runtime RpcHandler，attach 在 Node 启动前启动路由，detach 在 Node 关闭前关闭路由。直接 RpcHandlerContext/GameRpc 回复仍缺少来源附着 epoch 并使用原生直连回复，因此路由请求交给应用的 RouterHandler；将其解码进入 Runtime、精确路由回复（ServiceRouting.reply）以及捕获回调/drain 集成仍由应用实现，保留唯一 Node 和 Router → RPC 依赖。不能用第二个 Node 或把 Runtime 解码/分派移进 Router 来掩盖缺口。
-
-发现/放置集成也是应用工作，Router 示例没有提供：精确代际退役、Router 重启后的事件重放、成员移除和迁移执行隔离需要运维契约。epoch 的冲突排序不能单独证明时间新旧，绑定冲突的确定性解析也不会串行化跨进程业务执行。全连接会在每个 Router 复制全部权威桶；R 个 Router 使用 R×(R−1)/2 条成对连接，每个本地变更最多传播给 R−1 个 Peer。同步帧与业务帧共享单个 Router Slot；每次恢复都重发完整桶。这些是明确的小规模 Router 集群约束，生产成员数、内存及恢复预算仍未验证。[Router 审查](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits) 记录源码依据及待定集成决策。
+服务发现与放置属于应用工作：存在哪些 Router 和服务，玩家或房间当前位于何处。S 个服务与 R 个 Router 使用 S×R 条连接；每条路由消息恰好经过一个 Router。生产连接数、内存与吞吐仍未验证，见 [Router 已知限制](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits)。
 
 [game-rpc](../game-rpc/README.zh-CN.md) 已提供 RpcNode Builder、统一 RpcHandler 和泛型 RpcCallback。RPC 不自动解释业务 body、恢复 Runtime Context 或执行业务 callback；应用接入层负责这些工作。
 

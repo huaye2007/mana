@@ -3,11 +3,11 @@ package cn.managame.router.call;
 import cn.managame.rpc.call.RpcCallback;
 import cn.managame.rpc.message.RpcResponse;
 
-/** Borrowed routed messages delivered by the existing RpcNode's routing extension. */
+/** Routed messages for the service role. Requests and responses are borrowed during the callback. */
 public interface RouterHandler {
-    /** Registration/restore completion or a stopped verification failure; zero means all desired keys restored. */
-    default void onRegistration(int routerId, int errorCode) {}
     void onRoutedRequest(RoutedRequest request);
-    void onResponse(int sourceNodeId, int requestCommand, RpcResponse response, RpcCallback<?> callback);
+    /** A routed call completed: the target's response, or a positive error the Router returned for it. */
+    void onResponse(int targetNodeId, int requestCommand, RpcResponse response, RpcCallback<?> callback);
+    /** A routed call failed locally: timeout, transport loss, closure or a malformed response. */
     void onFail(int targetNodeId, int requestCommand, int errorCode, RpcCallback<?> callback);
 }

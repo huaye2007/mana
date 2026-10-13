@@ -2,104 +2,70 @@
 
 [English](OGBS-Router-1.0.md) | **[简体中文](OGBS-Router-1.0.zh-CN.md)**
 
-文档类型：语言无关 Specification。组件：game-router。配套：[Java 25 开发规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。依赖：[RPC](OGBS-RPC-1.0.zh-CN.md)、[Core](OGBS-Core-1.0.zh-CN.md)。字节定义：[RPC Wire Profile 中的 Router Profile](../rpc-wire.zh-CN.md#router-profile-v3)。状态：Java 参考实现已实现，具有本地 TCP 契约测试；生产容量与跨语言互通尚未验证。
+文档类型：语言无关 Specification。组件：game-router。配套：[Java 25 开发规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。依赖：[RPC](OGBS-RPC-1.0.zh-CN.md)、[Core](OGBS-Core-1.0.zh-CN.md)。字节定义：[RPC Wire Profile 中的 Router Profile](../rpc-wire.zh-CN.md#router-profile-v4)。状态：Java 参考实现已实现，具有本地 TCP 契约测试；生产容量与跨语言互通尚未验证。
 
-Router Profile v3 中，每对 Router 每个方向只有一条有序、无确认的同步流；本地桶与全部副本合并到一个无锁查询索引；响应和路由错误直接返回调用方所在 Router，因此数据路径从不等待同步。RPC 有限 pending 准入及生产边界仍未解决，详见 [Java 已知限制](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits)。
+Router 是无状态中继。每个服务连接所有 Router；服务通过任一已连接的 Router 发送发往精确 Node 的消息，该 Router 把消息交给连在它上面的目标 Node。Router 不保存路由表、注册或副本，也从不与其他 Router 通信：它只持有每个已连接 Node 声明的身份，连接断开即消失。把玩家等业务键解析为 Node 由发送方负责。未解决的边界见 [Java 已知限制](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#7-known-limits)。
 
 ## 1. 职责与组合
 
-**RT-SCOPE-01** Router MUST 基于 RPC 完成消息发送、接收、直连 Peer、Slot、调用 ID、PendingCall、超时与回调。每个进程只有一个 RPC Node；安装路由能力 MUST NOT 创建第二个 Node 或独立传输。应用仍可通过同一个 Node 与其他服务进行普通直连 RPC。Router 负责下一跳和控制状态；应用负责 RPC 启动、关闭和 Peer 配置。连接 Router 与连接其他服务使用同一个 RPC Peer 操作。Router 成员及服务附着声明路由角色，MUST NOT 创建或移除 RPC Peer，也不能持有地址或 Slot 配置。
+**RT-SCOPE-01** Router MUST 基于 RPC 完成消息发送、接收、直连 Peer、Slot、调用 ID、PendingCall、超时与回调。每个进程只有一个 RPC Node；安装路由能力 MUST NOT 创建第二个 Node 或独立传输。应用仍可通过同一个 Node 进行普通直连 RPC。Router 只负责中继；应用负责 RPC 启动、关闭和 Peer 配置，连接 Router 与连接其他 Node 使用同一个 RPC Peer 操作。声明服务使用哪些 Router MUST NOT 创建或移除 RPC Peer。
 
-**RT-SCOPE-02** V1 提供 nodeId 精确寻址、`(serviceId, bindingKey)` 动态寻址以及按服务广播。Router 之间形成全连接拓扑；禁止从一个远端 Router 再转发到另一个远端 Router。Router 不实现发现、订阅、可靠持久消息、业务重试、玩家状态或 Runtime 串行执行。RPC 成功或超时均不证明业务恰好执行一次。
-
-已确认的架构约束是保持组合简单，每项职责只有一个明确的归属：
+**RT-SCOPE-02** V1 通过无状态 Router 提供 Node 精确寻址和按服务广播。Router 不解析业务键，不保存绑定或注册，不复制任何数据，不实现发现或订阅，不存储或重试消息，不持有玩家状态，也不提供 Runtime 串行执行。Router 之间互不连接，因此每条路由消息恰好经过一个 Router。RPC 成功或超时均不证明业务恰好执行一次。
 
 | 归属 | 职责 |
 | --- | --- |
 | RPC | 连接与 Slot、消息传输、调用 ID、PendingCall、超时与完成回调 |
-| Router | 注册与绑定状态、Router 同步、路由选择与转发 |
-| 外部服务发现 | 服务实例的存在性与代际信息；权威的实例移除事件 |
-| 应用 | 组件装配、启动与关闭、Peer 配置，以及向 Router 传递发现变化 |
+| Router | 把消息中继给连在它上面的 Node，只使用该 Node 在其活动连接上声明的信息 |
+| 发送服务 | 把业务键（玩家、房间）解析为 Node ID；每条消息选择一个已连接的 Router |
+| 外部服务发现 | 存在哪些服务实例和 Router，以及它们的地址 |
+| 应用 | 组件装配、启动/关闭，让每个服务连接所有 Router |
 
-协议注册表示 Router 接受了路由状态，不能替代服务发现对实例存在性的判断。连接可用也不能证明远端 Router 重启后仍保有注册。恢复需要协调 Router 协议状态，同时保持连接和调用完成归 RPC 所有。业务放置与重试仍由应用负责。
+原因：Router 自身没有状态，因此重启、增加或移除 Router 都不需要任何恢复或同步协议，不存在副本滞后或绑定冲突，玩家位于何处的权威仍留在做出这一决定的业务代码中。新增层次或抽象需要现有归属方无法清楚表达的具体职责，仅为将来可能的扩展不够。
 
-职责适合现有组件时，扩展该组件的行为。新增层或抽象需要具体职责或集成边界，并且现有归属无法清晰表达；仅有未来可能扩展的设想不足以支持新增抽象。这些边界用于指导修复已知实现缺陷，不要求另一套传输、连接 API 或调用完成机制。
+## 2. Node 与附着
 
-## 2. Node 与绑定模型
+**RT-NODE-01** Node 身份为 `(nodeId, nodeEpoch, serviceId)`。nodeId 为非零 uint32，nodeEpoch 为非零 uint64，serviceId 为正 int32。Router ID 与服务 Node ID 共享同一命名空间。每个 Node 只服务一个服务。nodeEpoch 区分进程代际：重启的进程使用新值，只要求不同，不要求更大。
 
-**RT-NODE-01** Node 注册信息为 `(nodeId, nodeEpoch, serviceId)`。nodeId 是非零 uint32，nodeEpoch 是非零 uint64，serviceId 是正 int32。每个 Node 只承载一种服务，只附着到一个 Router，该附着关系可含多个 RPC Slot。Router 与服务 Node 使用同一 ID 命名空间。部署负责 ID 和新 epoch；epoch 区分附着代际，不是时钟或租约。
+**RT-NODE-02** 附着关系绑定在连接上。服务一看到连接就在每个已连接 Router 上声明自己的身份，之后周期性地再次声明；它发送的每条路由消息也同时声明身份。Router 只在该 Node 保持连接期间保存每个 Node 的最新声明；新代际替换旧代际。连接关闭或 Node 以相同 epoch 撤回后，声明即不再有效；只能在发送失败时才得知连接关闭的实现 MAY 届时再删除它。服务收到自己不使用的 Router 发来的投递时，会再次从该 Router 撤回，因此被先前声明超越的撤回仍会生效。声明不是注册：不确认、不复制、不持久化，也不表示服务是否在线。重启的 Router 从各 Node 的下一次声明中重新得知所有 Node。例如：Router 重启后每个服务都会看到新连接并立即声明；若服务的连接在它察觉前就已被替换，它会在一个声明周期内再次声明，在此之前经该 Router 发给它的消息以 PEER_NOT_FOUND 失败。
 
-**RT-NODE-02** 传输可用性 MUST NOT 决定服务上线/下线。多个 Slot 是同一实例的连接，不是多个注册。中间 Slot 丢失不改变路由状态。最后一个 Slot 丢失暂时阻止传输/协议工作，但 MUST 保留 Router 的权威 Node 注册和绑定。外部服务发现对精确代际的下线通知、显式注销或权威快照移除才清理它们。重连校验同一注册并恢复已接受的期望键，不改变 epoch。切换 Router 使用新 epoch；过期下线事件 MUST NOT 删除较新代际。 精确代际的发现移除 MUST 限制该代际随后重新注册，包括移除先于注册到达的情况。移除依据具有实现定义的有限容量与生命周期，MUST NOT 为接纳旧注册而静默淘汰。路由状态不持久化，Router 重启后发现需要重新提供当前状态。
+**RT-STATE-01** Router MUST NOT 保存活动连接声明之外的任何状态：没有绑定或路由表、缓存、注册、PendingCall、序号或副本。Router MUST NOT 与其他 Router 交换路由流量。因此 Router 可以互相替代：服务连接的任一 Router 都能承载它的消息。
 
-**RT-BIND-01** bindingKey 是 uint64，包括零。Map Key 存 serviceId、bindingKey；Value 只存 nodeId、nodeEpoch。Router MUST 只允许 Node 绑定其注册服务。同 owner 重复 bind 幂等；不同可见 owner MUST 返回 BINDING_CONFLICT，不能覆盖。不存在的 unbind 幂等；unbind MUST 按精确 owner/epoch 条件删除，MUST NOT 删除其他 owner 的条目。
+## 3. 寻址与 Router 选择
 
-**RT-BIND-02** bind 成功表示本地 Router 已接受绑定，并尝试将变更排入发往其他 Router 的同步流。它 MUST NOT 等待集群应用，不代表持久化，也不保证其他 Router 立即可见。Peer 丢失或同步流中断不回滚已接受的本地绑定。传播窗口中的路由缺失仍按真实缺失处理。
+**RT-ADDR-01** 路由消息的目标是精确 nodeId，可选附带由 Router 校验的精确 nodeEpoch。动态寻址由发送方在发送前解析；Router 从不把键映射到 Node。玩家示例：拥有玩家 B 的服务在业务状态中记录 B 位于 Node 12；发送方查到后发往 Node 12，并把 B 的 ID 放入业务身份或 payload。B 迁移后，消息去向由发送方的查询决定；Router 对已迁移玩家不作任何保证。
 
-**RT-BIND-03** 业务协调负责独占放置。隔离 Router 异常同时 bind 时，各副本 MUST 保留独立权威分桶，并使用同一确定性规则选择可见结果：在有效 owner 中选择无符号 nodeId 最小者。Node 注册重复时，选择无符号 nodeEpoch 最大者，再选择所属 Router 无符号 ID 最小者；只有与选中 Node 代际、服务匹配的绑定才有效。冲突 MUST 产生诊断。此兜底不是分布式锁，业务 MUST NOT 依赖它进行放置。胜者移除后，仍然绑定的败者可能重新可见。
+**RT-ADDR-02** 每个服务连接它发送或接收所经过的所有 Router。发送方为每条消息选择一个可用 Router。已连接的 Router SHOULD 在连接满一个声明周期后才算可用，以便 Router 重启后其他 Node 在流量到达前已在其上声明自己；没有可用 Router 时使用任一已连接 Router。在可用 Router 集合不变期间，该选择 MUST 是目标与 routeKey 的确定性函数，因此同一 routeKey 发往同一目标的消息保持顺序；集合变化前后的顺序不作保证。
 
-示例：Node 1 在 A 绑定 `(MATCH, 1001)`，隔离的 Node 2 同时在 B 绑定。两个本地操作都可能成功。交换快照后双方都解析为 Node 1；Node 2 unbind 只删除 B 的条目。没有选举或补偿回滚。
-
-epoch 比较是确定性冲突选择，不是时间新旧的证明。新 epoch 要求不同，不要求数值递增。如果保留权威包含 Node 1/epoch 10，而替代实例在另一个隔离 Router 注册 Node 1/epoch 1，两次本地注册与绑定都可能成功；同步后仍选择 epoch 10，直到其权威被显式移除。部署不能假定随机或新 epoch 自动覆盖旧条目。若采用有序分配策略，需要权威来源及明确契约决策；当前不提供这类分配器。有序分配也不能替代精确的发现退役。
-
-绑定权威选择目标，不授予业务执行的独占权。已经投递给旧 owner 的请求在解绑/迁移后仍可继续执行，另一分区在收敛前也可能向竞争 owner 投递。Runtime 的 same-Route 顺序只在一个进程内生效。要求玩家/房间修改独占的应用，需要由执行或存储拥有方检查的放置协调、排空和/或业务所有权限制。这不改变本地 bind 完成语义，不给 Router 增加分布式锁，也不使调用超时取消执行。
-
-## 3. 权威状态与同步
-
-**RT-SYNC-01** 每个 Router 拥有其直连 Node 注册及 LocalBindings。它 MUST 只发布自身权威状态，不能将合并后的 RouteTable 再当作权威发布。远端状态按来源 Router 分桶。可读视图由本地权威和已同步远端桶构成；实现可以维护一个合并索引，但每个条目必须标记来源桶，替换或删除某个桶时不会触碰其他桶的条目。数据路径上的查询 SHOULD NOT 获取串行化权威更新的锁。
-
-**RT-SYNC-02** Router 以会话形式向每个已声明 Router 推送本地权威状态，每个方向一个会话：带计数的快照开始、Node 分块、绑定分块、快照结束，之后是增量。每帧都携带发送方 Router epoch 和会话号；快照开始之后的每帧携带连续序号。快照 MUST 相对本地变更原子捕获，之后的每个变更 MUST 排在其后，使快照加增量精确还原权威状态。Node 条目先于其绑定条目。暂存数据 MUST 在结束时条数、owner 校验通过前不可见；结束消息一步替换该 Router 之前已提交的桶。单 Slot 连接可用且对该 Peer 的副本已提交、无缺口时，称 Router 对该 Peer *就绪*。就绪只用于运维观察和测试，不控制业务数据（RT-SYNC-05）。
-
-两端 Router 分别显式声明对方的路由成员身份，该声明与连接发起独立。普通直连 RPC Peer MUST NOT 自动成为 Router：来自未声明 Peer 的同步帧被忽略，其数据按服务流量处理。成员声明后若没有可用 RPC 连接，该 Router 不可用，也不自行发起连接。对已连接的 Router 声明成员时立即向其请求会话。移除成员会丢弃其可见桶，RPC 关系仍由应用管理。
-
-**RT-SYNC-03** 后续 register/remove/bind/unbind 只更新来源桶，并以增量传播；Node removal 清理该 Node/epoch 的全部绑定。同步流没有确认：单个 Router Slot 上的有序传输本身保证帧顺序，丢失只会表现为缺口。接收方对每帧检查 epoch、会话和序号，忽略同一 epoch 下旧会话的帧。序号缺口、未知会话、非法帧、连接丢失、快照停止到达或超过心跳窗口无消息，都会把副本标记为损坏：最后提交的桶仍可查询，接收方发送指明损坏会话的同步请求，要求权威方开启新会话。权威方以新快照回应；只要 Slot 可用且没有会话，它也会主动开启会话，因此恢复不依赖请求是否到达。空闲时权威方发送携带最后序号的状态心跳，用于发现流尾丢失。没有重放日志：每次恢复都是新快照，无会话期间的变更包含在其中。恢复 MUST NOT 重置共享 RPC Peer、改变其配置或取消无关 pending 调用。Router 传输丢失保留最后提交的桶；服务发现驱动的成员移除才删除桶。
-
-**RT-SYNC-04** 每个 Peer 的待发送增量 MUST 有界。达到上限时用新快照替换当前会话，新快照已包含该变更；本地权威从不回滚。快照分块在发送时从捕获的副本编码，大快照发送期间不持有权威锁。连续增量 MAY 合并为一帧。同步流不改变 RT-BIND-02：bind 成功只表示本地接受。
-
-分区期间，服务发现成员和最后提交的路由仍可见，即使下一跳不可用。已知路由的传输不可用返回 UNAVAILABLE，不臆造服务下线或路由缺失。视图可过期，直到显式发现移除或新的权威快照到达。没有共识、租约或分区强一致性；全连接恢复且来源状态停止变化后收敛。Router 重启通过 Node 注册及 Peer 快照重建状态，没有持久路由数据库。
-
-**RT-SYNC-05** 同步状态 MUST NOT 控制业务数据。来源 Router 按自身视图解析，目标 Router 只检查自己的权威注册，响应或路由错误返回请求中记录的来源 Router（origin Router），由它自己的权威状态找到调用方。因此过期或恢复中的副本最多导致路由缺失或过期目标（目标按精确 epoch 拒绝），不会丢失返回路径。例如，B 丢失 A 的同步流、正在重新同步时，A 上服务对 B 上 Node 的 Call 仍会投递，B 的响应直接回到 A，不查询 B 持有的 A 副本。业务消息不缓冲、不重放。[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 中的 `responsesAndRoutedErrorsReturnToTheOriginRouterWithoutItsReplica` 让 B 收不到 A 的同步流，验证响应和路由错误都能返回。
+**RT-ADDR-03** Router 只在没有投递时才以 PEER_NOT_FOUND 或 UNAVAILABLE 回答 Call，因此发送方 SHOULD 把这样的 Call 原样经另一个尚未为它尝试过的已连接 Router 重发，只有没有剩余 Router 时才报告该错误。这样，连接不完整（目标只连接了部分 Router）对调用不可见。Notify 没有这样的回答，不会重发；本地失败（例如连接丢失）的 Call 可能已经投递，也不重发。重发的 Call 可能超过同一键之后的消息。
 
 ## 4. 转发与调用完成
 
-**RT-DATA-01** 动态请求在来源 Router 只解析一次，得到精确 Node/epoch；物理请求直接使用 nodeId。来源 Router 本地投递，或转发到目标所属 Router；接收 Router 只向自己的本地目标投递。转发 MUST 保留 Metadata、body、业务身份、command、亲和字段及原调用 ID。直连 Node 的来源身份按附着关系校验；已声明的 Router 为其转发消息的来源身份负责。来源 Router 在请求中记录自身为 origin Router。
+**RT-DATA-01** Router 只接受来源 Node 等于消息来路直连 RPC Peer 的路由消息，并且只投递给以所请求 epoch 附着的目标 Node（未请求 epoch 时不限代际），地址为该精确代际。Metadata、body、业务身份、command、routeKey 与调用 ID 在转发中保持不变；内层 RPC 帧除调用 ID 外逐字节传递。服务只接受自己声明过的 Router 发来的路由消息，且目标必须是自己的 ID 和 epoch。
 
-玩家寻址示例：拥有玩家 B 的服务绑定 `(PLAYER_SERVICE, playerBId)`；处理玩家 A 已认证请求的服务向该逻辑服务/key 发送，无需知道 B 的实例 ID 或地址。Router 投递到拥有方服务实例，应用 Handler 从业务请求识别 B，再分派到本地玩家/会话。绑定键选择实例，不会自动复制为内层业务身份。路由 sourceNodeId 标识服务器 Node，不标识玩家 A；发送玩家身份与权限归应用。客户端入口、玩家/会话查询、最终客户端投递和离线存储不属于 Router。迁移仍需更新绑定；传播缺口或在途旧路由不能保证投递到已迁移玩家。
+**RT-DATA-02** 调用方 RPC Node 拥有路由调用的 pending 状态和超时；Router 不创建调用，也不保存关联。Router 把调用方的外层调用 ID 写入转发的请求；目标向投递该请求的 Router 回复，地址为调用方的精确代际；该 Router 用原生 RPC 响应完成调用方的调用。发给已不再附着的代际的响应被丢弃。Router 或调用方到它的连接丢失时，RPC 让调用方的 pending 调用失败，迟到的响应已无可完成的调用。
 
-**RT-DATA-02** 原始 RPC Node 拥有路由调用的 pending 状态和超时。中间 Router MUST NOT 新建另一笔业务调用、分配新的业务 requestId 或自行关联响应。控制同步可使用独立普通 RPC call。响应指向原 sourceNodeId、sourceEpoch，并发往请求中记录的 origin Router，不能重新查 binding 或副本；过期目标附着关系 MUST 拒绝投递。响应被接受不证明来源仍有 PendingCall。
-
-**RT-DATA-03** 动态路由缺失时 Notify 丢弃；Call 返回 ROUTE_NOT_FOUND，不能主动等待超时。物理 Node 不存在及下一跳不可用复用 RPC PEER_NOT_FOUND/UNAVAILABLE。转发使用现有 RPC 发送结果；ACCEPTED 仅表示本地传输准入。如果来源或返回链路已经消失，错误响应也可能无法返回，最终仍由 RPC 超时。Router 不提供端到端发送收据。远端错误进入响应 Handler，本地 RPC 失败进入失败 Handler。
-
-Router 产生的错误返回直接发往 origin Router，与同步流无关，不创建中间 pending 调用，也不重试。传输背压或来源消失仍可能使错误无法在原调用超时前到达。[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 覆盖没有调用方副本时的返回，传输表示见 [Wire Profile](../rpc-wire.zh-CN.md#router-profile-v3)。
-
-示例：Room 调用 `(MATCH, playerId)`；Match 收到原始来源身份，随后解绑 playerId。响应仍返回 Room 的精确 Node/epoch。Room 切换或移除附着关系可能丢失响应；超时不会撤销 Match 的执行。[集成测试](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) 验证这一边界。
+**RT-DATA-03** 发往未在所选 Router 附着的 Node 的 Call 立即以 RPC PEER_NOT_FOUND 失败；向已附着 Node 发送被拒绝时以 UNAVAILABLE 失败；目标路由 Handler 抛出异常时返回 HANDLER_ERROR。Notify 没有等待方，在这些情况下直接丢弃。Router 从不缓存或重试业务消息：写缓冲已满的下一跳会拒绝消息。ACCEPTED 只表示首跳准入；Router 不提供端到端收据。Router SHOULD 统计已转发的消息及每类丢弃（目标未附着、发送被拒、响应找不到调用方），使静默丢失可被观察。远端错误（包括 Router 自身返回的错误）进入响应 Handler，本地 RPC 失败进入失败 Handler。
 
 ## 5. 广播
 
-**RT-BCAST-01** 广播只允许 Notify，投递到当前可见的全部指定服务 Node，包括服务匹配的来源 Node。来源 Router 本地 fan-out，并向每个已声明 Router 发送一份消息。接收 Router 只向自身本地匹配 Node fan-out，MUST NOT 再转发到其他 Router。各副本使用自身当前注册视图；没有跨集群原子成员快照。
+**RT-BCAST-01** 广播仅支持 Notify。发送方把一条消息发给所选的一个 Router，该 Router 向附着在它上面的该服务每个 Node（发送方服务该服务时也包括发送方）各投递一份，地址为该 Node 的精确代际。由于每个服务都连接所有 Router，一个 Router 即可到达全部 Node；未连接该 Router 的 Node 收不到这次广播。没有订阅表、聚合结果、重放或投递保证。
 
-没有订阅表、广播 call、接收者聚合结果、重放或可靠投递。目标缺失或下一跳拒绝独立丢弃。首跳接受不表示所有接收者均已收到。
+## 6. 生命周期与所有权
 
-## 6. 切换、生命周期与所有权
+**RT-LIFE-01** 增加 Router 不需要任何状态迁移：服务连接后自行声明。移除 Router 由应用决定：服务不再选择它并从中撤回；经它在途的调用在其连接关闭时失败。Router 崩溃时，经它在途的调用以 RPC 连接丢失错误失败，之后的发送选择其余 Router。重启的服务使用新 epoch，因此发给旧代际的流量被拒绝或丢弃。
 
-**RT-LIFE-01** 正常切换先在旧 Router 删除全部绑定和注册，再附着到新 Router、重新绑定期望键。显式 detach 可原子完成旧关系的 unbind-all/removal。传输可用的失败选择可通过协议注销清除；确认精确代际已不存在视为成功清理，MUST NOT 移除其他代际。路由 detach MUST NOT 移除共享 RPC Peer；应用可以保留它供普通直连 RPC 使用，或在路由清理后显式移除。旧附着关系全部 Slot 丢失后允许异常切换；其他存活 Router 在服务发现确认旧 Router 下线后清除其桶。Node 在异常丢失后保留期望绑定，并显式选择新 Router/epoch；不自动选择 Router。清除丢失的附着同样把 RPC 配置留给应用，旧 Peer 随后的恢复 MUST NOT 恢复已清除的附着关系。
-
-**RT-LIFE-02** RPC 拥有自身生命周期/资源屏障；应用拥有组件装配及关闭顺序。显式路由关闭时 MUST 停止接纳状态变更、限制晚到 Handler 并释放自有表/控制缓冲，随后应用关闭 RPC；已分派回调可按 RPC 契约结束。远端实例清理仍需发现通知。路由不创建端点或业务 Executor，自行拥有有限协议恢复调度并在关闭时停止。恢复仅重试幂等注册/同步，不能重试业务执行。选中关系 MUST 在传输仍可用时协调远端 Router 替换和失败注册；连接可用不是注册依据。校验失败停止自动注册重试，并保持可观察。调度间隔/超时由实现定义，不是恢复期限或存在性租约。业务分派及借用 payload retain 归应用。已接受工作没有取消操作，超时/丢 ACK 使执行不确定；控制完成使用回调，不提供返回 future 的 API。
-
-非瞬时协议校验失败停止自动注册恢复，暴露失败，并保留已接受的期望绑定。瞬时传输错误或确认注册缺失仍允许恢复。例如，注册成功后，ACK 的校验数据非法使服务路由不可用；随后连接恢复不能抹除已停止的选择。应用可以检查失败，再显式重试同一选择或清除它。这落实 RT-LIFE-02 的校验边界，不把连接可用当成注册成功。Java 回调顺序和重试入口见 [Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md#3-服务注册和回调)；[RouterRecoveryTest](../../game-router/src/test/java/cn/managame/router/node/RouterRecoveryTest.java) 覆盖非法校验、显式重试及可恢复失败。
+**RT-LIFE-02** 应用拥有装配和关闭顺序：先关闭路由，再关闭 RPC。关闭服务角色会停止声明，并从已连接 Router 撤回本 Node；关闭 Router 会停止中继并忘记所有声明。路由不创建端点或业务 Executor；服务角色的周期声明是唯一的后台工作。已接受的工作没有取消操作，超时使执行结果不确定。完成使用回调，不提供返回 future 的 API。
 
 ## 7. 已确认取舍与验证
 
-身份、迁移与控制/数据耦合的后续方案未实现、不是规范条款，见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#design-proposals)。采纳任一方案时，须一起更新对应条款、Java 绑定、互通规则、示例及失败测试。
-
 | 决策 | 原因 | 重新考虑条件 |
 | --- | --- | --- |
-| 本地 bind 接受，副本最终一致 | 放置由业务负责，避免集群协调器 | 放置需要跨分区原子性 |
-| Router 权威分桶与重连快照 | 删除、重建明确，不需要增量重放日志 | 快照规模或恢复时间超过实测预算 |
-| 每方向一条无确认有序流 | 单 Slot 已保证帧顺序；缺口检测加新快照取代每次变更一次往返 | 传输不再保证单 Slot 顺序 |
-| 数据路径与同步无关 | 返回路径使用 origin Router 而非副本；查询不加锁 | 视图不一致时必须拒绝投递 |
-| 全连接、最多一跳 Router | Router 数量较少，避免环路和广播放大 | Router 规模或拓扑需要多跳 |
+| 无状态 Router，只保存每条连接的声明 | 重启与扩缩容不需要恢复协议；没有副本滞后或绑定冲突 | 部署无法让每个服务连接所有 Router |
+| 发送方解析业务键 | 放置归业务所有；Router 不可能沿用过期绑定 | 大量发送方需要一个共享的键目录，且其保证超出业务存储能力 |
+| 每个服务连接所有 Router，一跳 | 没有 Router 间流量、环路或放大；任一 Router 都能承载任意消息 | 服务数 × Router 数的连接过多 |
+| 响应经投递请求的 Router 返回 | RPC pending 调用属于单个 Peer，因此 Router 无需保存调用状态 | RPC 支持跨 Peer 关联响应 |
+| 周期声明代替有确认的注册 | Router 重启后无需重试、校验或恢复 | 必须保证 Router 静默重启后立即可投递 |
+| 发送方预热并重发未投递的调用 | 无需 Router 状态即可覆盖 Router 重启和连接不完整；Router 的 PEER_NOT_FOUND/UNAVAILABLE 证明未投递 | Notify 也需要同样保证，或重发的调用必须严格保持同键顺序 |
 | 现有 Node 上的普通 Handler | 一个身份、连接系统及调用完成拥有方；装配在 RPC 外完成 | 缺少具体可复用的 RPC 能力 |
 
-持续负载同步与进程总资源预算仍未验证。后续设计仍须保持暂存不可见、连续序号校验、快照先于增量和 bind 仅确认本地的边界。有界队列不能无限承受到达速率大于排出速率：溢出时以新快照重启，限制内存，代价是一次快照传输。没有发现证据证明已移除代际不可能再注册时，不能静默过期清除移除依据。早期审查证据保存在[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md)。
-
-Java 机制、默认值及包布局见 [Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。[RouterIntegrationTest](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) 覆盖真实 TCP 调用/响应字段、广播、分区冲突、多分块快照与增量顺序、重连、切换和 Handler 异常；[RouterSyncTest](../../game-router/src/test/java/cn/managame/router/node/RouterSyncTest.java) 覆盖并发变更下的大快照、四 Router 全连接与 Router 重启、反复断线、双向随机丢帧以及权威锁繁忙时的查询。[可运行示例](../../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 为每个模拟进程装配一个应用拥有的 RPC Node。本地测试不是生产规模、集群安全或跨语言认证。自动发现/故障目标选择、持久化、远端取消与 Runtime 适配不属于 V1。
+Java 机制、默认值及包布局见 [Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。[RouterIntegrationTest](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) 覆盖真实 TCP 的调用/通知/响应字段、大 body、目标缺失、广播、同键有序及在两个 Router 间分散、Router 丢失与重启、重连 Router 的预热、连接不完整时重发调用、向不再使用的 Router 再次撤回、代际校验、Handler 异常、非法响应、伪造来源、未声明 Router 及生命周期；[RouterWireTest](../../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java) 覆盖字节布局。[可运行示例](../../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 为每个模拟进程装配一个 RPC Node。本地测试不是生产规模、集群安全或跨语言认证。服务发现、持久化、远端取消与 Runtime 适配不属于 V1。

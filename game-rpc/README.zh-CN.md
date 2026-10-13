@@ -14,7 +14,7 @@ OGBS RPC 的 Java 25 实现，Maven cn.managame:game-rpc，依赖 game-core、ga
 
 ## 使用
 
-通过 Builder 配置普通 RpcHandler，请求/响应/失败分派在 Node 构造时固定。Peer 可用性/数量快照支持上层校验，不增加生命周期监听器。[game-router](../game-router/README.zh-CN.md) 使用同一 Handler 及 call/notify/reply；应用显式关闭路由与 RPC。Router 自有协议校验/恢复保留共享 Peer 和普通 pending。服务存在性归发现，见 [Java Handler 组合](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#direct-forwarding-and-handler-composition)。
+通过 Builder 配置普通 RpcHandler，请求/响应/失败分派在 Node 构造时固定。Peer 可用性/数量快照支持上层校验，不增加生命周期监听器。[game-router](../game-router/README.zh-CN.md) 使用同一 Handler 及 call/notify/reply；应用显式关闭路由与 RPC。路由从不重置共享 Peer 或普通 pending。服务存在性归发现，见 [Java Handler 组合](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#direct-forwarding-and-handler-composition)。
 
 ```java
 try (RpcNode node = RpcNode.builder()
@@ -47,4 +47,4 @@ mvn -pl game-rpc -am test
 mvn clean verify
 ```
 
-Wire、引用计数、完成竞争、真实 TCP、Peer 重建、恢复权竞争和超时隔离具有本地契约测试。RouterRecoveryTest 覆盖多 Slot 远端重启、回调重入和显式关闭；RouterIntegrationTest 覆盖重新同步保留普通在途调用。集成变更要求根 clean verify。有限调用准入暂缓，生产容量/跨语言互通未验证。可选 Runtime 接入在 game-spring；核心无发现或 RPC TLS/WS 配置。
+Wire、引用计数、完成竞争、真实 TCP、Peer 重建、恢复权竞争和超时隔离具有本地契约测试。RouterIntegrationTest 覆盖与普通 RPC 共用 Node 的路由、Router 丢失与重启。集成变更要求根 clean verify。有限调用准入暂缓，生产容量/跨语言互通未验证。可选 Runtime 接入在 game-spring；核心无发现或 RPC TLS/WS 配置。

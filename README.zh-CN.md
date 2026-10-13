@@ -11,7 +11,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-core | 共享 Metadata、类型化 MetadataKey、统一框架错误码 |
 | game-network | TCP / 二进制 WebSocket Connection API、原生 TLS / WSS，以及独立 HTTP/1.1 HttpServer |
 | game-rpc | RpcNode、主动/被动 Peer、固定 Slot、握手、心跳、重连、call / notify / reply，以及 Netty Wire 编解码 |
-| [game-router](game-router/README.zh-CN.md) | 基于已有唯一 RpcNode 的路由：明确的附着/消息 API、全连接快照/增量、绑定及广播 |
+| [game-router](game-router/README.zh-CN.md) | 基于已有唯一 RpcNode 的无状态 Router：服务连接所有 Router，按精确 Node ID 发送，并按服务广播 |
 | game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
 | [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、HTTP/RPC 托管生命周期、对象 RPC 适配、初始化 Repository 注入、Runtime 停机排空 |

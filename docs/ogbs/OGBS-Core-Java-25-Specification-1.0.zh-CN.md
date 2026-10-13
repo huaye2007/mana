@@ -105,7 +105,7 @@ stringKey 使用 JDK StandardCharsets.UTF_8 的 String 编解码；bytesKey 解�
 
 ## 4. 共享错误码绑定与兼容性
 
-FrameworkErrorCodes 同时发布 Core Router 分配中的 ROUTER_ROUTE_NOT_FOUND、ROUTER_BINDING_CONFLICT、ROUTER_NOT_REGISTERED、ROUTER_INVALID_SERVICE。game-router 的 RouterErrorCodes 引用这些常量，不另建数值登记表或业务 Metadata Key。报告路径见 [Router Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。
+FrameworkErrorCodes 不发布 Router 常量：game-router 报告 RPC 错误码，已退役的 5001..5004 不重新使用。报告路径见 [Router Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。
 
 Java FrameworkErrorCodes 暴露 public static final int 常量，对应 [Core 标准的错误码分配](OGBS-Core-1.0.zh-CN.md#4-frameworkerrorcode)。不得在 Java 文档复制维护第二套编号表。已定义常量值不可随意重排；新增编号先修订标准，再同步 Java 常量及消费方。
 

@@ -11,7 +11,7 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | game-core | Shared Metadata, typed MetadataKey, common framework error codes |
 | game-network | TCP / binary WebSocket Connection APIs, native TLS / WSS, and independent HTTP/1.1 HttpServer |
 | game-rpc | RpcNode, active/passive peers, fixed slots, handshakes, heartbeats, reconnects, call / notify / reply, and Netty wire codecs |
-| [game-router](game-router/README.md) | Routing on the existing single RpcNode: concrete service routing with callbacks, full-mesh snapshots/deltas, bindings and broadcasts |
+| [game-router](game-router/README.md) | Stateless Routers on the existing single RpcNode: services connected to every Router send to exact Node IDs and broadcast by service |
 | game-runtime | Route execution, Context, Handler, HTTP annotations/dispatch, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
 | [game-spring](game-spring/README.md) | Optional plain Spring: annotation discovery, managed HTTP/RPC lifecycle, typed RPC adaptation, initialized Repository injection, Runtime shutdown drain |

@@ -121,14 +121,7 @@ Each component specifies which APIs return or report errors. A defined constant 
 
 ### Router constants
 
-| Value | Name | Meaning |
-| --- | --- | --- |
-| 5001 | ROUTER_ROUTE_NOT_FOUND | No visible dynamic service/key owner |
-| 5002 | ROUTER_BINDING_CONFLICT | Different owner/attachment already visible |
-| 5003 | ROUTER_NOT_REGISTERED | Control source lacks the exact registered attachment |
-| 5004 | ROUTER_INVALID_SERVICE | Binding does not match the Node's sole registered service |
-
-Router uses RPC's existing physical Peer/unavailable/timeout errors for transport failures. See [Router](OGBS-Router-1.0.md) for local bind acceptance, route-miss handling and consistency limits; these allocations add no automatic RPC routing or Metadata keys.
+The 5000..5999 range stays reserved for game-router, which currently defines no codes: the stateless Router reports failures with RPC's PEER_NOT_FOUND, UNAVAILABLE, TIMEOUT and HANDLER_ERROR. 5001..5004 (ROUTER_ROUTE_NOT_FOUND, ROUTER_BINDING_CONFLICT, ROUTER_NOT_REGISTERED, ROUTER_INVALID_SERVICE) belonged to the removed binding and registration model and MUST NOT be reused. See [Router](OGBS-Router-1.0.md) for its failure paths.
 
 <a id="5-实现与验证"></a>
 

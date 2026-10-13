@@ -18,7 +18,7 @@ Byte layout: [RPC Wire Profile](../docs/rpc-wire.md). Shared Metadata/error code
 
 ## Usage
 
-Configure the ordinary RpcHandler through the builder; its request/response/failure dispatch is fixed at Node construction. Peer availability/count snapshots support upper-layer checks without lifecycle listeners. [game-router](../game-router/README.md) uses that same Handler and call/notify/reply; the application explicitly closes routing and RPC. Router-owned protocol verification/recovery preserves shared Peers and ordinary pending calls. Discovery owns service presence. See [Java Handler composition](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#direct-forwarding-and-handler-composition).
+Configure the ordinary RpcHandler through the builder; its request/response/failure dispatch is fixed at Node construction. Peer availability/count snapshots support upper-layer checks without lifecycle listeners. [game-router](../game-router/README.md) uses that same Handler and call/notify/reply; the application explicitly closes routing and RPC. Routing never resets shared Peers or ordinary pending calls. Discovery owns service presence. See [Java Handler composition](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md#direct-forwarding-and-handler-composition).
 
 ```java
 try (RpcNode node = RpcNode.builder()
@@ -53,4 +53,4 @@ mvn -pl game-rpc -am test
 mvn clean verify
 ```
 
-Wire, reference counts, completion races, real TCP, Peer recreation, recovery ownership and timeout isolation have local contract tests. RouterRecoveryTest covers multi-Slot remote restart, callback reentry and explicit closure; RouterIntegrationTest covers resynchronization retaining ordinary in-flight calls. Integration changes require root clean verify. Finite call admission remains deferred; production capacity and cross-language interoperability are unverified. Optional Runtime integration is in game-spring; core has no discovery or RPC TLS/WS configuration.
+Wire, reference counts, completion races, real TCP, Peer recreation, recovery ownership and timeout isolation have local contract tests. RouterIntegrationTest covers routing on the same Nodes as ordinary RPC, Router loss and restart. Integration changes require root clean verify. Finite call admission remains deferred; production capacity and cross-language interoperability are unverified. Optional Runtime integration is in game-spring; core has no discovery or RPC TLS/WS configuration.

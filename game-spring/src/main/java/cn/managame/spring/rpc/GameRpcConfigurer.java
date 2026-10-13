@@ -14,8 +14,8 @@ public interface GameRpcConfigurer {
     void configure(RpcNodeBuilder builder);
 
     /**
-     * Wraps the Node handler before build, for example with GameRouter.forRouterNode or
-     * GameRouter.forServiceNode using {@code handler} as the direct handler. Must return nonnull.
+     * Wraps the Node handler before build, for example with a new GameRouter or ServiceRouting
+     * using {@code handler} as the direct handler. Must return nonnull.
      */
     default RpcHandler decorate(RpcHandler handler) { return handler; }
 

@@ -2,21 +2,17 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-基于进程现有唯一 RpcNode 的 Java 25 路由。依赖 game-rpc，提供权威绑定、全连接快照/增量、精确 Node 寻址、服务/key 动态寻址和服务广播。
+基于进程现有唯一 RpcNode 的 Java 25 无状态 Router。依赖 game-rpc，通过不保存路由状态的 Router 提供精确 Node 寻址和服务广播。
 
 | 规范 | Java 开发规范 |
 | --- | --- |
 | [OGBS Router](../docs/ogbs/OGBS-Router-1.0.zh-CN.md) | [Router Java 25](../docs/ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md) |
 
-[GameRouter](src/main/java/cn/managame/router/node/GameRouter.java) 负责装配。forRouterNode 返回 Router 成员/查询方法；forServiceNode 返回具体类 [ServiceRouting](src/main/java/cn/managame/router/node/ServiceRouting.java)，同一个对象直接提供 register/bind/unbind/unregister 和业务 call/notify/broadcast/reply。控制操作通过 RpcCallback<Integer> 返回 0 或正框架错误码。先创建路由，作为普通 RpcHandler 传给 RpcNodeBuilder.handler，再调用 routing.start(rpc) 和 rpc.start()；应用拥有两者生命周期，先 routing.close()，再 rpc.close()。
+两个具体类就是两个角色。`new GameRouter(directHandler)` 是无状态中继；`new ServiceRouting(serviceId, nodeEpoch, routedHandler, directHandler)` 是服务，同一个对象直接提供 addRouter/removeRouter 和业务 notifyNode/broadcast/callNode/reply。先创建角色，作为普通 RpcHandler 传给 RpcNodeBuilder.handler，再调用 role.start(rpc) 和 rpc.start()；应用拥有两者生命周期，先 role.close()，再 rpc.close()。
 
-连接 Router 和普通服务都使用 rpc.addPeer(id,address,slots)。两端 Router 通过 registerRouter(id) 声明成员；Router 间同步使用单 Slot，服务可以多 Slot。连接事件只表示传输可用性，不是服务上线/下线。暂时断线保留权威注册/绑定及最后提交的远端桶。第三方发现通过 removeNode(id,epoch) 或 unregisterRouter(id) 清理实例权威；路由注销保留共享 RPC Peer。
+每个服务用 rpc.addPeer(id,address,slots) 连接所有 Router，并用 addRouter(id) 声明它们；Router 之间互不连接。Router 只保存每个已连接 Node 声明的身份（epoch、服务），连接断开即忘记：没有路由表、注册、副本、线程或定时器。服务在每条新连接上及每秒声明一次自己，因此 Router 重启后无需恢复。目标是精确 Node ID；把玩家或房间解析为 Node 是发送方的业务逻辑。每次发送按目标与 routeKey 选择一个 Router，新连接的 Router 一秒后才使用，以便其他 Node 先在其上声明；在这一选择不变期间同一键保持顺序。Router 未能投递的调用会经另一个 Router 重发，调用的响应经承载该调用的 Router 返回。GameRouter.stats() 统计已转发和丢弃的消息。Router 只改写路由头，内层 RPC 帧不解码直接传递；Router 从不缓存业务数据，因此 Router Node 的 RPC 写缓冲水位应调得比 Netty 默认 64 KiB 更大。[Router Profile](../docs/rpc-wire.zh-CN.md#router-profile-v4) 定义不改变 RPC Wire 的 payload。不提供服务发现、可靠消息或键目录。
 
-bind 成功只表示本地接受，不保证集群可见。每个 Router 把自己的桶以每方向一个有序、无确认的会话推送给其他 Router：先快照，再按连续序号批量发送增量。出现缺口、丢失或静默时，保留最后提交的副本供查询并请求新快照；没有逐条确认，也没有重放日志。本地桶与全部副本组成一个无锁索引，转发只做本地查表，从不等待同步；响应和路由错误直接返回调用方所在 Router。服务控制最多 8,192 个排队加一个在途调用；精确发现移除限制有容量上限，Router 重启后发现需重新提供这些事件。[Router Profile](../docs/rpc-wire.zh-CN.md#router-profile-v3) 定义不改变 RPC Wire 的内层 payload。不提供共识、可靠消息、自动发现或 Router 选择器。
-
-路由复用现有 RPC call/notify/reply，不修改 Node Handler，也不使用生命周期钩子。每个角色拥有一个维护任务：Router 角色推进并恢复同步流，服务角色校验 Router 代际和注册。恢复不重置共享 RPC Peer 或普通调用。Router Profile v3 要求路由参与方一起升级，RPC Wire 不变。
-
-[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 展示两 Router 的统一连接方法和回调。测试覆盖真实 TCP 寻址/回复、fan-out、快照/增量顺序、冲突、多连接、发现移除、回调异常、同步流缺口、随机丢帧、变更期间反复断线以及四 Router 全连接与重启。生产容量、持续过载和跨语言互通未验证。
+[RouterEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 装配两个 Router 和两个服务。测试覆盖真实 TCP 的调用/通知/回复、大 body、目标缺失、广播、两个 Router 下的同键顺序、Router 丢失与重启、代际校验、Handler 异常、伪造来源及生命周期。生产容量、持续过载和跨语言互通未验证。
 
 ```shell
 mvn -pl game-router -am test

@@ -97,7 +97,7 @@ command is nonzero and businessIdType 0..255; a response needs a nonzero request
 | Argument, null or lifecycle validation fails | Caller keeps the body |
 | Validated call/notify/reply | Exactly one body reference is consumed on every later path |
 | Missing Peer or no candidate connection | Body released without encoding |
-| Encoding (success or failure) | Encoder consumes the body; on success only the frame remains |
+| Encoding (success or failure) | Encoder consumes the body; on success only the frame remains. A body over 2 KiB becomes part of the frame, so its reference count stays positive until the frame is written: never release a body after the call returned, only if it threw before validation |
 | Network ACCEPTED | Frame belongs to Network; no further fallback |
 | Every connection rejects | RPC releases the frame |
 | Inbound onRequest/onResponse | Body is borrowed; retain or copy it for asynchronous use |
@@ -194,4 +194,4 @@ Run `mvn -pl game-rpc -am test`; cross-module changes need root `mvn clean verif
 <a id="92-后续审阅与扩展候选"></a>
 <a id="rpc-router-review-2026-10-07"></a>
 
-Remaining limits: no finite call admission (R-SEND-04) and no limits on inbound handshakes or passive Peers; closure scans all connections per Peer; the wire carries no Node incarnation, so IDs restarting with a new process can match replies saved by a peer (R-CALL-04). Handlers run on EventLoops: blocking one delays every connection on it. Not implemented: TLS/WebSocket builder options, discovery, business retries, remote cancellation, durable delivery. Unverified: cross-language interoperability, production throughput and memory. Router composes on an existing Node and uses only `isPeerConnected`/`peerSlotCount` beyond the ordinary API ([review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration)).
+Remaining limits: no finite call admission (R-SEND-04) and no limits on inbound handshakes or passive Peers; closure scans all connections per Peer; the wire carries no Node incarnation, so IDs restarting with a new process can match replies saved by a peer (R-CALL-04). Handlers run on EventLoops: blocking one delays every connection on it. Not implemented: TLS/WebSocket builder options, discovery, business retries, remote cancellation, durable delivery. Unverified: cross-language interoperability, production throughput and memory. Router composes on an existing Node and uses only `isPeerConnected` beyond the ordinary API ([review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration)).
