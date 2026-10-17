@@ -4,7 +4,7 @@ import cn.managame.core.Metadata;
 import io.netty.buffer.ByteBuf;
 
 /**
- * Read-only RPC envelope. A nonzero requestId represents an inbound call.
+ * Read-only RPC envelope. A positive requestId represents an inbound call.
  * Outbound call/notify require requestId == 0; the node assigns the wire ID.
  * The body is borrowed during inbound callbacks. Retain/copy it before asynchronous use.
  */
@@ -12,6 +12,7 @@ public record RpcRequest(int command, int requestId, long routeKey, int business
                          long businessId, Metadata metadata, ByteBuf body) {
     public RpcRequest {
         if (command == 0) throw new IllegalArgumentException("command must be nonzero");
+        if (requestId < 0) throw new IllegalArgumentException("requestId must be 0 (Notify) or positive (Call)");
         if ((businessIdType & ~255) != 0) throw new IllegalArgumentException("businessIdType must be 0..255");
         metadata = metadata == null ? Metadata.empty() : metadata;
     }

@@ -6,7 +6,7 @@
 
 语义见 [RPC Specification](ogbs/OGBS-RPC-1.0.zh-CN.md)，Java 接入见 [RPC Java 开发规范](ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)，Metadata 与错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
 
-所有多字节整数为 big-endian。Java int/long 保存原始位；nodeId、command、requestId 的负 int 是合法 uint32。errorCode 仅允许 0..2147483647。
+所有多字节整数为 big-endian。Java int/long 保存原始位；nodeId 与 command 的负 int 是合法 uint32；requestId 不同，它是 1..2147483647 的正数（0 为 Notify），负值视为坏帧。errorCode 仅允许 0..2147483647。
 
 ## Frame
 
@@ -47,7 +47,7 @@ v2 与 v1 握手不兼容（长度与 version 不同），集群内节点需一�
 | 字段 | 宽度 |
 | --- | --- |
 | command | uint32，非零 |
-| requestId | uint32 |
+| requestId | int32，0 为 Notify，否则 1..2147483647 |
 | routeKey | uint64 |
 | businessIdType | uint8 |
 | businessId | uint64 |
@@ -61,7 +61,7 @@ v2 与 v1 握手不兼容（长度与 version 不同），集群内节点需一�
 
 | 字段 | 宽度 |
 | --- | --- |
-| requestId | uint32，非零 |
+| requestId | int32，1..2147483647 |
 | errorCode | uint32，最高位必须为 0 |
 | metadataLength | uint16 |
 | metadata | metadataLength bytes |

@@ -29,7 +29,7 @@ It does not interpret business bodies or provide protocol registration, Runtime 
 | nodeId | Nonzero uint32 node identifier |
 | RpcPeer | One directly communicating remote relationship |
 | ConnectionSlot | Fixed logical connection position within a Peer |
-| requestId | uint32 call identifier matched within a Peer; 0 means Notify |
+| requestId | Positive call identifier, 1..2147483647, matched within a Peer; 0 means Notify |
 | routeKey | uint64 affinity value; 0 means no affinity; not a Runtime Route |
 | businessIdType / businessId | uint8 / uint64 business identity; type=0 means unspecified |
 | PendingCall | Correlation ID, completion notification, and timeout for one local call |
@@ -48,9 +48,9 @@ Example: a service crashes while ten calls to it are pending. When its last conn
 
 ## 3. Messages
 
-Request contains command, requestId, routeKey, businessIdType, businessId, Metadata, and opaque body. command is nonzero, not necessarily positive in signed representation. requestId=0 means Notify; otherwise Call. Notify creates no PendingCall and permits no Response.
+Request contains command, requestId, routeKey, businessIdType, businessId, Metadata, and opaque body. command is nonzero, not necessarily positive in signed representation. requestId=0 means Notify and a positive value means Call; negatives are invalid. Notify creates no PendingCall and permits no Response.
 
-Response contains nonzero requestId, errorCode, Metadata, and body, without command or routeKey. Retrieve command from local PendingCall. errorCode uses [Core's error space](OGBS-Core-1.0.md#4-frameworkerrorcode), with no high-bit marker.
+Response contains a positive requestId, errorCode, Metadata, and body, without command or routeKey. Retrieve command from local PendingCall. errorCode uses [Core's error space](OGBS-Core-1.0.md#4-frameworkerrorcode), with no high-bit marker.
 
 Handshake exchanges magic/version/nodeId/slotId/slotCount plus optional authentication fields (timestamp, nonce, peerNonce, MAC); Heartbeat has no payload. [Wire Profile](../rpc-wire.md) is the sole layout source.
 
@@ -69,6 +69,8 @@ Handshake exchanges magic/version/nodeId/slotId/slotCount plus optional authenti
 **R-HS-04** Duplicate handshakes, Request/Response/Heartbeat before READY, Slot conflicts, and handshake timeout terminate the candidate. Timeout and completion compete for the same completion right.
 
 **R-HS-05** Node-ID exchange alone is not authentication. With a shared secret, handshakes must carry an HMAC proof: the passive side verifies the MAC, clock skew and nonce uniqueness, and the initiator verifies that the reply echoes its nonce; any failure terminates the candidate. A node without a secret accepts only proof-less handshakes, so mismatched configurations cannot connect. Handshake authentication does not provide confidentiality or integrity of later frames; use transport TLS when required.
+
+**R-HS-06** The passive side bounds both the connections it holds and the Peers it learns: when the Node already holds its configured maximum of connections, a new one is closed before its handshake; when it already holds its maximum of inbound Peers, a handshake announcing an unknown Node is refused and its connection closed, while admitted Peers and their connections continue. Both bounds are binding configuration and keep a dial storm or a port scan from growing memory faster than handshake timeouts reclaim it. Peers the application configured itself do not count toward the inbound bound.
 
 <a id="5-slot-并发"></a>
 
@@ -90,15 +92,15 @@ Slots are transport details. Source Slot is only a reply hint, never part of bus
 
 For example, an upper layer can recheck its protocol on reconnect without rebuilding the RPC Peer or failing an ordinary call waiting on that Peer. Loss itself has no lifecycle callback in the message handler; calls retain the existing response/timeout/removal/closure contract. Routing envelopes use ordinary notify and reply, rather than introducing a second send primitive.
 
-**R-SEND-01** For call/notify, nonzero routeKey starts at unsigned64(routeKey) mod slotCount; zero uses Peer-local round-robin. reply first tries the Request's actual source Slot, then starts from the caller-supplied routeKey or round-robin and scans circularly, skipping the already tried source Slot. requestId is never a routing input.
+**R-SEND-01** For call/notify, nonzero routeKey starts at unsigned64(routeKey) mod slotCount; zero uses Peer-local round-robin. reply uses only the Request's actual source Slot and scans no other: an answer travels back over the connection that carried its request, so it can never reach another connection of the caller. A relay that never received the Request, such as a Router delivering a routed response, has no source Slot and selects one like a notify. requestId is never a routing input.
 
-**R-SEND-02** Scan at most one cycle, skipping empty, non-READY, inactive, or unwritable connections. An unaccepted frame may move to another candidate; stop immediately on first ACCEPTED. Each connection has a bounded outbound buffer; above it the connection counts as unwritable. The bound is binding configuration and prevents memory exhaustion.
+**R-SEND-02** A call/notify scan covers at most one cycle, skipping empty, non-READY, inactive, or unwritable connections. An unaccepted frame may move to another candidate; stop immediately on first ACCEPTED. Each connection has a bounded outbound buffer; above it the connection counts as unwritable. The bound is binding configuration and prevents memory exhaustion.
 
 **R-SEND-03** ACCEPTED means local network acceptance, not delivery/execution. Never resend an accepted business frame after asynchronous write failure, disconnection, or timeout. Reconnection restores channels only.
 
 **R-SEND-04** notify/reply return only ACCEPTED, PEER_NOT_FOUND, or UNAVAILABLE. Backpressure and no READY connection both mean UNAVAILABLE; no waiting queue. call additionally has a finite, binding-configured per-Peer limit of pending calls: when a Peer already has that many registered calls that have not completed (response, timeout or failure), a new call releases the owned body and reports local UNAVAILABLE immediately without encoding, sending, waiting, or retry. Counting per Peer keeps one slow but reachable Peer from exhausting the call capacity for every other Peer. This limit does not reject notify/reply.
 
-Example: routeKey chooses slot2 but fallback sends through slot3. reply prefers slot3; if unavailable, fallback starts at slot2. A new connection in the source Slot can carry the reply; no original physical connection is retained.
+Example: routeKey chooses slot2 but fallback sends the Request through slot3. reply then uses slot3 alone; when that connection is gone or unwritable it returns UNAVAILABLE instead of moving to slot2, and the caller's call ends on its own timeout. Binding is by Slot, not by physical connection, so a new connection in the source Slot can still carry the reply (see the restart window in R-CALL-04).
 
 Affinity does not guarantee global business ordering across connections. Applications supply ordering and idempotency.
 
@@ -112,7 +114,7 @@ Affinity does not guarantee global business ordering across connections. Applica
 
 **R-CALL-03** Response, timeout, removal, closure, and send failure compete for one completion right; notify at most once. Remove PendingCall and cancel timeout before invoking the unified handler. Handler failure cannot restore or recomplete it. Retain the admission reservation until its completion handler returns, including exceptional return; synchronous encoding/collision/write exceptions also release their reservation. Timeout business notifications must execute outside the shared maintenance timer so one slow notification cannot block other call/handshake deadlines or reconnection tasks. Notifications for different calls have no total-order guarantee.
 
-**R-CALL-04** requestId increments with uint32 wrap, skipping 0. Gaps are allowed; no Slot/Node/time encoding. Within one local Node lifetime, explicit removal or passive Peer reclamation must not reset allocation and immediately reuse old call IDs upon same-remote Peer recreation. Matching remains Peer-scoped; a binding may allocate IDs Node-wide. An occupied ID fails synchronously without replacing the old call or scanning for another ID. Deployments must keep unresolved remote response lifetime far below a full allocation wrap period; extreme responses delayed beyond a full wrap cannot be distinguished. Wire has no Node-incarnation field and does not guarantee rejection of saved old business replies after replacing/restarting the local Node instance; such protection needs application epoch validation or a separately versioned protocol.
+**R-CALL-04** requestId is positive and increments, wrapping from 2147483647 back to 1; it is never 0 or negative. Gaps are allowed; no Slot/Node/time encoding. Within one local Node lifetime, explicit removal or passive Peer reclamation must not reset allocation and immediately reuse old call IDs upon same-remote Peer recreation. Matching remains Peer-scoped; a binding may allocate IDs Node-wide. An occupied ID fails synchronously without replacing the old call or scanning for another ID. Deployments must keep unresolved remote response lifetime far below a full allocation wrap period; extreme responses delayed beyond a full wrap cannot be distinguished. The allocation start is unspecified: a binding may choose it at random, so a restarted instance practically never repeats the call IDs a peer still holds for the previous one. Wire has no Node-incarnation field, so that is probabilistic avoidance only and does not guarantee rejection of saved old business replies after replacing/restarting the local Node instance; deterministic protection needs application epoch validation or a separately versioned protocol.
 
 **R-CALL-05** Drop the remaining unmatched Response frame without notification or creating a call; a nonzero requestId must be readable. After a match, malformed remaining data must fail the claimed call with PROTOCOL_ERROR and close the connection; removal must not lose notification.
 

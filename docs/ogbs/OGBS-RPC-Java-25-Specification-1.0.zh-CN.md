@@ -17,7 +17,7 @@
 | cn.managame.rpc.error | RpcErrorCodes、RpcException、RpcEncodeException |
 | cn.managame.rpc.netty | 公开 RpcWire；包级 RpcEncoder、RpcProtocol |
 
-消息是只读 record。Node 在编码时分配 wire 请求 ID，不修改调用方的 Request；call/notify 拒绝非零 requestId。RpcWire 是独立的 Wire Profile 编解码器，不含 Peer、Slot 或计时器。可运行示例位于 game-demo（`cn.managame.demo.examples.rpc`）。
+消息是只读 record。调用 ID 为正数，到 Integer.MAX_VALUE 后回绕到 1；每个 Node 实例的分配起点随机，重启后的 Node 不会重新发放对端可能仍持有的 ID（R-CALL-04）。Node 在编码时分配 wire 请求 ID，不修改调用方的 Request；call/notify 拒绝非零 requestId。RpcWire 是独立的 Wire Profile 编解码器，不含 Peer、Slot 或计时器。可运行示例位于 game-demo（`cn.managame.demo.examples.rpc`）。
 
 Router 等上层在构造时组合一个普通 RpcHandler（见 [Router 职责边界](OGBS-Router-1.0.zh-CN.md#1-职责与组合)）。RPC 不增加 Router 专用的连接包装、状态或生命周期钩子；新增公共集成 API 需要现有操作无法满足的具体需求。
 
@@ -39,7 +39,8 @@ int peerSlotCount(int nodeId);
 RpcSendStatus notify(int nodeId, RpcRequest request);
 <T> void call(int nodeId, RpcRequest request, RpcCallback<T> callback);
 <T> void call(int nodeId, RpcRequest request, long timeoutMillis, RpcCallback<T> callback);
-RpcSendStatus reply(int nodeId, int sourceSlotId, long routeKey, RpcResponse response);
+RpcSendStatus reply(int nodeId, int sourceSlotId, RpcResponse response);
+RpcSendStatus forwardResponse(int nodeId, long routeKey, RpcResponse response);
 void close();
 ```
 
@@ -55,8 +56,10 @@ nodeId、bindAddress、handler 必填。nodeId 非零；int 保存 uint32 原始
 | heartbeatTimeout(Duration) | 30 秒 | 大于 interval |
 | maxFrameSize(int) | 4 MiB | ≥32，含长度前缀；`RpcNode.maxFrameSize()` 返回该值，Router 等组合组件据此计算自身上限，不另设配置 |
 | maxPendingCalls(int) | 65536 | ≥1，每个 Peer 的待完成 call 上限（R-SEND-04）；达到上限的 call 以 onFail(UNAVAILABLE) 立即失败，body 已释放；notify/reply 不计入 |
+| maxInboundPeers(int) | 1024 | ≥1，入站握手学到的 Peer 上限（R-HS-06）；超出后宣告未知 Node 的握手被拒绝并关闭其连接，已接纳的 Peer 不受影响；addPeer 显式配置的 Peer 不计入 |
+| maxConnections(int) | 4096 | ≥1，Node 同时持有的连接数上限，自己拨出与接受的一起计入（R-HS-06）；超出的连接在握手前被关闭，限制拨号风暴在握手超时清理之前的占用 |
 | eventLoopGroup(EventLoopGroup) | 无（Node 自建） | 调用方持有的事件循环，例如与客户端网关共用；Node 不关闭它，close 仍会等待自身连接结束（最多 5 秒）。未设置时 Node 按平台自建 Epoll 或 NIO 事件循环 |
-| writeBufferWaterMark(low, high) | Netty 32 KiB / 64 KiB | 超过 `high` 连接不可写，发送转到下一 Slot，全部不可写返回 UNAVAILABLE；内部链路通常需要调大 |
+| writeBufferWaterMark(low, high) | Netty 32 KiB / 64 KiB | 超过 `high` 连接不可写，call/notify 转到下一 Slot、全部不可写返回 UNAVAILABLE，reply 没有其他 Slot 可用（R-SEND-01）；内部链路通常需要调大 |
 | channelOption(option, value) | 无 | 作用于入站和出站连接（TCP_NODELAY、SO_SNDBUF 等） |
 | transport(Consumer&lt;ChannelPipeline&gt;) | 无 | 放在 RPC 分帧之前的字节级 handler：SslHandler（addFirst）、流量整形、日志；不得解码 RPC 帧 |
 | handshakeSecret(byte[] [, Duration]) | 无 | ≥16 字节，全集群一致；时钟偏差默认 60 秒 |
@@ -87,7 +90,7 @@ new RpcRequest(command, routeKey, businessIdType, businessId, metadata, body);
 public record RpcResponse(int requestId, int errorCode, Metadata metadata, ByteBuf body) {}
 ```
 
-command 非零，businessIdType 为 0..255；响应要求 requestId 非零且 errorCode ≥ 0。构造非法时抛 IllegalArgumentException，不释放 body。Metadata 为 null 时视为空；body 为 null 表示空负载。
+command 非零，businessIdType 为 0..255；请求的 requestId 为 0 或正数，响应要求 requestId 为正数，errorCode ≥ 0。构造非法时抛 IllegalArgumentException，不释放 body。Metadata 为 null 时视为空；body 为 null 表示空负载。
 
 | 边界 | 所有权 |
 | --- | --- |
@@ -133,7 +136,7 @@ onRequest 抛出 RuntimeException 时记录日志；对 Call 尝试回复空的 
 | 已匹配响应格式错误 | onFail(PROTOCOL_ERROR)，关闭该连接 |
 | Network 写入同步抛异常 | 清理该调用和帧，关闭连接，异常向上抛出 |
 
-`reply` 校验 sourceSlotId（0..254 且小于该 Peer 的 Slot 数）；失败时 body 仍归调用方。RpcErrorCodes 引用 Core 的错误码。
+`reply` 校验 sourceSlotId（0..254 且小于该 Peer 的 Slot 数）；失败时 body 仍归调用方。响应只走该 Slot（R-SEND-01）：该 Slot 的连接已断或不可写时返回 UNAVAILABLE 并释放 body，调用方的 call 随后按自身超时结束。`forwardResponse` 是中继入口：不接收来源 Slot，按 routeKey 像 notify 一样选 Slot，供 Router 投递并非自己产生的响应。RpcErrorCodes 引用 Core 的错误码。
 
 ## 5. call 顺序
 
@@ -179,4 +182,4 @@ close 返回后不再有待完成调用、连接、计时器或自有通知线�
 <a id="92-后续审阅与扩展候选"></a>
 <a id="rpc-router-review-2026-10-07"></a>
 
-剩余边界：不限制入站握手与被动 Peer 数量；关闭时按 Peer 扫描全部连接；wire 不携带 Node 代际，新进程重新从头分配 ID 时可能匹配到对端保存的旧回复（R-CALL-04）。Handler 运行在 EventLoop 上，阻塞会拖慢该 EventLoop 上的所有连接。未实现：TLS/WebSocket Builder 选项、服务发现、业务重试、远端取消、持久投递。未验证：跨语言互通、生产吞吐与内存。Router 在现有 Node 上组合，除普通 API 外只使用 `isPeerConnected`（见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)）。
+剩余边界：关闭时按 Peer 扫描全部连接；wire 不携带 Node 代际，新进程重新从头分配 ID 时可能匹配到对端保存的旧回复（R-CALL-04）。响应现在只走承载请求的那个 Slot（R-SEND-01），窗口已收窄但未关闭；要关闭它需要调用方只接受自己发出调用的那条连接上的响应，而 Router 把路由响应经自己持有的任意一条连接转交给调用方，Router Profile v4 也不携带调用方 Slot，因此需要新增 wire 字段或 Router 状态。Handler 运行在 EventLoop 上，阻塞会拖慢该 EventLoop 上的所有连接。未实现：TLS/WebSocket Builder 选项、服务发现、业务重试、远端取消、持久投递。未验证：跨语言互通、生产吞吐与内存。Router 在现有 Node 上组合，除普通 API 外只使用 `isPeerConnected` 与 `forwardResponse`（见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)）。

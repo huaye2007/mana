@@ -66,7 +66,7 @@ public final class RpcNode implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(RpcNode.class.getName());
     /** How long close waits for connections on a caller-owned EventLoopGroup to finish. */
     private static final long EXTERNAL_CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(5);
-    private final int nodeId, maxFrameSize, maxPendingCalls;
+    private final int nodeId, maxFrameSize, maxPendingCalls, maxInboundPeers, maxConnections;
     private final SocketAddress bindAddress;
     private final RpcHandler handler;
     private final long callTimeout, handshakeTimeout, reconnectDelay, heartbeatInterval, heartbeatTimeout;
@@ -78,7 +78,9 @@ public final class RpcNode implements AutoCloseable {
     private final Object lifecycleLock = new Object();
     /** Written only under lifecycleLock. */
     final PeerTable peers = new PeerTable();
-    final AtomicInteger requestIds = new AtomicInteger(1);
+    // Call IDs are positive and wrap from Integer.MAX_VALUE back to 1. The start is random, so a restarted
+    // Node practically never reissues the IDs a peer still holds for the previous incarnation (R-CALL-04).
+    final AtomicInteger requestIds = new AtomicInteger(ThreadLocalRandom.current().nextInt(Integer.MAX_VALUE) + 1);
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     // Close barrier for admitted API work, including late pending registrations. Striped, so concurrent
     // senders do not contend on one word, and unbounded (Phaser allows at most 65535 parties).
@@ -95,6 +97,8 @@ public final class RpcNode implements AutoCloseable {
     RpcNode(RpcNodeBuilder b) {
         nodeId = b.nodeId; bindAddress = b.address; handler = b.handler; maxFrameSize = b.maxFrameSize;
         maxPendingCalls = b.maxPendingCalls;
+        maxInboundPeers = b.maxInboundPeers;
+        maxConnections = b.maxConnections;
         callTimeout = b.callTimeout; handshakeTimeout = b.handshakeTimeout; reconnectDelay = b.reconnectDelay;
         heartbeatInterval = b.heartbeatInterval; heartbeatTimeout = b.heartbeatTimeout;
         reconnectRandomDelay = b.reconnectRandomDelay < 0 ? reconnectDelay / 4 : b.reconnectRandomDelay;
@@ -309,8 +313,32 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
-    /** First tries the request's source slot; fallback uses routeKey, never requestId. Consumes the body. */
-    public RpcSendStatus reply(int remoteNodeId, int sourceSlotId, long routeKey, RpcResponse response) {
+    /**
+     * Delivers a response this Node did not produce, for a relay such as a Router: it never saw the connection
+     * the call went out on, so the response takes any writable Slot of the target like a notify. An application
+     * answering a request it received itself uses {@link #reply} instead. Consumes the body.
+     */
+    public RpcSendStatus forwardResponse(int remoteNodeId, long routeKey, RpcResponse response) {
+        validateTarget(remoteNodeId);
+        Objects.requireNonNull(response, "response");
+        enterOperation();
+        ByteBuf body = response.body();
+        try {
+            RpcPeer peer = peers.get(remoteNodeId);
+            if (peer == null) return RpcSendStatus.PEER_NOT_FOUND;
+            body = null;
+            return send(peer, -1, routeKey, RpcWire.encodeResponse(response, maxFrameSize));
+        } finally {
+            ReferenceCountUtil.release(body);
+            operations.decrement();
+        }
+    }
+
+    /**
+     * Answers on the request's own Slot only; UNAVAILABLE when that connection is gone or unwritable, never a
+     * different Slot. Consumes the body.
+     */
+    public RpcSendStatus reply(int remoteNodeId, int sourceSlotId, RpcResponse response) {
         validateTarget(remoteNodeId);
         Objects.requireNonNull(response, "response");
         if (sourceSlotId < 0 || sourceSlotId >= 255) throw new IllegalArgumentException("invalid sourceSlotId");
@@ -323,7 +351,7 @@ public final class RpcNode implements AutoCloseable {
             body = response.body(); // Pure argument checks are complete.
             if (peer == null) return RpcSendStatus.PEER_NOT_FOUND;
             body = null;
-            return send(peer, sourceSlotId, routeKey, RpcWire.encodeResponse(response, maxFrameSize));
+            return answer(peer, sourceSlotId, RpcWire.encodeResponse(response, maxFrameSize));
         } finally {
             ReferenceCountUtil.release(body);
             operations.decrement();
@@ -331,8 +359,8 @@ public final class RpcNode implements AutoCloseable {
     }
 
     /**
-     * One pass over the Slots: the preferred one, then from the routeKey start. Always consumes the frame;
-     * a rejected attempt keeps it for the next Slot and ACCEPTED ends the traversal.
+     * One pass over the Slots for an outbound request: the preferred one, then from the routeKey start. Always
+     * consumes the frame; a rejected attempt keeps it for the next Slot and ACCEPTED ends the traversal.
      */
     RpcSendStatus send(RpcPeer peer, int preferred, long routeKey, ByteBuf frame) {
         boolean accepted = false;
@@ -353,6 +381,20 @@ public final class RpcNode implements AutoCloseable {
                 }
             }
             return RpcSendStatus.UNAVAILABLE;
+        } finally { if (!accepted) frame.release(); }
+    }
+
+    /**
+     * Answers a request on the Slot that carried it, with no fallback: a response never crosses to another
+     * connection, so it cannot reach a different incarnation of the caller and complete an unrelated call.
+     * An unwritable Slot therefore refuses the response instead of rerouting it. Always consumes the frame.
+     */
+    private RpcSendStatus answer(RpcPeer peer, int sourceSlotId, ByteBuf frame) {
+        boolean accepted = false;
+        try {
+            if (!current(peer)) return RpcSendStatus.UNAVAILABLE;
+            accepted = tryWrite(peer.slots[sourceSlotId], frame);
+            return accepted ? RpcSendStatus.ACCEPTED : RpcSendStatus.UNAVAILABLE;
         } finally { if (!accepted) frame.release(); }
     }
 
@@ -422,6 +464,14 @@ public final class RpcNode implements AutoCloseable {
     void connected(Connection connection) {
         synchronized (lifecycleLock) {
             if (state != State.RUNNING) { connection.close(); return; }
+            if (connections.size() >= maxConnections) {
+                // Bounds unauthenticated inbound connections: a dial storm or a scanner cannot grow memory
+                // while the handshake timeout has not yet closed the connections it opened.
+                warn("Refused a connection from " + connection.remoteAddress() + ": maxConnections ("
+                        + maxConnections + ") reached", null);
+                connection.close();
+                return;
+            }
             RpcConnectionContext context = new RpcConnectionContext();
             connection.set(CONTEXT, context);
             connections.add(connection);
@@ -498,6 +548,14 @@ public final class RpcNode implements AutoCloseable {
         if (existing != null && existing.outbound)
             throw new CorruptedFrameException("Both nodes called addPeer for each other (remote "
                     + Integer.toUnsignedString(hello.nodeId()) + "); only one side of a pair may dial");
+        if (existing == null && peers.inboundCount() >= maxInboundPeers) {
+            // A Peer learned from a handshake costs a Slot array and up to maxPendingCalls outstanding calls,
+            // so the number of Nodes that may dial this one is bounded. Configured Peers are not counted.
+            warn("Refused an inbound Peer " + Integer.toUnsignedString(hello.nodeId()) + " from "
+                    + connection.remoteAddress() + ": maxInboundPeers (" + maxInboundPeers + ") reached", null);
+            connection.close();
+            return;
+        }
         RpcPeer peer = existing != null ? existing : new RpcPeer(hello.nodeId(), hello.slotCount(), null);
         if (peer.slots.length != hello.slotCount()) throw new CorruptedFrameException("Peer slotCount mismatch");
         ConnectionSlot slot = peer.slots[hello.slotId()];
@@ -517,7 +575,7 @@ public final class RpcNode implements AutoCloseable {
     private void response(RpcPeer peer, ByteBuf frame) {
         if (frame.readableBytes() < 4) throw new CorruptedFrameException("Response lacks requestId");
         int id = frame.readInt();
-        if (id == 0) throw new CorruptedFrameException("Zero response requestId");
+        if (id <= 0) throw new CorruptedFrameException("Non-positive response requestId");
         PendingCall pending = peer.removePending(id);
         if (pending == null) return;
         pending.cancelTimeout();
@@ -582,8 +640,7 @@ public final class RpcNode implements AutoCloseable {
             if (request.requestId() != 0 && current(peer)) {
                 RpcResponse response = new RpcResponse(request.requestId(), HANDLER_ERROR, null, null);
                 try {
-                    RpcSendStatus status = send(peer, slotId, request.routeKey(),
-                            RpcWire.encodeResponse(response, maxFrameSize));
+                    RpcSendStatus status = answer(peer, slotId, RpcWire.encodeResponse(response, maxFrameSize));
                     if (status != RpcSendStatus.ACCEPTED) warn("Handler error response was not admitted", null);
                 } catch (RuntimeException sendError) { warn("Handler error response failed", sendError); }
             }
@@ -609,10 +666,9 @@ public final class RpcNode implements AutoCloseable {
         finally { tryRemovePassive(peer); }
     }
 
+    /** The next positive call ID; allocation wraps from Integer.MAX_VALUE back to 1 and never yields 0. */
     private int nextRequestId() {
-        int id;
-        do { id = requestIds.getAndIncrement(); } while (id == 0);
-        return id;
+        return requestIds.getAndUpdate(id -> id == Integer.MAX_VALUE ? 1 : id + 1);
     }
 
     /** Runs on the timer thread; the application hands the failure to its own executor if needed. */

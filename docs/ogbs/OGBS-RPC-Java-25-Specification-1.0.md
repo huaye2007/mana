@@ -19,7 +19,7 @@ Status: implemented and locally verified. JDK 25 without preview; Maven `cn.mana
 | cn.managame.rpc.error | RpcErrorCodes, RpcException, RpcEncodeException |
 | cn.managame.rpc.netty | Public RpcWire; package-private RpcEncoder, RpcProtocol |
 
-Messages are read-only records. The Node assigns the wire request ID while encoding and never mutates the caller's request; call/notify reject a nonzero requestId. RpcWire is a standalone Wire Profile codec without Peers, Slots or timers. Runnable examples live in game-demo (`cn.managame.demo.examples.rpc`).
+Messages are read-only records. Call IDs are positive and wrap from Integer.MAX_VALUE back to 1; allocation starts at a random value per Node instance, so a restarted Node does not reissue the IDs a peer may still hold (R-CALL-04). The Node assigns the wire request ID while encoding and never mutates the caller's request; call/notify reject a nonzero requestId. RpcWire is a standalone Wire Profile codec without Peers, Slots or timers. Runnable examples live in game-demo (`cn.managame.demo.examples.rpc`).
 
 Upper layers such as Router compose an ordinary RpcHandler at construction ([Router boundaries](OGBS-Router-1.0.md#1-responsibility-and-composition)). RPC adds no Router-specific connection wrappers, state or lifecycle hooks; a new public integration API needs a concrete need that existing operations cannot meet.
 
@@ -43,7 +43,8 @@ int peerSlotCount(int nodeId);
 RpcSendStatus notify(int nodeId, RpcRequest request);
 <T> void call(int nodeId, RpcRequest request, RpcCallback<T> callback);
 <T> void call(int nodeId, RpcRequest request, long timeoutMillis, RpcCallback<T> callback);
-RpcSendStatus reply(int nodeId, int sourceSlotId, long routeKey, RpcResponse response);
+RpcSendStatus reply(int nodeId, int sourceSlotId, RpcResponse response);
+RpcSendStatus forwardResponse(int nodeId, long routeKey, RpcResponse response);
 void close();
 ```
 
@@ -59,8 +60,10 @@ nodeId, bindAddress and handler are required. nodeId is nonzero; the int holds r
 | heartbeatTimeout(Duration) | 30 s | Greater than the interval |
 | maxFrameSize(int) | 4 MiB | ≥32, including the length prefix; `RpcNode.maxFrameSize()` returns it, and components composed on the Node (Router) derive their limits from it instead of a setting of their own |
 | maxPendingCalls(int) | 65536 | ≥1, pending calls allowed per Peer (R-SEND-04); a call beyond it fails at once with onFail(UNAVAILABLE) and its body released; notify/reply are not counted |
+| maxInboundPeers(int) | 1024 | ≥1, Peers learned from inbound handshakes (R-HS-06); beyond it a handshake announcing an unknown Node is refused and its connection closed, while admitted Peers keep theirs; Peers configured with addPeer are not counted |
+| maxConnections(int) | 4096 | ≥1, connections this Node holds at once, dialed and accepted together (R-HS-06); one beyond it is closed before its handshake, which bounds a dial storm between handshake timeouts |
 | eventLoopGroup(EventLoopGroup) | none (Node-owned) | Caller-owned event loops, for example shared with the client gateway; the Node never shuts it down and close still waits (up to 5 s) for its own connections to end. Without it the Node creates Epoll or NIO loops for the platform |
-| writeBufferWaterMark(low, high) | Netty 32 KiB / 64 KiB | Above `high` a connection is unwritable; sends move to the next Slot and return UNAVAILABLE when none is writable. Internal links usually need larger values |
+| writeBufferWaterMark(low, high) | Netty 32 KiB / 64 KiB | Above `high` a connection is unwritable; a call/notify moves to the next Slot and returns UNAVAILABLE when none is writable, while a reply has no other Slot to take (R-SEND-01). Internal links usually need larger values |
 | channelOption(option, value) | none | Applied to inbound and outbound connections (TCP_NODELAY, SO_SNDBUF, …) |
 | transport(Consumer&lt;ChannelPipeline&gt;) | none | Byte-level handlers placed before RPC framing: SslHandler (addFirst), traffic shaping, logging. They must not decode RPC frames |
 | handshakeSecret(byte[] [, Duration]) | none | ≥16 bytes, identical across the cluster; clock skew 60 s by default |
@@ -92,7 +95,7 @@ new RpcRequest(command, routeKey, businessIdType, businessId, metadata, body);
 public record RpcResponse(int requestId, int errorCode, Metadata metadata, ByteBuf body) {}
 ```
 
-command is nonzero and businessIdType 0..255; a response needs a nonzero requestId and errorCode ≥ 0. Invalid construction throws IllegalArgumentException without releasing the body. Null Metadata becomes empty; a null body is an empty payload.
+command is nonzero and businessIdType 0..255; a request's requestId is 0 or positive, a response needs a positive requestId, and errorCode ≥ 0. Invalid construction throws IllegalArgumentException without releasing the body. Null Metadata becomes empty; a null body is an empty payload.
 
 | Boundary | Ownership |
 | --- | --- |
@@ -140,7 +143,7 @@ A RuntimeException from onRequest is logged; for a Call an empty HANDLER_ERROR r
 | Malformed matched response | onFail(PROTOCOL_ERROR); the connection is closed |
 | Synchronous Network write exception | Pending call and frame cleaned, connection closed, exception propagated |
 
-`reply` validates sourceSlotId (0..254 and below the Peer's Slot count); failure leaves the body with the caller. RpcErrorCodes aliases the Core numbers.
+`reply` validates sourceSlotId (0..254 and below the Peer's Slot count); failure leaves the body with the caller. It answers on that Slot alone (R-SEND-01): a gone or unwritable connection there returns UNAVAILABLE with the body released, and the caller's call then ends on its timeout. `forwardResponse` is the relay entry: it takes no source Slot and selects one from routeKey like a notify, for a Router delivering a response it did not produce. RpcErrorCodes aliases the Core numbers.
 
 <a id="5-call-发送与完成顺序"></a>
 
@@ -196,4 +199,4 @@ Run `mvn -pl game-rpc -am test`; cross-module changes need root `mvn clean verif
 <a id="92-后续审阅与扩展候选"></a>
 <a id="rpc-router-review-2026-10-07"></a>
 
-Remaining limits: no limits on inbound handshakes or passive Peers; closure scans all connections per Peer; the wire carries no Node incarnation, so IDs restarting with a new process can match replies saved by a peer (R-CALL-04). Handlers run on EventLoops: blocking one delays every connection on it. Not implemented: TLS/WebSocket builder options, discovery, business retries, remote cancellation, durable delivery. Unverified: cross-language interoperability, production throughput and memory. Router composes on an existing Node and uses only `isPeerConnected` beyond the ordinary API ([review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration)).
+Remaining limits: closure scans all connections per Peer; the wire carries no Node incarnation, so IDs restarting with a new process can match replies saved by a peer (R-CALL-04). An answer already travels only over the Slot that carried its request (R-SEND-01), which narrows that window without closing it; closing it needs the caller to accept a response only on the connection it called over, which a Router cannot satisfy while it relays a routed response over whichever connection it holds and Router Profile v4 carries no caller Slot, so a wire field or Router state is required. Handlers run on EventLoops: blocking one delays every connection on it. Not implemented: TLS/WebSocket builder options, discovery, business retries, remote cancellation, durable delivery. Unverified: cross-language interoperability, production throughput and memory. Router composes on an existing Node and uses only `isPeerConnected` and `forwardResponse` beyond the ordinary API ([review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration)).

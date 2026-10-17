@@ -182,8 +182,9 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
             case RESPONSE -> {
                 if (outer.requestId() != 0) throw new IllegalArgumentException("Routed response must be a notify");
                 Attachment t = nodes.get(d.target());
-                // A caller that left or restarted has nothing waiting for this response.
-                boolean sent = t != null && t.epoch == d.targetEpoch() && reply(node, d.target(), 0, 0,
+                // A caller that left or restarted has nothing waiting for this response. The Router never saw
+                // the connection the call left on, so the response takes any of the caller's writable Slots.
+                boolean sent = t != null && t.epoch == d.targetEpoch() && forwardResponse(node, d.target(),
                         new RpcResponse(d.requestId(), 0, null, forward(d, d.target(), t.epoch, 0).body())) == RpcSendStatus.ACCEPTED;
                 (sent ? forwarded : responsesDropped).increment();
             }
@@ -200,13 +201,21 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
     }
     /** Answers the caller's outer Call at once; a Notify has nobody waiting. */
     private void fail(RpcNode node, int peer, int slot, RpcRequest outer, int error) {
-        if (outer.requestId() != 0) reply(node, peer, slot, outer.routeKey(), new RpcResponse(outer.requestId(), error, null, null));
+        if (outer.requestId() != 0) reply(node, peer, slot, new RpcResponse(outer.requestId(), error, null, null));
     }
-    private RpcSendStatus reply(RpcNode node, int id, int slot, long routeKey, RpcResponse message) {
-        try { return node.reply(id, slot, routeKey, message); }
+    private RpcSendStatus reply(RpcNode node, int id, int slot, RpcResponse message) {
+        try { return node.reply(id, slot, message); }
         catch (RuntimeException error) {
             release(message.body());
             LOG.log(System.Logger.Level.WARNING, "Router reply failed", error);
+            return RpcSendStatus.UNAVAILABLE;
+        }
+    }
+    private RpcSendStatus forwardResponse(RpcNode node, int id, RpcResponse message) {
+        try { return node.forwardResponse(id, 0, message); }
+        catch (RuntimeException error) {
+            release(message.body());
+            LOG.log(System.Logger.Level.WARNING, "Router response relay failed", error);
             return RpcSendStatus.UNAVAILABLE;
         }
     }

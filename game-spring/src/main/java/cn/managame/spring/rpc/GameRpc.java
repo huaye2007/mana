@@ -105,7 +105,7 @@ public final class GameRpc implements AutoCloseable {
             throw new IllegalArgumentException("Response does not match the request's registered response type");
         ByteBuf body = encode(response);
         try {
-            return node.reply(context.sourceNodeId(), context.sourceSlotId(), context.routeKey(),
+            return node.reply(context.sourceNodeId(), context.sourceSlotId(),
                     new RpcResponse(context.requestId(), 0, Metadata.empty(), body));
         } catch (RuntimeException | Error failure) {
             if (body.refCnt() > 0) body.release();
@@ -116,7 +116,7 @@ public final class GameRpc implements AutoCloseable {
     public RpcSendStatus replyError(RpcHandlerContext context, int errorCode) {
         requireCall(context);
         if (errorCode <= 0) throw new IllegalArgumentException("errorCode must be positive");
-        return node.reply(context.sourceNodeId(), context.sourceSlotId(), context.routeKey(),
+        return node.reply(context.sourceNodeId(), context.sourceSlotId(),
                 new RpcResponse(context.requestId(), errorCode, Metadata.empty(), null));
     }
 

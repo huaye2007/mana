@@ -123,6 +123,7 @@ public final class RpcWire {
     public static RpcRequest decodeRequest(ByteBuf frame) {
         require(frame, 27);
         int command = frame.readInt(), id = frame.readInt();
+        if (id < 0) throw new CorruptedFrameException("Negative request ID");
         long route = frame.readLong();
         int businessType = frame.readUnsignedByte();
         long businessId = frame.readLong();

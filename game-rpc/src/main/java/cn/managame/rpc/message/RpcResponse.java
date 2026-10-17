@@ -6,7 +6,7 @@ import io.netty.buffer.ByteBuf;
 /** Read-only response envelope. Inbound body is borrowed for the duration of RpcHandler.onResponse. */
 public record RpcResponse(int requestId, int errorCode, Metadata metadata, ByteBuf body) {
     public RpcResponse {
-        if (requestId == 0) throw new IllegalArgumentException("response requestId must be nonzero");
+        if (requestId <= 0) throw new IllegalArgumentException("response requestId must be positive");
         if (errorCode < 0) throw new IllegalArgumentException("errorCode must be 0..2147483647");
         metadata = metadata == null ? Metadata.empty() : metadata;
     }

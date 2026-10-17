@@ -13,6 +13,8 @@ import java.util.Set;
  */
 final class PeerTable {
     private volatile IntObjectHashMap<RpcPeer> peers = new IntObjectHashMap<>();
+    /** Peers learned from an inbound handshake; bounded by the Node's maxInboundPeers. */
+    private volatile int inbound;
 
     RpcPeer get(int nodeId) {
         return peers.get(nodeId);
@@ -30,6 +32,10 @@ final class PeerTable {
         return peers.size();
     }
 
+    int inboundCount() {
+        return inbound;
+    }
+
     /** Snapshot of the current Peers. */
     Collection<RpcPeer> values() {
         return List.copyOf(peers.values());
@@ -44,8 +50,9 @@ final class PeerTable {
 
     void put(int nodeId, RpcPeer peer) {
         IntObjectHashMap<RpcPeer> next = copy(1);
-        next.put(nodeId, peer);
+        RpcPeer replaced = next.put(nodeId, peer);
         peers = next;
+        inbound += (peer.outbound ? 0 : 1) - (replaced == null || replaced.outbound ? 0 : 1);
     }
 
     RpcPeer remove(int nodeId) {
@@ -53,6 +60,7 @@ final class PeerTable {
         IntObjectHashMap<RpcPeer> next = copy(0);
         RpcPeer removed = next.remove(nodeId);
         peers = next;
+        if (removed != null && !removed.outbound) inbound--;
         return removed;
     }
 
@@ -67,6 +75,7 @@ final class PeerTable {
     List<RpcPeer> clear() {
         List<RpcPeer> removed = new ArrayList<>(peers.values());
         peers = new IntObjectHashMap<>();
+        inbound = 0;
         return removed;
     }
 

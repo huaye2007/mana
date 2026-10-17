@@ -17,7 +17,7 @@ class RpcIntegrationTest extends RpcTestSupport {
             await(() -> a.peers.get(2).hasCandidate() && b.peers.containsKey(1));
             await(() -> java.util.Arrays.stream(a.peers.get(2).slots).allMatch(s -> s.connection.get() != null));
             pb.onRequest = r -> {
-                if (r.id() != 0) assertEquals(RpcSendStatus.ACCEPTED, b.reply(r.source(), r.slot(), r.route(),
+                if (r.id() != 0) assertEquals(RpcSendStatus.ACCEPTED, b.reply(r.source(), r.slot(),
                         new RpcResponse(r.id(), 0, null, Unpooled.wrappedBuffer(r.body()))));
             };
             byte[] content = {1, 2, 3, 4};
@@ -46,20 +46,25 @@ class RpcIntegrationTest extends RpcTestSupport {
         }
     }
 
-    @Test void acceptedCallSurvivesBrokenOriginalConnectionAndUsesAnotherSlot() throws Exception {
+    @Test void anAnswerNeedsTheRequestsOwnConnectionAndIsRefusedWithoutIt() throws Exception {
         Probe pa = new Probe(), pb = new Probe();
         try (RpcNode a = node(1, pa); RpcNode b = node(2, pb)) {
             a.addPeer(2, b.localAddress(), 2);
             await(() -> b.peers.containsKey(1)
                     && java.util.Arrays.stream(b.peers.get(1).slots).allMatch(s -> s.connection.get() != null));
-            a.call(2, new RpcRequest(10, 1, 0, 0, null, null), value -> {});
+            a.call(2, new RpcRequest(10, 1, 0, 0, null, null), 300, value -> {});
             Request request = take(pb.requests);
             b.peers.get(1).slots[request.slot()].connection.get().close();
             await(() -> b.peers.get(1).slots[request.slot()].connection.get() == null);
-            assertTrue(pa.failures.isEmpty());
-            assertEquals(RpcSendStatus.ACCEPTED, b.reply(1, request.slot(), request.route(),
-                    new RpcResponse(request.id(), 0, null, null)));
-            assertEquals(request.id(), take(pa.responses).id());
+            assertTrue(pa.failures.isEmpty());       // the Peer keeps its other connection, so the call stays
+            // An answer may only use the Slot that carried its request: the surviving Slot must not take it,
+            // so the response is refused with its body released and the call ends on its own timeout.
+            var body = Unpooled.wrappedBuffer(new byte[] {1});
+            assertEquals(RpcSendStatus.UNAVAILABLE, b.reply(1, request.slot(),
+                    new RpcResponse(request.id(), 0, null, body)));
+            assertEquals(0, body.refCnt());
+            assertEquals(TIMEOUT, take(pa.failures));
+            assertTrue(pa.responses.isEmpty());
         }
     }
 
@@ -93,9 +98,9 @@ class RpcIntegrationTest extends RpcTestSupport {
             a.call(2, new RpcRequest(202, null), value -> {});
             Request fresh = take(pb.requests);
             assertNotEquals(old.id(), fresh.id());
-            assertEquals(RpcSendStatus.ACCEPTED, b.reply(1, old.slot(), old.route(),
+            assertEquals(RpcSendStatus.ACCEPTED, b.reply(1, old.slot(),
                     new RpcResponse(old.id(), 0, null, Unpooled.wrappedBuffer(new byte[] {1}))));
-            assertEquals(RpcSendStatus.ACCEPTED, b.reply(1, fresh.slot(), fresh.route(),
+            assertEquals(RpcSendStatus.ACCEPTED, b.reply(1, fresh.slot(),
                     new RpcResponse(fresh.id(), 0, null, Unpooled.wrappedBuffer(new byte[] {2}))));
             Result result = take(pa.responses);
             assertEquals(202, result.command()); assertEquals(fresh.id(), result.id());

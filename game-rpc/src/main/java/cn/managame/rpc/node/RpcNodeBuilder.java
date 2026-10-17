@@ -14,6 +14,10 @@ import java.util.function.Consumer;
 public final class RpcNodeBuilder {
     /** Default bound of outstanding calls per Peer. */
     public static final int DEFAULT_MAX_PENDING_CALLS = 65_536;
+    /** Default bound of Peers learned from inbound handshakes. */
+    public static final int DEFAULT_MAX_INBOUND_PEERS = 1024;
+    /** Default bound of connections this Node holds at once, dialed and accepted together. */
+    public static final int DEFAULT_MAX_CONNECTIONS = 4096;
     int nodeId;
     SocketAddress address;
     RpcHandler handler;
@@ -22,6 +26,8 @@ public final class RpcNodeBuilder {
     long heartbeatInterval = 10000, heartbeatTimeout = 30000;
     int maxFrameSize = 4 * 1024 * 1024;
     int maxPendingCalls = DEFAULT_MAX_PENDING_CALLS;
+    int maxInboundPeers = DEFAULT_MAX_INBOUND_PEERS;
+    int maxConnections = DEFAULT_MAX_CONNECTIONS;
     EventLoopGroup eventLoopGroup;
     final Map<ChannelOption<?>, Object> channelOptions = new LinkedHashMap<>();
     final List<Consumer<ChannelPipeline>> transports = new ArrayList<>();
@@ -54,6 +60,27 @@ public final class RpcNodeBuilder {
     public RpcNodeBuilder maxPendingCalls(int value) {
         if (value < 1) throw new IllegalArgumentException("maxPendingCalls must be positive");
         maxPendingCalls = value; return this;
+    }
+    /**
+     * Peers this Node accepts from inbound handshakes (default {@value #DEFAULT_MAX_INBOUND_PEERS}). Beyond it
+     * a handshake announcing an unknown Node is refused and its connection closed, because every learned Peer
+     * costs a Slot array and up to {@code maxPendingCalls} outstanding calls. Peers configured with addPeer are
+     * not counted. Size it above the number of Nodes expected to dial this one, for example every service Node
+     * of a cluster for a Router.
+     */
+    public RpcNodeBuilder maxInboundPeers(int value) {
+        if (value < 1) throw new IllegalArgumentException("maxInboundPeers must be positive");
+        maxInboundPeers = value; return this;
+    }
+    /**
+     * Connections this Node holds at once, dialed and accepted together (default
+     * {@value #DEFAULT_MAX_CONNECTIONS}). A connection beyond it is closed before its handshake, which bounds
+     * what a dial storm or a port scanner can hold between the handshake timeout's sweeps. Keep it above this
+     * Node's own Peers times their Slots, plus the connections expected from dialing Nodes.
+     */
+    public RpcNodeBuilder maxConnections(int value) {
+        if (value < 1) throw new IllegalArgumentException("maxConnections must be positive");
+        maxConnections = value; return this;
     }
     /**
      * Caller-owned EventLoopGroup used to accept, dial and serve every RPC connection, for example one

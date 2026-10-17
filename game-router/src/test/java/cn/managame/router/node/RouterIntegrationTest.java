@@ -300,7 +300,7 @@ class RouterIntegrationTest {
         CompletableFuture<RpcNode> server = new CompletableFuture<>();
         Probe fakeRouter = new Probe() {
             @Override public void onRequest(int source, int slot, RpcRequest r) {
-                if (r.requestId() != 0) server.join().reply(source, slot, r.routeKey(), new RpcResponse(r.requestId(), 0, null, Unpooled.wrappedBuffer(new byte[]{99})));
+                if (r.requestId() != 0) server.join().reply(source, slot, new RpcResponse(r.requestId(), 0, null, Unpooled.wrappedBuffer(new byte[]{99})));
             }
         };
         try (RpcNode rpc = RpcNode.builder().nodeId(101).bindAddress(LOCAL).handler(fakeRouter).build();

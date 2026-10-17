@@ -46,7 +46,7 @@ public final class RpcEchoExample {
         public void onRequest(int source, int slot, RpcRequest request) {
             if (request.requestId() == 0) return;
             // Incoming body is borrowed. Transfer a retained reference to reply().
-            node.reply(source, slot, request.routeKey(),
+            node.reply(source, slot,
                     new RpcResponse(request.requestId(), 0, null, request.body().retain()));
         }
         public void onResponse(int source, int command, RpcResponse response, RpcCallback<?> callback) {}

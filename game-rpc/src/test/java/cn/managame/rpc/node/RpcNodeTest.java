@@ -45,7 +45,7 @@ class RpcNodeTest extends RpcTestSupport {
         assertThrows(IllegalStateException.class, neverStarted::start);
     }
 
-    @Test void routeFallbackOriginalSlotAndAdmissionStopsTraversal() {
+    @Test void requestsTraverseSlotsWhileAnswersStayOnTheirOwn() {
         try (RpcNode n = node(1, new Probe())) {
             Fake zero = bind(n, 2, 0, 3), one = bind(n, 2, 1, 3), two = bind(n, 2, 2, 3);
             assertEquals(RpcSendStatus.ACCEPTED, n.notify(2, new RpcRequest(1, -1L, 0, 0, null, null)));
@@ -56,11 +56,14 @@ class RpcNodeTest extends RpcTestSupport {
             assertEquals(1, two.frames.size());
             assertEquals(0, zero.frames.size());
             two.frames.clear();
-            n.reply(2, 2, 1, new RpcResponse(99, 0, null, null));
-            assertEquals(1, two.frames.size()); // Original slot outranks route 1.
+            assertEquals(RpcSendStatus.ACCEPTED, n.reply(2, 2, new RpcResponse(99, 0, null, null)));
+            assertEquals(1, two.frames.size()); // the request's own Slot
             two.writable = false;
-            n.reply(2, 2, 1, new RpcResponse(99, 0, null, null));
-            assertEquals(1, zero.frames.size()); // Preferred 2 fails; route 1 fails, then 0.
+            ByteBuf refused = Unpooled.buffer().writeByte(7);
+            // No other Slot may answer, so the response is refused instead of rerouted, and its body released.
+            assertEquals(RpcSendStatus.UNAVAILABLE, n.reply(2, 2, new RpcResponse(99, 0, null, refused)));
+            assertEquals(0, zero.frames.size());
+            assertEquals(0, refused.refCnt());
             zero.writable = false;
             ByteBuf body = Unpooled.buffer().writeByte(1);
             assertEquals(RpcSendStatus.UNAVAILABLE, n.notify(2, new RpcRequest(1, body)));
@@ -194,10 +197,10 @@ class RpcNodeTest extends RpcTestSupport {
         try (RpcNode n = node(1, p)) {
             bind(n, 2, 0, 1);
             RpcPeer peer = n.peers.get(2);
-            n.requestIds.set(-1);
+            n.requestIds.set(Integer.MAX_VALUE);
             n.call(2, new RpcRequest(1, null), CALLBACK);
             n.call(2, new RpcRequest(1, null), CALLBACK);
-            assertEquals(Set.of(-1, 1), peer.pending.keySet());
+            assertEquals(Set.of(Integer.MAX_VALUE, 1), peer.pending.keySet()); // wraps to 1, never to 0 or below
             PendingCall old = peer.pending.get(1);
             n.requestIds.set(1);
             ByteBuf body = Unpooled.buffer().writeByte(9);
@@ -360,5 +363,41 @@ class RpcNodeTest extends RpcTestSupport {
             assertFalse(group.isShuttingDown());
             assertTrue(a.peers.isEmpty());
         } finally { group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly(); }
+    }
+
+    @Test void callIdAllocationIsPositiveAndStartsDifferentlyPerNodeInstance() {
+        RpcNode first = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(new Probe()).build();
+        RpcNode second = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(new Probe()).build();
+        // A restarted Node must not hand out the IDs a peer may still hold, so allocation does not start at a
+        // fixed value; two fresh instances collide with probability 1/(2^31-1).
+        assertNotEquals(first.requestIds.get(), second.requestIds.get());
+        for (RpcNode node : new RpcNode[] {first, second}) assertTrue(node.requestIds.get() > 0);
+        assertThrows(IllegalArgumentException.class, () -> new RpcResponse(0, 0, null, null));
+        assertThrows(IllegalArgumentException.class, () -> new RpcResponse(-1, 0, null, null));
+        assertThrows(IllegalArgumentException.class, () -> new RpcRequest(1, -1, 0, 0, 0, null, null));
+    }
+
+    @Test void inboundPeerAndConnectionLimitsRefuseInsteadOfGrowing() {
+        Probe probe = new Probe();
+        RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(probe)
+                .maxInboundPeers(1).maxConnections(2).build();
+        probe.node = n;
+        n.start();
+        try (n) {
+            Fake accepted = bind(n, 2, 0, 1);                 // the one inbound Peer this Node admits
+            assertTrue(n.peers.containsKey(2));
+            Fake extra = new Fake();
+            n.connected(extra);                               // admitted as a connection, refused as a Peer
+            receive(n, extra, RpcWire.encodeHandshake(new RpcHandshake(3, 0, 1)));
+            assertFalse(extra.active);
+            assertFalse(n.peers.containsKey(3));
+            assertTrue(accepted.active);                       // the admitted Peer keeps its connection
+            Fake beyond = new Fake();
+            n.connected(beyond);                              // maxConnections reached: closed before its handshake
+            assertFalse(beyond.active);
+            assertTrue(beyond.attributes.isEmpty());          // refused before a connection context was attached
+        }
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder().maxInboundPeers(0));
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder().maxConnections(0));
     }
 }

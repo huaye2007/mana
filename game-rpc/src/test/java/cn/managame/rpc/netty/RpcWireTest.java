@@ -44,12 +44,23 @@ class RpcWireTest {
         response.release();
     }
 
+    @Test void aNegativeCallIdOnTheWireIsACorruptFrame() {
+        // command, nodeId and routeKey stay unsigned, but a call ID is positive, so this one cannot be decoded.
+        ByteBuf frame = RpcWire.encodeRequest(new RpcRequest(5, null), Integer.MAX_VALUE, 1024);
+        try {
+            frame.setInt(RpcWire.REQUEST_ID_OFFSET, -1);
+            frame.skipBytes(5);
+            assertThrows(CorruptedFrameException.class, () -> RpcWire.decodeRequest(frame));
+        } finally { frame.release(); }
+    }
+
     @Test void unsignedIdsAndMetadataRoundTrip() {
         Metadata metadata = Metadata.builder().put(MetadataKey.stringKey(7), "hello").build();
-        ByteBuf encoded = RpcWire.encodeRequest(new RpcRequest(-1, Long.MIN_VALUE, 255, -1, metadata, null), -1, 1024);
+        ByteBuf encoded = RpcWire.encodeRequest(new RpcRequest(-1, Long.MIN_VALUE, 255, -1, metadata, null),
+                Integer.MAX_VALUE, 1024);
         encoded.skipBytes(5);
         RpcRequest decoded = RpcWire.decodeRequest(encoded);
-        assertEquals(-1, decoded.requestId());
+        assertEquals(Integer.MAX_VALUE, decoded.requestId()); // the largest call ID, the one before the wrap to 1
         assertEquals(Long.MIN_VALUE, decoded.routeKey());
         assertEquals("hello", decoded.metadata().get(MetadataKey.stringKey(7)));
         encoded.release();

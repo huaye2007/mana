@@ -8,7 +8,7 @@ This document is the sole byte-layout source. This implemented binding replaces 
 
 Semantics: [RPC Specification](ogbs/OGBS-RPC-1.0.md). Java integration: [RPC Java specification](ogbs/OGBS-RPC-Java-25-Specification-1.0.md). Metadata/errors: [Core](ogbs/OGBS-Core-1.0.md).
 
-All multibyte integers are big-endian. Java int/long hold raw bits; negative nodeId, command, and requestId ints are valid uint32 values. errorCode permits only 0..2147483647.
+All multibyte integers are big-endian. Java int/long hold raw bits; negative nodeId and command ints are valid uint32 values, while requestId is a positive 1..2147483647 value (0 for Notify) and a negative one is a corrupt frame. errorCode permits only 0..2147483647.
 
 ## Frame
 
@@ -53,7 +53,7 @@ No payload; frameLength=1, full frame=5 bytes. Triggered by Write Idle after REA
 | Field | Width |
 | --- | --- |
 | command | uint32, nonzero |
-| requestId | uint32 |
+| requestId | int32, 0 for Notify, otherwise 1..2147483647 |
 | routeKey | uint64 |
 | businessIdType | uint8 |
 | businessId | uint64 |
@@ -69,7 +69,7 @@ Fixed overhead including type, excluding prefix: 28 bytes. requestId=0 means Not
 
 | Field | Width |
 | --- | --- |
-| requestId | uint32, nonzero |
+| requestId | int32, 1..2147483647 |
 | errorCode | uint32, highest bit must be 0 |
 | metadataLength | uint16 |
 | metadata | metadataLength bytes |

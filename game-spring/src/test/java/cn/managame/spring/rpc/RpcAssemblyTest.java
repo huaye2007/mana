@@ -117,7 +117,7 @@ class RpcAssemblyTest {
                 if(ignoreRequest.get()) return;
                 byte[] bytes=ByteBufUtil.getBytes(request.body());
                 String result=invalidResponse.get()?"invalid":new String(bytes,StandardCharsets.UTF_8)+"!";
-                remote[0].reply(source,slot,request.routeKey(),new RpcResponse(request.requestId(),remoteError.get(),null,
+                remote[0].reply(source,slot,new RpcResponse(request.requestId(),remoteError.get(),null,
                         Unpooled.wrappedBuffer(result.getBytes(StandardCharsets.UTF_8))));
             }
             public void onResponse(int source,int command,RpcResponse response,RpcCallback<?> callback) {
