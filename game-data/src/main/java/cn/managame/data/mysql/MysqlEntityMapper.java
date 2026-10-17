@@ -2,7 +2,7 @@ package cn.managame.data.mysql;
 
 import java.sql.SQLException;
 import cn.managame.data.codec.*;
-import cn.managame.data.key.GroupKey;
+import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
 import cn.managame.data.meta.EntityMeta;
 import java.util.*;
@@ -31,7 +31,7 @@ public final class MysqlEntityMapper implements EntityMapper {
     @Override public Object load(EntityMeta key, Object id) {
         var m = meta(key); return access.queryOne(m.select, new Object[]{id}, m.rowMapper);
     }
-    @Override public List<?> loadGroup(EntityMeta key, GroupKey group) {
+    @Override public List<?> loadGroup(EntityMeta key, GroupKeys group) {
         key.validateGroupKey(group); var m = meta(key);
         Object[] args = new Object[group.size()];
         for (int i = 0; i < args.length; i++) args[i] = group.valueAt(i);

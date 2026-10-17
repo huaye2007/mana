@@ -1,9 +1,10 @@
 package cn.managame.data.meta;
 
 import java.util.function.ToIntFunction;
+import cn.managame.data.annotation.GroupKey;
 import cn.managame.data.annotation.Id;
 import cn.managame.data.annotation.MapKey;
-import cn.managame.data.key.GroupKey;
+import cn.managame.data.key.GroupKeys;
 import cn.managame.data.key.MapKeys;
 import java.lang.invoke.*;
 import java.lang.reflect.*;
@@ -31,9 +32,9 @@ public final class EntityMeta {
         groupKeys = ordered(fields, true);
         mapKeys = ordered(fields, false);
         if (kind == Kind.SINGLE && (!groupKeys.isEmpty() || !mapKeys.isEmpty()))
-            throw new IllegalArgumentException("Single entity cannot have GroupKey/MapKey");
+            throw new IllegalArgumentException("Single entity cannot have @GroupKey/@MapKey");
         if (kind == Kind.GROUP && (groupKeys.isEmpty() || mapKeys.isEmpty()))
-            throw new IllegalArgumentException("Group entity requires GroupKey and MapKey");
+            throw new IllegalArgumentException("Group entity requires @GroupKey and @MapKey");
         for (FieldAccessor a : identityFields()) {
             Class<?> t = boxed(a.type());
             if (!(t == String.class || t == Long.class || t == Integer.class || t == Short.class || t == Byte.class))
@@ -61,10 +62,10 @@ public final class EntityMeta {
     }
     private static List<FieldAccessor> ordered(List<Field> fields, boolean group) {
         var selected = fields.stream().filter(f -> group
-                ? f.isAnnotationPresent(cn.managame.data.annotation.GroupKey.class)
+                ? f.isAnnotationPresent(GroupKey.class)
                 : f.isAnnotationPresent(MapKey.class)).toList();
         ToIntFunction<Field> order = f -> group
-                ? f.getAnnotation(cn.managame.data.annotation.GroupKey.class).order()
+                ? f.getAnnotation(GroupKey.class).order()
                 : f.getAnnotation(MapKey.class).order();
         if (selected.size() > 1) {
             Set<Integer> orders = new HashSet<>();
@@ -87,22 +88,22 @@ public final class EntityMeta {
     }
     public Object create() { return construct(constructor); }
     public Object getId(Object entity) { return Objects.requireNonNull(id.get(entity), "Null @Id"); }
-    public GroupKey getGroupKey(Object entity) {
+    public GroupKeys getGroupKey(Object entity) {
         Object[] values = new Object[groupKeys.size()];
-        for (int i = 0; i < values.length; i++) values[i] = Objects.requireNonNull(groupKeys.get(i).get(entity), "Null GroupKey");
-        return GroupKey.of(values);
+        for (int i = 0; i < values.length; i++) values[i] = Objects.requireNonNull(groupKeys.get(i).get(entity), "Null @GroupKey");
+        return GroupKeys.of(values);
     }
     public Object getMapKey(Object entity) {
-        if (mapKeys.size() == 1) return Objects.requireNonNull(mapKeys.getFirst().get(entity), "Null MapKey");
+        if (mapKeys.size() == 1) return Objects.requireNonNull(mapKeys.getFirst().get(entity), "Null @MapKey");
         Object[] values = new Object[mapKeys.size()];
         for (int i = 0; i < values.length; i++) values[i] = mapKeys.get(i).get(entity);
         return MapKeys.of(values);
     }
-    public void validateGroupKey(GroupKey key) {
-        if (key.size() != groupKeys.size()) throw new IllegalArgumentException("GroupKey arity mismatch");
+    public void validateGroupKey(GroupKeys key) {
+        if (key.size() != groupKeys.size()) throw new IllegalArgumentException("GroupKeys arity mismatch");
         for (int i = 0; i < key.size(); i++)
             if (key.valueAt(i).getClass() != boxed(groupKeys.get(i).type()))
-                throw new IllegalArgumentException("GroupKey type mismatch at " + i);
+                throw new IllegalArgumentException("GroupKeys type mismatch at " + i);
     }
     public Class<?> keyType() { return kind == Kind.SINGLE ? boxed(id.type())
             : mapKeys.size() == 1 ? boxed(mapKeys.getFirst().type()) : String.class; }

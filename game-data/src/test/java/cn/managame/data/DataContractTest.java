@@ -2,7 +2,7 @@ package cn.managame.data;
 
 import cn.managame.data.annotation.*;
 import cn.managame.data.error.*;
-import cn.managame.data.key.GroupKey;
+import cn.managame.data.key.GroupKeys;
 import cn.managame.data.key.MapKeys;
 import cn.managame.data.mapper.EntityMapper;
 import cn.managame.data.meta.EntityMeta;
@@ -19,15 +19,15 @@ class DataContractTest {
     static class Player { @Id long id; int score; Player() {} Player(long id) { this.id = id; } }
     static final class Players extends SingleRepository<Long,Player> {}
     static class Task extends Player {
-        @cn.managame.data.annotation.GroupKey long roleId;
+        @GroupKey long roleId;
         @MapKey long taskId;
         Task() {}
         Task(long id, long role, long task) { super(id); roleId = role; taskId = task; }
     }
     static final class Tasks extends GroupRepository<Long,Task> {}
     static class Composite extends Player {
-        @cn.managame.data.annotation.GroupKey(order=20) int region;
-        @cn.managame.data.annotation.GroupKey(order=10) long role;
+        @GroupKey(order=20) int region;
+        @GroupKey(order=10) long role;
         @MapKey(order=3) String code;
         @MapKey(order=1) int category;
     }
@@ -47,7 +47,7 @@ class DataContractTest {
         public Object load(EntityMeta meta,Object id) {
             loads.incrementAndGet(); if (loadFailure) throw new IllegalStateException("load"); return null;
         }
-        public List<?> loadGroup(EntityMeta meta,GroupKey key) {
+        public List<?> loadGroup(EntityMeta meta,GroupKeys key) {
             groupLoads.incrementAndGet(); if (loadFailure) throw new IllegalStateException("group"); return group;
         }
         void save(String op, List<?> data) {
@@ -93,12 +93,12 @@ class DataContractTest {
             var tasks = data.repository(Tasks.class);
             tasks.insert(task);                            // no getGroup first: the write loads the group
             assertEquals(1, mapper.groupLoads.get());
-            var group = tasks.getGroup(GroupKey.of(1L));
-            assertSame(task, group.get(5L)); assertSame(group, tasks.getGroup(GroupKey.of(1L)));
+            var group = tasks.getGroup(GroupKeys.of(1L));
+            assertSame(task, group.get(5L)); assertSame(group, tasks.getGroup(GroupKeys.of(1L)));
             assertThrows(UnsupportedOperationException.class, () -> group.remove(5L));
             assertThrows(UnsupportedOperationException.class, () -> group.put(6L, new Task(21,1,6)));
-            tasks.deleteGroup(GroupKey.of(1L)); assertTrue(group.isEmpty());
-            tasks.deleteGroup(GroupKey.of(2L));            // loads and deletes nothing
+            tasks.deleteGroup(GroupKeys.of(1L)); assertTrue(group.isEmpty());
+            tasks.deleteGroup(GroupKeys.of(2L));            // loads and deletes nothing
             assertEquals(2, mapper.groupLoads.get());
             data.writer.flush(); assertTrue(mapper.events.isEmpty());
         }
@@ -112,9 +112,9 @@ class DataContractTest {
             assertThrows(DataOperationException.class, () -> tasks.update(new Task(32,1,5)));   // another @Id
             tasks.delete(new Task(33,1,6));                                                     // absent: no-op
             var replacement = new Task(20,1,5); tasks.update(replacement);
-            assertSame(replacement, tasks.get(GroupKey.of(1L), 5L));
+            assertSame(replacement, tasks.get(GroupKeys.of(1L), 5L));
             tasks.delete(new Task(20,1,5));                // deletes whatever holds the MapKey
-            assertNull(tasks.get(GroupKey.of(1L), 5L));
+            assertNull(tasks.get(GroupKeys.of(1L), 5L));
             data.writer.flush();
             assertEquals(List.of("DELETE"), mapper.events); assertEquals(List.of(20L), mapper.batches.getFirst());
         }
@@ -150,17 +150,17 @@ class DataContractTest {
     @Test void loadedGroupDeletesByDatabaseId() {
         var mapper = new RecordingMapper(); mapper.group = List.of(new Task(20,1,5),new Task(21,1,6));
         try (var data = builder(mapper).build()) {
-            var tasks = data.repository(Tasks.class); tasks.getGroup(GroupKey.of(1L));
-            tasks.deleteGroup(GroupKey.of(1L)); data.writer.flush();
+            var tasks = data.repository(Tasks.class); tasks.getGroup(GroupKeys.of(1L));
+            tasks.deleteGroup(GroupKeys.of(1L)); data.writer.flush();
             assertEquals(Set.of(20L,21L), new HashSet<>(mapper.batches.getFirst()));
         }
     }
     @Test void duplicateAndForeignLoadedMapKeysFail() {
         var mapper = new RecordingMapper(); mapper.group = List.of(new Task(20,1,5),new Task(21,1,5));
         try (var data = builder(mapper).build()) {
-            assertThrows(DataLoadException.class, () -> data.repository(Tasks.class).getGroup(GroupKey.of(1L)));
+            assertThrows(DataLoadException.class, () -> data.repository(Tasks.class).getGroup(GroupKeys.of(1L)));
             mapper.group = List.of(new Task(20,2,5));
-            assertThrows(DataLoadException.class, () -> data.repository(Tasks.class).getGroup(GroupKey.of(1L)));
+            assertThrows(DataLoadException.class, () -> data.repository(Tasks.class).getGroup(GroupKeys.of(1L)));
         }
     }
     @Test void compositeKeysUseExplicitOrderAndTypedGroupValues() {
@@ -168,11 +168,11 @@ class DataContractTest {
         try (var data = GameDataBuilder.builder().repositories(mapper, Composites.class).build()) {
             var repository = data.repository(Composites.class);
             var entity = new Composite(); entity.id=1; entity.role=4; entity.region=2; entity.category=3; entity.code="x";
-            var group = repository.getGroup(GroupKey.of(4L,2)); repository.insert(entity);
+            var group = repository.getGroup(GroupKeys.of(4L,2)); repository.insert(entity);
             assertSame(entity, group.get(MapKeys.of(3,"x")));
-            assertThrows(IllegalArgumentException.class, () -> repository.getGroup(GroupKey.of(4,2)));
+            assertThrows(IllegalArgumentException.class, () -> repository.getGroup(GroupKeys.of(4,2)));
         }
-        assertNotEquals(GroupKey.of(1), GroupKey.of(1L));
+        assertNotEquals(GroupKeys.of(1), GroupKeys.of(1L));
         assertThrows(IllegalArgumentException.class, () -> MapKeys.of("a:b","c"));
         assertThrows(IllegalArgumentException.class, () -> GameDataBuilder.builder().repositories(mapper, WrongKey.class).build());
         assertThrows(IllegalArgumentException.class, () -> GameDataBuilder.builder().repositories(mapper, Indirect.class).build());
@@ -255,7 +255,7 @@ class DataContractTest {
         EntityMapper failing = new EntityMapper() {
             public void initialize(EntityMeta m) {}
             public Object load(EntityMeta m, Object id) { return mapper.load(m, id); }
-            public List<?> loadGroup(EntityMeta m, GroupKey k) { return mapper.loadGroup(m, k); }
+            public List<?> loadGroup(EntityMeta m, GroupKeys k) { return mapper.loadGroup(m, k); }
             public void insertBatch(EntityMeta m, List<?> e) {
                 if (e.contains(bad)) throw new IllegalArgumentException("value too long");
                 mapper.insertBatch(m, e);
@@ -281,12 +281,12 @@ class DataContractTest {
                 .cacheExpire(Duration.ofMillis(40)).shutdownTimeout(Duration.ZERO).errorHandler(f -> {}).build();
         try {
             var players = data.repository(Players.class); var p = new Player(1);
-            var tasks = data.repository(Tasks.class); tasks.getGroup(GroupKey.of(7L));
+            var tasks = data.repository(Tasks.class); tasks.getGroup(GroupKeys.of(7L));
             var task = new Task(5, 7, 1); tasks.insert(task);
             players.insert(p);
             Thread.sleep(200);                             // idle far beyond cacheExpire while saves keep failing
             assertSame(p, players.get(1L)); assertEquals(0, mapper.loads.get());
-            assertSame(task, tasks.get(GroupKey.of(7L), 1L)); assertEquals(1, mapper.groupLoads.get());
+            assertSame(task, tasks.get(GroupKeys.of(7L), 1L)); assertEquals(1, mapper.groupLoads.get());
         } finally { assertThrows(DataSaveException.class, data::close); }
     }
     @Test void cleanIdleEntriesAreEvictedAndReloaded() throws Exception {
@@ -294,7 +294,7 @@ class DataContractTest {
         try (var data = builder(mapper).flushInterval(Duration.ofMillis(10)).cacheExpire(Duration.ofMillis(40)).build()) {
             var players = data.repository(Players.class);
             players.insert(new Player(1));
-            assertNull(data.repository(Tasks.class).getGroup(GroupKey.of(7L)).get(1L));
+            assertNull(data.repository(Tasks.class).getGroup(GroupKeys.of(7L)).get(1L));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while ((data.stats().singleCacheEntries() != 0 || data.stats().groupCacheEntries() != 0) && System.nanoTime() < deadline)
                 Thread.sleep(10);
@@ -389,7 +389,7 @@ class DataContractTest {
             if (Long.valueOf(1).equals(id)) { entered.countDown(); await(release); return new Player(1); }
             return null;
         }
-        public List<?> loadGroup(EntityMeta meta, GroupKey key) { return List.of(); }
+        public List<?> loadGroup(EntityMeta meta, GroupKeys key) { return List.of(); }
         public void insertBatch(EntityMeta m, List<?> e) {}
         public void updateBatch(EntityMeta m, List<?> e) {}
         public void deleteBatch(EntityMeta m, List<Object> e) {}

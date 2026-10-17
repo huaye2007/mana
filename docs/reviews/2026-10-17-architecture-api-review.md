@@ -262,7 +262,7 @@ both.
 
 | | `SingleRepository` | `GroupRepository` | `LogRepository` |
 | --- | --- | --- | --- |
-| read | `get(K)` | `getGroup(GroupKey)`, `get(GroupKey, K)` | — |
+| read | `get(K)` | `getGroup(GroupKeys)`, `get(GroupKeys, K)` | — |
 | insert | `void insert(E)` | `void insert(E)` | **`boolean insert(E)`** |
 | update | `void update(E)` | `void update(E)` | — |
 | delete | **`void delete(K key)`** | **`void delete(E entity)`** | — |

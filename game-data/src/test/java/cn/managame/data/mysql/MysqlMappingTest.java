@@ -3,7 +3,7 @@ package cn.managame.data.mysql;
 import cn.managame.data.annotation.*;
 import cn.managame.data.codec.*;
 import cn.managame.data.meta.*;
-import cn.managame.data.key.GroupKey;
+import cn.managame.data.key.GroupKeys;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.*;
@@ -15,7 +15,7 @@ class MysqlMappingTest {
     static class Base { @Id @Column long id; }
     @Table(name="tasks",indexes=@Index(columnList="role_id, task_id"))
     static class Task extends Base {
-        @cn.managame.data.annotation.GroupKey @Column long roleId;
+        @GroupKey @Column long roleId;
         @MapKey @Column long taskId;
         @Column int progress;
         @Column String description;
@@ -69,7 +69,7 @@ class MysqlMappingTest {
         var t = new Task(); t.id=1; t.roleId=4; t.taskId=7; t.progress=10; t.description="old";
         mapper.insertBatch(meta,List.of(t));
         var loaded = (Task)mapper.load(meta,1L); assertEquals(10,loaded.progress); assertEquals("old",loaded.description);
-        assertEquals(1,mapper.loadGroup(meta,GroupKey.of(4L)).size());
+        assertEquals(1,mapper.loadGroup(meta,GroupKeys.of(4L)).size());
         t.progress=20; t.roleId=99; mapper.updateBatch(meta,List.of(t));
         loaded=(Task)mapper.load(meta,1L); assertEquals(4,loaded.roleId); assertEquals(20,loaded.progress);
         t.roleId=4;

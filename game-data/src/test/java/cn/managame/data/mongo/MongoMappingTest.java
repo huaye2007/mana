@@ -2,7 +2,7 @@ package cn.managame.data.mongo;
 
 import cn.managame.data.annotation.*;
 import cn.managame.data.meta.EntityMeta;
-import cn.managame.data.key.GroupKey;
+import cn.managame.data.key.GroupKeys;
 import com.mongodb.MongoClientSettings;
 import org.bson.*;
 import org.bson.codecs.*;
@@ -16,7 +16,7 @@ class MongoMappingTest {
     @Collection(name="tasks",indexes=@MongoIndex(fields={"role_id","task_id"}))
     static class Task {
         @Id @Field long id;
-        @cn.managame.data.annotation.GroupKey @Field long roleId;
+        @GroupKey @Field long roleId;
         @MapKey @Field long taskId;
         @Field int progress;
         @Field List<Detail> details;
@@ -60,7 +60,7 @@ class MongoMappingTest {
         assertEquals("hello",restored.details.getFirst().text); assertEquals(Map.of(7,99L),restored.rewards);
         assertArrayEquals(task.bytes,restored.bytes); assertEquals(12,restored.shortValue);
         assertEquals(new BsonDocument("_id",new BsonInt64(1)),access.filter);
-        assertEquals(1,mapper.loadGroup(meta,GroupKey.of(2L)).size());
+        assertEquals(1,mapper.loadGroup(meta,GroupKeys.of(2L)).size());
         assertEquals(new BsonDocument("role_id",new BsonInt64(2)),access.filter);
         assertEquals(List.of("role_id","task_id"),access.indexes.getFirst().fields());
     }

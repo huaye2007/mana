@@ -1,7 +1,7 @@
 package cn.managame.data;
 
 import cn.managame.data.error.*;
-import cn.managame.data.key.GroupKey;
+import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
 import cn.managame.data.meta.EntityMeta;
 import java.time.Duration;
@@ -9,7 +9,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Cached groups of entities sharing a {@code @GroupKey}, each group a map by {@code @MapKey}. A group is loaded
+ * Cached groups of entities sharing a {@code @GroupKeys}, each group a map by {@code @MapKey}. A group is loaded
  * whole on first use, by reads and writes alike, so business code never has to load it before writing.
  *
  * <p>{@link #getGroup} returns a read-only live view: change entities only through insert/update/delete, which
@@ -27,20 +27,20 @@ public abstract class GroupRepository<K, E> {
     private EntityMeta meta;
     private EntityMapper mapper;
     private WriteBehindManager writer;
-    private EntityCache<GroupKey, Group<K, E>> cache;
+    private EntityCache<GroupKeys, Group<K, E>> cache;
     protected GroupRepository() {}
     final long cachedEntries() { return cache.size(); }
     final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;
         cache = new EntityCache<>(expiry.toNanos());
         writer.addSweeper(() -> cache.sweep(() -> {
-            Set<GroupKey> dirty = new HashSet<>();
+            Set<GroupKeys> dirty = new HashSet<>();
             for (PendingBuffer.Change change : writer.pending(meta)) dirty.add(meta.getGroupKey(change.entity()));
             return dirty::contains;
         }));
     }
     @SuppressWarnings("unchecked")
-    private Group<K, E> load(GroupKey key) {
+    private Group<K, E> load(GroupKeys key) {
         // Only groups without unsaved changes are ever missing from the cache, so storage is current.
         try {
             var result = new ConcurrentHashMap<K, E>();
@@ -57,19 +57,19 @@ public abstract class GroupRepository<K, E> {
         if (writer == null) throw new DataOperationException("Repository is not initialized");
         writer.ensureRunning();
     }
-    private Group<K, E> group(GroupKey key) { return cache.get(key, this::load); }
+    private Group<K, E> group(GroupKeys key) { return cache.get(key, this::load); }
 
     /** Read-only live view of the group, loading it on this thread when missing; empty when storage has none. */
-    public final Map<K, E> getGroup(GroupKey key) {
+    public final Map<K, E> getGroup(GroupKeys key) {
         ready(); meta.validateGroupKey(key); return group(key).view;
     }
-    public final E get(GroupKey key, K mapKey) {
+    public final E get(GroupKeys key, K mapKey) {
         ready(); meta.validateGroupKey(key);
         if (Objects.requireNonNull(mapKey).getClass() != meta.keyType())
             throw new DataOperationException("MapKey type mismatch");
         return group(key).entries.get(mapKey);
     }
-    private static <G> G loaded(G group, GroupKey key) {
+    private static <G> G loaded(G group, GroupKeys key) {
         // The group was loaded (and touched) just before, so only an impossible idle eviction could get here.
         if (group == null) throw new DataOperationException("Group was evicted during a mutation: " + key);
         return group;
@@ -80,7 +80,7 @@ public abstract class GroupRepository<K, E> {
     @SuppressWarnings("unchecked")
     private void change(E entity, DataOperation operation) {
         ready(); Objects.requireNonNull(entity);
-        GroupKey groupKey = meta.getGroupKey(entity);
+        GroupKeys groupKey = meta.getGroupKey(entity);
         K mapKey = (K) meta.getMapKey(entity);
         group(groupKey);
         writer.mutate(() -> cache.update(groupKey, (cached, current) -> {
@@ -110,7 +110,7 @@ public abstract class GroupRepository<K, E> {
             return current;
         }));
     }
-    public final void deleteGroup(GroupKey key) {
+    public final void deleteGroup(GroupKeys key) {
         ready(); meta.validateGroupKey(key);
         group(key);
         writer.mutate(() -> cache.update(key, (cached, current) -> {

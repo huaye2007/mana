@@ -1,7 +1,7 @@
 package cn.managame.data.mongo;
 
 import cn.managame.data.error.DataOperationException;
-import cn.managame.data.key.GroupKey;
+import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
 import cn.managame.data.meta.EntityMeta;
 import com.mongodb.client.MongoDatabase;
@@ -29,7 +29,7 @@ public final class MongoEntityMapper implements EntityMapper {
         var m = meta(key);
         return m.decode(access.findOne(m.collection, new BsonDocument("_id", m.id.codec().encode(id))));
     }
-    @Override public List<?> loadGroup(EntityMeta key, GroupKey group) {
+    @Override public List<?> loadGroup(EntityMeta key, GroupKeys group) {
         key.validateGroupKey(group); var m = meta(key); var filter = new BsonDocument();
         for (int i = 0; i < group.size(); i++)
             filter.append(m.groups.get(i).name(), m.groups.get(i).codec().encode(group.valueAt(i)));

@@ -232,7 +232,7 @@ requestId、哪个是 routeKey、哪个是 businessId。整个仓库里这个方
 
 | | `SingleRepository` | `GroupRepository` | `LogRepository` |
 | --- | --- | --- | --- |
-| 读 | `get(K)` | `getGroup(GroupKey)`、`get(GroupKey, K)` | —— |
+| 读 | `get(K)` | `getGroup(GroupKeys)`、`get(GroupKeys, K)` | —— |
 | insert | `void insert(E)` | `void insert(E)` | **`boolean insert(E)`** |
 | update | `void update(E)` | `void update(E)` | —— |
 | delete | **`void delete(K key)`** | **`void delete(E entity)`** | —— |

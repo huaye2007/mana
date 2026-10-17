@@ -40,7 +40,7 @@ Player-task example:
 | Group key | roleId = 42 | Load every task for player 42 |
 | In-group key | taskId = 7 | Locate a task within that group's Map |
 
-Another player may have taskId=7 but not primary key 90001. GroupRepository K is the in-group key, neither primary key nor whole GroupKey. Composite group keys retain type/order; composite in-group strings follow D-ID-03 without another encoding scheme.
+Another player may have taskId=7 but not primary key 90001. GroupRepository K is the in-group key, neither primary key nor the whole group key. Composite group keys retain type/order; composite in-group strings follow D-ID-03 without another encoding scheme.
 
 Moving a task from player A to B cannot mutate an existing roleId. Explicitly delete the old identity and create the new one, accepting that the two operations have no cross-group atomic transaction.
 

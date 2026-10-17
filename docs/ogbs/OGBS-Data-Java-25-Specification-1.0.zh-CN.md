@@ -13,7 +13,7 @@
 | 包 | 职责 |
 | --- | --- |
 | cn.managame.data | GameData、GameDataBuilder、三种 Repository 基类；包级 EntityCache、PendingBuffer、WriteBehindManager |
-| annotation / key | 身份注解、GroupKey、MapKeys |
+| annotation / key | 身份注解、GroupKeys、MapKeys |
 | meta / mapper | EntityMeta（供存储 SPI 使用的身份元数据）、EntityMapper |
 | codec / error | JSON/BINARY codec、异常、DataFailure、RetryPolicy、DataErrorHandler |
 | mysql | SQL 注解、MysqlAccess、JdbcMysqlAccess、MysqlEntityMapper、日志映射 |
@@ -30,12 +30,12 @@ public abstract class SingleRepository<K, E> {
     public final void delete(K key);
 }
 public abstract class GroupRepository<K, E> {
-    public final Map<K, E> getGroup(GroupKey key);   // 只读实时视图
-    public final E get(GroupKey key, K mapKey);
+    public final Map<K, E> getGroup(GroupKeys key);   // 只读实时视图
+    public final E get(GroupKeys key, K mapKey);
     public final void insert(E entity);
     public final void update(E entity);
     public final void delete(E entity);
-    public final void deleteGroup(GroupKey key);
+    public final void deleteGroup(GroupKeys key);
 }
 public abstract class LogRepository<E> {
     public final boolean insert(E entity);   // false：日志队列已满，已报告给 DataErrorHandler
@@ -49,7 +49,7 @@ public abstract class LogRepository<E> {
 
 ### 2.1 缓存与修改路径
 
-每个 Repository 持有一个 EntityCache：Single 按 id 缓存实体或已确认的不存在（null）；Group 按 GroupKey 缓存一个 `ConcurrentHashMap<K,E>`，getGroup 返回它的只读实时视图（每次加载创建一次，同一缓存期内返回同一对象）；业务只能通过 insert/update/delete 修改分组，直接 put/remove 抛 UnsupportedOperationException。Single 的读取（get/getOrCreate）与 Group 的读写都会加载缺失的 Key；Single 的写入从不加载。加载在调用线程上同步执行；缺失的 Key 只加载一次，同 Key 的并发调用等待该次加载。加载在缓存 Map 的锁之外执行，其他 Key 不会因此被阻塞；加载期间对同一 Key 的修改先等待该次加载，再作用于其结果；若加载期间该 Key 被淘汰，结果作废并重新加载，保证不会装入比内存旧的数据。在加载器内再次读取同一 Key 抛 IllegalStateException。加载失败抛 DataLoadException，不会缓存为不存在。
+每个 Repository 持有一个 EntityCache：Single 按 id 缓存实体或已确认的不存在（null）；Group 按 GroupKeys 缓存一个 `ConcurrentHashMap<K,E>`，getGroup 返回它的只读实时视图（每次加载创建一次，同一缓存期内返回同一对象）；业务只能通过 insert/update/delete 修改分组，直接 put/remove 抛 UnsupportedOperationException。Single 的读取（get/getOrCreate）与 Group 的读写都会加载缺失的 Key；Single 的写入从不加载。加载在调用线程上同步执行；缺失的 Key 只加载一次，同 Key 的并发调用等待该次加载。加载在缓存 Map 的锁之外执行，其他 Key 不会因此被阻塞；加载期间对同一 Key 的修改先等待该次加载，再作用于其结果；若加载期间该 Key 被淘汰，结果作废并重新加载，保证不会装入比内存旧的数据。在加载器内再次读取同一 Key 抛 IllegalStateException。加载失败抛 DataLoadException，不会缓存为不存在。
 
 Data 不提供异步读取。默认的虚拟线程 Route 执行器上，同步加载只挂起当前 Route 的虚拟线程，同一 Route 的后续消息本就要等它完成，顺序语义不变，且业务不需要回调。使用平台线程 Route 执行器时，应在玩家进入 Route 时预加载其数据，让游戏内读取都命中缓存。
 
@@ -99,13 +99,13 @@ GameData 只关闭自己的线程，从不关闭 DataSource、MongoClient 或 Ma
 
 ## 4. Entity 与身份元数据
 
-支持继承字段；注解标在非 static、非 final 字段上。状态实体需要可访问的无参构造器；加载时通过 VarHandle 直接写字段（JPMS 下需开放包）。身份字段为 byte/short/int/long、其包装类型或 String，不能为 null。复合 Key 需要显式且互不相同的 `order`。`GroupKey.of(Object...)` 不复制数组（不要修改它），按类型比较值：`GroupKey.of(42L)` ≠ `GroupKey.of(42)`。`MapKeys.of(a, b, …)` 用 ':' 连接至少两个整数/String 值，值内不能含 ':'。
+支持继承字段；注解标在非 static、非 final 字段上。状态实体需要可访问的无参构造器；加载时通过 VarHandle 直接写字段（JPMS 下需开放包）。身份字段为 byte/short/int/long、其包装类型或 String，不能为 null。复合 Key 需要显式且互不相同的 `order`。`GroupKeys.of(Object...)` 不复制数组（不要修改它），按类型比较值：`GroupKeys.of(42L)` ≠ `GroupKeys.of(42)`。`MapKeys.of(a, b, …)` 用 ':' 连接至少两个整数/String 值，值内不能含 ':'。
 
 ```java
 public interface EntityMapper {
     void initialize(EntityMeta meta);
     Object load(EntityMeta meta, Object id);
-    List<?> loadGroup(EntityMeta meta, GroupKey key);      // 非 null，无数据时为空列表
+    List<?> loadGroup(EntityMeta meta, GroupKeys key);      // 非 null，无数据时为空列表
     void insertBatch(EntityMeta meta, List<?> entities);
     void updateBatch(EntityMeta meta, List<?> entities);
     void deleteBatch(EntityMeta meta, List<Object> ids);
@@ -132,7 +132,7 @@ MySQL UPDATE 未匹配任何行时按不可重试单行失败（保持 Connector
 
 ### 5.1 缓存淘汰
 
-只有空闲超过 cacheExpire 且没有待保存变更的条目才会被淘汰。淘汰在保存线程上、一轮保存之后进行，最多每 max(flushInterval, cacheExpire/4) 一次，此时没有已认领但未完成的变更。Single 检查 `pending.containsKey(id)`；Group 每次清理时收集待保存变更所属的 GroupKey（分组删除因此保留实体）。清理先读取时钟再构建该集合，并在单 Key 原子操作内重新检查空闲时间：集合漏掉的修改一定发生在读取时钟之后，已刷新其条目访问时间，条目会被保留。读取最多每 min(cacheExpire/16, 1 秒) 刷新一次访问时间，避免多线程读同一热点实体时反复写同一缓存行；因此淘汰等待 cacheExpire 再加上该间隔。因此加载从不查询缓冲：缺失的 Key 没有待保存变更，存储就是最新的。存储故障期间脏实体一直留在缓存中，直到保存成功或被丢弃。
+只有空闲超过 cacheExpire 且没有待保存变更的条目才会被淘汰。淘汰在保存线程上、一轮保存之后进行，最多每 max(flushInterval, cacheExpire/4) 一次，此时没有已认领但未完成的变更。Single 检查 `pending.containsKey(id)`；Group 每次清理时收集待保存变更所属的 GroupKeys（分组删除因此保留实体）。清理先读取时钟再构建该集合，并在单 Key 原子操作内重新检查空闲时间：集合漏掉的修改一定发生在读取时钟之后，已刷新其条目访问时间，条目会被保留。读取最多每 min(cacheExpire/16, 1 秒) 刷新一次访问时间，避免多线程读同一热点实体时反复写同一缓存行；因此淘汰等待 cacheExpire 再加上该间隔。因此加载从不查询缓冲：缺失的 Key 没有待保存变更，存储就是最新的。存储故障期间脏实体一直留在缓存中，直到保存成功或被丢弃。
 
 ### 5.2 一轮保存
 
@@ -158,7 +158,7 @@ RetryPolicy 只在“保留到下一轮”和“拆分/丢弃”之间选择；�
 @Table(name = "player_task", indexes = { @Index(name = "idx_role_task", columnList = "role_id, task_id") })
 public class Task {
     @Id @Column private long id;
-    @cn.managame.data.annotation.GroupKey @Column private long roleId;
+    @GroupKey @Column private long roleId;
     @MapKey @Column private long taskId;
     @Column private int progress;
 }

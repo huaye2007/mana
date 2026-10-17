@@ -15,7 +15,7 @@ One artifact contains repositories, caching, write-back, MySQL/JDBC, MongoDB and
 | Package | Responsibility |
 | --- | --- |
 | cn.managame.data | GameData, GameDataBuilder, the three repository bases; package-private EntityCache, PendingBuffer, WriteBehindManager |
-| annotation / key | Identity annotations, GroupKey, MapKeys |
+| annotation / key | Identity annotations, GroupKeys, MapKeys |
 | meta / mapper | EntityMeta (identity metadata for storage SPIs), EntityMapper |
 | codec / error | JSON/BINARY codecs, exceptions, DataFailure, RetryPolicy, DataErrorHandler |
 | mysql | SQL annotations, MysqlAccess, JdbcMysqlAccess, MysqlEntityMapper, log mapping |
@@ -34,12 +34,12 @@ public abstract class SingleRepository<K, E> {
     public final void delete(K key);
 }
 public abstract class GroupRepository<K, E> {
-    public final Map<K, E> getGroup(GroupKey key);   // read-only live view
-    public final E get(GroupKey key, K mapKey);
+    public final Map<K, E> getGroup(GroupKeys key);   // read-only live view
+    public final E get(GroupKeys key, K mapKey);
     public final void insert(E entity);
     public final void update(E entity);
     public final void delete(E entity);
-    public final void deleteGroup(GroupKey key);
+    public final void deleteGroup(GroupKeys key);
 }
 public abstract class LogRepository<E> {
     public final boolean insert(E entity);   // false: log queue full, reported to DataErrorHandler
@@ -53,7 +53,7 @@ A business repository directly extends one concrete parameterized base and has a
 
 ### 2.1 Cache and mutation paths
 
-Each repository holds one EntityCache: Single caches entity or confirmed absence (null) by id; Group caches a `ConcurrentHashMap<K,E>` by GroupKey and getGroup returns a read-only live view of it (created once per load, so the same object for as long as the group stays cached); business code changes a group only through insert/update/delete, and a direct put/remove throws UnsupportedOperationException. Single reads (get/getOrCreate) and every Group read or write load a missing key; Single writes never load. Loads run synchronously on the calling thread; a missing key loads once while concurrent callers of that key wait. The load runs outside the cache map's locks, so other keys are never blocked by it; a mutation of the same key during the load waits for it and then applies to its result; if the key is evicted while loading, the result is discarded and loaded again, so nothing older than memory is ever installed. Reading the same key again inside its loader throws IllegalStateException. A load failure throws DataLoadException and is not cached as absence.
+Each repository holds one EntityCache: Single caches entity or confirmed absence (null) by id; Group caches a `ConcurrentHashMap<K,E>` by GroupKeys and getGroup returns a read-only live view of it (created once per load, so the same object for as long as the group stays cached); business code changes a group only through insert/update/delete, and a direct put/remove throws UnsupportedOperationException. Single reads (get/getOrCreate) and every Group read or write load a missing key; Single writes never load. Loads run synchronously on the calling thread; a missing key loads once while concurrent callers of that key wait. The load runs outside the cache map's locks, so other keys are never blocked by it; a mutation of the same key during the load waits for it and then applies to its result; if the key is evicted while loading, the result is discarded and loaded again, so nothing older than memory is ever installed. Reading the same key again inside its loader throws IllegalStateException. A load failure throws DataLoadException and is not cached as absence.
 
 Data has no asynchronous reads. On the default virtual-thread Route executor a synchronous load only parks the current Route's virtual thread; later messages of that Route have to wait for it anyway, so ordering is unchanged and business code needs no callbacks. With a platform-thread Route executor, preload a player's data when the player enters its Route so in-game reads hit the cache.
 
@@ -108,13 +108,13 @@ GameData closes only its own thread, never the DataSource, MongoClient or Mapper
 
 ## 4. Entity and identity metadata
 
-Inherited fields are supported; annotations are on nonstatic, nonfinal fields. State entities need an accessible no-argument constructor; loading writes fields directly through VarHandles (open the package under JPMS). Identity fields are byte/short/int/long, their wrappers or String, never null. Composite keys need explicit, distinct `order` values. `GroupKey.of(Object...)` keeps its array without copying (do not mutate it) and compares typed values: `GroupKey.of(42L)` ≠ `GroupKey.of(42)`. `MapKeys.of(a, b, …)` joins at least two integer/String values with ':' and rejects ':' inside values.
+Inherited fields are supported; annotations are on nonstatic, nonfinal fields. State entities need an accessible no-argument constructor; loading writes fields directly through VarHandles (open the package under JPMS). Identity fields are byte/short/int/long, their wrappers or String, never null. Composite keys need explicit, distinct `order` values. `GroupKeys.of(Object...)` keeps its array without copying (do not mutate it) and compares typed values: `GroupKeys.of(42L)` ≠ `GroupKeys.of(42)`. `MapKeys.of(a, b, …)` joins at least two integer/String values with ':' and rejects ':' inside values.
 
 ```java
 public interface EntityMapper {
     void initialize(EntityMeta meta);
     Object load(EntityMeta meta, Object id);
-    List<?> loadGroup(EntityMeta meta, GroupKey key);      // nonnull, empty for no rows
+    List<?> loadGroup(EntityMeta meta, GroupKeys key);      // nonnull, empty for no rows
     void insertBatch(EntityMeta meta, List<?> entities);
     void updateBatch(EntityMeta meta, List<?> entities);
     void deleteBatch(EntityMeta meta, List<Object> ids);
@@ -175,7 +175,7 @@ The admission read lock orders shutdown against mutations in progress. close tak
 @Table(name = "player_task", indexes = { @Index(name = "idx_role_task", columnList = "role_id, task_id") })
 public class Task {
     @Id @Column private long id;
-    @cn.managame.data.annotation.GroupKey @Column private long roleId;
+    @GroupKey @Column private long roleId;
     @MapKey @Column private long taskId;
     @Column private int progress;
 }
