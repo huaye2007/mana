@@ -17,14 +17,52 @@ class RouterWireTest {
     @Test void goldenVectors() {
         ByteBuf attach = attach(5, 6).body(), detach = detach(5).body();
         RpcRequest data = data(DIRECT, 1, 2, 3, 4, 5, 0, new RpcRequest(44, 0, 9, 0, 0, null, null), MAX_INNER);
+        RpcRequest located = locations(true, List.of(new Entry(7, 8, 9)));
+        RpcRequest gone = unlocate(List.of(new Entry(7, 8, 0)));
         try {
-            assertEquals("0401" + "0000000000000005" + "00000006", ByteBufUtil.hexDump(attach));
-            assertEquals("0402" + "0000000000000005", ByteBufUtil.hexDump(detach));
-            assertEquals("0403" + "01" + "00000001" + "0000000000000002" + "00000003" + "00000004" + "0000000000000005" + "00000000"
+            assertEquals("0501" + "0000000000000005" + "00000006", ByteBufUtil.hexDump(attach));
+            assertEquals("0502" + "0000000000000005", ByteBufUtil.hexDump(detach));
+            assertEquals("0504" + "01" + "0001" + "00000007" + "0000000000000008" + "00000009",
+                    ByteBufUtil.hexDump(located.body()));
+            assertEquals("0505" + "0001" + "00000007" + "0000000000000008", ByteBufUtil.hexDump(gone.body()));
+            assertEquals("0503" + "01" + "00000001" + "0000000000000002" + "00000003" + "00000004" + "0000000000000005" + "00000000"
                             + "0000001c" + "03" + "0000002c" + "00000000" + "0000000000000009" + "00" + "0000000000000000" + "0000",
                     ByteBufUtil.hexDump(data.body()));
             assertEquals(9, data.routeKey());
-        } finally { attach.release(); detach.release(); data.body().release(); }
+            // Every control operation shares one routeKey, so they cannot overtake each other on their Slot.
+            assertEquals(1, located.routeKey()); assertEquals(1, gone.routeKey());
+        } finally { attach.release(); detach.release(); data.body().release(); located.body().release(); gone.body().release(); }
+    }
+    @Test void locationReportsRoundTripAndRejectMalformedCounts() {
+        List<Entry> entries = List.of(new Entry(7, 8, 9), new Entry(10, 11, 12));
+        RpcRequest report = locations(false, entries);
+        try {
+            ByteBuf b = report.body().duplicate();
+            assertEquals(LOCATIONS, operation(b));
+            Report decoded = locations(b);
+            assertFalse(decoded.replace());
+            assertEquals(entries, decoded.entries());
+        } finally { report.body().release(); }
+        // A complete set may be empty ("I have no attachments"); an upsert or a withdrawal may not.
+        RpcRequest empty = locations(true, List.of());
+        try {
+            ByteBuf b = empty.body().duplicate(); operation(b);
+            assertTrue(locations(b).replace());
+            assertEquals(List.of(), locations(empty.body().duplicate().skipBytes(2)).entries());
+        } finally { empty.body().release(); }
+        assertThrows(IllegalStateException.class, () -> locations(false, List.of()));
+        assertThrows(IllegalStateException.class, () -> unlocate(List.of()));
+        // A declared count the payload does not cover, and a zero nodeId, are both rejected.
+        ByteBuf truncated = Unpooled.buffer().writeByte(VERSION).writeByte(LOCATIONS).writeByte(1).writeShort(2).writeInt(7).writeLong(8).writeInt(9);
+        try {
+            ByteBuf b = truncated.duplicate(); operation(b);
+            assertThrows(CorruptedFrameException.class, () -> locations(b));
+        } finally { truncated.release(); }
+        ByteBuf zeroNode = Unpooled.buffer().writeByte(VERSION).writeByte(UNLOCATE).writeShort(1).writeInt(0).writeLong(8);
+        try {
+            ByteBuf b = zeroNode.duplicate(); operation(b);
+            assertThrows(CorruptedFrameException.class, () -> unlocate(b));
+        } finally { zeroNode.release(); }
     }
     @Test void innerMessageFieldsAndBorrowedOwnershipSurviveTheFrame() {
         ByteBuf body = Unpooled.buffer().writeLong(42);
@@ -102,6 +140,9 @@ class RouterWireTest {
     @Test void unknownVersionsAndBroadcastsWithoutAServiceAreRejected() {
         ByteBuf v3 = Unpooled.wrappedBuffer(new byte[]{3, 3});
         try { assertThrows(CorruptedFrameException.class, () -> operation(v3)); } finally { v3.release(); }
+        // v5 is incompatible with v4: a v4 participant's frames are rejected rather than half-understood.
+        ByteBuf v4 = Unpooled.wrappedBuffer(new byte[]{4, 3});
+        try { assertThrows(CorruptedFrameException.class, () -> operation(v4)); } finally { v4.release(); }
         RpcRequest broadcast = data(BROADCAST, 1, 11, 3, 0, 0, 0, new RpcRequest(44, null), MAX_INNER);
         try {
             ByteBuf b = broadcast.body().duplicate(); operation(b);

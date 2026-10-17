@@ -5,7 +5,9 @@
 > Non-normative record. The component specifications hold the current contracts; this page records what a
 > whole-repository review found, the evidence for each finding, and what it would take to close it. Nothing
 > here changes a contract. Findings the previous review already decided are not reopened: see
-> [2026-10-14 framework review](2026-10-14-framework-review.md).
+> [2026-10-14 framework review](2026-10-14-framework-review.md). This page covers what is missing; its
+> companion [2026-10-17 architecture and API review](2026-10-17-architecture-api-review.md) covers whether
+> what exists is shaped right.
 >
 > Fixed the same day, after this record was written: the §4.1 stale import and the Checkstyle source scope,
 > so `mvn clean verify -Pquality` now passes for every module; the
@@ -76,11 +78,17 @@ What exists: `DIRECT` (one node ID), `BROADCAST` (every node of a service attach
 - "call any node of service X" with load balancing,
 - entity handoff/migration between nodes, and the fencing that makes it safe.
 
-Broadcast is also best-effort by construction: one Router is chosen
-([ServiceRouting.java:142](../../game-router/src/main/java/cn/managame/router/node/ServiceRouting.java#L142)),
-so delivery covers the nodes attached *to that Router* at that moment. In steady state every service
-attaches to every Router and the set is complete; during warm-up, a Router restart or a partition it is
-silently partial, with no acknowledgement and no way for the caller to learn who was missed.
+Broadcast is also best-effort by construction: one Router is chosen, so delivery covers the nodes attached
+*to that Router* at that moment. In steady state every service attaches to every Router and the set is
+complete; during warm-up, a Router restart or a partition it is silently partial, with no acknowledgement
+and no way for the caller to learn who was missed.
+
+> **Partly superseded on 2026-10-17** by the [Router mesh redesign](2026-10-17-router-mesh-redesign.md). A
+> service now attaches to one Router and the sender's Router fans a broadcast out across the mesh, so
+> coverage is every node of the service whose Router is reachable — no longer only the nodes of one chosen
+> Router. The rest of this section still holds: there is still no entity→node ownership registry, no shard
+> map, no load-balanced "call any node of service X" and no entity handoff, and a broadcast still has no
+> acknowledgement and no way to learn who was missed.
 
 ### 2.3 The serial-Route promise is per-process, and nothing enforces it across the cluster
 

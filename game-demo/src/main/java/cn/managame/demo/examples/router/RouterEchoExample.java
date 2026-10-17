@@ -12,8 +12,10 @@ import java.util.concurrent.*;
 import java.util.function.BooleanSupplier;
 
 /**
- * Four simulated processes: two stateless Routers and two services, each with exactly one application-owned
- * RPC Node. Every service connects to every Router; the source addresses the target by its Node ID.
+ * Four simulated processes: two Routers forming a mesh and two services, each with exactly one
+ * application-owned RPC Node. Each service connects to one Router — the source to A, the target to B — so the
+ * echo crosses two hops: the source's Router passes it to the Router the target is attached to, and the
+ * response comes back the same way. The source still addresses the target by its Node ID.
  */
 public final class RouterEchoExample {
     private RouterEchoExample() {}
@@ -31,13 +33,14 @@ public final class RouterEchoExample {
             sourceHandler.routing = sourceRouting; targetHandler.routing = targetRouting;
             // Routing is an ordinary Handler. The application starts and closes each component.
             a.start(); b.start(); source.start(); target.start();
-            // Every service declares and connects to every Router; Routers never connect to each other.
-            for (ServiceRouting routing : new ServiceRouting[]{sourceRouting, targetRouting}) { routing.addRouter(101); routing.addRouter(102); }
-            for (RpcNode service : new RpcNode[]{source, target}) {
-                service.addPeer(101, a.localAddress(), 2); service.addPeer(102, b.localAddress(), 2);
-            }
-            // A service is reachable through a Router once it has announced itself there.
-            await(() -> routerA.isAttached(2) && routerB.isAttached(2));
+            // The Routers declare each other; the larger ID opens the one connection of the pair.
+            routerA.addRouter(102); routerB.addRouter(101);
+            b.addPeer(101, a.localAddress(), 2);
+            // Each service declares and connects to one Router. Which one is the application's decision.
+            sourceRouting.addRouter(101); source.addPeer(101, a.localAddress(), 2);
+            targetRouting.addRouter(102); target.addPeer(102, b.localAddress(), 2);
+            // The target announces itself on B, and B reports it to A, which is what lets A forward there.
+            await(() -> routerB.isAttached(2) && routerA.isReachable(2));
             sourceRouting.callNode(2, new RpcRequest(44, Unpooled.copiedBuffer("hello game-router", StandardCharsets.UTF_8)),
                     (String value) -> sourceHandler.result.offer(value));
             Object response = sourceHandler.result.poll(5, TimeUnit.SECONDS);
@@ -55,7 +58,7 @@ public final class RouterEchoExample {
     private static void await(BooleanSupplier ready) throws Exception {
         long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (!ready.getAsBoolean() && System.nanoTime() < end) Thread.sleep(5);
-        if (!ready.getAsBoolean()) throw new IllegalStateException("Service did not attach to the Routers");
+        if (!ready.getAsBoolean()) throw new IllegalStateException("The target did not become reachable through the mesh");
     }
     private static final class Handler implements RpcHandler, RouterHandler {
         final boolean echo;

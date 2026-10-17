@@ -121,7 +121,7 @@ Each component specifies which APIs return or report errors. A defined constant 
 
 ### Router constants
 
-The 5000..5999 range stays reserved for game-router, which currently defines no codes: the stateless Router reports failures with RPC's PEER_NOT_FOUND, UNAVAILABLE, TIMEOUT and HANDLER_ERROR. 5001..5004 (ROUTER_ROUTE_NOT_FOUND, ROUTER_BINDING_CONFLICT, ROUTER_NOT_REGISTERED, ROUTER_INVALID_SERVICE) belonged to the removed binding and registration model and MUST NOT be reused. See [Router](OGBS-Router-1.0.md) for its failure paths.
+The 5000..5999 range stays reserved for game-router, which currently defines no codes: the Router reports failures with RPC's PEER_NOT_FOUND, UNAVAILABLE, TIMEOUT and HANDLER_ERROR. 5001..5004 (ROUTER_ROUTE_NOT_FOUND, ROUTER_BINDING_CONFLICT, ROUTER_NOT_REGISTERED, ROUTER_INVALID_SERVICE) belonged to the removed binding and registration model and MUST NOT be reused. See [Router](OGBS-Router-1.0.md) for its failure paths.
 
 <a id="5-实现与验证"></a>
 

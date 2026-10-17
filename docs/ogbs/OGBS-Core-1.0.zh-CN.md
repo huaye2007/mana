@@ -106,7 +106,7 @@ Data 错误码用于后台持久化失败上下文；同步加载/操作/关闭�
 
 ### Router 常量
 
-5000..5999 区间仍保留给 game-router，但它目前不定义任何错误码：无状态 Router 使用 RPC 的 PEER_NOT_FOUND、UNAVAILABLE、TIMEOUT 和 HANDLER_ERROR 报告失败。5001..5004（ROUTER_ROUTE_NOT_FOUND、ROUTER_BINDING_CONFLICT、ROUTER_NOT_REGISTERED、ROUTER_INVALID_SERVICE）属于已删除的绑定与注册模型，MUST NOT 重新使用。失败路径见 [Router](OGBS-Router-1.0.zh-CN.md)。
+5000..5999 区间仍保留给 game-router，但它目前不定义任何错误码：Router 使用 RPC 的 PEER_NOT_FOUND、UNAVAILABLE、TIMEOUT 和 HANDLER_ERROR 报告失败。5001..5004（ROUTER_ROUTE_NOT_FOUND、ROUTER_BINDING_CONFLICT、ROUTER_NOT_REGISTERED、ROUTER_INVALID_SERVICE）属于已删除的绑定与注册模型，MUST NOT 重新使用。失败路径见 [Router](OGBS-Router-1.0.zh-CN.md)。
 
 ## 5. 实现与验证
 

@@ -5,6 +5,8 @@
 > 非规范记录。现行契约见 [Router 规范](../ogbs/OGBS-Router-1.0.zh-CN.md)、[Router Java 规范](../ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md) 和 [Wire Profile](../rpc-wire.zh-CN.md#router-profile-v4)。本文保留本次审查的问题、测量与决定。
 >
 > 当天稍后 Router 改为无状态中继（第 4 节），第 1–3 节讨论的 RoutingThread、RouterSync、origin 字段和 Router 间一跳随之删除；只改写路由头的转发方式和写缓冲建议保持不变。
+>
+> 2026-10-17 被取代：第 4 节的设计——每个服务连接每个 Router，因此 Router 之间互不通信——已被两级网格替代，服务只附着一个 Router，各 Router 之间复制 Node 位置。Node 位置复制的规模由 Node 数量决定，它不是第 4 节删掉的那套业务键绑定复制，后者依旧不复存在。第 1–3 节仍是第 4 节之前设计的记录。见 [2026-10-17 Router 网格改造](2026-10-17-router-mesh-redesign.zh-CN.md)。
 
 ## 1. 问题：RoutingThread 能否删除？
 

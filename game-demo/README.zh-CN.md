@@ -2,7 +2,7 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-路由示例：[RouterEchoExample](src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 经两个无状态 Router 按 Node ID 从一个服务调用另一个服务，每个模拟进程只有一个应用拥有的 RpcNode。每个服务在其 ServiceRouting 上声明两个 Router，并用 rpc.addPeer 连接它们；回复时展示 retain 借用 body。RouterExampleTest 验证执行。demo 在 Spring/RPC 之外直接依赖 game-router。见 [Router 标准](../docs/ogbs/OGBS-Router-1.0.zh-CN.md) 和 [Java 开发规范](../docs/ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)；该示例不启动 MySQL 或主 Spring 应用。
+路由示例：[RouterEchoExample](src/main/java/cn/managame/demo/examples/router/RouterEchoExample.java) 跨一个两 Router 网格按 Node ID 从一个服务调用另一个服务，每个模拟进程只有一个应用拥有的 RpcNode。两个 Router 互相声明，由 ID 较大的一方开那一对的连接；每个服务只声明并用 rpc.addPeer 连接一个 Router，因此回显要跨两跳。回复时展示 retain 借用 body。RouterExampleTest 验证执行。demo 在 Spring/RPC 之外直接依赖 game-router。见 [Router 标准](../docs/ogbs/OGBS-Router-1.0.zh-CN.md) 和 [Java 开发规范](../docs/ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)；该示例不启动 MySQL 或主 Spring 应用。
 
 根 Maven 构建中的普通 Spring 应用与统一示例模块，使用 JDK 25 和仓库父 POM。主应用位于 `cn.managame.demo`，独立运行入口及测试位于 `cn.managame.demo.examples.<component>`。直接框架依赖为 [game-spring](../game-spring/README.zh-CN.md)、game-rpc 与 game-router；Spring Context、Runtime、Data、Network、Core 通过 game-spring 传递引入，RPC 与 Router 供独立示例使用。应用层 Fory、HikariCP、MySQL Driver 仍显式声明。框架模块不依赖此应用，也不发布示例类。
 

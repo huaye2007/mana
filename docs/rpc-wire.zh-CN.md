@@ -115,27 +115,42 @@ Response：requestId=9、errorCode=2006、Metadata/body 空：
 <a id="router-profile-v2"></a>
 <a id="router-profile-v3"></a>
 <a id="router-profile-v4"></a>
+<a id="router-profile-v5"></a>
 
-## Router Profile v4（显式启用的 RPC payload）
+## Router Profile v5（显式启用的 RPC payload）
 
-[Router 语义](ogbs/OGBS-Router-1.0.zh-CN.md)和 [Java 绑定](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)定义角色与所有权。本节是 Router 字节布局的唯一定义。RPC framing、消息类型和握手不变。Router 流量使用 Request.command **0x80000288**（Java **-2147483000**），在启用路由的 Node 中保留；普通业务 command 不得使用它。外层 Metadata 与业务身份为空/零。Data 请求的外层 routeKey 取内层请求的 routeKey；Attach 和 Detach 都使用 routeKey 1，因此走同一个 Slot，按发送顺序到达。
+[Router 语义](ogbs/OGBS-Router-1.0.zh-CN.md)和 [Java 绑定](ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md)定义角色与所有权。本节是 Router 字节布局的唯一定义。RPC framing、消息类型和握手不变。Router 流量使用 Request.command **0x80000288**（Java **-2147483000**），在启用路由的 Node 中保留；普通业务 command 不得使用它。外层 Metadata 与业务身份为空/零。Data 请求的外层 routeKey 取内层请求的 routeKey；每个控制操作（Attach、Detach、Locations、Unlocate）都使用 routeKey 1，因此同一连接上的全部控制流量共用一个 Slot，按发送顺序到达。
 
-每个 Router 请求 body 以 `profileVersion:uint8=4` 开头，随后是 `operation:uint8`。其他版本、不支持的操作、截断或尾随数据均非法。所有整数为大端序。nodeId 为非零 uint32，nodeEpoch 为非零 uint64，serviceId 为限定在 1..2147483647 的 uint32。Router Profile 流量只在服务与 Router 之间传输；Router 之间从不互发。
+每个 Router 请求 body 以 `profileVersion:uint8=5` 开头，随后是 `operation:uint8`。其他版本、不支持的操作、截断或尾随数据均非法。所有整数为大端序。nodeId 为非零 uint32，nodeEpoch 为非零 uint64，serviceId 为限定在 1..2147483647 的 uint32。Router Profile 流量在服务与它所附着的那一个 Router 之间传输，也在网格的两个 Router 之间传输。方向列是规范性的：接收方必须拒绝来自已声明 Router 的 Attach 或 Detach，也必须拒绝来自非已声明 Router 的 Locations 或 Unlocate。
 
 | Op | 名称 | 方向 | 公共两字节头之后的字段 |
 | --- | --- | --- | --- |
 | 1 | Attach | 服务 → Router，Notify | nodeEpoch:uint64, serviceId:uint32 |
 | 2 | Detach | 服务 → Router，Notify | nodeEpoch:uint64 |
-| 3 | Data | 双向 | 下文 envelope，随后是内层帧 |
+| 3 | Data | 服务 ↔ Router，Router ↔ Router | 下文 envelope，随后是内层帧 |
+| 4 | Locations | Router → Router，Notify | replace:uint8, entryCount:uint16，随后 entryCount × (nodeId:uint32, nodeEpoch:uint64, serviceId:uint32) |
+| 5 | Unlocate | Router → Router，Notify | entryCount:uint16，随后 entryCount × (nodeId:uint32, nodeEpoch:uint64) |
 
-Attach 声明本连接上的 Node，Node ID 即直连 RPC Peer。Router 在该 Node 保持连接期间保存每个 Node 的最新声明，收到其他 nodeEpoch 或 serviceId 时替换。Detach 仅在 nodeEpoch 相同时删除声明。两者都没有确认：服务在每条新连接上及周期性地重复 Attach，因此重启的 Router 会重新得知它；收到自己不使用的 Router 发来的 Data 时，服务再回一条 Detach。以 Call 发送的 Attach 或 Detach 被拒绝。
+Attach 声明本连接上的 Node，Node ID 即直连 RPC Peer。Router 在该 Node 保持连接期间保存每个 Node 的最新声明，收到其他 nodeEpoch 或 serviceId 时替换。Detach 仅在 nodeEpoch 相同时删除声明。两者都没有确认：服务在每条新连接上及周期性地重复 Attach，因此重启的 Router 会重新得知它；收到自己并未使用的 Router 发来的 Data 时，服务再回一条 Detach。以 Call 发送的 Attach 或 Detach 被拒绝。
+
+### Locations 与 Unlocate
+
+Locations 上报附着在**发送方** Router 上的服务 Node；发送方 Router 即直连 RPC Peer，因此它不是一个字段。`replace=1` 表示条目列表是发送方的完整集合，替换它先前上报的全部内容——未经 Unlocate 就消失的 Node 正是这样被忘掉的；`replace=0` 只对所列条目做 upsert。每个条目定位一个 Node：接收方保存 `(nodeId → nodeEpoch, serviceId, 上报的 Router)`，并替换同一 Router 为该 nodeId 上报的既有条目。两个 Router 上报同一个 nodeId 属于配置错误；接收方可保留任意一个，而它自己的在线附着永远胜过任何上报。
+
+Unlocate 删除上报来的条目，且仅在 nodeId 与 nodeEpoch 都与已存条目匹配时删除，于是一条与更新上报竞争失败的删除不会误删更新的位置。
+
+来自某个 Router 的 Data 帧同时把它自己的 `sourceNodeId`/`sourceNodeEpoch`/`sourceServiceId` 定位在那个 Router 上，效果等同于随帧携带了一条单条目的 `replace=0` Locations。控制操作与 Data 使用不同 routeKey，因而走不同 Slot，所以响应不能依赖某条上报抢在需要它的那个请求之前到达。
+
+`entryCount` 取值 0..65535，payload 必须在所声明的条目之后恰好结束。`entryCount=0` 仅在 `replace=1` 时合法，含义是"我没有任何附着"；零条目的 Unlocate 或 `replace=0` 的 Locations 非法。完整集合必须装进一个 RPC 帧：在 `maxFrameSize` 为 4 MiB 时，限制来自 uint16 条目数而不是帧长。以 Call 发送的 Locations 或 Unlocate 被拒绝，两者都不被确认：下一次周期性完整集合会修复任何丢失。
+
+payload 大小：Locations 为 5 + 16 × entryCount 字节，Unlocate 为 4 + 12 × entryCount，均含公共两字节。
 
 ### Data envelope
 
 | 字段 | 宽度 / 含义 |
 | --- | --- |
 | mode | uint8：1 Node 请求，2 服务广播，3 响应 |
-| sourceNodeId | uint32，发送 Node；在 Router 处必须等于直连 Peer |
+| sourceNodeId | uint32，发起的服务 Node；服务发出该帧时等于直连 Peer，Router 转交时仍保持为发起者 |
 | sourceNodeEpoch | uint64，发送方代际 |
 | sourceServiceId | uint32，发送 Node 所属服务 |
 | targetNodeId | uint32：请求目标，或响应中的调用方；服务发出的广播中为 0 |
@@ -145,18 +160,20 @@ Attach 声明本连接上的 Node，Node ID 即直连 RPC Peer。Router 在该 N
 
 连同公共两字节，envelope 共 35 字节；加上外层 Request 头（长度前缀和 28 个固定字节），Data 请求比其内层帧长 67 字节，并且必须符合 RPC 帧上限。内层声明长度必须恰好覆盖剩余字节。mode 3 要求内层为 Response；mode 1 和 2 要求内层为 requestId 为 0 的 Request。内层 Metadata、command、身份、body 与 routeKey 遵循普通 RPC 格式。
 
-服务把 Node 请求（mode 1）发给一个 Router：Notify，或需要响应时用 Call。Router 同时把该帧视为其来源的 Attach，然后仅当 targetNodeId 以 targetNodeEpoch（为 0 时不限代际）附着时才投递：作为外层 Notify，targetNodeEpoch 改为附着的代际；若是 Call，内层 requestId 改为外层调用 ID。除这些字段外，Router 逐字节原样传递内层帧。目标未附着时，Router 立即以原生 Response 回答 Call，errorCode 为 RPC PEER_NOT_FOUND；向已附着目标发送被拒绝时为 UNAVAILABLE；Notify 直接丢弃。
+服务把 Node 请求（mode 1）发给自己的 Router：Notify，或需要响应时用 Call。Router 同时把该帧视为其来源的 Attach，然后解析 targetNodeId。目标以 targetNodeEpoch（为 0 时不限代际）附着在本 Router 上时直接投递：作为外层 Notify，targetNodeEpoch 改为附着的代际；若是 Call，内层 requestId 改为外层调用 ID。若是另一个 Router 上报过该目标，则把该帧一次性以 Notify 交给那个 Router，targetNodeEpoch 置为上报的代际，由它投递。除这些字段外，Router 逐字节原样传递内层帧。**来自 Router** 的帧只会被投递给本地已附着的目标，绝不再次转出。不存在可用位置时，Router 立即以原生 Response 回答 Call，errorCode 为 RPC PEER_NOT_FOUND；向目标或向下一个 Router 发送被拒绝时为 UNAVAILABLE；Notify 直接丢弃。
 
-广播（mode 2）是 Notify。Router 向 targetServiceId 的每个已附着 Node（包括发送方）各投递一份，地址为该 Node 的精确 ID 与代际。
+广播（mode 2）是 Notify。接收该帧的 Router 向附着在自己身上的 targetServiceId 的每个 Node（包括发送方）各投递一份，地址为该 Node 的精确 ID 与代际；并把该帧一次性交给网格中每一个其他已连接 Router，targetNodeId 与 targetNodeEpoch 保持为 0。来自 Router 的广播只在本地投递。
 
-响应（mode 3）是响应服务发往投递该请求的 Router 的 Notify，目标为调用方的 ID 与代际。该 Router 用原生 RPC Response 回答调用方挂起的 Call：携带内层 requestId，**外层 errorCode 为 0、Metadata 为空**，body 为完整的 Router version/op=3/mode=3 payload；调用方再解开内层响应的实际错误与 Metadata。若调用方已不再以该代际附着，响应被丢弃。服务只接受自己声明过的 Router 发来的 Data，且 targetNodeId 与 targetNodeEpoch 必须是自己的。
+响应（mode 3）是响应服务发往投递该请求的 Router 的 Notify，目标为调用方的 ID 与代际。该 Router 按 targetNodeId 路由它，与 mode 1 完全相同：调用方附着在此处时，用原生 RPC Response 回答调用方挂起的 Call，携带内层 requestId，**外层 errorCode 为 0、Metadata 为空**，body 为完整的 Router version/op=3/mode=3 payload，调用方再解开内层响应的实际错误与 Metadata；若是另一个 Router 上报过调用方，则把该帧一次性交给那个 Router，由它完成该调用。由于服务 Node 只附着一个 Router，这次解析必然抵达持有该待完成调用的 Router。调用方已不再以该代际附着、或没有可用位置时，响应被丢弃。服务只接受自己正在使用的那个 Router 发来的 Data，且 targetNodeId 与 targetNodeEpoch 必须是自己的。
 
 黄金向量（来自 [RouterWireTest](../game-router/src/test/java/cn/managame/router/node/RouterWireTest.java)）：
 
 | 帧 | 字节 |
 | --- | --- |
-| Attach(epoch 5, service 6) | `04 01 0000000000000005 00000006` |
-| Detach(epoch 5) | `04 02 0000000000000005` |
-| Data(Node 请求 1/2/3 → 4/5，command 44，routeKey 9，无 body) | `04 03 01 00000001 0000000000000002 00000003 00000004 0000000000000005 00000000 0000001c 03 0000002c 00000000 0000000000000009 00 0000000000000000 0000` |
+| Attach(epoch 5, service 6) | `05 01 0000000000000005 00000006` |
+| Detach(epoch 5) | `05 02 0000000000000005` |
+| Locations(replace，一条：node 7、epoch 8、service 9) | `05 04 01 0001 00000007 0000000000000008 00000009` |
+| Unlocate(一条：node 7、epoch 8) | `05 05 0001 00000007 0000000000000008` |
+| Data(Node 请求 1/2/3 → 4/5，command 44，routeKey 9，无 body) | `05 03 01 00000001 0000000000000002 00000003 00000004 0000000000000005 00000000 0000001c 03 0000002c 00000000 0000000000000009 00 0000000000000000 0000` |
 
-Profile v4 与 v1–v3 不兼容：Router 同步、服务注册与绑定控制以及 RoutedError 均已删除，Data envelope 也已改变。拒绝其他版本，路由参与方需一起升级。RPC Wire framing 与普通 RPC 消息不变；旧锚点仅为保持链接而保留。跨语言 Router 互通仍未验证。
+Profile v5 与 v1–v4 不兼容。相对 v4，Data envelope 逐字节相同，原有三个操作也未变，但 Data 现在也在 Router 之间流动，新增了 Locations 与 Unlocate，而且服务只附着一个 Router 而不是全部，因此一个 v4 参与方既不会上报也不会接受位置，并且仍会把自己的流量铺到每个 Router 上。相对 v1–v3，业务键绑定的 Router 同步、服务注册与绑定控制以及 RoutedError 依旧不复存在：v5 只复制 Node 位置。拒绝其他版本，路由参与方需一起升级。RPC Wire framing 与普通 RPC 消息不变；旧锚点仅为保持链接而保留。跨语言 Router 互通仍未验证。

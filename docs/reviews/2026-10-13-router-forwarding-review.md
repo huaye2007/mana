@@ -5,6 +5,8 @@
 > Non-normative record. Current contracts live in the [Router Specification](../ogbs/OGBS-Router-1.0.md), the [Router Java specification](../ogbs/OGBS-Router-Java-25-Specification-1.0.md) and the [Wire Profile](../rpc-wire.md#router-profile-v4). This file keeps the questions, measurements and decisions of the review.
 >
 > Later the same day the Router became a stateless relay (section 4). That removed RoutingThread, RouterSync, the origin field and the Router-to-Router hop discussed in sections 1–3; the header-rewrite forwarding and the write-buffer guidance carry over unchanged.
+>
+> Superseded on 2026-10-17: section 4's design — every service connected to every Router, so Routers never talk to each other — was replaced by a two-tier mesh in which a service attaches to one Router and the Routers replicate Node locations. Node-location replication is bounded by Node count and is not the business-key binding replication that section 4 removed, which stays removed. Sections 1–3 remain the record of the design before section 4. See [2026-10-17 Router mesh redesign](2026-10-17-router-mesh-redesign.md).
 
 ## 1. Question: can RoutingThread be removed?
 

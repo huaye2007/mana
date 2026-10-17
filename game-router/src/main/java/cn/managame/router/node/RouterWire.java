@@ -6,18 +6,22 @@ import cn.managame.rpc.node.RpcNode;
 import cn.managame.rpc.transport.RpcSendStatus;
 import io.netty.buffer.*;
 import io.netty.handler.codec.CorruptedFrameException;
+import java.util.ArrayList;
+import java.util.List;
 
-/** Router Profile v4 payloads inside ordinary RPC requests. Package-private protocol. */
+/** Router Profile v5 payloads inside ordinary RPC requests. Package-private protocol. */
 final class RouterWire {
     private static final System.Logger LOG = System.getLogger(RouterWire.class.getName());
-    static final int COMMAND = -2147483000, VERSION = 4;
-    /** Service → Router notifies that announce or withdraw the Node on this connection, and routed data. */
-    static final int ATTACH = 1, DETACH = 2, DATA = 3;
+    static final int COMMAND = -2147483000, VERSION = 5;
+    /** Service → Router announcements, routed data, and the Router → Router location reports. */
+    static final int ATTACH = 1, DETACH = 2, DATA = 3, LOCATIONS = 4, UNLOCATE = 5;
     /** DATA modes. */
     static final int DIRECT = 1, BROADCAST = 2, RESPONSE = 3;
     /** Bytes before the inner frame of a DATA payload, and the inner frame size above which it is referenced, not copied. */
     static final int DATA_HEADER = 35, COPY_LIMIT = 2048;
-    /** Attach and Detach share one routeKey, so they use one Slot and arrive in the order they were sent. */
+    /** A uint16 counts the entries of one report, so one refresh cannot describe more attachments than this. */
+    static final int MAX_ENTRIES = 65535;
+    /** Every control operation shares one routeKey, so they use one Slot and arrive in the order they were sent. */
     private static final long CONTROL_ROUTE_KEY = 1;
     /** Offsets in an inner request frame (from its length prefix): the call ID and the routeKey that follows it. */
     private static final int CALL_ID = RpcWire.REQUEST_ID_OFFSET, CALL_ID_END = RpcWire.REQUEST_ROUTE_KEY_OFFSET;
@@ -45,12 +49,38 @@ final class RouterWire {
         RpcResponse response() { return RpcWire.decodeResponse(requestId, inner.duplicate().skipBytes(RpcWire.RESPONSE_ID_OFFSET + 4)); }
     }
 
+    /** One Node located on the reporting Router; {@code serviceId} is 0 in the entries of an Unlocate. */
+    record Entry(int nodeId, long nodeEpoch, int serviceId) {}
+
+    /** A received Locations report. {@code replace} makes the entries the reporter's complete set. */
+    record Report(boolean replace, List<Entry> entries) {}
+
     static RpcRequest attach(long nodeEpoch, int serviceId) {
         return packet(CONTROL_ROUTE_KEY, Unpooled.buffer(14).writeByte(VERSION).writeByte(ATTACH).writeLong(nodeEpoch).writeInt(serviceId));
     }
     static RpcRequest detach(long nodeEpoch) {
         return packet(CONTROL_ROUTE_KEY, Unpooled.buffer(10).writeByte(VERSION).writeByte(DETACH).writeLong(nodeEpoch));
     }
+    /** Reports the sending Router's attachments; {@code replace} marks the list as its complete set. */
+    static RpcRequest locations(boolean replace, List<Entry> entries) {
+        count(entries.size(), replace);
+        ByteBuf b = Unpooled.buffer(5 + 16 * entries.size()).writeByte(VERSION).writeByte(LOCATIONS)
+                .writeByte(replace ? 1 : 0).writeShort(entries.size());
+        for (Entry e : entries) b.writeInt(e.nodeId()).writeLong(e.nodeEpoch()).writeInt(e.serviceId());
+        return packet(CONTROL_ROUTE_KEY, b);
+    }
+    /** Withdraws reported attachments; each entry removes only an identical (nodeId, nodeEpoch). */
+    static RpcRequest unlocate(List<Entry> entries) {
+        count(entries.size(), false);
+        ByteBuf b = Unpooled.buffer(4 + 12 * entries.size()).writeByte(VERSION).writeByte(UNLOCATE).writeShort(entries.size());
+        for (Entry e : entries) b.writeInt(e.nodeId()).writeLong(e.nodeEpoch());
+        return packet(CONTROL_ROUTE_KEY, b);
+    }
+    private static void count(int size, boolean mayBeEmpty) {
+        if (size > MAX_ENTRIES) throw new IllegalStateException("Router report exceeds " + MAX_ENTRIES + " entries");
+        if (size == 0 && !mayBeEmpty) throw new IllegalStateException("Router report needs at least one entry");
+    }
+
     static int operation(ByteBuf body) {
         if (body == null || body.readableBytes() < 2 || body.readUnsignedByte() != VERSION)
             throw new CorruptedFrameException("Invalid Router Profile version");
@@ -61,6 +91,37 @@ final class RouterWire {
     }
     static void end(ByteBuf body) {
         if (body.isReadable()) throw new CorruptedFrameException("Trailing Router payload bytes");
+    }
+
+    /** Reads a Locations payload after its operation byte. */
+    static Report locations(ByteBuf b) {
+        need(b, 3);
+        int flag = b.readUnsignedByte();
+        if (flag > 1) throw new CorruptedFrameException("Invalid Locations replace flag");
+        boolean replace = flag == 1;
+        List<Entry> entries = entries(b, 16, replace);
+        return new Report(replace, entries);
+    }
+    /** Reads an Unlocate payload after its operation byte; entry serviceId is 0. */
+    static List<Entry> unlocate(ByteBuf b) {
+        return entries(b, 12, false);
+    }
+    private static List<Entry> entries(ByteBuf b, int width, boolean mayBeEmpty) {
+        need(b, 2);
+        int size = b.readUnsignedShort();
+        if (size == 0 && !mayBeEmpty) throw new CorruptedFrameException("Router report needs at least one entry");
+        need(b, size * width);
+        List<Entry> entries = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            int nodeId = b.readInt();
+            long nodeEpoch = b.readLong();
+            int serviceId = width == 16 ? b.readInt() : 0;
+            if (nodeId == 0 || nodeEpoch == 0 || (width == 16 && serviceId <= 0))
+                throw new CorruptedFrameException("Invalid Router report entry");
+            entries.add(new Entry(nodeId, nodeEpoch, serviceId));
+        }
+        end(b);
+        return entries;
     }
 
     /**
@@ -108,7 +169,8 @@ final class RouterWire {
     }
     /**
      * The same payload addressed to one exact Node incarnation. The inner frame is never decoded: it is copied
-     * when small and otherwise referenced, and only a request's call ID is rewritten to {@code callId}.
+     * when small and otherwise referenced, and only a request's call ID is rewritten to {@code callId}. Passing
+     * a frame to the next Router uses the call ID it already carries, so only the caller's own Router sets it.
      */
     static RpcRequest forward(Data d, int target, long targetEpoch, int callId) {
         ByteBuf inner = d.inner();
