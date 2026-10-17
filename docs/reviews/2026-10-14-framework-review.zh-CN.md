@@ -21,7 +21,7 @@
 | 7 | 过载拒绝异常带完整栈 | 修改 | RuntimeDispatchException 不采集栈 |
 | 8 | GameRpc 同步失败既抛异常又回调 UNAVAILABLE | 修改 | 新增 `CapturedRouteCallback.cancel()`，同步失败只抛异常 |
 | 9 | RPC 待完成调用无上限 | 修改（按 Peer） | `maxPendingCalls`（默认 65,536），超出时 onFail(UNAVAILABLE)；R-SEND-04 由 Node 级改为 Peer 级，避免一个慢 Peer 占满所有容量 |
-| 10 | 缓存在 CHM 锁内同步查库 | 修改 | 加载移到锁外并按 Key 合并；加载中修改先等待；淘汰竞争时重载；新增 getAsync/getGroupAsync |
+| 10 | 缓存在 CHM 锁内同步查库 | 修改 | 加载移到锁外并按 Key 合并；加载中修改先等待；淘汰竞争时重载。加载按设计保持同步（D-MODEL-01）；本行最初声称的异步访问方法从未加入，也不应加入（2026-10-17 更正） |
 | 11 | HTTP 请求与结果的 Jackson 配置不一致 | 修改 | 共享 JsonSupport 配置 |
 | 12 | RpcWire 注释写 v1，实际为 v2 | 修改 | 已更正 |
 

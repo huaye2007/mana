@@ -21,7 +21,7 @@ game-core, game-network, game-rpc, game-router, game-runtime, game-data and game
 | 7 | Overload rejections carried full stack traces | Change | RuntimeDispatchException captures no stack |
 | 8 | GameRpc reported a synchronous failure both as an exception and as an UNAVAILABLE callback | Change | New `CapturedRouteCallback.cancel()`; a synchronous failure only throws |
 | 9 | RPC pending calls were unbounded | Change (per Peer) | `maxPendingCalls` (default 65,536), UNAVAILABLE via onFail beyond it; R-SEND-04 changed from Node-wide to per-Peer so one slow Peer cannot consume every Peer's capacity |
-| 10 | The cache queried the database inside a CHM lock | Change | Loads run outside the lock, coalesced per key; a mutation during a load waits for it; a load that raced with eviction reloads; new getAsync/getGroupAsync |
+| 10 | The cache queried the database inside a CHM lock | Change | Loads run outside the lock, coalesced per key; a mutation during a load waits for it; a load that raced with eviction reloads. Loads stay synchronous by design (D-MODEL-01); the asynchronous accessors this row first claimed were never added and are not wanted (corrected 2026-10-17) |
 | 11 | HTTP request and result Jackson configurations differed | Change | Shared JsonSupport configuration |
 | 12 | The RpcWire comment said v1 while the wire is v2 | Change | Corrected |
 

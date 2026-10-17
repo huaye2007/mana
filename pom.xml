@@ -34,8 +34,14 @@
           <dependencies><dependency><groupId>com.puppycrawl.tools</groupId><artifactId>checkstyle</artifactId><version>${checkstyle.version}</version></dependency></dependencies>
           <configuration>
             <configLocation>${maven.multiModuleProjectDirectory}/config/checkstyle.xml</configLocation>
-            <!-- Main sources only: test sources carry leftover imports and very long assertion lines. -->
+            <!--
+              Hand-written main sources only. Test sources carry leftover imports and very long assertion
+              lines. sourceDirectories pins the scan to src/main/java: the plugin otherwise walks every
+              compile source root, which includes target/generated-sources/annotations, and JMH's generated
+              benchmark harness in game-benchmark declares imports it does not use.
+            -->
             <includeTestSourceDirectory>false</includeTestSourceDirectory>
+            <sourceDirectories><sourceDirectory>${project.build.sourceDirectory}</sourceDirectory></sourceDirectories>
             <consoleOutput>true</consoleOutput>
             <failOnViolation>true</failOnViolation>
           </configuration>

@@ -2,12 +2,12 @@
 
 [English](OGBS-RPC-1.0.md) | **[简体中文](OGBS-RPC-1.0.zh-CN.md)**
 
-文档类型：**标准规范（语言无关）**。组件 game-rpc。Java 实现已提供；关联、超时隔离与恢复交接修复已通过本地验证，有限调用接纳仍未实现并暂缓。详见 Java 规范 9.1。生产容量与跨语言互操作尚未验证。
+文档类型：**标准规范（语言无关）**。组件 game-rpc。Java 实现已提供；关联、超时隔离与恢复交接修复已通过本地验证；有限调用接纳已实现：**R-SEND-04** 限定每个 Peer 的待完成调用数。其余边界见 [Java 规范第 9 节](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#9-验证与边界)。生产容量与跨语言互操作尚未验证。
 
 配套：[Java 25 开发规范](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md)、[RPC Wire Profile](../rpc-wire.zh-CN.md)。
 规范性依赖：[Network](OGBS-Network-1.0.zh-CN.md)、[Core](OGBS-Core-1.0.zh-CN.md)。
 
-Router 集成审查已落实为普通 Handler 装配及组件自有协议恢复；RPC 不提供上层就绪/清理钩子。有限准入仍为已声明缺口，详见 [Java 集成审查](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#rpc-router-review-2026-10-07)。
+Router 集成审查已落实为普通 Handler 装配及组件自有协议恢复；RPC 不提供上层就绪/清理钩子。该次审查声明为缺口的有限调用接纳现已落实为 **R-SEND-04**，详见 [Java 集成审查](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#rpc-router-review-2026-10-07)。
 
 ## 1. 范围
 
@@ -86,7 +86,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-SEND-03** ACCEPTED 只表示本地网络接纳，不保证交付/执行。接纳后即使发生异步写失败、断线或超时，也不得补发该业务帧。重连只恢复通道。
 
-**R-SEND-04** notify/reply 只返回 ACCEPTED、PEER_NOT_FOUND、UNAVAILABLE。背压、无 READY 连接均归为 UNAVAILABLE，不排队等待。call 另有语言绑定配置的有限 Peer 级待完成调用上限：同一 Peer 已登记且尚未完成（响应、超时、失败）的调用达到上限时，新调用释放已接管 body，立即交付本地 UNAVAILABLE，不编码、不发送、不等待、不重试。按 Peer 计数使一个可达但很慢的 Peer 不会耗尽发往其他 Peer 的调用容量。此上限不拒绝 notify/reply。
+**R-SEND-04** notify/reply 只返回 ACCEPTED、PEER_NOT_FOUND、UNAVAILABLE。背压、无 READY 连接均归为 UNAVAILABLE，不排队等待。call 另有**有限调用接纳**：由语言绑定配置的 Peer 级待完成调用上限。同一 Peer 已登记且尚未完成（响应、超时、失败）的调用达到上限时，新调用释放已接管 body，立即交付本地 UNAVAILABLE，不编码、不发送、不等待、不重试。按 Peer 计数使一个可达但很慢的 Peer 不会耗尽发往其他 Peer 的调用容量。此上限不拒绝 notify/reply。
 
 例：routeKey 指向 slot2，但 Request 由 slot3 回退发送。此时 reply 只用 slot3；slot3 的连接已断或不可写时返回 UNAVAILABLE，不改用 slot2，调用方的 call 按自身超时结束。绑定按 Slot 而非物理连接，来源 Slot 上的新连接仍可承接回复（重启窗口见 R-CALL-04）。
 
@@ -161,4 +161,4 @@ Java 实现通过清除恢复标记后重新检查并 CAS 获得恢复权处理�
 
 Java 验证入口：[RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java)、[RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java)、[RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java)。实现细节、默认值与示例见 Java 开发规范。
 
-本地真实 TCP、并发回归及根 clean verify 已通过。有限接纳仍暂缓；跨语言、生产容量、长时间 ID 回绕与公网部署未验证。RPC 核心不自动依赖 Runtime；可选 Spring 适配另遵循 [容器集成规范](OGBS-Spring-1.0.zh-CN.md)。TLS/WS RPC Builder 和发现尚未实现。
+本地真实 TCP、并发回归及根 clean verify 已通过。有限调用接纳（R-SEND-04）已实现，并由 RpcNodeTest 覆盖达到上限时的快速拒绝、body 释放与完成后名额归还；跨语言、生产容量、长时间 ID 回绕与公网部署未验证。RPC 核心不自动依赖 Runtime；可选 Spring 适配另遵循 [容器集成规范](OGBS-Spring-1.0.zh-CN.md)。TLS/WS RPC Builder 和发现尚未实现。

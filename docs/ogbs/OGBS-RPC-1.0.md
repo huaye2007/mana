@@ -2,12 +2,12 @@
 
 **[English](OGBS-RPC-1.0.md)** | [简体中文](OGBS-RPC-1.0.zh-CN.md)
 
-Document type: **Language-independent specification**. Component: game-rpc. Java implementation is available; correlation, timeout isolation and recovery handoff repairs are locally verified. Finite admission remains unimplemented/deferred. See Java section 9.1. Production capacity and cross-language interoperability are unverified.
+Document type: **Language-independent specification**. Component: game-rpc. Java implementation is available; correlation, timeout isolation and recovery handoff repairs are locally verified. Finite call admission is implemented: **R-SEND-04** bounds each Peer's pending calls. Remaining limits are listed in [Java section 9](OGBS-RPC-Java-25-Specification-1.0.md#9-validation-and-limits). Production capacity and cross-language interoperability are unverified.
 
 Companions: [Java 25 specification](OGBS-RPC-Java-25-Specification-1.0.md), [RPC Wire Profile](../rpc-wire.md).
 Normative dependencies: [Network](OGBS-Network-1.0.md), [Core](OGBS-Core-1.0.md).
 
-The Router integration review led to ordinary Handler assembly and component-owned protocol recovery; RPC has no upper-layer readiness/cleanup hooks. Finite admission remains a declared gap. See [Java integration review](OGBS-RPC-Java-25-Specification-1.0.md#rpc-router-review-2026-10-07).
+The Router integration review led to ordinary Handler assembly and component-owned protocol recovery; RPC has no upper-layer readiness/cleanup hooks. The finite call admission that review declared a gap is now **R-SEND-04**. See [Java integration review](OGBS-RPC-Java-25-Specification-1.0.md#rpc-router-review-2026-10-07).
 
 <a id="1-范围"></a>
 
@@ -98,7 +98,7 @@ For example, an upper layer can recheck its protocol on reconnect without rebuil
 
 **R-SEND-03** ACCEPTED means local network acceptance, not delivery/execution. Never resend an accepted business frame after asynchronous write failure, disconnection, or timeout. Reconnection restores channels only.
 
-**R-SEND-04** notify/reply return only ACCEPTED, PEER_NOT_FOUND, or UNAVAILABLE. Backpressure and no READY connection both mean UNAVAILABLE; no waiting queue. call additionally has a finite, binding-configured per-Peer limit of pending calls: when a Peer already has that many registered calls that have not completed (response, timeout or failure), a new call releases the owned body and reports local UNAVAILABLE immediately without encoding, sending, waiting, or retry. Counting per Peer keeps one slow but reachable Peer from exhausting the call capacity for every other Peer. This limit does not reject notify/reply.
+**R-SEND-04** notify/reply return only ACCEPTED, PEER_NOT_FOUND, or UNAVAILABLE. Backpressure and no READY connection both mean UNAVAILABLE; no waiting queue. call additionally has **finite call admission**: a binding-configured per-Peer limit of pending calls. When a Peer already has that many registered calls that have not completed (response, timeout or failure), a new call releases the owned body and reports local UNAVAILABLE immediately without encoding, sending, waiting, or retry. Counting per Peer keeps one slow but reachable Peer from exhausting the call capacity for every other Peer. This limit does not reject notify/reply.
 
 Example: routeKey chooses slot2 but fallback sends the Request through slot3. reply then uses slot3 alone; when that connection is gone or unwritable it returns UNAVAILABLE instead of moving to slot2, and the caller's call ends on its own timeout. Binding is by Slot, not by physical connection, so a new connection in the source Slot can still carry the reply (see the restart window in R-CALL-04).
 
@@ -183,4 +183,4 @@ Automatic HANDLER_ERROR includes no exception text, stack trace, or Metadata. Co
 
 Java tests: [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java), [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java), [RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java). Implementation, defaults, and examples are in the Java specification.
 
-Local real TCP/concurrency regressions and root clean verify pass. Finite admission remains deferred; cross-language, production capacity, long-lived ID wrap and public-network deployment are unverified. RPC core has no automatic Runtime dependency; optional Spring adaptation follows [container integration semantics](OGBS-Spring-1.0.md). TLS/WS RPC Builder and discovery remain unimplemented.
+Local real TCP/concurrency regressions and root clean verify pass. Finite call admission (R-SEND-04) is implemented and covered by RpcNodeTest, which exercises fail-fast rejection at the limit, body release and the place returned on completion; cross-language, production capacity, long-lived ID wrap and public-network deployment are unverified. RPC core has no automatic Runtime dependency; optional Spring adaptation follows [container integration semantics](OGBS-Spring-1.0.md). TLS/WS RPC Builder and discovery remain unimplemented.
