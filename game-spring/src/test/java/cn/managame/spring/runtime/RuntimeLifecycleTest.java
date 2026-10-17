@@ -72,7 +72,7 @@ class RuntimeLifecycleTest {
     @Test void aCallbackThatNeverCompletesCannotBlockShutdownBeyondTheDrainTimeout() throws Exception {
         var spring = new AnnotationConfigApplicationContext();
         spring.getEnvironment().getPropertySources().addFirst(new org.springframework.core.env.MapPropertySource(
-                "drain", Map.of("game.runtime.drain-timeout-millis", "200")));
+                "drain", Map.of("game.shutdown.budget-millis", "1200", "game.shutdown.flush-reserve-millis", "1000")));
         spring.register(Config.class); spring.refresh();
         var runtime = spring.getBean(GameRuntime.class); var captured = new CountDownLatch(1);
         runtime.dispatch(null, 9L, new Request(() -> {

@@ -90,7 +90,7 @@ try (GameData data = GameDataBuilder.builder()
 | cacheExpire | 30 min | Idle time before a clean entry is evicted; must exceed flushInterval |
 | flushInterval | 1 s | Target interval between persistence passes |
 | batchSize | 500 | Rows per batch |
-| shutdownTimeout | 30 s | How long close keeps retrying retryable failures before dropping and reporting them |
+| shutdownTimeout | 30 s | How long close keeps retrying retryable failures before dropping and reporting them. Under container integration it is set from the shutdown budget's reserved flush slice before the application's configurers run, so it defaults to that instead ([Spring §3.0](OGBS-Spring-Java-25-Specification-1.0.md#30-shutdown-budget)) |
 | retryPolicy | RetryPolicy.transientFailures() | true keeps a failed change for the next pass; false splits, drops and reports (section 5) |
 | errorHandler | System.Logger | Receives dropped changes; archive them here |
 | partitionZone | UTC | Zone for DAY/MONTH/YEAR log partitions |

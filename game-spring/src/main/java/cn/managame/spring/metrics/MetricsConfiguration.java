@@ -5,6 +5,7 @@ import cn.managame.data.GameData;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.rpc.node.RpcNode;
 import cn.managame.runtime.GameRuntime;
+import cn.managame.spring.lifecycle.ShutdownPhase;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.beans.factory.ObjectProvider;
@@ -48,8 +49,14 @@ class MetricsConfiguration {
     ObservabilityEndpoints gameObservabilityEndpoints(MetricsRegistry gameMetricsRegistry, Environment environment,
                                                       ObjectProvider<GameRuntime> runtime,
                                                       ObjectProvider<GameData> data,
+                                                      ObjectProvider<ShutdownPhase> phase,
                                                       ObjectProvider<ReadinessCheck> extra) {
         List<ReadinessCheck> checks = new ArrayList<>();
+        // First, so an instance leaving rotation reports it before anything else has changed. This is the
+        // one condition that turns false while the instance is still serving normally, which is the window
+        // a load balancer needs to stop sending before admission closes.
+        ShutdownPhase leaving = phase.getIfAvailable();
+        if (leaving != null) checks.add(check("shutdown.rotation", () -> !leaving.leavingRotation()));
         GameRuntime r = runtime.getIfAvailable();
         if (r != null) checks.add(check("runtime.accepting", () -> r.stats().accepting()));
         GameData d = data.getIfAvailable();

@@ -20,6 +20,25 @@
 
 内部 ContextClosedEvent 监听器使用 Ordered.HIGHEST_PRECEDENCE、supportsAsyncExecution=false。在 Spring 普通同步事件广播下只处理自身 Context，执行 Runtime.shutdown，最多等待 `game.runtime.drain-timeout-millis`（默认 60000，须为正数）；未排空时记录包含未完成数量的 WARNING，然后执行 Runtime.close。中断会提前结束等待、关闭 Runtime 并恢复中断状态。普通关闭监听器（例如 demo TCP 关闭）随后执行，再停止托管 HTTP 生命周期、销毁 Bean 和 Data 最终回写。不得安装更早/同优先级的资源关闭监听器、以自定义异步广播改变顺序，或在 Runtime Route 关闭 Context，否则违反 S-CLOSE-01。refresh 失败按 Spring 销毁清理。本模块持有托管 HTTP 监听器，不持有数据库池或额外业务线程。监听器可能在 refresh 最后生命周期阶段对外可达；其他生命周期若随后失败，Spring 关闭监听器及 Runtime，但此失败清理不保证优雅排空或响应投递。
 
+### 3.0 关停预算
+
+实现 S-CLOSE-02 与 S-CLOSE-03。`cn.managame.spring.lifecycle.ShutdownBudget` 就是那份唯一声明的预算，由三个配置项创建并切分为顺序执行的各阶段；摘流是推导出来的，从不被直接配置。
+
+| 配置项 | 默认 | 阶段 |
+| --- | --- | --- |
+| `game.shutdown.budget-millis` | 25 000 | 整份预算；请把编排器的宽限期设在它之上 |
+| `game.shutdown.lead-millis` | 0 | 就绪报失败而准入保持开放的那段 |
+| `game.shutdown.flush-reserve-millis` | 10 000 | 为 Data 最终刷盘保留 |
+| *推导* | 15 000 | `drain = budget − lead − flushReserve`，给已接纳工作 |
+
+25 000 选在 Kubernetes 宽限期默认的 30 秒之下；`docker stop` 只给 10 秒，用它的部署据此调小预算。`ShutdownBudget.of` 拒绝非正的预算或保留额、负的提前量，以及任何让摘流分不到时间的切分，于是超额的预算在 refresh 时就失败，而不是很久以后把一次停机截断。原来的 `game.runtime.drain-timeout-millis` 已删除：单独配置摘流正是让总和漂移的原因。
+
+`ShutdownConfiguration` 被 Runtime 与 Data 两个配置同时 import，因此只要其中任一集成存在，预算与 `ShutdownPhase` 就存在，且两者读的是同一个实例。`DataConfiguration` 在应用的 `GameDataConfigurer` **之前**调用 `builder.shutdownTimeout(budget.flushReserve())`，于是这个保留额是一个框架默认值，更了解自己存储的应用仍可覆盖；没有 Runtime 集成时预算 Bean 可能不存在，Data 保持它自己的默认值。
+
+`ShutdownPhase` 是摘流与就绪之间唯一共享的那点状态：`leaveRotation()` 只置一次，`leavingRotation()` 可从任意线程读取，包括正在应答探测的 HTTP 线程。摘流监听器先置它、记一行提前量日志、在仍然接纳的状态下睡过这段，然后才调用 `runtime.shutdown()`；提前量为零时跳过睡眠。提前量或摘流期间的中断会被记住，并在 Runtime 关闭之后重新置位。§5 据它贡献 `shutdown.rotation` 就绪条件，并排在列表第一位，使正在退出轮转的实例报告的是这件事本身而不是它的后果。
+
+验证：[ShutdownBudgetTest](../../game-spring/src/test/java/cn/managame/spring/lifecycle/ShutdownBudgetTest.java) 覆盖推导、默认值落在 30 秒宽限期之下、必须失败的几种切分，以及阶段只置一次；[MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) 断言这份预算存在的理由——就绪已报 503 且点名 `shutdown.rotation`，而 `stats().accepting()` 仍为真，准入只在提前量结束之后才关闭。
+
 ### 3.1 托管 HTTP
 
 `EnableGameRuntime` 同时导入内部 HTTP 装配。单例 `gameHttpServer` 是普通 Network HttpServer Bean，采用 destroyMethod="close"。内部 SmartLifecycle 在单例初始化和 Runtime 构建完成后，以 Integer.MAX_VALUE 阶段启动监听，在生命周期 stop 时关闭。Context.close 时 Runtime 同步排空监听器先于此 stop 执行。不要手动调用 Bean 的 start/close。HTTP 与底层 Network 服务一样只启动一次，停止的监听器不能通过 Context.start 重新打开。Context.stop 本身不是 Runtime 优雅停机操作，请使用 Context.close。即使禁用监听，无效配置仍导致启动失败。

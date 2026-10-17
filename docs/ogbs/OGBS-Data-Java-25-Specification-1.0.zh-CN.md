@@ -84,7 +84,7 @@ try (GameData data = GameDataBuilder.builder()
 | cacheExpire | 30 分钟 | 干净条目空闲多久后淘汰；须大于 flushInterval |
 | flushInterval | 1 秒 | 两轮保存之间的目标间隔 |
 | batchSize | 500 | 每批行数 |
-| shutdownTimeout | 30 秒 | close 持续重试可重试失败多久，之后丢弃并报告 |
+| shutdownTimeout | 30 秒 | close 持续重试可重试失败多久，之后丢弃并报告。在容器集成下，它会在应用的 configurer 之前由关停预算为刷盘保留的那块份额设定，因此默认值改为那个值（[Spring §3.0](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#30-关停预算)） |
 | retryPolicy | RetryPolicy.transientFailures() | true 保留到下一轮；false 拆分、丢弃并报告（见第 5 节） |
 | errorHandler | System.Logger | 接收被丢弃的变更，在此归档 |
 | partitionZone | UTC | DAY/MONTH/YEAR 日志分表使用的时区 |

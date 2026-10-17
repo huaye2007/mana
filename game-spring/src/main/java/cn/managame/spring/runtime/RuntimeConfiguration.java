@@ -1,6 +1,7 @@
 package cn.managame.spring.runtime;
 
-import java.time.Duration;
+import cn.managame.spring.lifecycle.ShutdownBudget;
+import cn.managame.spring.lifecycle.ShutdownPhase;
 import cn.managame.runtime.*;
 import cn.managame.runtime.event.*;
 import cn.managame.runtime.handler.Handler;
@@ -15,7 +16,7 @@ import java.lang.annotation.Annotation;
 import java.util.*;
 
 @Configuration(proxyBeanMethods = false)
-@Import(RuntimeHttpConfiguration.class)
+@Import({RuntimeHttpConfiguration.class, cn.managame.spring.lifecycle.ShutdownConfiguration.class})
 class RuntimeConfiguration {
     @Bean(destroyMethod = "close")
     GameRuntime gameRuntime(ApplicationContext context, ConfigurableListableBeanFactory beans,
@@ -33,10 +34,9 @@ class RuntimeConfiguration {
         catch (RuntimeException | Error failure) { runtime.close(); throw failure; }
     }
 
-    @Bean RuntimeDrainListener runtimeDrainListener(GameRuntime runtime, ApplicationContext context) {
-        long millis = context.getEnvironment().getProperty("game.runtime.drain-timeout-millis", Long.class, 60_000L);
-        if (millis <= 0) throw new IllegalArgumentException("game.runtime.drain-timeout-millis must be positive");
-        return new RuntimeDrainListener(runtime, context, Duration.ofMillis(millis));
+    @Bean RuntimeDrainListener runtimeDrainListener(GameRuntime runtime, ApplicationContext context,
+                                                   ShutdownBudget budget, ShutdownPhase phase) {
+        return new RuntimeDrainListener(runtime, context, budget, phase);
     }
 
     private static List<Object> handlers(ApplicationContext context, ConfigurableListableBeanFactory beans,

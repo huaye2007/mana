@@ -133,6 +133,36 @@ class MetricsAssemblyTest {
             assertTrue(get(client, app.base() + "/stats").body().contains("runtime.accepting 0"));
         }
     }
+    @Test void theLeadReportsUnreadinessWhileWorkIsStillAdmitted() throws Exception {
+        // The whole point of the lead: a load balancer can learn to stop sending before anything is refused.
+        try (var app = new Application(Map.of("game.shutdown.budget-millis", "20000",
+                "game.shutdown.lead-millis", "1500", "game.shutdown.flush-reserve-millis", "5000"));
+             var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()) {
+            app.refresh();
+            GameRuntime runtime = app.spring.getBean(GameRuntime.class);
+            assertEquals(200, get(client, app.base() + "/readiness").statusCode());
+            assertTrue(runtime.stats().accepting());
+
+            Thread closing = new Thread(app.spring::close, "closing");
+            closing.start();
+            try {
+                // Poll until readiness turns, then check admission in the same breath.
+                long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                HttpResponse<String> response = null;
+                while (System.nanoTime() < end) {
+                    response = get(client, app.base() + "/readiness");
+                    if (response.statusCode() == 503) break;
+                    Thread.sleep(5);
+                }
+                assertNotNull(response);
+                assertEquals(503, response.statusCode(), "readiness never reported failure during the lead");
+                assertTrue(response.body().contains("shutdown.rotation"), response.body());
+                // This is the assertion the finding was about: unready, yet still accepting work.
+                assertTrue(runtime.stats().accepting(), "admission closed before the lead elapsed");
+            } finally { closing.join(10_000); }
+            assertFalse(runtime.stats().accepting());    // and closed once the lead elapsed
+        }
+    }
     @Test void pathsMustBeAbsoluteAndDistinct() {
         MetricsRegistry registry = new MetricsRegistry();
         assertThrows(IllegalArgumentException.class,

@@ -5,6 +5,7 @@ import cn.managame.data.GameDataBuilder;
 import cn.managame.data.GroupRepository;
 import cn.managame.data.LogRepository;
 import cn.managame.data.SingleRepository;
+import cn.managame.spring.lifecycle.ShutdownBudget;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
@@ -19,6 +20,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 @Configuration(proxyBeanMethods = false)
+@org.springframework.context.annotation.Import(cn.managame.spring.lifecycle.ShutdownConfiguration.class)
 class DataConfiguration {
     private record Binding(String beanName, Class<?> type, boolean log) {}
 
@@ -41,12 +43,18 @@ class DataConfiguration {
     }
 
     @Bean(destroyMethod = "close")
-    public GameData gameData(DataSource source, ConfigurableListableBeanFactory beans, org.springframework.beans.factory.ObjectProvider<GameDataConfigurer> configurers) {
+    public GameData gameData(DataSource source, ConfigurableListableBeanFactory beans,
+                             org.springframework.beans.factory.ObjectProvider<GameDataConfigurer> configurers,
+                             org.springframework.beans.factory.ObjectProvider<ShutdownBudget> budget) {
         var builder = GameDataBuilder.builder().mysql(source);
         for (Binding binding : bindings(beans)) {
             if (binding.log()) builder.logRepositories(binding.type());
             else builder.repositories(binding.type());
         }
+        // The final persistence pass gets the slice the shutdown budget reserved for it. Applied before the
+        // application's configurers, so one that knows its storage better can still override it.
+        ShutdownBudget declared = budget.getIfAvailable();
+        if (declared != null) builder.shutdownTimeout(declared.flushReserve());
         configurers.orderedStream().forEach(configurer -> configurer.configure(builder));
         return builder.build();
     }

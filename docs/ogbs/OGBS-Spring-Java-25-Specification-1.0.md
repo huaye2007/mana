@@ -20,6 +20,25 @@ Companion: [container integration semantics](OGBS-Spring-1.0.md). Implemented op
 
 The internal ContextClosedEvent listener has Ordered.HIGHEST_PRECEDENCE and supportsAsyncExecution=false. With Spring's ordinary synchronous event multicaster, it handles only its owning Context, calls Runtime.shutdown, awaits termination for at most `game.runtime.drain-timeout-millis` (default 60000, must be positive), logs a WARNING with the unfinished count if draining did not complete, then calls Runtime.close. An interrupt ends the wait early, closes Runtime and restores the interrupt status. Ordinary close listeners (such as demo TCP shutdown) run next, followed by managed HTTP lifecycle stop, Bean destruction and Data final flush. Do not install earlier/equal-priority resource-closing listeners, override this event ordering with a custom asynchronous multicaster, or close the Context from a Runtime Route. These would violate S-CLOSE-01. Resource cleanup on failed refresh follows Spring destruction. This module owns its managed HTTP listener, but no database pool or extra business threads. A listener may become reachable during the final refresh lifecycle phase; if another lifecycle fails, Spring closes the listener and Runtime, but this failed-refresh cleanup does not guarantee graceful drain or response delivery.
 
+### 3.0 Shutdown budget
+
+Implements S-CLOSE-02 and S-CLOSE-03. `cn.managame.spring.lifecycle.ShutdownBudget` is the one declared budget, created from three properties and split into the phases that run in sequence; the drain is derived, never configured.
+
+| Property | Default | Phase |
+| --- | --- | --- |
+| `game.shutdown.budget-millis` | 25 000 | the whole budget; keep the orchestrator's grace period above it |
+| `game.shutdown.lead-millis` | 0 | readiness reports failure while admission stays open |
+| `game.shutdown.flush-reserve-millis` | 10 000 | reserved for Data's final persistence pass |
+| *derived* | 15 000 | `drain = budget − lead − flushReserve`, for admitted work |
+
+25 000 is chosen below the 30 seconds a Kubernetes grace period defaults to; `docker stop` allows 10, so a deployment using it sets the budget accordingly. `ShutdownBudget.of` rejects a non-positive budget or reserve, a negative lead, and any split that leaves the drain nothing, so an over-committed budget fails at refresh rather than truncating a shutdown much later. The former `game.runtime.drain-timeout-millis` is gone: configuring the drain on its own is what let the total drift.
+
+`ShutdownConfiguration` is imported by both the Runtime and the Data configuration, so the budget and `ShutdownPhase` exist whenever either integration does and both read the same instance. `DataConfiguration` applies `builder.shutdownTimeout(budget.flushReserve())` **before** the application's `GameDataConfigurer`s, so the reserve is a framework default an application that knows its storage better can still override; without the Runtime integration the budget Bean may be absent, and Data keeps its own default.
+
+`ShutdownPhase` is the one bit of state the drain shares with readiness: `leaveRotation()` sets it once, `leavingRotation()` is read from any thread including an HTTP thread answering a probe. The drain listener sets it first, logs the lead, sleeps it while still admitting, and only then calls `runtime.shutdown()`; a lead of zero skips the sleep. An interrupt during the lead or the drain is remembered and re-asserted after the Runtime is closed. §5 contributes the `shutdown.rotation` readiness condition from it, first in the list so an instance leaving rotation reports that rather than a consequence of it.
+
+Validation: [ShutdownBudgetTest](../../game-spring/src/test/java/cn/managame/spring/lifecycle/ShutdownBudgetTest.java) covers the derivation, the defaults fitting under a 30 s grace period, the splits that must fail, and the phase being set once; [MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) asserts the behaviour the budget exists for — readiness reporting 503 with `shutdown.rotation` named while `stats().accepting()` is still true, and admission closing only after the lead elapses.
+
 ### 3.1 Managed HTTP
 
 `EnableGameRuntime` also imports internal HTTP assembly. The singleton `gameHttpServer` is an ordinary Network HttpServer Bean with destroyMethod="close". An internal SmartLifecycle starts it at phase Integer.MAX_VALUE after singleton initialization and Runtime build, and closes it on lifecycle stop. Runtime's synchronous drain listener runs before this stop during Context.close. Do not call start/close on the Bean manually. HTTP is one-shot like the underlying Network server: a stopped listener cannot be reopened by Context.start. Context.stop alone is not the Runtime graceful-shutdown operation; use Context.close. Invalid configuration remains a startup failure even when listener activation is disabled.
