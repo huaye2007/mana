@@ -72,7 +72,11 @@ class RouterIntegrationTest {
         RouterFixture(int id) { this(id, LOCAL); }
         RouterFixture(int id, SocketAddress address) {
             routing = new GameRouter(probe);
-            rpc = RpcNode.builder().nodeId(id).bindAddress(address).handler(routing).build();
+            // A Router never buffers business data, and one mesh connection carries all cross-Router traffic
+            // of a pair, so the tests configure the watermark the Java specification asks for instead of
+            // relying on Netty's 32/64 KiB default, which drops messages under the bursts below.
+            rpc = RpcNode.builder().nodeId(id).bindAddress(address).handler(routing)
+                    .writeBufferWaterMark(512 * 1024, 1024 * 1024).build();
             routing.start(rpc); rpc.start();
         }
         int id() { return rpc.nodeId(); }
@@ -90,7 +94,8 @@ class RouterIntegrationTest {
         final ServiceRouting routing;
         NodeFixture(int id, int service, long epoch, Probe p, RouterFixture router) {
             routing = new ServiceRouting(service, epoch, p, p); p.routing = routing;
-            rpc = RpcNode.builder().nodeId(id).bindAddress(LOCAL).handler(routing).build();
+            rpc = RpcNode.builder().nodeId(id).bindAddress(LOCAL).handler(routing)
+                    .writeBufferWaterMark(512 * 1024, 1024 * 1024).build();
             routing.start(rpc); rpc.start();
             if (router != null) connect(router.id(), router.rpc.localAddress());
         }

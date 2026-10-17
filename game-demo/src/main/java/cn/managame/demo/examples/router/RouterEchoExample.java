@@ -56,7 +56,9 @@ public final class RouterEchoExample {
                 .writeBufferWaterMark(512 * 1024, 1024 * 1024).build();
     }
     private static void await(BooleanSupplier ready) throws Exception {
-        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        // The mesh has to connect, the target has to announce itself on its Router and that Router has to
+        // report the location, so the readiness chain is longer than a single attachment was.
+        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
         while (!ready.getAsBoolean() && System.nanoTime() < end) Thread.sleep(5);
         if (!ready.getAsBoolean()) throw new IllegalStateException("The target did not become reachable through the mesh");
     }
