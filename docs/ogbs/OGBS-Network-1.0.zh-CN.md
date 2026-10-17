@@ -293,3 +293,28 @@ handler 可在提交外部业务任务后返回，随后完成该请求的回调
 完整请求等待最终响应时暂停自动读取。已经解码或投递的输入可在连接内暂存；这是传输顺序处理，不是业务任务队列，也不是全局硬内存上限。手动读取与外部执行器容量仍由应用负责。等待响应期间入站无数据计时继续；长业务需要不同策略时显式禁用或配置，不新建业务响应定时器。handler 永不完成会阻滞当前连接，直到关闭/无数据超时，但不阻塞其他连接。断开和服务端关闭不会完成、取消或中断应用回调/业务；自有执行器停止后的晚到完成仍消费提交的响应引用。借用传输资源时监听关闭继续遵循 N-HTTP-06。
 
 兜底的请求专属回调负责完成关联；原生异步扩展仍负责自身单次响应纪律和引用所有权，不新增通用响应 ID 注册表。源码与验证：[Java 异步响应 API](OGBS-Network-Java-25-Specification-1.0.zh-CN.md#http-async-response)、HttpServerTransport、HttpServerTest 和 HttpAsyncServerExample。
+
+<a id="10-可观测性"></a>
+
+## 10. 可观测性
+
+读数遵循 [Core §5](OGBS-Core-1.0.zh-CN.md#5-可观测性)：gauge 是当前值，counter 只增，收集方式是拉取，在有人收集之前不产生任何开销。
+
+**N-OBS-01** 监听端与客户端各自上报下列读数。客户端的 `accepted` 恒为 0，因为它不接受连接。名称是固定的，因为针对某一实现搭好的看板必须能读另一实现。
+
+| 读数 | 种类 | 含义 |
+| --- | --- | --- |
+| `connections` | gauge | 已交给应用且尚未断开的连接数 |
+| `accepted` | counter | 监听端接受的 channel 数，在 TLS 与 WebSocket 之前 |
+| `established` | counter | 已触发应用"已建立"回调的连接数 |
+| `closed` | counter | 已触发"已断开"回调的既有连接数 |
+| `establishment.failures` | counter | 从未到达"已建立"回调的 channel：TLS、WebSocket、pipeline 装配，或建立期间被关闭 |
+| `messages.read` | counter | 投递给应用的入站消息数 |
+| `writes.accepted` | counter | 传输层已接管的写；是准入，不是投递 |
+| `writes.inactive` | counter | 因连接已失活而被拒绝的写 |
+| `writes.notwritable` | counter | 因连接高于写缓冲高水位而被拒绝的写 |
+| `handler.exceptions` | counter | 报告给应用、或在连接生命周期之外被记录的 throwable |
+
+**N-OBS-02** `writes.notwritable` 是解释丢失的那条读数：N-WRITE-01 在高水位之上拒绝写入并由调用方决定如何处理，于是被拒即丢弃消息的发送方会静默丢数据，除非盯住这个计数。`establishment.failures` 对"从未建立起来的连接"起同样作用：`accepted` 与 `established` 之差等于它加上仍在建立中的部分。两者都无法由其他读数推导出来。
+
+**N-OBS-03** 读数是近似的，也不是屏障：`established`、`closed` 与 `connections` 在连接交接过程中不加锁读取，因此可能相差一。读写字节数、按连接的读数与延迟分布在 V1 不上报；需要它们的部署自行安装传输层 handler。

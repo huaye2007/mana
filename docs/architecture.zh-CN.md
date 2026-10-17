@@ -154,3 +154,11 @@ Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。�
 
 
 可选 `@EnableGameRpc` 由 game-spring 装配 RpcNode、对象 codec 与 Runtime 适配，配置 node-id/端口；game-rpc 为 optional Maven 依赖，只有 HTTP/Data 的应用无需传递引入；game-demo 现为独立 RPC 示例显式添加 game-rpc。详见 [Spring Java 规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
+
+## 可观测性组合
+
+Core 在 `cn.managame.core.metrics` 里拥有"一条读数的形状"——gauge 还是 counter、点分名称、拉取式收集——仅此而已：没有导出格式、没有端点、没有依赖。各组件拥有"自己有哪些读数"，并以一个普通快照 record 上报：`RuntimeStats`、`DataStats`、`GameRouter.Stats`、`RpcStats` 与 `NetworkStats`。集成层拥有收集：`@EnableGameMetrics` 把每个存在的组件的 record 适配成挂在固定前缀下的 `MetricsSource`，在业务分发之前提供 `/metrics` 与 `/readiness`，并在那里组合就绪条件。
+
+正是这个分工让不依赖任何其他框架模块的 game-network 也能被加上仪表：它发布一个 record，而本来就依赖一切的 game-spring 去映射它。组件永远不需要知道指标契约，依赖图也不必为承载它而改变。
+
+就绪有意不是"读数加阈值"。它是一组具名条件，在所有 Route 执行器之外作答，于是饱和中或摘流中的实例依然答得出；框架只贡献组件对自身的陈述——准入是否开放、是否仍接受变更——而应用贡献策略，例如是否已附着 Router、世界是否已加载。契约：[Core §5](ogbs/OGBS-Core-1.0.zh-CN.md#5-可观测性)、[Network §10](ogbs/OGBS-Network-1.0.zh-CN.md#10-可观测性)、[RPC §12](ogbs/OGBS-RPC-1.0.zh-CN.md#12-可观测性)、[Spring §5](ogbs/OGBS-Spring-1.0.zh-CN.md#5-可观测性组合)。

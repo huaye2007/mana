@@ -38,3 +38,19 @@ Java validation entries: [CronBeansTest](../../game-spring/src/test/java/cn/mana
 **S-RPC-02**: Call response types come from request bindings. Calls require the current Runtime Route; registered success/failure continuations return to the source Route and participate in drain. Synchronous rejection must not leak a continuation reservation. Object replies preserve RPC source-Slot preference and replacement-connection fallback; Notify cannot be replied to. Return values do not automatically reply, and errors after business admission retain ordinary Runtime error policy; applications explicitly reply with errors when needed.
 
 **S-RPC-03**: The container starts Node after Runtime construction, and stops/drains Runtime before closing Node. Applications own thread-safe codecs and topology policy. This adds no discovery, automatic business retries, authentication, durable delivery or unified TCP/RPC send. For example, a Role Handler with RPC context uses a separate RPC reply entry, while its outbound call completion returns to the originating Role Route. Java APIs/configuration and real TCP validation are in [the Java specification](OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
+
+<a id="5-observability-composition"></a>
+
+## 5. Observability composition
+
+Core defines what a reading is and each component defines which readings it has; container integration is where they are collected and where "should this instance receive traffic" is answered.
+
+**S-OBS-01**: Integration publishes one reading source per managed component that is present, each under a fixed prefix — `runtime`, `data`, `rpc`, `network` — so a dashboard reads any deployment of this framework. A component that is not assembled publishes nothing rather than publishing zeros, because a missing component and an idle one are different. A component the application built itself, outside the container, is its own to publish.
+
+**S-OBS-02**: Readiness is a separate question from readings and MUST NOT be derived from them by a threshold. It is a set of named conditions, each either holding or not; the result is ready only when every condition holds, and when it is not, the failing conditions MUST be named. Integration contributes a condition for each managed component that can stop accepting work — admission open, changes accepted — and nothing else: whether an instance is ready to serve players also depends on policy the framework does not own, such as attachment to a Router or a loaded world, which the application contributes as its own conditions.
+
+**S-OBS-03**: Readiness and readings MUST be answerable while the instance is in trouble. They are therefore served in front of business dispatch, outside any business execution queue, and a condition MUST answer from state it already has without blocking, dispatching or taking a lock a saturated instance could be holding. A condition that fails to answer counts as not ready. This is the whole point: an endpoint that queues behind the work it reports on says nothing at the one moment it matters.
+
+**S-OBS-04**: Shutdown is visible. Draining closes admission before work stops, so readiness reports not ready while the instance is still finishing accepted work — which is what lets a load balancer stop sending before the process goes away. Readings keep answering throughout, including after admission closed.
+
+**S-OBS-05**: Exposition is not specified here. Integration MAY serve readings in a format of its choosing; an application that needs a particular one implements the Core sink and maps the names. Paths, when served over HTTP, are absolute and independent of any configured business context path, so a probe does not need to know it.

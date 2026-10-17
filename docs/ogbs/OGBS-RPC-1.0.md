@@ -184,3 +184,30 @@ Automatic HANDLER_ERROR includes no exception text, stack trace, or Metadata. Co
 Java tests: [RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java), [RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java), [RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java). Implementation, defaults, and examples are in the Java specification.
 
 Local real TCP/concurrency regressions and root clean verify pass. Finite call admission (R-SEND-04) is implemented and covered by RpcNodeTest, which exercises fail-fast rejection at the limit, body release and the place returned on completion; cross-language, production capacity, long-lived ID wrap and public-network deployment are unverified. RPC core has no automatic Runtime dependency; optional Spring adaptation follows [container integration semantics](OGBS-Spring-1.0.md). TLS/WS RPC Builder and discovery remain unimplemented.
+
+<a id="12-observability"></a>
+
+## 12. Observability
+
+Readings follow [Core §5](OGBS-Core-1.0.md#5-observability).
+
+**R-OBS-01** A Node reports the readings below for itself. The four gauges are derived from the Peer table when a snapshot is taken, so they cost one walk of the Peers and are meant for periodic collection rather than a data path.
+
+| Reading | Kind | Meaning |
+| --- | --- | --- |
+| `peers` | gauge | Peers configured or learned from an inbound handshake |
+| `peers.connected` | gauge | Peers with at least one connected Slot |
+| `connections` | gauge | connected Slots across every Peer |
+| `calls.pending` | gauge | calls registered and not yet completed, across every Peer |
+| `calls.started` | counter | calls whose frame was accepted for a connection |
+| `calls.rejected` | counter | calls refused before encoding because their Peer was at the R-SEND-04 limit |
+| `calls.timedout` | counter | calls completed by their timeout rather than a response |
+| `frames.sent` | counter | request, response and heartbeat frames accepted for a connection |
+| `sends.refused` | counter | sends no Slot accepted: none connected, or all above their write-buffer high watermark |
+| `requests.received` | counter | inbound requests handed to the application's handler |
+| `handshakes.accepted` | counter | connections that completed a handshake and were bound to a Slot |
+| `reconnects` | counter | recovery attempts scheduled for an outbound Slot |
+
+**R-OBS-02** Three of these answer questions the other readings cannot. `calls.pending` against the configured per-Peer limit is how close a Node is to refusing calls, and `calls.rejected` says it already is. `sends.refused` is why a Notify disappeared: R-SEND-04 turns backpressure and a missing connection into UNAVAILABLE, and a sender that does not inspect that status loses the message silently. `peers.connected` below `peers` says a neighbour is gone, which no error code reports on its own because RPC never announces a disconnect.
+
+**R-OBS-03** Readings are approximate and are not a barrier. Per-Peer, per-Slot and per-command breakdowns are not reported in V1: a Node reports aggregates, which answer whether this instance is in trouble but not which neighbour or command caused it. Latency is not reported at all — there is no round-trip timing and no distribution, so a timeout count is the only latency signal.

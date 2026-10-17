@@ -132,3 +132,29 @@ class GameConfig {
 ```
 
 完整接入见 [GameRuntimeConfig](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) 及 [GameDataConfig](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java)。[CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java) 覆盖仅方法注解、继承/default 接口及工厂发现、去重、启动拒绝和真实 Route 执行。[RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java) 证明已接纳工作先于普通关闭监听器和资源销毁完成，新 Context 可重新绑定 Events。demo Repository 测试用 JDBC 桩验证初始化注入及三种基类，真实数据库和自定义广播/代理配置仍未验证。根 `mvn clean verify` 检查模块边界，RPC 及可选适配器现已纳入通过的根验证。
+
+<a id="5-可观测性"></a>
+
+## 5. 可观测性
+
+实现 [Spring §5](OGBS-Spring-1.0.zh-CN.md#5-可观测性组合)。包 `cn.managame.spring.metrics`，由 `@EnableGameMetrics` 显式启用。
+
+| 类型 | 角色 |
+| --- | --- |
+| `@EnableGameMetrics` | 导入该配置；不启用时组件依旧保留自己的计数器，应用通过各自的 `stats()` 读取 |
+| `ReadinessCheck` | public：`String name()`、`boolean ready()`。应用 Bean 按顺序收集并追加到框架自带的条件之后 |
+| `ObservabilityEndpoints` | public 的 `HttpDispatcher wrap(HttpDispatcher business)`；该 Bean 存在时由 Runtime HTTP 配置应用它 |
+
+Bean：`MetricsRegistry gameMetricsRegistry` 为每个存在的组件各发布一个源，挂在固定前缀 `runtime`、`data`、`rpc`、`network` 下，每个都经 `ObjectProvider` 解析，因此缺失的组件什么都不发布。`ObservabilityEndpoints gameObservabilityEndpoints` 持有注册表、就绪条件与两个路径。
+
+配置项：`game.metrics.path`（默认 `/metrics`）与 `game.metrics.readiness-path`（默认 `/readiness`）。两者必须是绝对路径、至少两个字符、不含 `?` 与 `#`，且互不相同；否则该 Bean 在 refresh 时以 `IllegalArgumentException` 失败。它们在应用 `game.http.context-path` 之前匹配，因此无论业务 context path 是什么都可在服务器根路径访问，context path 既不暴露也不隐藏它们。只服务 `GET`；其他方法一律落到业务分发。
+
+就绪返回 200 与 `ready\n`，或 503 与 `not ready: ` 加上以逗号分隔的失败条件名。框架在相应 Bean 存在时贡献 `runtime.accepting` 与 `data.accepting`，取自 `stats().accepting()`；抛异常的条件计为不就绪。由于 `GameRuntime.shutdown()` 会在工作停止之前先关闭准入，正在摘流的实例在仍收尾已接纳工作期间就报 503，而读数在整个过程中持续可答。
+
+`/metrics` 把每条读数按 `name value` 各占一行渲染，顺序与注册表一致，`Content-Type` 为 `text/plain; charset=UTF-8`。这里有意不采用某种具名导出格式：需要某种格式的应用实现 `MetricSink` 并映射名称即可——Core 的那份契约正是为此存在。
+
+两个路径都在 HTTP 线程上作答，位于 `HttpContextPath` 之前，因而在所有 Route 执行器之外——一个排在它所报告的工作后面的端点，在实例饱和时什么也说不出来。条件必须遵守同一条规则：凭已持有的状态作答，不阻塞、不分发。
+
+`FrameworkMetrics` 持有从各组件快照 record 到 `MetricsSource` 的适配。它们放在这里而不是放在组件里，是为了让组件不必知道指标契约，也让 game-network 继续不依赖任何其他框架模块。应用自己构造且未暴露为 Bean 的 `NetworkServer` 由它自己发布，用 `registry.publish(prefix, source)`。
+
+验证：[MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) 覆盖只装配 Runtime 时发布了哪些前缀、两个路径在 context path 之外被服务、应用自带的 `ReadinessCheck` 使实例不就绪并被点名、路径可配置、摘流中的 Runtime 报 503 而 `/metrics` 仍可答，以及路径校验。

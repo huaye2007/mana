@@ -35,7 +35,7 @@ class ConnectionSetupTest {
                 result.addListener(f -> {
                     if (!f.isSuccess()) probe.failures.add(f.cause().getCause());
                 });
-                ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(channel, probe, () -> true, result);
+                ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(channel, probe, () -> true, result, new NetworkCounters());
                 NetworkChannelInitializer.configure(channel, configurers, transport, adapter);
             }
         });

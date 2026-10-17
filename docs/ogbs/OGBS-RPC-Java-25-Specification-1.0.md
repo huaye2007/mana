@@ -200,3 +200,29 @@ Run `mvn -pl game-rpc -am test`; cross-module changes need root `mvn clean verif
 <a id="rpc-router-review-2026-10-07"></a>
 
 Remaining limits: closure scans all connections per Peer; the wire carries no Node incarnation, so IDs restarting with a new process can match replies saved by a peer (R-CALL-04). An answer already travels only over the Slot that carried its request (R-SEND-01), which narrows that window without closing it; closing it needs the caller to accept a response only on the connection it called over, which a Router cannot satisfy while it relays a routed response over whichever connection it holds and Router Profile v4 carries no caller Slot, so a wire field or Router state is required. Handlers run on EventLoops: blocking one delays every connection on it. Not implemented: TLS/WebSocket builder options, discovery, business retries, remote cancellation, durable delivery. Unverified: cross-language interoperability, production throughput and memory. Router composes on an existing Node and uses only `isPeerConnected` and `forwardResponse` beyond the ordinary API ([review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration)).
+
+<a id="10-stats"></a>
+
+## 10. Stats
+
+Implements [RPC §12](OGBS-RPC-1.0.md#12-observability). `RpcNode.stats()` returns `cn.managame.rpc.node.RpcStats`, a record of twelve `long` components in the order `peers, peersConnected, connections, pendingCalls, callsStarted, callsRejected, callsTimedOut, framesSent, sendsRefused, requestsReceived, handshakesAccepted, reconnects`.
+
+The eight counters are `LongAdder` fields in one package-private holder, incremented from EventLoops, the caller's thread and the timer thread. The four gauges are **not** counted: `stats()` walks the Peer table and, per Peer, counts Slots with a connection and the size of its pending map. Nothing therefore has to be kept in step with the Peer table, which is where the node's own races already are; the cost is proportional to the number of Peers, so `stats()` is for periodic collection and not for a data path.
+
+Increment points, each a single site:
+
+| Reading | Where |
+| --- | --- |
+| `callsRejected` | the `reservePending` refusal in `call`, before the body is released |
+| `callsStarted` | after the frame was accepted, before the timeout is published |
+| `callsTimedOut` | in the timeout task, after its conditional `removePending` won, so exactly once per call |
+| `framesSent`, `sendsRefused` | the one internal `send` that every outbound request, response and heartbeat goes through, by whether a Slot accepted it |
+| `requestsReceived` | the entry of handler notification for an inbound request |
+| `handshakesAccepted` | where a connection is bound to its Slot, both the initiating and the inbound path |
+| `reconnects` | the recovery scheduling entry, after the ownership check |
+
+Counting at the internal `send` is deliberate: `notify`, `reply`, `forwardResponse` and `call` all pass through it, so one site covers every public send and a refusal is counted even when the caller ignores the returned `RpcSendStatus`. `answer`, which replies on the request's own Slot without fallback, is the one outbound path outside it and is therefore not counted in V1.
+
+No reading is configurable and none can be turned off. Adapting a snapshot to a registry is [Spring §5](OGBS-Spring-Java-25-Specification-1.0.md#5-observability).
+
+Validation: [RpcStatsTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcStatsTest.java) covers an idle Node reporting zeros, a bound Slot appearing as a connected Peer with an accepted handshake, a pending call raising and clearing the gauge without touching `callsStarted`, an inbound request, and a call refused by `maxPendingCalls` being counted separately from a send refused by an unwritable Slot.

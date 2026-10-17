@@ -3,7 +3,9 @@ package cn.managame.spring.runtime;
 import cn.managame.network.http.HttpServer;
 import cn.managame.network.http.HttpServerBuilder;
 import cn.managame.runtime.GameRuntime;
+import cn.managame.runtime.http.HttpDispatcher;
 import cn.managame.runtime.http.HttpHandler;
+import cn.managame.spring.metrics.ObservabilityEndpoints;
 import io.netty.channel.ChannelOption;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -18,12 +20,17 @@ import java.net.InetSocketAddress;
 class RuntimeHttpConfiguration {
     @Bean(destroyMethod = "close")
     HttpServer gameHttpServer(GameRuntime runtime, Environment environment,
-                              ObjectProvider<GameHttpConfigurer> configurers) {
+                              ObjectProvider<GameHttpConfigurer> configurers,
+                              ObjectProvider<ObservabilityEndpoints> observability) {
         int port = environment.getProperty("game.http.port", Integer.class, 8080);
         if (port < 0 || port > 65535) throw new IllegalArgumentException("game.http.port must be 0..65535");
         String address = environment.getProperty("game.http.bind-address", "127.0.0.1");
         if (address.isBlank()) throw new IllegalArgumentException("game.http.bind-address must not be blank");
-        var dispatch = new HttpContextPath(environment.getProperty("game.http.context-path", ""), runtime.http());
+        HttpDispatcher dispatch = new HttpContextPath(environment.getProperty("game.http.context-path", ""), runtime.http());
+        // Readiness and metrics answer in front of business dispatch and outside the context path, so a
+        // probe reaches them without knowing it and without queueing behind the work it is reporting on.
+        ObservabilityEndpoints endpoints = observability.getIfAvailable();
+        if (endpoints != null) dispatch = endpoints.wrap(dispatch);
         var builder = HttpServer.builder().bindAddress(new InetSocketAddress(address, port))
                 .maxContentLength(environment.getProperty("game.http.max-content-length", Integer.class,
                         HttpServerBuilder.DEFAULT_MAX_CONTENT_LENGTH))

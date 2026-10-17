@@ -132,3 +132,29 @@ class GameConfig {
 ```
 
 The complete integration is [GameRuntimeConfig](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) and [GameDataConfig](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java). [CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java) covers method-only, inherited/default-interface and factory discovery, deduplication, startup rejection and real Route execution. [RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java) proves accepted work finishes before ordinary close listeners and resource destruction, and a replacement Context can bind Events again. Demo Repository tests validate initialized injection and all three bases using JDBC stubs; live databases and custom multicaster/proxy configurations remain unverified. Run root `mvn clean verify` for reactor boundaries; root clean verify now includes RPC and its optional adapter.
+
+<a id="5-observability"></a>
+
+## 5. Observability
+
+Implements [Spring §5](OGBS-Spring-1.0.md#5-observability-composition). Package `cn.managame.spring.metrics`, opt-in with `@EnableGameMetrics`.
+
+| Type | Role |
+| --- | --- |
+| `@EnableGameMetrics` | imports the configuration; without it components still keep their counters and an application reads them through their own `stats()` |
+| `ReadinessCheck` | public: `String name()`, `boolean ready()`. Application beans are collected in order and added to the framework's own |
+| `ObservabilityEndpoints` | public `HttpDispatcher wrap(HttpDispatcher business)`; the Runtime HTTP configuration applies it when the bean exists |
+
+Beans: `MetricsRegistry gameMetricsRegistry` publishes one source per present component under the fixed prefixes `runtime`, `data`, `rpc` and `network`, each resolved through `ObjectProvider` so a missing component publishes nothing. `ObservabilityEndpoints gameObservabilityEndpoints` holds the registry, the readiness checks and the two paths.
+
+Properties: `game.metrics.path` (default `/metrics`) and `game.metrics.readiness-path` (default `/readiness`). Both must be absolute, at least two characters, free of `?` and `#`, and different from each other; otherwise the bean fails with `IllegalArgumentException` at refresh. They are matched before `game.http.context-path` is applied, so they are reachable at the server root whatever the business context path is, and the context path neither exposes nor hides them. Only `GET` is served; any other method falls through to business dispatch.
+
+Readiness returns 200 with `ready\n`, or 503 with `not ready: ` and the comma-separated names of the failing checks. The framework contributes `runtime.accepting` and `data.accepting` when those beans exist, from `stats().accepting()`; a check that throws counts as not ready. Because `GameRuntime.shutdown()` closes admission before work stops, a draining instance reports 503 while still finishing accepted work, and readings keep answering throughout.
+
+`/metrics` renders every reading as `name value` on its own line, in registry order, with `text/plain; charset=UTF-8`. This is deliberately not a named exposition format: an application that needs one implements `MetricSink` and maps the names, which is what the Core contract exists for.
+
+Both paths are answered on the HTTP thread, in front of `HttpContextPath` and therefore outside every Route executor — an endpoint that queued behind the work it reports on would say nothing while the instance is saturated. A check must honour the same rule: answer from state it already has, without blocking or dispatching.
+
+`FrameworkMetrics` holds the adapters from each component's snapshot record to a `MetricsSource`. They live here rather than in the components so that a component stays free of the metrics contract and game-network keeps depending on no other framework module. A `NetworkServer` the application created without exposing it as a bean is its own to publish, with `registry.publish(prefix, source)`.
+
+Validation: [MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) covers which prefixes are published when only Runtime is assembled, both paths served outside the context path, an application `ReadinessCheck` turning the instance not ready and being named, configurable paths, a draining Runtime reporting 503 while `/metrics` still answers, and path validation.

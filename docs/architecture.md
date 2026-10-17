@@ -167,3 +167,11 @@ Runtime retains an admitted request until method return, not until deferred repl
 
 
 Optional `@EnableGameRpc` in game-spring assembles RpcNode, application object codec and Runtime adaptation from node-id/port settings. game-rpc is an optional Maven dependency, HTTP/Data-only applications need not inherit it; game-demo now adds game-rpc explicitly for its standalone RPC sample. See [Spring Java specification](ogbs/OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
+
+## Observability composition
+
+Core owns the shape of a reading — a gauge or a counter, a dotted name, pull collection — in `cn.managame.core.metrics`, and nothing else: no exposition format, no endpoint, no dependency. Each component owns which readings it has and reports them as a plain snapshot record: `RuntimeStats`, `DataStats`, `GameRouter.Stats`, `RpcStats` and `NetworkStats`. The integration layer owns collection: `@EnableGameMetrics` adapts each present component's record to a `MetricsSource` under a fixed prefix, serves `/metrics` and `/readiness` in front of business dispatch, and is where readiness conditions are composed.
+
+That split is why game-network, which depends on no other framework module, can be instrumented at all: it publishes a record and game-spring, which already depends on everything, maps it. A component never learns the metrics contract, and the dependency graph does not change to carry it.
+
+Readiness is deliberately not a reading with a threshold. It is a set of named conditions, answered outside every Route executor so a saturated or draining instance still answers, with the framework contributing only what a component reports about itself — admission open, changes accepted — and the application contributing policy such as Router attachment or a loaded world. Contracts: [Core §5](ogbs/OGBS-Core-1.0.md#5-observability), [Network §10](ogbs/OGBS-Network-1.0.md#10-observability), [RPC §12](ogbs/OGBS-RPC-1.0.md#12-observability), [Spring §5](ogbs/OGBS-Spring-1.0.md#5-observability-composition).

@@ -2,6 +2,7 @@ package cn.managame.network.netty;
 
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
+import cn.managame.network.connection.NetworkStats;
 import cn.managame.network.connector.*;
 import cn.managame.network.error.NetworkException;
 import io.netty.bootstrap.Bootstrap;
@@ -25,6 +26,7 @@ public final class NetworkClient implements AutoCloseable {
     private final ChannelFactory<? extends Channel> factory;
     private final Map<ChannelOption<?>, Object> options;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final NetworkCounters counters = new NetworkCounters();
 
     NetworkClient(NetworkClientBuilder b) {
         handler = b.handler; pipelines = List.copyOf(b.pipelines); webSocket = b.webSocket;
@@ -111,7 +113,7 @@ public final class NetworkClient implements AutoCloseable {
                 @Override protected void initChannel(Channel channel) {
                     if (result.isDone()) { channel.close(); return; }
                     ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(
-                            channel, handler, () -> !closed.get(), result);
+                            channel, handler, () -> !closed.get(), result, counters);
                     NetworkChannelInitializer.configure(channel, pipelines, protocol, adapter);
                 }
             });
@@ -166,6 +168,9 @@ public final class NetworkClient implements AutoCloseable {
         try { callback.onFailure(cause); }
         catch (Throwable error) { NetworkSupport.log("ConnectCallback.onFailure failed", error); }
     }
+    /** Approximate counts for this client since construction; {@code accepted} is always 0. See {@link NetworkStats}. */
+    public NetworkStats stats() { return counters.snapshot(); }
+
     @Override public void close() {
         if (closed.get()) return;
         NetworkSupport.checkNotEventLoop(group);

@@ -58,7 +58,7 @@ abstract class NetworkTestSupport {
     static ChannelInitializer<Channel> initializer(ConnectionHandler handler, Consumer<ChannelPipeline> configurer) {
         return new ChannelInitializer<Channel>() {
             protected void initChannel(Channel channel) {
-                ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(channel, handler, () -> true, null);
+                ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(channel, handler, () -> true, null, new NetworkCounters());
                 NetworkChannelInitializer.configure(channel, List.of(configurer), null, adapter);
             }
         };

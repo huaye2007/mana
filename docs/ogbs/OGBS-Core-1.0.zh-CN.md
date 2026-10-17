@@ -108,8 +108,27 @@ Data 错误码用于后台持久化失败上下文；同步加载/操作/关闭�
 
 5000..5999 区间仍保留给 game-router，但它目前不定义任何错误码：Router 使用 RPC 的 PEER_NOT_FOUND、UNAVAILABLE、TIMEOUT 和 HANDLER_ERROR 报告失败。5001..5004（ROUTER_ROUTE_NOT_FOUND、ROUTER_BINDING_CONFLICT、ROUTER_NOT_REGISTERED、ROUTER_INVALID_SERVICE）属于已删除的绑定与注册模型，MUST NOT 重新使用。失败路径见 [Router](OGBS-Router-1.0.zh-CN.md)。
 
-## 5. 实现与验证
+<a id="5-可观测性"></a>
 
-源码：[Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java)、[MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java)、[FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java)。
+## 5. 可观测性
 
-测试：[MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java) 覆盖共享数组、惰性 codec、结构损坏、重复 Key、边界、大小端向量、Builder 快照、boolean 黄金字节/非法值/缺失默认值，以及 int32 有符号边界。
+Core 拥有"组件如何上报自身读数"的形状，正如它拥有 Metadata 与错误码：只有一份契约，于是同一个读数在每个组件、每种语言实现里含义相同。
+
+**C-OBS-01** 一条读数由名称、种类与 64 位有符号值组成。**gauge** 是会升也会降的当前值：队列深度、在线连接数、缓存条目数。**counter** 在进程运行期间只增，组件不得将其重置，于是收集方通过两次读数求差得到速率；进程重启表现为该值归零。V1 没有其他种类：没有直方图、没有 summary、每条读数也不带时间戳。总耗时以纳秒 counter 上报，它配合完成次数 counter 能得出均值，但永远得不到分位数——在此写明，以免读者把它当成延迟分布。
+
+**C-OBS-02** 名称是小写点分路径：每段以字母开头、其后为字母或数字，段间以单个点分隔，不得有前导、尾随或重复的点。含组件前缀的完整名称最长 128 字符。名称属于跨语言契约：各组件自己的规范列出它上报的读数，于是针对某一实现搭好的看板也能读另一实现。违反规则的名称必须被拒绝而不是导出，因为收集方无法解析它叫不出的名字。
+
+**C-OBS-03** 收集方式是**拉取**：组件发布一个源，由它上报自己本来就持有的值，在收集方读取之前什么都不会发生。因此为组件加仪表不会给它的数据路径增加任何工作，而组件在源里不得做计算、跨时间聚合或按读数分配内存。源不得抛异常。读数是近似的，也不是屏障：取值时不加锁，被描述的东西同时在变，因此同一快照的两条读数可能相差一。
+
+**C-OBS-04** 注册表持有已发布的源，各自挂在一个前缀下，并在上报时为每个源的读数加上该前缀。发布与撤销在任意线程上安全，属于装配与关闭阶段；读取可与二者并发，也可与另一次读取并发。以同一前缀再次发布会替换其源。Core 不定义任何导出格式、端点或传输方式：把读数适配到收集方属于集成层——这正是 Core 承载该契约却不需要任何依赖的原因。
+
+**C-OBS-05** Core 只定义形状。有哪些读数属于各组件：见 [Network](OGBS-Network-1.0.zh-CN.md#10-可观测性)、[RPC](OGBS-RPC-1.0.zh-CN.md#12-可观测性)，以及本来就上报自身快照的 [Runtime](OGBS-Runtime-1.0.zh-CN.md)、[Data](OGBS-Data-1.0.zh-CN.md) 与 [Router](OGBS-Router-1.0.zh-CN.md)。就绪、存活以及任何决定"实例是否该接收流量"的东西都不是读数，也不在此处；它们属于组合，由[容器集成](OGBS-Spring-1.0.zh-CN.md)定义。
+
+<a id="5-实现与验证"></a>
+<a id="6-实现与验证"></a>
+
+## 6. 实现与验证
+
+源码：[Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java)、[MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java)、[FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java)、[MetricsRegistry](../../game-core/src/main/java/cn/managame/core/metrics/MetricsRegistry.java)。
+
+测试：[MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java) 覆盖共享数组、惰性 codec、结构损坏、重复 Key、边界、大小端向量、Builder 快照、boolean 黄金字节/非法值/缺失默认值，以及 int32 有符号边界。[MetricsRegistryTest](../../game-core/src/test/java/cn/managame/core/metrics/MetricsRegistryTest.java) 覆盖前缀顺序、替换与撤销、前缀与上报名称的命名规则、加前缀后名称的长度上界，以及抛异常的源会终止本次收集。

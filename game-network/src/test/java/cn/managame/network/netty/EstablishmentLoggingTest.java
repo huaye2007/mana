@@ -49,7 +49,7 @@ class EstablishmentLoggingTest {
         };
         EmbeddedChannel channel = new EmbeddedChannel(new ChannelInitializer<Channel>() {
             protected void initChannel(Channel ch) {
-                ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(ch, handler, () -> true, null);
+                ConnectionHandlerAdapter adapter = new ConnectionHandlerAdapter(ch, handler, () -> true, null, new NetworkCounters());
                 adapter.failEstablishment(failure);
                 adapter.failEstablishment(failure); // Repeated closure must not duplicate diagnostics.
                 if (late) adapter.exceptionCaught(null, failure);

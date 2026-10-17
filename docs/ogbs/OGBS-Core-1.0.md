@@ -123,10 +123,28 @@ Each component specifies which APIs return or report errors. A defined constant 
 
 The 5000..5999 range stays reserved for game-router, which currently defines no codes: the Router reports failures with RPC's PEER_NOT_FOUND, UNAVAILABLE, TIMEOUT and HANDLER_ERROR. 5001..5004 (ROUTER_ROUTE_NOT_FOUND, ROUTER_BINDING_CONFLICT, ROUTER_NOT_REGISTERED, ROUTER_INVALID_SERVICE) belonged to the removed binding and registration model and MUST NOT be reused. See [Router](OGBS-Router-1.0.md) for its failure paths.
 
+<a id="5-可观测性"></a>
+<a id="5-observability"></a>
+
+## 5. Observability
+
+Core owns the shape of what components report about themselves, as it owns Metadata and error codes: one contract, so a reading means the same thing in every component and in every language implementation.
+
+**C-OBS-01** A reading is a name, a kind and a 64-bit signed value. A **gauge** is a current value that rises and falls: a queue depth, an open-connection count, a cache size. A **counter** only rises while the process runs and MUST NOT be reset by the component, so a collector derives a rate by differencing two readings; a restart is visible as the value going back to zero. There are no other kinds in V1: no histogram, no summary and no timestamp per reading. A total duration is reported as a counter of nanoseconds, which gives a mean against a counter of completions but never a percentile — stated here so no reader mistakes it for a latency distribution.
+
+**C-OBS-02** A name is a lowercase dotted path: each segment starts with a letter and continues with letters or digits, segments are separated by single dots, and there is no leading, trailing or repeated dot. The full name including its component prefix is at most 128 characters. Names are part of the cross-language contract: a component's own specification lists the readings it reports, so a dashboard built against one implementation reads another. A name that breaks the rule MUST be rejected rather than exported, because a collector cannot parse what it cannot name.
+
+**C-OBS-03** Collection is **pull**: a component publishes a source that reports the values it already keeps, and nothing happens until a collector reads it. Instrumenting a component therefore adds no work to its data path, and a component MUST NOT compute, aggregate over time or allocate per reading inside a source. A source MUST NOT throw. A reading is approximate and is not a barrier: values are read without a lock while the thing they describe changes, so two readings of the same snapshot can be one apart.
+
+**C-OBS-04** A registry holds the published sources, each under a prefix, and reports every source's readings with that prefix applied. Publishing and withdrawal are safe from any thread and belong to assembly and shutdown; reading is concurrent with both and with another read. Publishing the same prefix again replaces its source. Core defines no exposition format, endpoint or transport: adapting readings to a collector is the integration layer's, which is why Core needs no dependency to carry this contract.
+
+**C-OBS-05** Core defines the shape only. Which readings exist is each component's: see [Network](OGBS-Network-1.0.md#10-observability), [RPC](OGBS-RPC-1.0.md#12-observability) and the components that already reported their own snapshot — [Runtime](OGBS-Runtime-1.0.md), [Data](OGBS-Data-1.0.md) and [Router](OGBS-Router-1.0.md). Readiness, liveness and anything that decides whether an instance should receive traffic are not readings and are not here; they are composition, defined by [container integration](OGBS-Spring-1.0.md).
+
 <a id="5-实现与验证"></a>
+<a id="6-实现与验证"></a>
 
-## 5. Implementation and validation
+## 6. Implementation and validation
 
-Sources: [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java), [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java), [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java).
+Sources: [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java), [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java), [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java), [MetricsRegistry](../../game-core/src/main/java/cn/managame/core/metrics/MetricsRegistry.java).
 
-[MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java) covers shared arrays, lazy codecs, malformed structure, duplicate Keys, boundaries, endian vectors, Builder snapshots, boolean golden bytes/invalid values/missing defaults, and signed int32 boundaries.
+[MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java) covers shared arrays, lazy codecs, malformed structure, duplicate Keys, boundaries, endian vectors, Builder snapshots, boolean golden bytes/invalid values/missing defaults, and signed int32 boundaries. [MetricsRegistryTest](../../game-core/src/test/java/cn/managame/core/metrics/MetricsRegistryTest.java) covers prefix order, replacement and withdrawal, the name rule for both prefixes and reported names, the length bound on a prefixed name, and that a throwing source ends the collection.

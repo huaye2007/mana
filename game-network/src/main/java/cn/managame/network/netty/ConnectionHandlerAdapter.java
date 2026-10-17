@@ -19,17 +19,19 @@ final class ConnectionHandlerAdapter extends ChannelInboundHandlerAdapter {
     private final ConnectionHandler handler;
     private final BooleanSupplier open;
     private final Promise<Connection> result; // Client result only; null for an accepted server channel.
+    private final NetworkCounters counters;
     private final ChannelFutureListener closedBeforeConnected;
     private SslHandler ssl;
     private Connection connection;
     private boolean initialized, active, webSocketPending, ended;
 
     ConnectionHandlerAdapter(Channel channel, ConnectionHandler handler,
-                             BooleanSupplier open, Promise<Connection> result) {
+                             BooleanSupplier open, Promise<Connection> result, NetworkCounters counters) {
         this.channel = channel;
         this.handler = handler;
         this.open = open;
         this.result = result;
+        this.counters = counters;
         closedBeforeConnected = f -> failEstablishment(new ClosedChannelException());
         channel.closeFuture().addListener(closedBeforeConnected);
     }
@@ -44,6 +46,7 @@ final class ConnectionHandlerAdapter extends ChannelInboundHandlerAdapter {
     void failEstablishment(Throwable cause) {
         if (connection != null || ended) return;
         ended = true;
+        counters.establishmentFailed();
         channel.closeFuture().removeListener(closedBeforeConnected);
         channel.close();
         if (result != null) {
@@ -67,7 +70,8 @@ final class ConnectionHandlerAdapter extends ChannelInboundHandlerAdapter {
             return;
         }
         channel.closeFuture().removeListener(closedBeforeConnected);
-        Connection current = new NettyConnection(channel);
+        Connection current = new NettyConnection(channel, counters);
+        counters.established();
         connection = current;
         try { handler.onConnected(current); }
         catch (Throwable cause) { report(cause); }
@@ -87,6 +91,7 @@ final class ConnectionHandlerAdapter extends ChannelInboundHandlerAdapter {
             if (connection == null) failEstablishment(new ClosedChannelException());
             else {
                 ended = true;
+                counters.closed();
                 try { handler.onDisconnected(connection); }
                 catch (Throwable cause) { report(cause); }
                 finally { connection = null; }
@@ -97,18 +102,20 @@ final class ConnectionHandlerAdapter extends ChannelInboundHandlerAdapter {
 
     private void report(Throwable cause) {
         if (connection != null) {
+            counters.handlerException();
             try { handler.onException(connection, cause); }
             catch (Throwable error) { NetworkSupport.log("ConnectionHandler.onException failed", error); }
         } else if (!ended) {
             failEstablishment(cause);
         } else {
+            counters.handlerException();
             NetworkSupport.logTransportFailure("Exception outside connection lifecycle", channel, cause);
         }
     }
 
     @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
         try {
-            if (connection != null && !ended) handler.onMessage(connection, message);
+            if (connection != null && !ended) { counters.messageRead(); handler.onMessage(connection, message); }
             else if (!ended) failEstablishment(new IllegalStateException("Message before establishment"));
         } catch (Throwable cause) { report(cause); }
         finally { ReferenceCountUtil.release(message); }

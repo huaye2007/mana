@@ -115,11 +115,34 @@ Network 当前使用 WriteStatus、NetworkException、ConnectionHandler.onExcept
 
 Java 方法签名或异常形式变更应说明源码兼容性；Metadata 字节格式和跨进程错误码含义变更必须先处理标准及 Wire Profile 的协议兼容性。
 
-## 5. 源码与验证
+<a id="5-可观测性绑定"></a>
+
+## 5. 可观测性绑定
+
+包 `cn.managame.core.metrics`，实现 [Core §5](OGBS-Core-1.0.zh-CN.md#5-可观测性)。三个类型、零依赖：Core 依旧不依赖任何第三方，这正是该契约放在此处而不是放在某个指标库上的原因。
+
+| 类型 | 形状 |
+| --- | --- |
+| `MetricSink` | `void gauge(String name, long value)`、`void counter(String name, long value)`。由应用实现；在收集线程上每条读数调用一次 |
+| `MetricsSource` | `@FunctionalInterface`，`void read(MetricSink sink)`。由组件发布；上报自己本来就持有的值，且不得抛异常 |
+| `MetricsRegistry` | `publish(String prefix, MetricsSource)`、`boolean withdraw(String prefix)`、`List<String> prefixes()`、`void read(MetricSink)`、`MAX_NAME_LENGTH = 128` |
+
+`publish` 与 `withdraw` 是 `synchronized` 且会复制源表，因此属于装配与关闭阶段；`read` 遍历一个 volatile 数组且不加锁，因此可与二者并发，也可与另一次读取并发。源按前缀顺序（字典序）访问，于是收集方的输出在多次读取之间、多个进程之间都稳定。以已存在的前缀发布会原地替换其源并保持位置不变。
+
+`read` 为每个源包装调用方的 sink，用于加上 `<prefix>.` 前缀并校验该源上报的内容：C-OBS-02 的命名规则用字符扫描实现而非正则，非法名称与加前缀后超过 `MAX_NAME_LENGTH` 的名称都抛 `IllegalArgumentException`——报给组件作者，而不是把收集方无法解析的东西导出去。前缀、源或 sink 为 null 抛 `NullPointerException`。源抛出的 `RuntimeException` 会传播给 `read` 的调用方，且其后的源不再被读取：注册表不做隔离，因为 C-OBS-03 规定源不得抛异常。
+
+Core 里没有任何东西做收集、调度或导出。有哪些读数属于各组件的 Java 规范——[Network §10](OGBS-Network-Java-25-Specification-1.0.zh-CN.md#10-stats)、[RPC §10](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#10-stats)，以及 Runtime、Data、Router 本来就提供的 `stats()` 记录——把它们适配到注册表并对外提供则属于 [Spring §5](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#5-可观测性)。
+
+<a id="5-源码与验证"></a>
+<a id="6-源码与验证"></a>
+
+## 6. 源码与验证
 
 - [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java)：结构校验、查询与 Builder。
 - [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java)：Key 校验与内置 codec。
 - [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java)：共享编号绑定。
+- [MetricsRegistry](../../game-core/src/main/java/cn/managame/core/metrics/MetricsRegistry.java)、[MetricsSource](../../game-core/src/main/java/cn/managame/core/metrics/MetricsSource.java)、[MetricSink](../../game-core/src/main/java/cn/managame/core/metrics/MetricSink.java)：可观测性契约。
 - [MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java)：共享数组、惰性解码、结构损坏、边界、Builder 快照及编码向量。
+- [MetricsRegistryTest](../../game-core/src/test/java/cn/managame/core/metrics/MetricsRegistryTest.java)：前缀顺序、替换与撤销、命名规则、加前缀后的长度上界、抛异常的源。
 
 运行 mvn -pl game-core -am test；影响模块依赖或跨组件接入时运行 mvn clean verify。测试覆盖不表示已经完成跨语言互操作或生产性能验证。

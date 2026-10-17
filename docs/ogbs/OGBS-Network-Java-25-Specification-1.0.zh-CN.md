@@ -370,3 +370,17 @@ DEBUG 摘要只包含上下文、类别、远端地址与异常类型。源码�
 - WS URI 在选定 EventLoop 上用 JDK 阻塞解析器解析；DNS 缓慢会拖住该 loop。
 - onConnected 等回调应保持短小，否则会延迟同一 loop 上的其他 Channel。
 - 生产容量、原生传输与跨语言互通尚未验证。
+
+<a id="10-stats"></a>
+
+## 10. Stats
+
+实现 [Network §10](OGBS-Network-1.0.zh-CN.md#10-可观测性)。`NetworkServer.stats()` 与 `NetworkClient.stats()` 返回 `cn.managame.network.connection.NetworkStats`，是一个含十个 `long` 分量的 record，顺序为 `liveConnections, accepted, established, closed, establishmentFailures, messagesRead, writesAccepted, writesInactive, writesNotWritable, handlerExceptions`。客户端的 `accepted` 恒为 0。
+
+计数保存在每个监听端或客户端各自的一个包私有持有者中，并与它拥有的每条连接共享：单调计数用 `LongAdder`，因为它们会从每个 EventLoop 上递增；`liveConnections` 用单个 `AtomicLong`，因为它也会减少。取快照就是把各 adder 求和并读一次 live 值，因此开销很小且无锁；它不是屏障，`established`、`closed` 与 `liveConnections` 在连接交接过程中可能相差一。
+
+增量点单一且精确，这正是让这些计数可比的原因：accept 记在监听端的 channel 初始化器里；建立失败在抑制重复诊断的同一个守卫之后、每个 channel 记一次；established 记在 Connection 被创建并交给 `onConnected` 处；closed 记在既有连接触发 `onDisconnected` 处；每次投递给 `onMessage` 记一次读；每次 `Connection.write` 按返回的 `WriteStatus` 记一次；每个到达 `onException` 或生命周期外日志的 throwable 记一次。被拒绝的写在调用方看到状态之前就已计数，因此没有哪次拒绝是看不见的。
+
+game-network 只上报一个 record，仅此而已：它不依赖 game-core，因此并不知道指标契约。把快照适配到注册表属于 [Spring §5](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#5-可观测性)；另有收集方式的应用自己调 `stats()`。所有读数都不可配置、也无法关闭；无人收集时的成本就是上述路径上已经递增的那些 adder。HTTP 监听端的读数在 V1 不上报。
+
+验证：[NetworkStatsTest](../../game-network/src/test/java/cn/managame/network/netty/NetworkStatsTest.java) 覆盖一对服务端/客户端上的 accept、建立、live 计数、一次消息投递、一次被接纳的写与一次 inactive 写，以及一个在 pipeline 装配阶段建立失败的 channel。

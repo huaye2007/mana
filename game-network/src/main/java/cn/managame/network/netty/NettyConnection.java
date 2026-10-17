@@ -9,15 +9,17 @@ import java.util.Objects;
 
 final class NettyConnection implements Connection {
     private final Channel channel;
-    NettyConnection(Channel channel) { this.channel = channel; }
+    private final NetworkCounters counters;
+    NettyConnection(Channel channel, NetworkCounters counters) { this.channel = channel; this.counters = counters; }
     public boolean isActive() { return channel.isActive(); }
     public boolean isWritable() { return channel.isWritable(); }
     public WriteStatus write(Object message) {
         Objects.requireNonNull(message, "message");
-        if (!channel.isActive()) return WriteStatus.INACTIVE;
-        if (!channel.isWritable()) return WriteStatus.NOT_WRITABLE;
+        if (!channel.isActive()) { counters.writeInactive(); return WriteStatus.INACTIVE; }
+        if (!channel.isWritable()) { counters.writeNotWritable(); return WriteStatus.NOT_WRITABLE; }
         // Reusable void promise forwards outbound failures into exceptionCaught.
         channel.writeAndFlush(message, channel.voidPromise());
+        counters.writeAccepted();
         return WriteStatus.ACCEPTED;
     }
     public void close() { channel.close(); }

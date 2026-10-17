@@ -123,13 +123,34 @@ Network uses WriteStatus, NetworkException, and ConnectionHandler.onException. C
 
 Changes to Java signatures or exceptions should explain source compatibility. Changes to Metadata bytes or cross-process error meanings must first address protocol compatibility in the standard and Wire Profile.
 
-<a id="5-源码与验证"></a>
+<a id="5-可观测性绑定"></a>
 
-## 5. Sources and validation
+## 5. Observability binding
+
+Package `cn.managame.core.metrics`, implementing [Core §5](OGBS-Core-1.0.md#5-observability). Three types and no dependency: Core still depends on nothing, which is why this contract lives here rather than on a metrics library.
+
+| Type | Shape |
+| --- | --- |
+| `MetricSink` | `void gauge(String name, long value)`, `void counter(String name, long value)`. The application implements it; called once per reading on the collecting thread |
+| `MetricsSource` | `@FunctionalInterface`, `void read(MetricSink sink)`. A component publishes one; it reports values it already keeps and must not throw |
+| `MetricsRegistry` | `publish(String prefix, MetricsSource)`, `boolean withdraw(String prefix)`, `List<String> prefixes()`, `void read(MetricSink)`, `MAX_NAME_LENGTH = 128` |
+
+`publish` and `withdraw` are `synchronized` and copy the source table, so they belong to assembly and shutdown; `read` walks a volatile array and takes no lock, so it is concurrent with both and with another read. Sources are visited in prefix order, which is lexicographic, so a collector's output is stable across reads and across processes. Publishing a prefix that already exists replaces its source in place and keeps its position.
+
+`read` wraps the caller's sink per source to prepend `<prefix>.` and to validate what the source reports: the name rule of C-OBS-02 is enforced with a character scan, not a regular expression, and both an invalid name and a prefixed name over `MAX_NAME_LENGTH` throw `IllegalArgumentException` — reported to the component's author rather than exported as something a collector cannot parse. A null prefix, source or sink throws `NullPointerException`. A `RuntimeException` from a source propagates to the caller of `read`, and the sources after it are not read: the registry isolates nothing, as C-OBS-03 says a source must not throw.
+
+Nothing in Core collects, schedules or exports. Which readings exist belongs to each component's Java specification — [Network §10](OGBS-Network-Java-25-Specification-1.0.md#10-stats), [RPC §10](OGBS-RPC-Java-25-Specification-1.0.md#10-stats), and the `stats()` records Runtime, Data and Router already publish — and adapting them to a registry and serving them belongs to [Spring §5](OGBS-Spring-Java-25-Specification-1.0.md#5-observability).
+
+<a id="5-源码与验证"></a>
+<a id="6-源码与验证"></a>
+
+## 6. Sources and validation
 
 - [Metadata](../../game-core/src/main/java/cn/managame/core/Metadata.java): structure checks, lookup and Builder.
 - [MetadataKey](../../game-core/src/main/java/cn/managame/core/MetadataKey.java): key validation and built-in codecs.
 - [FrameworkErrorCodes](../../game-core/src/main/java/cn/managame/core/FrameworkErrorCodes.java): shared allocation binding.
+- [MetricsRegistry](../../game-core/src/main/java/cn/managame/core/metrics/MetricsRegistry.java), [MetricsSource](../../game-core/src/main/java/cn/managame/core/metrics/MetricsSource.java), [MetricSink](../../game-core/src/main/java/cn/managame/core/metrics/MetricSink.java): the observability contract.
 - [MetadataTest](../../game-core/src/test/java/cn/managame/core/MetadataTest.java): shared arrays, lazy decoding, malformed structure, boundaries, Builder snapshots, encoding vectors.
+- [MetricsRegistryTest](../../game-core/src/test/java/cn/managame/core/metrics/MetricsRegistryTest.java): prefix order, replacement and withdrawal, the name rule, the prefixed-name bound, a throwing source.
 
 Run mvn -pl game-core -am test. For dependency or cross-component integration changes, run mvn clean verify. Coverage does not establish cross-language interoperability or production performance validation.

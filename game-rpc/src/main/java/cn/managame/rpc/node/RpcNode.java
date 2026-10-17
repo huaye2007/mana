@@ -69,6 +69,7 @@ public final class RpcNode implements AutoCloseable {
     private final int nodeId, maxFrameSize, maxPendingCalls, maxInboundPeers, maxConnections;
     private final SocketAddress bindAddress;
     private final RpcHandler handler;
+    private final RpcCounters counters;
     private final long callTimeout, handshakeTimeout, reconnectDelay, heartbeatInterval, heartbeatTimeout;
     private final long reconnectRandomDelay;
     private final Map<ChannelOption<?>, Object> channelOptions;
@@ -104,6 +105,7 @@ public final class RpcNode implements AutoCloseable {
         reconnectRandomDelay = b.reconnectRandomDelay < 0 ? reconnectDelay / 4 : b.reconnectRandomDelay;
         channelOptions = Map.copyOf(b.channelOptions); transports = List.copyOf(b.transports);
         guard = new HandshakeGuard(b.handshakeSecret, b.handshakeClockSkew);
+        counters = new RpcCounters();
         externalGroup = b.eventLoopGroup;
     }
 
@@ -113,6 +115,24 @@ public final class RpcNode implements AutoCloseable {
 
     /** Largest frame this Node encodes or accepts, length prefix included. */
     public int maxFrameSize() { return maxFrameSize; }
+
+    /**
+     * Approximate readings for this Node; see {@link RpcStats}. The current values are walked from the Peer
+     * table on each call, so this is proportional to the number of Peers and is meant for periodic
+     * collection, not for a data path.
+     */
+    public RpcStats stats() {
+        long connected = 0, connections = 0, pending = 0;
+        var all = peers.values();
+        for (RpcPeer peer : all) {
+            long slots = 0;
+            for (ConnectionSlot slot : peer.slots) if (slot.connection.get() != null) slots++;
+            if (slots > 0) connected++;
+            connections += slots;
+            pending += peer.pending.size();
+        }
+        return counters.snapshot(all.size(), connected, connections, pending);
+    }
 
     /** Snapshot only: at least one bound connection is active; does not promise delivery. */
     public boolean isPeerConnected(int remoteNodeId) {
@@ -253,6 +273,7 @@ public final class RpcNode implements AutoCloseable {
             }
             if (!peer.reservePending(maxPendingCalls)) {
                 ReferenceCountUtil.release(body); body = null;
+                counters.callRejected();
                 fireFail(remoteNodeId, request.command(), UNAVAILABLE, callback);
                 return;
             }
@@ -275,6 +296,7 @@ public final class RpcNode implements AutoCloseable {
                 fail(peer, pending, state != State.RUNNING ? NODE_CLOSED : peers.get(remoteNodeId) != peer ? PEER_REMOVED : UNAVAILABLE);
                 return;
             }
+            counters.callStarted();
             RpcPeer scheduledPeer = peer;
             PendingCall scheduledCall = pending;
             Timeout timeout = timer.newTimeout(ignored -> timeout(scheduledPeer, scheduledCall),
@@ -381,7 +403,7 @@ public final class RpcNode implements AutoCloseable {
                 }
             }
             return RpcSendStatus.UNAVAILABLE;
-        } finally { if (!accepted) frame.release(); }
+        } finally { if (accepted) counters.frameSent(); else { counters.sendRefused(); frame.release(); } }
     }
 
     /**
@@ -434,6 +456,7 @@ public final class RpcNode implements AutoCloseable {
 
     private void reconnect(RpcPeer peer, ConnectionSlot slot) {
         if (!continueRecovery(peer, slot)) return;
+        counters.reconnect();
         try {
             timer.newTimeout(ignored -> connect(peer, slot), nextReconnectDelayMillis(), TimeUnit.MILLISECONDS);
         } catch (IllegalStateException stopped) {
@@ -535,6 +558,7 @@ public final class RpcNode implements AutoCloseable {
             throw new CorruptedFrameException("Duplicate slot");
         context.peer = peer;
         context.slot = slot;
+        counters.handshakeAccepted();
         slot.connecting.set(false);
     }
 
@@ -569,6 +593,7 @@ public final class RpcNode implements AutoCloseable {
         if (existing == null) peers.put(peer.nodeId, peer);
         context.peer = peer;
         context.slot = slot;
+        counters.handshakeAccepted();
         // An existing outbound recovery chain stops itself on observing this binding.
     }
 
@@ -631,6 +656,7 @@ public final class RpcNode implements AutoCloseable {
     // ---------------------------------------------------------------- handler notification
 
     private void fireRequest(RpcPeer peer, int slotId, RpcRequest request) {
+        counters.requestReceived();
         boolean previous = inHandler.get();
         inHandler.set(true);
         try { handler.onRequest(peer.nodeId, slotId, request); }
@@ -674,6 +700,7 @@ public final class RpcNode implements AutoCloseable {
     /** Runs on the timer thread; the application hands the failure to its own executor if needed. */
     private void timeout(RpcPeer peer, PendingCall pending) {
         if (!peer.removePending(pending)) return;
+        counters.callTimedOut();
         pending.cancelTimeout();
         tryRemovePassive(peer);
         fireFail(peer.nodeId, pending.command, TIMEOUT, pending.callback);

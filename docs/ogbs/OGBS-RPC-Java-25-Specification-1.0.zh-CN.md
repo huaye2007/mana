@@ -183,3 +183,29 @@ close 返回后不再有待完成调用、连接、计时器或自有通知线�
 <a id="rpc-router-review-2026-10-07"></a>
 
 剩余边界：关闭时按 Peer 扫描全部连接；wire 不携带 Node 代际，新进程重新从头分配 ID 时可能匹配到对端保存的旧回复（R-CALL-04）。响应现在只走承载请求的那个 Slot（R-SEND-01），窗口已收窄但未关闭；要关闭它需要调用方只接受自己发出调用的那条连接上的响应，而 Router 把路由响应经自己持有的任意一条连接转交给调用方，Router Profile v4 也不携带调用方 Slot，因此需要新增 wire 字段或 Router 状态。Handler 运行在 EventLoop 上，阻塞会拖慢该 EventLoop 上的所有连接。未实现：TLS/WebSocket Builder 选项、服务发现、业务重试、远端取消、持久投递。未验证：跨语言互通、生产吞吐与内存。Router 在现有 Node 上组合，除普通 API 外只使用 `isPeerConnected` 与 `forwardResponse`（见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)）。
+
+<a id="10-stats"></a>
+
+## 10. Stats
+
+实现 [RPC §12](OGBS-RPC-1.0.zh-CN.md#12-可观测性)。`RpcNode.stats()` 返回 `cn.managame.rpc.node.RpcStats`，是一个含十二个 `long` 分量的 record，顺序为 `peers, peersConnected, connections, pendingCalls, callsStarted, callsRejected, callsTimedOut, framesSent, sendsRefused, requestsReceived, handshakesAccepted, reconnects`。
+
+八个 counter 是一个包私有持有者里的 `LongAdder` 字段，会从 EventLoop、调用方线程与定时器线程上递增。四个 gauge **不**计数：`stats()` 遍历 Peer 表，按 Peer 统计有连接的 Slot 数与其 pending map 的大小。因此没有任何东西需要与 Peer 表保持同步——而节点自身的竞态恰恰都在那里；代价与 Peer 数量成正比，所以 `stats()` 面向周期性收集，而不是数据路径。
+
+增量点，每个都只有一处：
+
+| 读数 | 位置 |
+| --- | --- |
+| `callsRejected` | `call` 中 `reservePending` 被拒处，在释放 body 之前 |
+| `callsStarted` | 帧已被接纳之后、发布超时之前 |
+| `callsTimedOut` | 超时任务中，其条件式 `removePending` 胜出之后，因此每个调用恰好一次 |
+| `framesSent`、`sendsRefused` | 全部出站请求、响应与心跳都会经过的那一个内部 `send`，按是否有 Slot 接纳区分 |
+| `requestsReceived` | 入站请求通知 handler 的入口 |
+| `handshakesAccepted` | 连接被绑定到其 Slot 处，发起侧与入站侧两条路径都算 |
+| `reconnects` | 恢复调度入口，在所有权检查之后 |
+
+在内部 `send` 处计数是有意的：`notify`、`reply`、`forwardResponse` 与 `call` 全都经过它，于是一处就覆盖了每个公共发送，而且即使调用方忽略返回的 `RpcSendStatus`，被拒也会被计数。`answer` 在请求自身的 Slot 上回复且不做回退，是唯一在它之外的出站路径，因此 V1 不计数。
+
+所有读数都不可配置、也无法关闭。把快照适配到注册表属于 [Spring §5](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#5-可观测性)。
+
+验证：[RpcStatsTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcStatsTest.java) 覆盖空闲 Node 全报零、绑定后的 Slot 表现为一个已完成握手的已连接 Peer、待完成调用使 gauge 升起又清零而不影响 `callsStarted`、一次入站请求，以及被 `maxPendingCalls` 拒绝的调用与被不可写 Slot 拒绝的发送分别计数。

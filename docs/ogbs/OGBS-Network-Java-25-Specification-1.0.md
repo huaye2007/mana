@@ -372,3 +372,17 @@ Run `mvn -pl game-network -am test`, or `mvn clean verify` for the repository. T
 - WS URIs are resolved with the JDK blocking resolver on the selected EventLoop; slow DNS can stall that loop.
 - Keep onConnected and other callbacks short; they delay other channels on the same loop.
 - Production capacity, native transports and cross-language interoperability are not verified.
+
+<a id="10-stats"></a>
+
+## 10. Stats
+
+Implements [Network §10](OGBS-Network-1.0.md#10-observability). `NetworkServer.stats()` and `NetworkClient.stats()` return `cn.managame.network.connection.NetworkStats`, a record of ten `long` components in the order `liveConnections, accepted, established, closed, establishmentFailures, messagesRead, writesAccepted, writesInactive, writesNotWritable, handlerExceptions`. A client's `accepted` is always 0.
+
+Counts live in one package-private holder per listener or client, shared with every connection it owns: `LongAdder` for the monotonic counts, because they are incremented from every EventLoop, and a single `AtomicLong` for `liveConnections`, which also decreases. A snapshot sums the adders and reads the live count, so it is cheap and lock-free; it is not a barrier, and `established`, `closed` and `liveConnections` can be observed one apart while a connection is being handed over.
+
+The increment points are single and exact, which is what makes the counts comparable: accept in the listener's channel initializer, establishment failure once per channel behind the same guard that suppresses duplicate diagnostics, established where the Connection is created and handed to `onConnected`, closed where `onDisconnected` is invoked for an established connection, one read per delivery to `onMessage`, one per `Connection.write` outcome by returned `WriteStatus`, and one per throwable that reaches `onException` or the outside-lifecycle log. A refused write is counted before the caller sees the status, so no refusal is invisible.
+
+game-network reports a record and nothing more: it does not depend on game-core and so does not know the metrics contract. Adapting a snapshot to a registry is [Spring §5](OGBS-Spring-Java-25-Specification-1.0.md#5-observability); an application that collects differently calls `stats()` itself. No reading is configurable and none can be turned off; the cost when nobody collects is the adders already incremented on the paths above. HTTP listener readings are not reported in V1.
+
+Validation: [NetworkStatsTest](../../game-network/src/test/java/cn/managame/network/netty/NetworkStatsTest.java) covers accept, establishment, live count, a delivered message, an accepted and an inactive write across a server/client pair, and a channel that fails establishment in pipeline assembly.

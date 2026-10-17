@@ -103,3 +103,5 @@ mvn clean verify
 可运行示例及其执行测试统一维护在 [game-demo](../game-demo/README.zh-CN.md)，game-network 只发布框架代码。可在 IDE 运行 [NetworkEchoExample](../game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java)。示例使用随机端口、长度 framing 与普通字符串，并完整释放连接和网络资源。
 
 测试覆盖 TCP/TLS/WS/WSS、握手失败、引用计数、背压、关闭与中断竞争，以及独立 HTTP/1.1 契约。测试自行创建临时证书，不要求外部服务；未验证公网部署、native transport 或生产容量。根构建和完整示例模块目前被已有 RPC API 不匹配阻断，HTTP 示例已单独编译并运行。
+
+`NetworkServer.stats()` 与 `NetworkClient.stats()` 返回一份 `NetworkStats` 快照：在线连接数、accepted、established、closed、建立失败数、已读消息数，以及拆成 accepted / inactive / not-writable 的写入计数。最后那一项是解释丢失的读数——高于高水位的写会被拒绝，而被拒即丢弃消息的发送方会静默丢数据。这些计数收集起来没有成本，也无法关闭。game-network 不依赖任何其他框架模块，因此它只上报一个 record；把它适配到收集方属于 [game-spring](../game-spring/README.zh-CN.md)。见 [Network §10](../docs/ogbs/OGBS-Network-1.0.zh-CN.md#10-可观测性) 与 [Java §10](../docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md#10-stats)。

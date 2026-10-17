@@ -162,3 +162,30 @@ Java 实现通过清除恢复标记后重新检查并 CAS 获得恢复权处理�
 Java 验证入口：[RpcNodeTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcNodeTest.java)、[RpcIntegrationTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcIntegrationTest.java)、[RpcWireTest](../../game-rpc/src/test/java/cn/managame/rpc/netty/RpcWireTest.java)。实现细节、默认值与示例见 Java 开发规范。
 
 本地真实 TCP、并发回归及根 clean verify 已通过。有限调用接纳（R-SEND-04）已实现，并由 RpcNodeTest 覆盖达到上限时的快速拒绝、body 释放与完成后名额归还；跨语言、生产容量、长时间 ID 回绕与公网部署未验证。RPC 核心不自动依赖 Runtime；可选 Spring 适配另遵循 [容器集成规范](OGBS-Spring-1.0.zh-CN.md)。TLS/WS RPC Builder 和发现尚未实现。
+
+<a id="12-可观测性"></a>
+
+## 12. 可观测性
+
+读数遵循 [Core §5](OGBS-Core-1.0.zh-CN.md#5-可观测性)。
+
+**R-OBS-01** Node 为自身上报下列读数。四个 gauge 在取快照时从 Peer 表推导，因此代价是遍历一遍 Peer，面向周期性收集而不是数据路径。
+
+| 读数 | 种类 | 含义 |
+| --- | --- | --- |
+| `peers` | gauge | 已配置或由入站握手学到的 Peer 数 |
+| `peers.connected` | gauge | 至少有一个 Slot 处于连接状态的 Peer 数 |
+| `connections` | gauge | 全部 Peer 上处于连接状态的 Slot 数 |
+| `calls.pending` | gauge | 全部 Peer 上已登记且尚未完成的调用数 |
+| `calls.started` | counter | 帧已被某条连接接纳的调用数 |
+| `calls.rejected` | counter | 因其 Peer 已达 R-SEND-04 上限而在编码前被拒的调用数 |
+| `calls.timedout` | counter | 由超时而非响应完成的调用数 |
+| `frames.sent` | counter | 被连接接纳的请求、响应与心跳帧数 |
+| `sends.refused` | counter | 没有任何 Slot 接纳的发送：无连接，或全部高于写缓冲高水位 |
+| `requests.received` | counter | 交给应用 handler 的入站请求数 |
+| `handshakes.accepted` | counter | 完成握手并绑定到 Slot 的连接数 |
+| `reconnects` | counter | 为出站 Slot 排定的恢复尝试数 |
+
+**R-OBS-02** 其中三条回答的是其他读数无法回答的问题。`calls.pending` 对照配置的 Peer 级上限，说明这个 Node 距离拒绝调用还有多远，而 `calls.rejected` 说明它已经在拒了。`sends.refused` 解释 Notify 为何消失：R-SEND-04 把背压与无连接都归为 UNAVAILABLE，不检查该状态的发送方会静默丢消息。`peers.connected` 低于 `peers` 说明某个邻居不在了，而这一点没有任何错误码会单独报告——因为 RPC 从不宣告断连。
+
+**R-OBS-03** 读数是近似的，也不是屏障。按 Peer、按 Slot、按 command 的细分在 V1 不上报：Node 只报聚合值，它能回答"这个实例是否有问题"，但回答不了"是哪个邻居或哪个 command 造成的"。延迟完全不上报——没有往返计时也没有分布，因此超时计数是唯一的延迟信号。

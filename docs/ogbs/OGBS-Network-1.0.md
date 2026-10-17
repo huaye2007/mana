@@ -321,3 +321,28 @@ For example, request A schedules player work and request B is already pipelined 
 Pause automatic reads while a complete request awaits its final response. Already decoded or scheduled input may be buffered per connection; this is transport sequencing rather than a business task queue or a hard global memory bound. Manual reads and external executor capacities remain application responsibilities. Inbound inactivity timing continues while a response is pending; disable or configure it explicitly if long business operations require a different policy. No business-response timer is created. A handler that never completes stalls this connection until closure/inactivity timing; it does not block other connections. Disconnect and server close do not complete, cancel or interrupt the application callback/work. Late completion still consumes a submitted response reference, even after owned executors have stopped. Listener close with borrowed transport resources retains the existing N-HTTP-06 behavior.
 
 The request-specific fallback callback supplies completion correlation; native asynchronous extensions remain responsible for their own single-response discipline and reference ownership. No general response-ID registry is added. Source and validation: [Java deferred-response API](OGBS-Network-Java-25-Specification-1.0.md#http-async-response), HttpServerTransport, HttpServerTest and HttpAsyncServerExample.
+
+<a id="10-observability"></a>
+
+## 10. Observability
+
+Readings follow [Core §5](OGBS-Core-1.0.md#5-observability): gauges are current values, counters only rise, collection is pull and costs nothing until something collects.
+
+**N-OBS-01** A listener and a client each report the readings below for themselves. A client reports 0 for `accepted`, which it never does. Names are fixed, because a dashboard built against one implementation must read another.
+
+| Reading | Kind | Meaning |
+| --- | --- | --- |
+| `connections` | gauge | connections handed to the application and not yet disconnected |
+| `accepted` | counter | channels the listener accepted, before TLS and WebSocket |
+| `established` | counter | connections the application's established callback was invoked for |
+| `closed` | counter | established connections whose disconnected callback was invoked |
+| `establishment.failures` | counter | channels that never reached the established callback: TLS, WebSocket, pipeline assembly, or a close during establishment |
+| `messages.read` | counter | inbound messages delivered to the application |
+| `writes.accepted` | counter | writes the transport took ownership of; admission, not delivery |
+| `writes.inactive` | counter | writes refused because the connection was already inactive |
+| `writes.notwritable` | counter | writes refused because the connection was over its write-buffer high watermark |
+| `handler.exceptions` | counter | throwables reported to the application or logged outside a connection's lifecycle |
+
+**N-OBS-02** `writes.notwritable` is the reading that explains loss: N-WRITE-01 refuses a write above the high watermark and the caller decides what to do, so a sender that drops the message on refusal loses it silently unless this count is watched. `establishment.failures` plays the same role for connections that never arrive: the difference between `accepted` and `established` is this count plus whatever is still in flight. Neither is derivable from the other readings.
+
+**N-OBS-03** Readings are approximate and are not a barrier: `established`, `closed` and `connections` are read without a lock while a connection is being handed over, so they can be observed one apart. Bytes read and written, per-connection readings and latency distributions are not reported in V1; a deployment that needs them installs its own transport handler.
