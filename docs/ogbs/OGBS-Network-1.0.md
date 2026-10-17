@@ -328,7 +328,7 @@ The request-specific fallback callback supplies completion correlation; native a
 
 Readings follow [Core §5](OGBS-Core-1.0.md#5-observability): gauges are current values, counters only rise, collection is pull and costs nothing until something collects.
 
-**N-OBS-01** A listener and a client each report the readings below for themselves. A client reports 0 for `accepted`, which it never does. Names are fixed, because a dashboard built against one implementation must read another.
+**N-OBS-01** A listener and a client each report the readings below for themselves. A client reports 0 for `accepted`, which it never does. Names are fixed, because a dashboard built against one implementation must read another. Per C-OBS-05 none of them is counted on the success path of a read or a write: delivered messages and accepted writes are deliberately absent, because the application already sees every message its handler receives and every ACCEPTED its write returned.
 
 | Reading | Kind | Meaning |
 | --- | --- | --- |
@@ -337,12 +337,10 @@ Readings follow [Core §5](OGBS-Core-1.0.md#5-observability): gauges are current
 | `established` | counter | connections the application's established callback was invoked for |
 | `closed` | counter | established connections whose disconnected callback was invoked |
 | `establishment.failures` | counter | channels that never reached the established callback: TLS, WebSocket, pipeline assembly, or a close during establishment |
-| `messages.read` | counter | inbound messages delivered to the application |
-| `writes.accepted` | counter | writes the transport took ownership of; admission, not delivery |
 | `writes.inactive` | counter | writes refused because the connection was already inactive |
 | `writes.notwritable` | counter | writes refused because the connection was over its write-buffer high watermark |
 | `handler.exceptions` | counter | throwables reported to the application or logged outside a connection's lifecycle |
 
 **N-OBS-02** `writes.notwritable` is the reading that explains loss: N-WRITE-01 refuses a write above the high watermark and the caller decides what to do, so a sender that drops the message on refusal loses it silently unless this count is watched. `establishment.failures` plays the same role for connections that never arrive: the difference between `accepted` and `established` is this count plus whatever is still in flight. Neither is derivable from the other readings.
 
-**N-OBS-03** Readings are approximate and are not a barrier: `established`, `closed` and `connections` are read without a lock while a connection is being handed over, so they can be observed one apart. Bytes read and written, per-connection readings and latency distributions are not reported in V1; a deployment that needs them installs its own transport handler.
+**N-OBS-03** Readings are approximate and are not a barrier: `established`, `closed` and `connections` are read without a lock while a connection is being handed over, so they can be observed one apart. A connection that reads and writes normally therefore touches no counter at all, which is what makes these readings free rather than cheap. Message and byte throughput, per-connection readings and latency distributions are not reported in V1: throughput belongs to the layer that already counts it, and a deployment that needs bytes or latency installs its own transport handler.

@@ -188,24 +188,22 @@ close 返回后不再有待完成调用、连接、计时器或自有通知线�
 
 ## 10. Stats
 
-实现 [RPC §12](OGBS-RPC-1.0.zh-CN.md#12-可观测性)。`RpcNode.stats()` 返回 `cn.managame.rpc.node.RpcStats`，是一个含十二个 `long` 分量的 record，顺序为 `peers, peersConnected, connections, pendingCalls, callsStarted, callsRejected, callsTimedOut, framesSent, sendsRefused, requestsReceived, handshakesAccepted, reconnects`。
+实现 [RPC §12](OGBS-RPC-1.0.zh-CN.md#12-可观测性)。`RpcNode.stats()` 返回 `cn.managame.rpc.node.RpcStats`，是一个含九个 `long` 分量的 record，顺序为 `peers, peersConnected, connections, pendingCalls, callsRejected, callsTimedOut, sendsRefused, handshakesAccepted, reconnects`。
 
-八个 counter 是一个包私有持有者里的 `LongAdder` 字段，会从 EventLoop、调用方线程与定时器线程上递增。四个 gauge **不**计数：`stats()` 遍历 Peer 表，按 Peer 统计有连接的 Slot 数与其 pending map 的大小。因此没有任何东西需要与 Peer 表保持同步——而节点自身的竞态恰恰都在那里；代价与 Peer 数量成正比，所以 `stats()` 面向周期性收集，而不是数据路径。
+五个 counter 是一个包私有持有者里的 `LongAdder` 字段，因为拒绝发生在调用方线程、超时发生在定时器线程、握手发生在 EventLoop 上。每个计数要么每连接取一次，要么取在本来就是例外的分支上，因此正常收发的 Node 永远不会碰到这个持有者：C-OBS-05 由构造方式满足，这也正是没有开关的原因。四个 gauge **不**计数：`stats()` 遍历 Peer 表，按 Peer 统计有连接的 Slot 数与其 pending map 的大小。因此没有任何东西需要与 Peer 表保持同步——而节点自身的竞态恰恰都在那里；代价与 Peer 数量成正比，所以 `stats()` 面向周期性收集，而不是数据路径。
 
 增量点，每个都只有一处：
 
 | 读数 | 位置 |
 | --- | --- |
 | `callsRejected` | `call` 中 `reservePending` 被拒处，在释放 body 之前 |
-| `callsStarted` | 帧已被接纳之后、发布超时之前 |
 | `callsTimedOut` | 超时任务中，其条件式 `removePending` 胜出之后，因此每个调用恰好一次 |
-| `framesSent`、`sendsRefused` | 全部出站请求、响应与心跳都会经过的那一个内部 `send`，按是否有 Slot 接纳区分 |
-| `requestsReceived` | 入站请求通知 handler 的入口 |
+| `sendsRefused` | 全部出站请求、响应与心跳都会经过的那一个内部 `send` 的被拒分支 |
 | `handshakesAccepted` | 连接被绑定到其 Slot 处，发起侧与入站侧两条路径都算 |
 | `reconnects` | 恢复调度入口，在所有权检查之后 |
 
-在内部 `send` 处计数是有意的：`notify`、`reply`、`forwardResponse` 与 `call` 全都经过它，于是一处就覆盖了每个公共发送，而且即使调用方忽略返回的 `RpcSendStatus`，被拒也会被计数。`answer` 在请求自身的 Slot 上回复且不做回退，是唯一在它之外的出站路径，因此 V1 不计数。
+在内部 `send` 处计数是有意的：`notify`、`reply`、`forwardResponse` 与 `call` 全都经过它，于是一处就覆盖了每个公共发送，而且即使调用方忽略返回的 `RpcSendStatus`，被拒也会被计数。只有被拒分支递增；已接纳分支什么都不做，`fireRequest` 与 `call` 的成功部分也被有意留空。`answer` 在请求自身的 Slot 上回复且不做回退，是 `send` 之外唯一的出站路径，因此它的被拒在 V1 不计数。
 
-所有读数都不可配置、也无法关闭。把快照适配到注册表属于 [Spring §5](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#5-可观测性)。
+所有读数都不可配置、也无法关闭——成功路径上既然什么都没有，就没有什么可关的。把快照适配到注册表属于 [Spring §5](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#5-可观测性)。
 
-验证：[RpcStatsTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcStatsTest.java) 覆盖空闲 Node 全报零、绑定后的 Slot 表现为一个已完成握手的已连接 Peer、待完成调用使 gauge 升起又清零而不影响 `callsStarted`、一次入站请求，以及被 `maxPendingCalls` 拒绝的调用与被不可写 Slot 拒绝的发送分别计数。
+验证：[RpcStatsTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcStatsTest.java) 覆盖空闲 Node 全报零、绑定后的 Slot 表现为一个已完成握手的已连接 Peer、100 次 notify 加一次入站请求与一次完成的调用之后所有 counter 不变而只有 gauge 变化，以及被 `maxPendingCalls` 拒绝的调用与被不可写 Slot 拒绝的发送分别计数。

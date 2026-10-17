@@ -6,22 +6,24 @@ package cn.managame.rpc.node;
  * differencing two readings. Nothing here is a barrier: a snapshot is taken without a lock while Peers,
  * connections and pending calls change.
  *
+ * <p>Nothing is counted on the success path of a send, a call or a delivery. Frames sent, calls started and
+ * requests received are deliberately absent: a caller already knows it called and already receives every
+ * request its handler is given, so counting those here would add work per message to report a number the
+ * caller can produce for free. What remains is what only the Node sees — what it refused, what timed out,
+ * and the state of its own Peers.
+ *
  * @param peers Peers configured with addPeer or learned from an inbound handshake
  * @param peersConnected Peers with at least one connected Slot — the reading that says a neighbour is gone
  * @param connections connected Slots across every Peer
  * @param pendingCalls calls registered and not yet completed, across every Peer. Against the configured
  *        maxPendingCalls this is how close a Node is to refusing calls
- * @param callsStarted calls whose frame RPC accepted for a connection
  * @param callsRejected calls refused before encoding because their Peer was already at maxPendingCalls
  * @param callsTimedOut calls completed by their timeout rather than a response
- * @param framesSent request, response and heartbeat frames RPC accepted for a connection; admission, not delivery
  * @param sendsRefused sends no Slot accepted: no connected Slot, or every one over its write-buffer high
  *        watermark — the reading that explains messages disappearing under load
- * @param requestsReceived inbound requests handed to the application's RpcHandler
  * @param handshakesAccepted connections that completed a handshake and were bound to a Slot
  * @param reconnects recovery attempts scheduled for an outbound Slot after a failure or a disconnect
  */
 public record RpcStats(long peers, long peersConnected, long connections, long pendingCalls,
-                       long callsStarted, long callsRejected, long callsTimedOut,
-                       long framesSent, long sendsRefused, long requestsReceived,
+                       long callsRejected, long callsTimedOut, long sendsRefused,
                        long handshakesAccepted, long reconnects) {}

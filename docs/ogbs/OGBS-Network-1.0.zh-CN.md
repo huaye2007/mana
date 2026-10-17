@@ -300,7 +300,7 @@ handler 可在提交外部业务任务后返回，随后完成该请求的回调
 
 读数遵循 [Core §5](OGBS-Core-1.0.zh-CN.md#5-可观测性)：gauge 是当前值，counter 只增，收集方式是拉取，在有人收集之前不产生任何开销。
 
-**N-OBS-01** 监听端与客户端各自上报下列读数。客户端的 `accepted` 恒为 0，因为它不接受连接。名称是固定的，因为针对某一实现搭好的看板必须能读另一实现。
+**N-OBS-01** 监听端与客户端各自上报下列读数。客户端的 `accepted` 恒为 0，因为它不接受连接。名称是固定的，因为针对某一实现搭好的看板必须能读另一实现。按 C-OBS-05，它们都不在读或写的成功路径上计数：已投递消息数与已接纳写入数是有意缺席的，因为应用本来就看到它 handler 收到的每条消息，也看到它每次写返回的 ACCEPTED。
 
 | 读数 | 种类 | 含义 |
 | --- | --- | --- |
@@ -309,12 +309,10 @@ handler 可在提交外部业务任务后返回，随后完成该请求的回调
 | `established` | counter | 已触发应用"已建立"回调的连接数 |
 | `closed` | counter | 已触发"已断开"回调的既有连接数 |
 | `establishment.failures` | counter | 从未到达"已建立"回调的 channel：TLS、WebSocket、pipeline 装配，或建立期间被关闭 |
-| `messages.read` | counter | 投递给应用的入站消息数 |
-| `writes.accepted` | counter | 传输层已接管的写；是准入，不是投递 |
 | `writes.inactive` | counter | 因连接已失活而被拒绝的写 |
 | `writes.notwritable` | counter | 因连接高于写缓冲高水位而被拒绝的写 |
 | `handler.exceptions` | counter | 报告给应用、或在连接生命周期之外被记录的 throwable |
 
 **N-OBS-02** `writes.notwritable` 是解释丢失的那条读数：N-WRITE-01 在高水位之上拒绝写入并由调用方决定如何处理，于是被拒即丢弃消息的发送方会静默丢数据，除非盯住这个计数。`establishment.failures` 对"从未建立起来的连接"起同样作用：`accepted` 与 `established` 之差等于它加上仍在建立中的部分。两者都无法由其他读数推导出来。
 
-**N-OBS-03** 读数是近似的，也不是屏障：`established`、`closed` 与 `connections` 在连接交接过程中不加锁读取，因此可能相差一。读写字节数、按连接的读数与延迟分布在 V1 不上报；需要它们的部署自行安装传输层 handler。
+**N-OBS-03** 读数是近似的，也不是屏障：`established`、`closed` 与 `connections` 在连接交接过程中不加锁读取，因此可能相差一。正常收发的连接因此完全不碰任何计数器——这正是让这些读数"免费"而不是"便宜"的原因。消息与字节吞吐、按连接的读数以及延迟分布在 V1 不上报：吞吐属于本来就在数它的那一层，而需要字节数或延迟的部署自行安装传输层 handler。

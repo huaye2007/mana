@@ -205,24 +205,22 @@ Remaining limits: closure scans all connections per Peer; the wire carries no No
 
 ## 10. Stats
 
-Implements [RPC §12](OGBS-RPC-1.0.md#12-observability). `RpcNode.stats()` returns `cn.managame.rpc.node.RpcStats`, a record of twelve `long` components in the order `peers, peersConnected, connections, pendingCalls, callsStarted, callsRejected, callsTimedOut, framesSent, sendsRefused, requestsReceived, handshakesAccepted, reconnects`.
+Implements [RPC §12](OGBS-RPC-1.0.md#12-observability). `RpcNode.stats()` returns `cn.managame.rpc.node.RpcStats`, a record of nine `long` components in the order `peers, peersConnected, connections, pendingCalls, callsRejected, callsTimedOut, sendsRefused, handshakesAccepted, reconnects`.
 
-The eight counters are `LongAdder` fields in one package-private holder, incremented from EventLoops, the caller's thread and the timer thread. The four gauges are **not** counted: `stats()` walks the Peer table and, per Peer, counts Slots with a connection and the size of its pending map. Nothing therefore has to be kept in step with the Peer table, which is where the node's own races already are; the cost is proportional to the number of Peers, so `stats()` is for periodic collection and not for a data path.
+The five counters are `LongAdder` fields in one package-private holder, because a refusal arrives on the caller's thread, a timeout on the timer thread and a handshake on an EventLoop. Each is taken either once per connection or on a branch that was already exceptional, so a Node sending and receiving normally never touches the holder: C-OBS-05 is satisfied by construction, which is why there is no switch. The four gauges are **not** counted: `stats()` walks the Peer table and, per Peer, counts Slots with a connection and the size of its pending map. Nothing therefore has to be kept in step with the Peer table, which is where the node's own races already are; the cost is proportional to the number of Peers, so `stats()` is for periodic collection and not for a data path.
 
 Increment points, each a single site:
 
 | Reading | Where |
 | --- | --- |
 | `callsRejected` | the `reservePending` refusal in `call`, before the body is released |
-| `callsStarted` | after the frame was accepted, before the timeout is published |
 | `callsTimedOut` | in the timeout task, after its conditional `removePending` won, so exactly once per call |
-| `framesSent`, `sendsRefused` | the one internal `send` that every outbound request, response and heartbeat goes through, by whether a Slot accepted it |
-| `requestsReceived` | the entry of handler notification for an inbound request |
+| `sendsRefused` | the refusal branch of the one internal `send` that every outbound request, response and heartbeat goes through |
 | `handshakesAccepted` | where a connection is bound to its Slot, both the initiating and the inbound path |
 | `reconnects` | the recovery scheduling entry, after the ownership check |
 
-Counting at the internal `send` is deliberate: `notify`, `reply`, `forwardResponse` and `call` all pass through it, so one site covers every public send and a refusal is counted even when the caller ignores the returned `RpcSendStatus`. `answer`, which replies on the request's own Slot without fallback, is the one outbound path outside it and is therefore not counted in V1.
+Counting at the internal `send` is deliberate: `notify`, `reply`, `forwardResponse` and `call` all pass through it, so one site covers every public send and a refusal is counted even when the caller ignores the returned `RpcSendStatus`. Only the refusal branch increments; the accepted branch does nothing, and `fireRequest` and the successful part of `call` were deliberately left uncounted. `answer`, which replies on the request's own Slot without fallback, is the one outbound path outside `send` and its refusals are therefore not counted in V1.
 
-No reading is configurable and none can be turned off. Adapting a snapshot to a registry is [Spring §5](OGBS-Spring-Java-25-Specification-1.0.md#5-observability).
+No reading is configurable and none can be turned off, because with nothing on the success paths there is nothing to turn off. Adapting a snapshot to a registry is [Spring §5](OGBS-Spring-Java-25-Specification-1.0.md#5-observability).
 
-Validation: [RpcStatsTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcStatsTest.java) covers an idle Node reporting zeros, a bound Slot appearing as a connected Peer with an accepted handshake, a pending call raising and clearing the gauge without touching `callsStarted`, an inbound request, and a call refused by `maxPendingCalls` being counted separately from a send refused by an unwritable Slot.
+Validation: [RpcStatsTest](../../game-rpc/src/test/java/cn/managame/rpc/node/RpcStatsTest.java) covers an idle Node reporting zeros, a bound Slot appearing as a connected Peer with an accepted handshake, 100 notifies plus an inbound request and a completed call leaving every counter unchanged while only the gauges move, and a call refused by `maxPendingCalls` being counted separately from a send refused by an unwritable Slot.

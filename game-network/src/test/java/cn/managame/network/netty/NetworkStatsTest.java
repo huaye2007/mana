@@ -28,17 +28,16 @@ class NetworkStatsTest extends NetworkTestSupport {
         return result.get(5, TimeUnit.SECONDS);
     }
 
-    @Test void aListenerAndAClientCountEstablishmentTrafficAndClosure() throws Exception {
+    @Test void establishmentAndClosureAreCountedAndOrdinaryTrafficIsNot() throws Exception {
         Probe serverProbe = new Probe(), clientProbe = new Probe();
         try (NetworkServer server = NetworkServer.builder().bindAddress(LOCAL).handler(serverProbe).pipeline(INTS).build();
              NetworkClient client = NetworkClient.builder().handler(clientProbe).pipeline(INTS).build()) {
-            assertEquals(new NetworkStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0), server.stats());
+            assertEquals(new NetworkStats(0, 0, 0, 0, 0, 0, 0, 0), server.stats());
             server.start();
             InetSocketAddress address = (InetSocketAddress) server.localAddress();
 
             Connection outbound = connect(client, address);
-            Connection inbound = serverProbe.connected.poll(5, TimeUnit.SECONDS);
-            assertNotNull(inbound);
+            assertNotNull(serverProbe.connected.poll(5, TimeUnit.SECONDS));
             await(() -> server.stats().established() == 1);
             NetworkStats accepting = server.stats();
             assertEquals(1, accepting.accepted());
@@ -50,20 +49,21 @@ class NetworkStatsTest extends NetworkTestSupport {
             assertEquals(1, client.stats().established());
             assertEquals(1, client.stats().liveConnections());
 
-            assertEquals(WriteStatus.ACCEPTED, outbound.write(7));
-            assertEquals(7, serverProbe.messages.poll(5, TimeUnit.SECONDS));
-            await(() -> server.stats().messagesRead() == 1);
-            assertEquals(1, client.stats().writesAccepted());
-            assertEquals(0, client.stats().writesNotWritable());
+            // The contract that keeps the readings free: a successful read or write touches no counter.
+            NetworkStats beforeTraffic = client.stats(), serverBefore = server.stats();
+            for (int i = 0; i < 200; i++) assertEquals(WriteStatus.ACCEPTED, outbound.write(i));
+            for (int i = 0; i < 200; i++) assertEquals(i, serverProbe.messages.poll(5, TimeUnit.SECONDS));
+            assertEquals(beforeTraffic, client.stats());
+            assertEquals(serverBefore, server.stats());
 
             outbound.close();
             await(() -> server.stats().closed() == 1 && client.stats().closed() == 1);
             assertEquals(0, server.stats().liveConnections());
             assertEquals(0, client.stats().liveConnections());
-            // A write to a connection that is gone is refused, and the refusal is counted, not silent.
+            // A write to a connection that is gone is refused, and only the refusal is counted.
             assertEquals(WriteStatus.INACTIVE, outbound.write(8));
             assertEquals(1, client.stats().writesInactive());
-            assertEquals(1, client.stats().writesAccepted());
+            assertEquals(0, client.stats().writesNotWritable());
         }
     }
     @Test void aChannelThatNeverReachesTheApplicationCountsAsAnEstablishmentFailure() throws Exception {

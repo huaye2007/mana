@@ -115,7 +115,7 @@ final class ConnectionHandlerAdapter extends ChannelInboundHandlerAdapter {
 
     @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
         try {
-            if (connection != null && !ended) { counters.messageRead(); handler.onMessage(connection, message); }
+            if (connection != null && !ended) handler.onMessage(connection, message);
             else if (!ended) failEstablishment(new IllegalStateException("Message before establishment"));
         } catch (Throwable cause) { report(cause); }
         finally { ReferenceCountUtil.release(message); }

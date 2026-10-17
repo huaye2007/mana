@@ -19,7 +19,6 @@ final class NettyConnection implements Connection {
         if (!channel.isWritable()) { counters.writeNotWritable(); return WriteStatus.NOT_WRITABLE; }
         // Reusable void promise forwards outbound failures into exceptionCaught.
         channel.writeAndFlush(message, channel.voidPromise());
-        counters.writeAccepted();
         return WriteStatus.ACCEPTED;
     }
     public void close() { channel.close(); }

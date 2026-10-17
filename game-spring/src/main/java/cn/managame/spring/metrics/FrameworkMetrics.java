@@ -55,12 +55,9 @@ final class FrameworkMetrics {
             sink.gauge("peers.connected", s.peersConnected());
             sink.gauge("connections", s.connections());
             sink.gauge("calls.pending", s.pendingCalls());
-            sink.counter("calls.started", s.callsStarted());
             sink.counter("calls.rejected", s.callsRejected());
             sink.counter("calls.timedout", s.callsTimedOut());
-            sink.counter("frames.sent", s.framesSent());
             sink.counter("sends.refused", s.sendsRefused());
-            sink.counter("requests.received", s.requestsReceived());
             sink.counter("handshakes.accepted", s.handshakesAccepted());
             sink.counter("reconnects", s.reconnects());
         };
@@ -74,8 +71,6 @@ final class FrameworkMetrics {
             sink.counter("established", s.established());
             sink.counter("closed", s.closed());
             sink.counter("establishment.failures", s.establishmentFailures());
-            sink.counter("messages.read", s.messagesRead());
-            sink.counter("writes.accepted", s.writesAccepted());
             sink.counter("writes.inactive", s.writesInactive());
             sink.counter("writes.notwritable", s.writesNotWritable());
             sink.counter("handler.exceptions", s.handlerExceptions());

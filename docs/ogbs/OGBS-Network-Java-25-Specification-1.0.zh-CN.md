@@ -375,12 +375,12 @@ DEBUG 摘要只包含上下文、类别、远端地址与异常类型。源码�
 
 ## 10. Stats
 
-实现 [Network §10](OGBS-Network-1.0.zh-CN.md#10-可观测性)。`NetworkServer.stats()` 与 `NetworkClient.stats()` 返回 `cn.managame.network.connection.NetworkStats`，是一个含十个 `long` 分量的 record，顺序为 `liveConnections, accepted, established, closed, establishmentFailures, messagesRead, writesAccepted, writesInactive, writesNotWritable, handlerExceptions`。客户端的 `accepted` 恒为 0。
+实现 [Network §10](OGBS-Network-1.0.zh-CN.md#10-可观测性)。`NetworkServer.stats()` 与 `NetworkClient.stats()` 返回 `cn.managame.network.connection.NetworkStats`，是一个含八个 `long` 分量的 record，顺序为 `liveConnections, accepted, established, closed, establishmentFailures, writesInactive, writesNotWritable, handlerExceptions`。客户端的 `accepted` 恒为 0。
 
-计数保存在每个监听端或客户端各自的一个包私有持有者中，并与它拥有的每条连接共享：单调计数用 `LongAdder`，因为它们会从每个 EventLoop 上递增；`liveConnections` 用单个 `AtomicLong`，因为它也会减少。取快照就是把各 adder 求和并读一次 live 值，因此开销很小且无锁；它不是屏障，`established`、`closed` 与 `liveConnections` 在连接交接过程中可能相差一。
+计数保存在每个监听端或客户端各自的一个包私有持有者中，并与它拥有的每条连接共享：单调计数用 `LongAdder`，因为一次拒绝或一次异常可能来自任意线程；`liveConnections` 用单个 `AtomicLong`，因为它也会减少。每个计数要么每连接取一次，要么取在本来就是例外的分支上，因此正常收发的连接永远不会碰到这个持有者：C-OBS-05 是由构造方式满足的，而不是由某个开关满足的——这也正是没有开关的原因。取快照就是把各 adder 求和并读一次 live 值，因此开销很小且无锁；它不是屏障，`established`、`closed` 与 `liveConnections` 在连接交接过程中可能相差一。
 
-增量点单一且精确，这正是让这些计数可比的原因：accept 记在监听端的 channel 初始化器里；建立失败在抑制重复诊断的同一个守卫之后、每个 channel 记一次；established 记在 Connection 被创建并交给 `onConnected` 处；closed 记在既有连接触发 `onDisconnected` 处；每次投递给 `onMessage` 记一次读；每次 `Connection.write` 按返回的 `WriteStatus` 记一次；每个到达 `onException` 或生命周期外日志的 throwable 记一次。被拒绝的写在调用方看到状态之前就已计数，因此没有哪次拒绝是看不见的。
+增量点单一且精确，这正是让这些计数可比的原因：accept 记在监听端的 channel 初始化器里；建立失败在抑制重复诊断的同一个守卫之后、每个 channel 记一次；established 记在 Connection 被创建并交给 `onConnected` 处；closed 记在既有连接触发 `onDisconnected` 处；每次被拒绝的 `Connection.write` 在"已经决定拒绝"的那个分支上记一次；每个到达 `onException` 或生命周期外日志的 throwable 记一次。`channelRead` 与 `write` 的已接纳分支不记任何东西。被拒绝的写在调用方看到状态之前就已计数，因此即使调用方忽略它，那次拒绝也不是看不见的。
 
-game-network 只上报一个 record，仅此而已：它不依赖 game-core，因此并不知道指标契约。把快照适配到注册表属于 [Spring §5](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#5-可观测性)；另有收集方式的应用自己调 `stats()`。所有读数都不可配置、也无法关闭；无人收集时的成本就是上述路径上已经递增的那些 adder。HTTP 监听端的读数在 V1 不上报。
+game-network 只上报一个 record，仅此而已：它不依赖 game-core，因此并不知道指标契约。把快照适配到注册表属于 [Spring §5](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#5-可观测性)；另有收集方式的应用自己调 `stats()`。所有读数都不可配置、也无法关闭——成功路径上既然什么都没有，就没有什么可关的。HTTP 监听端的读数在 V1 不上报。
 
-验证：[NetworkStatsTest](../../game-network/src/test/java/cn/managame/network/netty/NetworkStatsTest.java) 覆盖一对服务端/客户端上的 accept、建立、live 计数、一次消息投递、一次被接纳的写与一次 inactive 写，以及一个在 pipeline 装配阶段建立失败的 channel。
+验证：[NetworkStatsTest](../../game-network/src/test/java/cn/managame/network/netty/NetworkStatsTest.java) 覆盖一对服务端/客户端上的 accept、建立与 live 计数，200 次成功写入与投递之后所有计数不变，关闭，关闭之后一次被拒的写，以及一个在 pipeline 装配阶段建立失败的 channel。

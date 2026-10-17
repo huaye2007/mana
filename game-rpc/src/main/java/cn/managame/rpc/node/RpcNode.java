@@ -296,7 +296,6 @@ public final class RpcNode implements AutoCloseable {
                 fail(peer, pending, state != State.RUNNING ? NODE_CLOSED : peers.get(remoteNodeId) != peer ? PEER_REMOVED : UNAVAILABLE);
                 return;
             }
-            counters.callStarted();
             RpcPeer scheduledPeer = peer;
             PendingCall scheduledCall = pending;
             Timeout timeout = timer.newTimeout(ignored -> timeout(scheduledPeer, scheduledCall),
@@ -403,7 +402,7 @@ public final class RpcNode implements AutoCloseable {
                 }
             }
             return RpcSendStatus.UNAVAILABLE;
-        } finally { if (accepted) counters.frameSent(); else { counters.sendRefused(); frame.release(); } }
+        } finally { if (!accepted) { counters.sendRefused(); frame.release(); } }
     }
 
     /**
@@ -656,7 +655,6 @@ public final class RpcNode implements AutoCloseable {
     // ---------------------------------------------------------------- handler notification
 
     private void fireRequest(RpcPeer peer, int slotId, RpcRequest request) {
-        counters.requestReceived();
         boolean previous = inHandler.get();
         inHandler.set(true);
         try { handler.onRequest(peer.nodeId, slotId, request); }
