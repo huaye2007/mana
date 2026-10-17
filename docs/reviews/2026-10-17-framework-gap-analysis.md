@@ -25,7 +25,7 @@ Measured on this tree (commit `f6f555f`, JDK 25, Windows):
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Tests | `mvn -B -fae test` | **PASS** — 358 tests, 0 failures, 0 skipped, all 9 modules |
+| Tests | `mvn -B -fae test` | **PASS** — 360 tests, 0 failures, 2 skipped (the env-gated `DatabaseIntegrationTest`), all 9 modules |
 | Style gate | `mvn -B -Pquality verify` | **FAIL** — 1 violation, build stops at game-runtime |
 | Static analysis | `mvn -B -Perrorprone clean compile` | **FAIL** — 121 unique findings, 75 at ERROR, game-data does not compile |
 | Real database | `DatabaseIntegrationTest` | **NOT RUN** — gated on `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` |
@@ -228,10 +228,12 @@ reason (`information_schema.columns.data_type` carries neither).
 
 ### 3.5 The storage adapter is unverified against the databases it targets
 
-358 tests pass and **none of them touches a real MySQL or MongoDB**. `DatabaseIntegrationTest` is gated on
-`@EnabledIfEnvironmentVariable(named="OGBS_DATA_MYSQL_URL")` / `OGBS_DATA_MONGO_URI`, the CI workflow defines
-no service containers, and the tests are filtered out entirely rather than reported as skipped — the previous
-review counted "2 skipped", this run reports 0, so the coverage hole is now invisible in the build output.
+360 tests pass and **none of them touches a real MySQL or MongoDB**. `DatabaseIntegrationTest` is gated on
+`@EnabledIfEnvironmentVariable(named="OGBS_DATA_MYSQL_URL")` / `OGBS_DATA_MONGO_URI` and the CI workflow
+defines no service containers, so the two tests that would exercise a real database are skipped on every run
+anywhere. Maven does report them: game-data's summary reads "Tests run: 64, Failures: 0, Errors: 0,
+Skipped: 2" — on a `[WARNING]` line rather than `[INFO]`, which is easy to filter out of a build log without
+noticing, as happened while first measuring this.
 
 game-data is 2,299 lines of SQL generation, DDL, partitioning and type mapping, covered by 62 tests against
 H2 and unit-level mapping assertions. Unexercised as a result: real DDL and migration behaviour, partitioned
@@ -268,8 +270,8 @@ plugin walks every compile source root, and the annotation processor adds that d
 was never limited to the "main sources only" its own comment claims. Pinning `sourceDirectories` to
 `${project.build.sourceDirectory}` restores the documented intent. This is the same generated-source defect
 as §4.2, so it was worth fixing in the gate rather than silencing the module. `mvn clean verify -Pquality`
-now passes end to end: all ten reactor modules green, 0 violations in every checked module, 358 tests,
-0 failures, 0 skipped.
+now passes end to end: all ten reactor modules green, 0 violations in every checked module, 360 tests,
+0 failures, 2 skipped.
 
 ### 4.2 The `errorprone` profile cannot build, is not in CI, and analyses generated code
 
@@ -417,3 +419,9 @@ observed production failures: no multi-node deployment, no real database and no 
 nothing here should be read as a measured outage. The Error Prone findings in §4.2 were each read and
 classified; none was confirmed as a functional bug, and that table says so explicitly rather than counting
 them as defects.
+
+One figure in the first version of this record was wrong and is corrected above: it reported 358 tests and
+0 skipped, and claimed the env-gated database tests were no longer reported as skipped at all. They are —
+game-data's summary line carries "Skipped: 2" — and the total is 360. The measurement had filtered the build
+log to `[INFO]` lines, and that summary is a `[WARNING]`. The coverage gap §3.5 describes is unchanged: still
+no test against a real MySQL or MongoDB, and still no service container in CI.

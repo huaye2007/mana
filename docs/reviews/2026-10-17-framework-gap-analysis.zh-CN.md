@@ -21,7 +21,7 @@ game-demo 与 game-benchmark，均对照其两层规范通读。问题不是"哪
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 测试 | `mvn -B -fae test` | **通过** —— 358 个测试，0 失败，0 跳过，9 个模块全绿 |
+| 测试 | `mvn -B -fae test` | **通过** —— 360 个测试，0 失败，2 个跳过（受环境变量门控的 `DatabaseIntegrationTest`），9 个模块全绿 |
 | 风格门禁 | `mvn -B -Pquality verify` | **失败** —— 1 条违规，构建在 game-runtime 停止 |
 | 静态分析 | `mvn -B -Perrorprone clean compile` | **失败** —— 121 条去重发现，75 条为 ERROR，game-data 无法编译 |
 | 真实数据库 | `DatabaseIntegrationTest` | **未运行** —— 受 `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` 门控 |
@@ -200,10 +200,11 @@ Runtime 规范与 Spring 集成都没有涉及"只在一个节点执行"，也�
 
 ### 3.5 存储适配层对其目标数据库基本未验证
 
-358 个测试通过，而**没有一个接触真实 MySQL 或 MongoDB**。`DatabaseIntegrationTest` 由
-`@EnabledIfEnvironmentVariable(named="OGBS_DATA_MYSQL_URL")` / `OGBS_DATA_MONGO_URI` 门控，CI 工作流没有定义
-任何服务容器，而且这些测试是被整体过滤掉而不是报告为跳过——上一次审阅记录"2 个跳过"，本次运行报告 0，于是这个
-覆盖缺口在构建输出里已经不可见了。
+360 个测试通过，而**没有一个接触真实 MySQL 或 MongoDB**。`DatabaseIntegrationTest` 由
+`@EnabledIfEnvironmentVariable(named="OGBS_DATA_MYSQL_URL")` / `OGBS_DATA_MONGO_URI` 门控，CI 工作流也没有
+定义任何服务容器，所以那两个本应接触真实数据库的测试在任何地方的每次运行里都被跳过。Maven 确实报告了它们：
+game-data 的汇总是 "Tests run: 64, Failures: 0, Errors: 0, Skipped: 2"——但它在 `[WARNING]` 行上而不是
+`[INFO]` 行上，很容易在过滤构建日志时漏掉，本记录初次测量时就漏掉了。
 
 game-data 是 2,299 行 SQL 生成、DDL、分区与类型映射，由 62 个针对 H2 的测试与单元级映射断言覆盖。因此未被
 执行到的包括：真实 DDL 与迁移行为、分区日志表、JSON 列语义、`rewriteBatchedStatements` 批处理——以及
@@ -236,7 +237,7 @@ game-benchmark 立刻失败——失败的不是它那三个手写类，而是 `
 门禁从来就不像它自己的注释所称的那样"只检查主源码"。把 `sourceDirectories` 钉到
 `${project.build.sourceDirectory}` 即恢复了文档所述的意图。这与 §4.2 是同一个"扫到生成代码"的缺陷，所以值得
 修门禁本身，而不是把那个模块静默跳过。`mvn clean verify -Pquality` 现已端到端通过：十个 reactor 模块全绿，
-每个被检查的模块 0 条违规，358 个测试，0 失败，0 跳过。
+每个被检查的模块 0 条违规，360 个测试，0 失败，2 个跳过。
 
 ### 4.2 `errorprone` profile 无法构建、不在 CI、且在分析生成代码
 
@@ -367,3 +368,8 @@ Netty EventLoop 线程上，所以从其中任何一处调用仓储的业务代�
 文件与行号。§2 与 §3 陈述的是能力缺口与风险，而不是观察到的生产故障：没有多节点部署、没有真实数据库、没有
 压力测试可用，所以本文任何内容都不应被当作已度量的线上事故。§4.2 的 Error Prone 发现逐条读过并分类；没有一条
 被确认为功能缺陷，该表格对此直接写明，而不是把它们计为缺陷。
+
+本记录初版有一个数字是错的，上文已更正：它写的是 358 个测试、0 跳过，并声称受环境变量门控的数据库测试已不再
+被报告为跳过。它们是被报告的——game-data 的汇总行里带着 "Skipped: 2"——而总数是 360。那次测量把构建日志过滤
+成了 `[INFO]` 行，而这条汇总是 `[WARNING]`。§3.5 描述的覆盖缺口没有变化：仍然没有任何测试跑在真实 MySQL 或
+MongoDB 上，CI 里也仍然没有服务容器。

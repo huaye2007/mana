@@ -30,6 +30,9 @@
         <phase>package</phase><goals><goal>shade</goal></goals>
         <configuration>
           <finalName>benchmarks</finalName>
+          <!-- Nothing consumes this module as a dependency, so the reduced POM is only an untracked
+               file left in the module directory on every build. -->
+          <createDependencyReducedPom>false</createDependencyReducedPom>
           <transformers>
             <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer"><mainClass>org.openjdk.jmh.Main</mainClass></transformer>
             <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
