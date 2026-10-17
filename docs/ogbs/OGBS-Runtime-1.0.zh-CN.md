@@ -82,9 +82,9 @@ RouteExecutor 的提交结果为：
 
 **RT-EXEC-04**：同 Route 内联由 Runtime 判断，不经过执行器容量接纳。业务应控制递归深度；内联不提供栈深保护。
 
-**RT-EXEC-05**：存在排队或执行中任务的 Route Mailbox 必须保持活跃，不能因空闲期限或缓存容量压力被淘汰。全部工作结束后，可保留空 Mailbox 以有界复用。到期 Mailbox 不得再复用；物理回收可延迟到后续缓存访问触发维护，或在缓存容量压力下进行。缓存完全没有访问时不承诺清理截止时间。后续提交可复用或重建 Mailbox，但不得丢失已接纳任务、改变入队顺序或引入第二个并发消费者。空闲时间从最近一次排空完成后开始，不从长任务开始时计算。Mailbox 失效不取消业务操作，也不使 Route 所有的业务数据失效。
+**RT-EXEC-05**：存在排队或执行中任务的 Route Mailbox 必须保持活跃：空闲、内存压力或复用策略都不得将其淘汰。全部工作结束后，实现可以立即回收空 Mailbox，也可以保留以供复用；无论哪种，后续提交复用或重建 Mailbox 时都不得丢失已接纳任务、改变入队顺序或引入第二个并发消费者。回收 Mailbox 不取消业务操作，也不使 Route 所有的业务数据失效。
 
-例如 Route (1,42) 的动作 A 可能运行超过空闲期限，而等待队列已空。该 Route 仍活跃，此时提交 B 必须等待 A。只有两者都返回后，空 Mailbox 才进入空闲保留。回收与 C 的提交竞争时可以丢弃空 Mailbox，但 C 仍必须在同一串行边界执行且仅执行一次。默认值和维护时机由 Java 绑定规定，它们限制资源保留，不是执行截止时间。[VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java) 验证复用、空闲过期、活跃工作保护和并发交接。
+例如 Route (1,42) 的动作 A 可能在等待队列已空的情况下长时间运行：执行中的工作使该 Route 保持活跃，此时提交的 B 必须等待 A。只有两者都返回后，空 Mailbox 才可以被回收。回收与 C 的提交竞争时可以丢弃该 Mailbox，但 C 仍必须在同一串行边界执行且仅执行一次。空 Mailbox 何时回收由 Java 绑定决定，这是资源保留的取舍，不是执行截止时间。[VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java) 验证回收与重建、活跃工作保护、排在运行中动作之后的顺序，以及并发交接。
 
 本仓库提供平台线程分片队列与虚拟线程 Mailbox 两种实现。它们的容量含义不同，见 Java 开发规范。队列容量是任务接纳限制，不是内存使用的完整上限。
 
@@ -215,7 +215,7 @@ Event 自身提供目标 Domain 和 Key。事件是进程内消息，没有持�
 
 **RT-EVENT-03**：一个监听器抛出异常必须报告，但不得阻止同次发布中的后续监听器执行。
 
-**RT-EVENT-04**：没有监听器不构成 Handler 缺失错误；Route 合法性与任务接纳限制仍然适用。
+**RT-EVENT-04**：没有监听器不构成 Handler 缺失错误。Route 合法性与 Runtime 接纳仍然适用：未注册的 Domain、零 Key，或已停止接纳的 Runtime，与有监听器时一样拒绝本次发布。校验通过而该事件类型没有监听器时，不再发生任何事情：不创建上下文，也不创建 Route 任务，因此既不占用执行器容量，也不会被执行器拒绝，不计入排队或完成动作的计数（RT-DIAG-01），也不与该 Route 上的其他工作构成顺序。既然没有监听器可执行，发布无人订阅的类型除校验之外没有任何开销。
 
 **RT-EVENT-05**：未显式指定 Runtime 的便捷发布，首先选择当前执行上下文的所属 Runtime；不存在所属上下文时，选择显式配置的进程默认 Runtime；两者皆无则报告配置错误。选中的所属 Runtime 拒绝发布时，包括已经关闭的情况，不得转发到默认 Runtime。选中的 Runtime 执行与普通事件发布一致的 Route 校验、接纳、身份传播、监听器顺序及错误处理，不引入独立的事件执行机制。
 

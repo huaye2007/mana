@@ -22,8 +22,8 @@ class EntityCacheTest {
         // Both changes land while the dirty view is being built and are absent from it, like a group
         // mutation racing the snapshot of pending changes: a new value, and an in-place change (same value).
         cache.sweep(() -> {
-            cache.update(1L, current -> "changed");
-            cache.update(2L, current -> current);
+            cache.update(1L, (cached, current) -> "changed");
+            cache.update(2L, (cached, current) -> current);
             sleep(5);                                            // a slow view build must not matter
             return k -> false;
         });

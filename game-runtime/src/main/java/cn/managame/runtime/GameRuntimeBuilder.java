@@ -11,7 +11,9 @@ import cn.managame.runtime.http.HttpContextFactory;
 import cn.managame.runtime.http.HttpResultCodec;
 import cn.managame.runtime.http.HttpRequestCodec;
 
+import cn.managame.core.FrameworkErrorCodes;
 import cn.managame.runtime.internal.RuntimeCompiler;
+import cn.managame.runtime.internal.RuntimeSettings;
 import java.time.*;
 import java.util.*;
 public final class GameRuntimeBuilder {
@@ -27,8 +29,10 @@ public final class GameRuntimeBuilder {
     private HttpResultCodec httpResults = HttpResultCodec.json();
     private HttpRequestCodec httpRequests = HttpRequestCodec.json();
     private ZoneId cronZone = ZoneId.of("UTC");
-    private RuntimeErrorHandler errors = e -> System.getLogger("cn.managame.runtime").log(
-        System.Logger.Level.ERROR, "Runtime error " + e.errorCode() + " at " + e.routeDomain() + "/" + e.routeKey(), e.cause());
+    private boolean executionTiming = true;
+    private RuntimeErrorHandler errors = e -> System.getLogger("cn.managame.runtime").log(System.Logger.Level.ERROR,
+        "Runtime error " + FrameworkErrorCodes.describe(e.errorCode()) + " at route " + e.routeDomain() + "/" + e.routeKey(),
+        e.cause());
     private GameRuntimeBuilder() {}
     public static GameRuntimeBuilder builder() { return new GameRuntimeBuilder(); }
     private static <T> List<T> copy(Iterable<? extends T> source) {
@@ -49,8 +53,14 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder cronHandlers(Iterable<?> v) { crons = copy(v); return this; }
     public GameRuntimeBuilder errorHandler(RuntimeErrorHandler v) { errors = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder cronZone(ZoneId v) { cronZone = Objects.requireNonNull(v); return this; }
+    /**
+     * Whether each Route task reads the monotonic clock twice to accumulate {@code RuntimeStats.executionNanos}
+     * (default true). Disable on very high task rates when that statistic is not needed; it then stays zero.
+     */
+    public GameRuntimeBuilder executionTiming(boolean enabled) { executionTiming = enabled; return this; }
     public GameRuntime build() {
-        return RuntimeCompiler.build(domains, executors, protocols, keys, handlers, arguments, handlerContexts, events, crons,
-                httpHandlers, httpContexts, httpResults, httpRequests, cronZone, errors);
+        return RuntimeCompiler.build(new RuntimeSettings(domains, executors, protocols, keys, handlers, arguments,
+                handlerContexts, events, crons, httpHandlers, httpContexts, httpResults, httpRequests, cronZone, errors,
+                executionTiming));
     }
 }

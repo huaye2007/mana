@@ -1,5 +1,6 @@
 package cn.managame.data;
 
+import java.util.function.Function;
 import cn.managame.core.FrameworkErrorCodes;
 import cn.managame.data.PendingBuffer.Change;
 import cn.managame.data.PendingBuffer.Claimed;
@@ -9,8 +10,9 @@ import cn.managame.data.meta.EntityMeta;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
 /**
@@ -31,7 +33,9 @@ final class WriteBehindManager {
     private final long sweepNanos;
     private long lastSweep = System.nanoTime();
     private final ScheduledExecutorService scheduler;
-    private final ReentrantReadWriteLock admission = new ReentrantReadWriteLock();
+    // Shutdown barrier for mutations: high bit = closing, low bits = mutations in progress. One CAS per
+    // mutation instead of a read lock; close sets the bit and waits for the count to reach zero.
+    private final AtomicLong admission = new AtomicLong();
     private final Object pipeline = new Object();
     private volatile Thread pipelineThread;
     private volatile State state = State.RUNNING;
@@ -39,9 +43,13 @@ final class WriteBehindManager {
     private final long intervalNanos, shutdownNanos;
     private final DataErrorHandler handler;
     private final RetryPolicy retry;
-    private volatile DataSaveException failure;
+    /** First drop in this GameData's lifetime; close reports it. */
+    private volatile DataSaveException lifetimeFailure;
+    /** First drop during the current explicit flush; guarded by {@code pipeline}. */
+    private DataSaveException callFailure;
     private volatile int deferred; // retryable failures left pending by the latest flush
-    private final LongAdder failedBatches = new LongAdder(), flushes = new LongAdder(), saveNanos = new LongAdder();
+    private final LongAdder failedBatches = new LongAdder(), flushes = new LongAdder(), saveNanos = new LongAdder(),
+            droppedLogs = new LongAdder();
     private volatile DataSaveException closeFailure;
 
     WriteBehindManager(Map<EntityMeta,EntityMapper> mappers, Duration interval, int batchSize, Duration shutdownTimeout,
@@ -56,16 +64,27 @@ final class WriteBehindManager {
         executor.setRemoveOnCancelPolicy(true);
         scheduler = executor;
     }
+
     void addLog(LogRepository<?> log) { logs.add(log); }
+
     void start() { scheduler.schedule(this::tick, intervalNanos, TimeUnit.NANOSECONDS); }
     void ensureRunning() {
         if (state != State.RUNNING) throw new DataOperationException("GameData is " + state);
     }
-    /** Admission is only the shutdown barrier; flushing never takes this lock. */
+    /** Admission is only the shutdown barrier; flushing never waits for it. */
     void mutate(Runnable action) {
-        admission.readLock().lock();
+        if (admission.getAndIncrement() < 0) {
+            admission.decrementAndGet();
+            throw new DataOperationException("GameData is " + state);
+        }
         try { ensureRunning(); action.run(); }
-        finally { admission.readLock().unlock(); }
+        finally { admission.decrementAndGet(); }
+    }
+
+    /** Stops admission and waits until every mutation that entered has finished. */
+    private void closeAdmission() {
+        admission.getAndUpdate(value -> value | Long.MIN_VALUE);
+        while ((admission.get() & Long.MAX_VALUE) != 0) LockSupport.parkNanos(10_000);
     }
     void record(EntityMeta meta, Object id, DataOperation operation, Object entity) {
         buffer.record(meta, id, operation, entity);
@@ -149,7 +168,7 @@ final class WriteBehindManager {
      * Returns how many items were kept. Mappers must apply a batch atomically so a retry cannot duplicate rows.
      */
     <T> int save(Class<?> type, DataOperation operation, List<T> batch, Consumer<List<T>> action,
-                 Consumer<T> saved, Consumer<T> keep, java.util.function.Function<T, Object> reported) {
+                 Consumer<T> saved, Consumer<T> keep, Function<T, Object> reported) {
         Throwable cause;
         try { action.accept(batch); batch.forEach(saved); return 0; }
         catch (Throwable error) { cause = error; }
@@ -166,21 +185,30 @@ final class WriteBehindManager {
         return kept;
     }
     private <T> boolean retryable(Class<?> type, DataOperation operation, List<T> batch,
-                                  java.util.function.Function<T, Object> reported, Throwable cause, int attempt) {
+                                  Function<T, Object> reported, Throwable cause, int attempt) {
         if (state == State.CLOSED) return false;
         try { return retry.shouldRetry(failureOf(type, operation, batch.stream().map(reported).toList(), cause, attempt)); }
         catch (Throwable policyFailure) { if (policyFailure != cause) cause.addSuppressed(policyFailure); return false; }
     }
     private <T> void dropAndRelease(Class<?> type, DataOperation operation, T item,
-                                    java.util.function.Function<T, Object> reported, Throwable cause, int attempt, Consumer<T> release) {
+                                    Function<T, Object> reported, Throwable cause, int attempt, Consumer<T> release) {
         drop(type, operation, reported.apply(item), cause, attempt);
         release.accept(item); // no longer unsaved: storage keeps whatever it had
     }
     void drop(Class<?> type, DataOperation operation, Object value, Throwable cause, int attempt) {
-        if (failure == null) failure = new DataSaveException("One or more accepted changes failed; see DataErrorHandler", cause);
+        if (callFailure == null) callFailure = new DataSaveException("One or more accepted changes failed; see DataErrorHandler", cause);
+        if (lifetimeFailure == null) lifetimeFailure = callFailure;
         failedBatches.increment();
         try { handler.onError(failureOf(type, operation, List.of(value), cause, attempt)); }
         catch (Throwable callbackFailure) { LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", callbackFailure); }
+    }
+    /** A log refused because its queue is full: reported on the inserting thread, not a save failure. */
+    void rejectLog(Class<?> type, Object log, int capacity) {
+        droppedLogs.increment();
+        try {
+            handler.onError(new DataFailure(FrameworkErrorCodes.DATA_LOG_SAVE_FAILED, type, DataOperation.LOG_INSERT,
+                    List.of(log), new DataOperationException("Log queue is full (" + capacity + " waiting)"), 0));
+        } catch (Throwable callbackFailure) { LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", callbackFailure); }
     }
     private static DataFailure failureOf(Class<?> type, DataOperation operation, List<?> values, Throwable cause, int attempt) {
         return new DataFailure(operation == DataOperation.LOG_INSERT
@@ -191,14 +219,24 @@ final class WriteBehindManager {
         long queued = 0;
         for (var log : logs) queued += log.queuedLogs();
         return new DataStats(state == State.RUNNING, buffer.size(), queued, failedBatches.sum(), flushes.sum(),
-                saveNanos.sum(), singles, groups);
+                saveNanos.sum(), singles, groups, droppedLogs.sum());
     }
-    /** Persists everything accepted before the call, or throws; retryable leftovers stay pending. */
+    /**
+     * Persists everything accepted before the call, or throws: DataSaveException when this flush dropped a
+     * change (already reported to DataErrorHandler) or left retryable changes pending. Earlier drops do not
+     * make later flushes fail; close reports them once more.
+     */
     void flushNow() {
         if (Thread.currentThread() == pipelineThread) throw new DataOperationException("Cannot flush from a persistence callback");
         ensureRunning();
-        int left = flush();
-        if (failure != null) throw failure;
+        int left;
+        DataSaveException dropped;
+        synchronized (pipeline) {
+            callFailure = null;
+            left = flush();
+            dropped = callFailure;
+        }
+        if (dropped != null) throw dropped;
         if (left > 0) throw new DataSaveException(left + " changes remain pending after retryable failures", null);
     }
     /**
@@ -211,8 +249,8 @@ final class WriteBehindManager {
             throw new DataOperationException("Cannot close GameData from a persistence callback");
         synchronized (this) {
             if (state == State.CLOSED) { if (closeFailure != null) throw closeFailure; return; }
-            admission.writeLock().lock();
-            try { state = State.CLOSING; } finally { admission.writeLock().unlock(); }
+            state = State.CLOSING;
+            closeAdmission();
             scheduler.shutdown();
             long deadline = System.nanoTime() + shutdownNanos;
             boolean interrupted = false;
@@ -225,7 +263,7 @@ final class WriteBehindManager {
                 try {
                     state = State.CLOSED;   // retryable failures now drop instead of requeueing
                     flush0();
-                    closeFailure = failure;
+                    closeFailure = lifetimeFailure;
                 } finally { pipelineThread = null; }
             }
             if (interrupted) Thread.currentThread().interrupt();

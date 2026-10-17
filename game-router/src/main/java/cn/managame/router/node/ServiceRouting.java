@@ -136,13 +136,13 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
     public RpcSendStatus notifyNode(int nodeId, RpcRequest request) {
         RpcNode node = validate(request, nodeId != 0);
         int router = router(node, nodeId, request.routeKey());
-        return send(node, router, data(DIRECT, node.nodeId(), epoch, service, nodeId, 0, 0, request));
+        return send(node, router, data(DIRECT, node.nodeId(), epoch, service, nodeId, 0, 0, request, maxInner(node)));
     }
     /** Every Node of the service attached to the chosen Router, including this one if it serves that service. */
     public RpcSendStatus broadcast(int serviceId, RpcRequest request) {
         RpcNode node = validate(request, serviceId > 0);
         int router = router(node, -serviceId, request.routeKey());
-        return send(node, router, data(BROADCAST, node.nodeId(), epoch, service, 0, 0, serviceId, request));
+        return send(node, router, data(BROADCAST, node.nodeId(), epoch, service, 0, 0, serviceId, request, maxInner(node)));
     }
     public <T> void callNode(int nodeId, RpcRequest request, RpcCallback<T> callback) {
         call(nodeId, request, 0, callback);
@@ -155,7 +155,7 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
         Objects.requireNonNull(callback);
         RpcNode node = validate(request, nodeId != 0);
         int router = router(node, nodeId, request.routeKey());
-        RpcRequest out = data(DIRECT, node.nodeId(), epoch, service, nodeId, 0, 0, request);
+        RpcRequest out = data(DIRECT, node.nodeId(), epoch, service, nodeId, 0, 0, request, maxInner(node));
         Call c = new Call(nodeId, request.command(), callback, timeoutMillis, out.routeKey(), out.body().retainedDuplicate());
         try { c.start(node, router, out.body()); }
         catch (RuntimeException | Error error) { c.release(); throw error; }
@@ -167,7 +167,7 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
             throw new IllegalArgumentException("response ID must match a routed call");
         RpcNode node = running();
         return send(node, request.routerId(), data(RESPONSE, node.nodeId(), epoch, service,
-                request.sourceNodeId(), request.sourceNodeEpoch(), 0, response));
+                request.sourceNodeId(), request.sourceNodeEpoch(), 0, response, maxInner(node)));
     }
     private RpcNode validate(RpcRequest request, boolean target) {
         Objects.requireNonNull(request);
@@ -186,18 +186,31 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
      * else among all connected ones, skipping {@code tried}; 0 when none is connected.
      */
     private static int pick(RpcNode node, Link[] all, int target, long routeKey, int[] tried) {
-        int[] warm = new int[all.length], up = new int[all.length];
-        int warmCount = 0, upCount = 0;
+        // Two passes over the (few) declared Routers instead of collecting candidates, so a send allocates nothing.
         long now = System.nanoTime();
+        int warmCount = 0, upCount = 0;
         for (Link l : all) {
-            if ((tried != null && contains(tried, l.id)) || !node.isPeerConnected(l.id)) continue;
-            up[upCount++] = l.id;
-            if (l.up && now - l.upSince >= WARMUP_NANOS) warm[warmCount++] = l.id;
+            if (!usable(node, l, tried)) continue;
+            upCount++;
+            if (warm(l, now)) warmCount++;
         }
         if (upCount == 0) return 0;
         long h = (routeKey ^ ((long) target << 32)) * 0x9E3779B97F4A7C15L;
         int hash = (int) (h ^ (h >>> 32));
-        return warmCount > 0 ? warm[Math.floorMod(hash, warmCount)] : up[Math.floorMod(hash, upCount)];
+        boolean onlyWarm = warmCount > 0;
+        int remaining = Math.floorMod(hash, onlyWarm ? warmCount : upCount), fallback = 0;
+        for (Link l : all) {
+            if (!usable(node, l, tried) || (onlyWarm && !warm(l, now))) continue;
+            if (remaining-- == 0) return l.id;
+            fallback = l.id;
+        }
+        return fallback; // a connection dropped between the passes
+    }
+    private static boolean usable(RpcNode node, Link l, int[] tried) {
+        return (tried == null || !contains(tried, l.id)) && node.isPeerConnected(l.id);
+    }
+    private static boolean warm(Link l, long now) {
+        return l.up && now - l.upSince >= WARMUP_NANOS;
     }
     private static boolean contains(int[] ids, int id) {
         for (int i : ids) if (i == id) return true;

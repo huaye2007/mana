@@ -1,5 +1,6 @@
 package cn.managame.data.meta;
 
+import java.util.function.ToIntFunction;
 import cn.managame.data.annotation.Id;
 import cn.managame.data.annotation.MapKey;
 import cn.managame.data.key.GroupKey;
@@ -62,7 +63,7 @@ public final class EntityMeta {
         var selected = fields.stream().filter(f -> group
                 ? f.isAnnotationPresent(cn.managame.data.annotation.GroupKey.class)
                 : f.isAnnotationPresent(MapKey.class)).toList();
-        java.util.function.ToIntFunction<Field> order = f -> group
+        ToIntFunction<Field> order = f -> group
                 ? f.getAnnotation(cn.managame.data.annotation.GroupKey.class).order()
                 : f.getAnnotation(MapKey.class).order();
         if (selected.size() > 1) {
@@ -87,11 +88,15 @@ public final class EntityMeta {
     public Object create() { return construct(constructor); }
     public Object getId(Object entity) { return Objects.requireNonNull(id.get(entity), "Null @Id"); }
     public GroupKey getGroupKey(Object entity) {
-        return GroupKey.of(groupKeys.stream().map(a -> Objects.requireNonNull(a.get(entity), "Null GroupKey")).toArray());
+        Object[] values = new Object[groupKeys.size()];
+        for (int i = 0; i < values.length; i++) values[i] = Objects.requireNonNull(groupKeys.get(i).get(entity), "Null GroupKey");
+        return GroupKey.of(values);
     }
     public Object getMapKey(Object entity) {
         if (mapKeys.size() == 1) return Objects.requireNonNull(mapKeys.getFirst().get(entity), "Null MapKey");
-        return MapKeys.of(mapKeys.stream().map(a -> a.get(entity)).toArray());
+        Object[] values = new Object[mapKeys.size()];
+        for (int i = 0; i < values.length; i++) values[i] = mapKeys.get(i).get(entity);
+        return MapKeys.of(values);
     }
     public void validateGroupKey(GroupKey key) {
         if (key.size() != groupKeys.size()) throw new IllegalArgumentException("GroupKey arity mismatch");

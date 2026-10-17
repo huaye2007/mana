@@ -7,6 +7,7 @@ import java.net.SocketAddress;
 public interface Connection {
     boolean isActive();
     boolean isWritable();
+    /** Writes and flushes the message. */
     WriteStatus write(Object message);
     /** Nonblocking and idempotent; disconnection is reported after channel inactivity. */
     void close();

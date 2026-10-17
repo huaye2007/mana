@@ -23,7 +23,7 @@ mvn -pl game-data -am test
 mvn clean verify
 ```
 
-业务 Repository 直接继承 SingleRepository<K,E> / GroupRepository<K,E> / LogRepository<E>。使用 GameDataBuilder 注册 Class，build 后通过 GameData.repository 获取。Group 修改前先 getGroup；单 MapKey 使用字段类型，多 MapKey 使用 String 与 MapKeys.of。关闭 GameData 同步处理已接纳写入，并报告最终保存失败。
+业务 Repository 直接继承 SingleRepository<K,E> / GroupRepository<K,E> / LogRepository<E>。使用 GameDataBuilder 注册 Class，build 后通过 GameData.repository 获取。读取在调用方 Route 上同步加载，无需回调；Group 写入会自行加载分组，getGroup 返回只读视图。对已缓存的 Key 写入会立即校验（insert 已存在的实体或 MapKey、update 不存在的，抛 DataOperationException），`getOrCreate(id, Player::new)` 代替常见的先 get 再 insert；单 MapKey 使用字段类型，多 MapKey 使用 String 与 MapKeys.of。关闭 GameData 同步处理已接纳写入，并报告最终保存失败。
 
 MySQL 可通过 `GameDataBuilder.builder().mysql(dataSource).repositories(PlayerRepository.class).build()` 接收应用 DataSource，内部装配 Access 和 Mapper。JDBC Driver 和连接池配置仍由应用负责。JSON 列默认按字段完整类型及非 null 状态初始化实现绑定，例如 ConcurrentHashMap<Integer,Long>，不要求手动注册类型。需要覆盖时使用 `jsonCodec(...)`，也可保留显式 Mapper 构造以接入自定义 backend。详见 [JSON 类型绑定与边界](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding) 和 [MysqlBuilderTest](src/test/java/cn/managame/data/MysqlBuilderTest.java)。
 

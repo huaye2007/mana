@@ -76,7 +76,14 @@ class RpcAssemblyTest {
             received.add(context);
             if(context.requestId()!=0) rpc.getObject().reply(new Response(message.text()+"!"));
         }
+        /** expectedError -1: the call must fail synchronously and never complete its callback. */
         @HandlerMethod public void start(Start request) {
+            try { call(request); }
+            catch(IllegalArgumentException synchronous) {
+                if(request.expectedError()==-1) request.done().countDown(); else errors.add(synchronous);
+            }
+        }
+        private void call(Start request) {
             Context origin=Contexts.current();
             rpc.getObject().call(request.target(),77,5,123,Metadata.empty(),new Request("hello"),new RouteCallback<Response>() {
                 public void onSuccess(Response response) {
@@ -152,8 +159,12 @@ class RpcAssemblyTest {
             runtime.dispatch(new DefaultHandlerContext(1,99,new Start(malformed,2,cn.managame.rpc.error.RpcErrorCodes.PROTOCOL_ERROR)));
             assertTrue(malformed.await(5,TimeUnit.SECONDS));
             CountDownLatch rejected=new CountDownLatch(1);
-            runtime.dispatch(new DefaultHandlerContext(1,99,new Start(rejected,0,cn.managame.rpc.error.RpcErrorCodes.UNAVAILABLE)));
+            runtime.dispatch(new DefaultHandlerContext(1,99,new Start(rejected,0,-1)));
             assertTrue(rejected.await(5,TimeUnit.SECONDS));
+            // The handler task itself finishes right after the latch; a leaked capture would keep inFlight at 1.
+            long released=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+            while(runtime.stats().inFlight()!=0 && System.nanoTime()<released) Thread.onSpinWait();
+            assertEquals(0,runtime.stats().inFlight(),"A synchronously rejected call releases its Route capture");
             assertTrue(owners.errors.isEmpty(),owners.errors.toString());
             remoteNode.call(1,new RpcRequest(999,77,0,0,null,null),value->{});
             RpcResponse bad=responses.poll(5,TimeUnit.SECONDS); assertNotNull(bad);

@@ -6,7 +6,6 @@ import cn.managame.network.connector.*;
 import cn.managame.network.error.NetworkException;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.ImmediateEventExecutor;
 import io.netty.util.concurrent.Promise;
@@ -29,8 +28,9 @@ public final class NetworkClient implements AutoCloseable {
 
     NetworkClient(NetworkClientBuilder b) {
         handler = b.handler; pipelines = List.copyOf(b.pipelines); webSocket = b.webSocket;
-        maxMessageSize = b.maxMessageSize; factory = b.factory; options = Map.copyOf(b.options);
-        ownGroup = b.group == null; group = ownGroup ? new NioEventLoopGroup() : b.group;
+        maxMessageSize = b.maxMessageSize; options = Map.copyOf(b.options);
+        ownGroup = b.group == null; group = ownGroup ? NetworkTransports.newEventLoopGroup(0) : b.group;
+        factory = b.factory != null ? b.factory : NetworkTransports.socketChannelFactory(group);
     }
     public static NetworkClientBuilder builder() { return new NetworkClientBuilder(); }
     public Connection connect(SocketAddress address) {

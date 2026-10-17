@@ -1,5 +1,6 @@
 package cn.managame.data.mysql;
 
+import java.util.Objects;
 import cn.managame.data.codec.*;
 import cn.managame.data.meta.*;
 import java.lang.reflect.Field;
@@ -31,7 +32,7 @@ final class MysqlFieldMeta {
                     if (json == null) json = JsonCodec.defaultCodec();
                     encoder = json::encode;
                     Object initialized = prototype == null ? null : accessor.get(prototype);
-                    var decoder = java.util.Objects.requireNonNull(json.decoder(accessor.genericType(),
+                    var decoder = Objects.requireNonNull(json.decoder(accessor.genericType(),
                             initialized == null ? null : initialized.getClass()), "JSON field decoder");
                     reader = (r, i) -> { String value = r.getString(i); return value == null ? null : decoder.apply(value); };
                 }

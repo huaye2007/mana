@@ -1,5 +1,6 @@
 package cn.managame.network.netty;
 
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.MessageToMessageDecoder;
 import io.netty.handler.codec.http.websocketx.*;
@@ -10,7 +11,7 @@ final class WebSocketBinaryFrameDecoder extends MessageToMessageDecoder<WebSocke
         if (frame instanceof BinaryWebSocketFrame binary) out.add(binary.content().retain());
         else if (frame instanceof TextWebSocketFrame || frame instanceof ContinuationWebSocketFrame) {
             ctx.writeAndFlush(new CloseWebSocketFrame(1003, "Binary messages only"))
-                    .addListener(io.netty.channel.ChannelFutureListener.CLOSE);
+                    .addListener(ChannelFutureListener.CLOSE);
         }
         // Protocol handlers consume ping/pong/close; do not expose transport frames.
     }

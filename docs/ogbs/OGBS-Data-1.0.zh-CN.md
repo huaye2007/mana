@@ -14,7 +14,7 @@ OGBS = Open Game Backend Specification（开放游戏后端规范）。
 
 不提供 ORM Session、代理、自动 Dirty Tracking、实体快照、自动回滚、关系映射、自动生成主键、任意条件查询 DSL、分布式事务、跨进程缓存一致性或 Redis 二级缓存。特殊查询使用原生数据库访问层。
 
-**D-OWN-01** 同一实体/组的业务修改顺序由应用串行化；容器线程安全不等于实体字段线程安全。应用必须保证后台读取实体字段与业务修改之间的可见性，以及需要的多字段一致性。引用进入待保存集合后仍可能继续改变，持久化观察的是编码时状态，不承诺 update 调用时的快照。
+**D-OWN-01** 同一实体/组的业务修改顺序由应用串行化；容器线程安全不等于实体字段线程安全。应用必须保证后台读取实体字段与业务修改之间的可见性，以及需要的多字段一致性。引用进入待保存集合后仍可能继续改变，持久化观察的是编码时状态，不承诺 update 调用时的快照。实体中会被业务修改、同时被后台保存遍历的集合应使用线程安全集合（语言绑定给出具体类型）；不提供快照是为避免每次修改都复制实体的性能代价。
 
 ## 2. 身份
 
@@ -42,44 +42,44 @@ OGBS = Open Game Backend Specification（开放游戏后端规范）。
 
 **D-SINGLE-01** get 命中缓存返回同一实体引用；不存在返回空结果并可负缓存；存储失败必须同步报告加载错误，不得伪装为不存在或缓存为不存在。
 
-**D-SINGLE-02** insert 声明新增，不得为检测存储是否存在而额外 SELECT。update 保存完整可变状态。两者立即更新缓存并记录变更，不等待数据库写入。存储冲突通过后台错误处理报告。
+**D-SINGLE-02** insert 声明新增，不得为检测存储是否存在而额外 SELECT。update 保存完整可变状态。两者立即更新缓存并记录变更，不等待数据库写入。Key 的缓存状态已知时，对已存在实体 insert、对已确认不存在的实体 update 必须同步拒绝且不登记任何变更；Key 未缓存时，存储冲突通过后台错误处理报告。getOrCreate 返回实体，不存在时在同一步中插入调用方提供的新实体。
 
-**D-SINGLE-03** delete 不要求事先加载；接纳后缓存立即体现不存在，后续 get 不得在该缓存状态仍有效时加载尚未删除的旧行。
+**D-SINGLE-03** delete 不要求事先加载；接纳后缓存立即体现不存在，后续 get 不得在该缓存状态仍有效时加载尚未删除的旧行。删除已缓存为不存在的 Key 不登记任何变更。
 
 ## 4. Group
 
 **D-GROUP-01** 按完整组键加载整组，以组内键构造 Map；零行表示已加载空组。加载失败、重复组内键、返回其他组的数据必须报告加载错误。
 
-**D-GROUP-02** insert/update/delete/deleteGroup 前，该组必须仍在缓存中。未加载或已过期时同步拒绝，不得隐式访问数据库。delete 接收实体，从中获取完整身份；deleteGroup 对已加载组内各实体记录主键 DELETE，再清空原 Map。已清空组仍为已加载空组。
+**D-GROUP-02** insert/update/delete/deleteGroup 遇到未缓存的组时，按 getGroup 相同方式加载，业务无需为写入而先加载。随后同步按组校验：组内键已存在时 insert、不存在时 update、update 换成另一主键的实体，均拒绝且不登记变更；delete 删除持有该组内键的实体（取其主键），组内键不存在时什么也不做。deleteGroup 对组内各实体记录主键 DELETE，再清空分组；已清空组仍为已加载空组。
 
-**D-GROUP-03** getGroup 返回真实缓存 Map 引用。应用可以遍历 Map、读取实体和修改实体字段，但不得直接 put/remove/clear 等改变 Map 结构。结构变更必须经 Repository，字段变更必须显式 update 才有持久化保证。
+**D-GROUP-03** getGroup 返回缓存分组的只读实时视图：能看到之后经 Repository 的变更，put/remove/clear 抛异常，结构变更只能经 Repository。应用可以遍历、读取实体和修改实体字段，字段变更必须显式 update 才有持久化保证。
 
 ### 4.1 操作前提与即时效果
 
 | 操作 | 是否会同步加载数据库 | 接纳后的内存效果 | 后台持久化意图 |
 | --- | --- | --- | --- |
 | Single.get | 缓存未命中时会 | 缓存实体或不存在 | 无 |
+| Single.getOrCreate | 缓存未命中时会 | 缓存实体或新建实体 | 新建时 INSERT |
 | Single.insert / update | 不会 | 缓存指向传入对象 | INSERT / UPDATE，随后按合并表归并 |
 | Single.delete | 不会 | 缓存体现不存在 | DELETE |
 | Group.getGroup / get | 组未命中时加载整组 | 缓存真实 Map，包括空 Map | 无 |
-| Group.insert / update | 不会；组不在缓存则拒绝 | 写入对应组内位置 | 按实体主键登记变更 |
-| Group.delete | 不会；组不在缓存则拒绝 | 移除对应组内位置 | 按实体主键 DELETE |
-| Group.deleteGroup | 不会；组不在缓存则拒绝 | 清空原 Map，仍为已加载组 | 对当前组内各主键逐项 DELETE |
+| Group.insert / update | 组未命中时加载整组 | 写入对应组内位置 | 按实体主键登记变更 |
+| Group.delete | 组未命中时加载整组 | 移除对应组内位置 | 按实体主键 DELETE |
+| Group.deleteGroup | 组未命中时加载整组 | 清空分组，仍为已加载组 | 对当前组内各主键逐项 DELETE |
 | Log.insert | 不会 | 追加到日志队列 | 后续按实际表 INSERT |
 
-“组已经加载”是当前缓存状态，不是业务过去调用过一次 getGroup 的历史事实。持有已过期 Map 的局部变量不能代替重新取得当前缓存组。加载空组后可以插入第一条实体；完全没有加载过的组不能直接 insert。
+局部变量持有的视图始终对应取得它时的分组；空闲淘汰后，下一次经 Repository 的访问会加载新的分组，因此每次业务访问都应经 Repository 取得当前分组。
 
-### 4.2 返回原 Map 的使用约定
+### 4.2 返回视图的使用约定
 
-返回原 Map 是已确认的 API 选择，便于读取组内实体并避免额外 view/包装层。它同时要求业务遵守结构修改边界：
+视图在每次加载分组时创建一次，读取不产生逐次包装开销。使用边界：
 
 - 遍历、按组内键读取：可以。
 - 修改实体可变字段：可以，但需显式 update，且遵守并发可见性约定。
-- 直接向 Map 放入实体：不会登记 INSERT，不允许。
-- 直接 remove/clear：不会登记 DELETE，不允许。
-- 从外部线程同时修改实体：不因 Map 线程安全而获得许可。
+- put/remove/clear：会抛异常，因为它们不会登记 INSERT 或 DELETE。
+- 从外部线程同时修改实体：不因并发可读而获得许可。
 
-deleteGroup 清空的是原 Map，因此持有该 Map 的业务会看到它变空。该操作只覆盖缓存组内已知实体，不等价于对数据库执行任意条件删除；绕过 Repository 写入的额外数据库行不在其保证内。
+deleteGroup 清空分组，因此持有其视图的业务会看到它变空。该操作只覆盖缓存组内已知实体，不等价于对数据库执行任意条件删除；绕过 Repository 写入的额外数据库行不在其保证内。
 
 ## 5. 缓存与保存生命周期
 
@@ -193,7 +193,7 @@ close 不负责停止上游 Runtime 或网络入口，也不关闭外部数据�
 
 **D-DIAG-01**：待处理变更、排队日志、最终失败批次和缓存数量为近似观察，不是持久化确认或内存限制。Group 缓存数量指缓存组数，不是实体数。flush 成功只确认覆盖范围内的 mapper 操作，不是分布式事务，也不保护此前回写前的进程丢失。
 
-修改实体仍需 update，直接修改返回的 Group Map 仍绕过持久化。不新增自动脏检测、不可变保存快照或缓存容量淘汰。关键业务可先暂停相关写入，在管理上下文执行 flush，普通游戏操作维持异步。验证见 [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java)。
+修改实体仍需 update，返回的 Group 视图只读。不新增自动脏检测、不可变保存快照或缓存容量淘汰。关键业务可先暂停相关写入，在管理上下文执行 flush，普通游戏操作维持异步。验证见 [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java)。
 
 ## 8. 存储适配语义
 
@@ -249,4 +249,4 @@ MongoDB：主键固定映射 `_id`。INSERT 与 DELETE_INSERT 为带 upsert 的 
 
 契约测试见 [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java)、[LogContractTest](../../game-data/src/test/java/cn/managame/data/LogContractTest.java)。Java 数据库映射、JDBC 事务及实机测试入口见 [模块 README](../../game-data/README.zh-CN.md)。
 
-已实现不等于生产认证。可变实体跨线程读取、无界队列容量与数据库超时需要部署方评估；实机验证状态以当前 Java 实现文档为准。
+已实现不等于生产认证。可变实体跨线程读取、日志队列容量（语言绑定提供上限，满时拒绝并报告）与数据库超时需要部署方评估；实机验证状态以当前 Java 实现文档为准。

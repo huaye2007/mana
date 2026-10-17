@@ -10,7 +10,7 @@ Status: Java 25 reference implementation, Maven `cn.managame:game-data:1.0.0-SNA
 
 ## 1. Module and public entry points
 
-One artifact contains repositories, caching, write-back, MySQL/JDBC, MongoDB and logs. Dependencies: game-core and Jackson Databind 2.21.3 (default JSON). The MongoDB Sync Driver 5.5.1 is optional; Mongo applications add it. JDBC uses an application-provided DataSource and MySQL driver; Data selects no pool.
+One artifact contains repositories, caching, write-back, MySQL/JDBC, MongoDB and logs. Dependencies: game-core and Jackson Databind 2.21.3 (default JSON). The MongoDB Sync Driver 5.5.1 is optional; Mongo applications add it. JDBC uses an application-provided DataSource and MySQL driver; Data selects no pool. Saves run as JDBC batches, which MySQL Connector/J only sends combined with the connection property `rewriteBatchedStatements=true` ([game-demo's MysqlConfig](../../game-demo/src/main/java/cn/managame/demo/common/mysql/MysqlConfig.java) sets it); otherwise every row costs a round trip.
 
 | Package | Responsibility |
 | --- | --- |
@@ -28,12 +28,13 @@ One artifact contains repositories, caching, write-back, MySQL/JDBC, MongoDB and
 ```java
 public abstract class SingleRepository<K, E> {
     public final E get(K key);
+    public final E getOrCreate(K key, Function<? super K, ? extends E> factory);
     public final void insert(E entity);
     public final void update(E entity);
     public final void delete(K key);
 }
 public abstract class GroupRepository<K, E> {
-    public final Map<K, E> getGroup(GroupKey key);
+    public final Map<K, E> getGroup(GroupKey key);   // read-only live view
     public final E get(GroupKey key, K mapKey);
     public final void insert(E entity);
     public final void update(E entity);
@@ -41,7 +42,7 @@ public abstract class GroupRepository<K, E> {
     public final void deleteGroup(GroupKey key);
 }
 public abstract class LogRepository<E> {
-    public final void insert(E entity);
+    public final boolean insert(E entity);   // false: log queue full, reported to DataErrorHandler
 }
 ```
 
@@ -52,9 +53,15 @@ A business repository directly extends one concrete parameterized base and has a
 
 ### 2.1 Cache and mutation paths
 
-Each repository holds one EntityCache: Single caches entity or confirmed absence (null) by id; Group caches the actual `ConcurrentHashMap<K,E>` by GroupKey. Only get/getGroup load; a missing key loads once while concurrent callers of that key wait. A load failure throws DataLoadException and is not cached as absence.
+Each repository holds one EntityCache: Single caches entity or confirmed absence (null) by id; Group caches a `ConcurrentHashMap<K,E>` by GroupKey and getGroup returns a read-only live view of it (created once per load, so the same object for as long as the group stays cached); business code changes a group only through insert/update/delete, and a direct put/remove throws UnsupportedOperationException. Single reads (get/getOrCreate) and every Group read or write load a missing key; Single writes never load. Loads run synchronously on the calling thread; a missing key loads once while concurrent callers of that key wait. The load runs outside the cache map's locks, so other keys are never blocked by it; a mutation of the same key during the load waits for it and then applies to its result; if the key is evicted while loading, the result is discarded and loaded again, so nothing older than memory is ever installed. Reading the same key again inside its loader throws IllegalStateException. A load failure throws DataLoadException and is not cached as absence.
 
-A mutation validates state and identity, enters the admission read lock, and then runs inside `EntityCache.update` for its key: Group checks that the group is still cached, `writer.record` coalesces the intent (an illegal sequence throws and leaves the cache unchanged), then the cache entry or group Map changes. Running the record inside the cache's per-key atomic update is what makes eviction safe (section 5.1). Recording is not a field transaction: fields changed directly before the call are not rolled back. deleteGroup records a primary-key DELETE for each current member, then clears the original Map.
+Data has no asynchronous reads. On the default virtual-thread Route executor a synchronous load only parks the current Route's virtual thread; later messages of that Route have to wait for it anyway, so ordering is unchanged and business code needs no callbacks. With a platform-thread Route executor, preload a player's data when the player enters its Route so in-game reads hit the cache.
+
+Writes are checked as soon as the key is cached: Single insert of an existing entity and update of a key cached as absent throw DataOperationException, and delete of an absent key does nothing; a key that is not cached is recorded as is, without reading storage to check it. Group writes load the group first and are therefore always checked: insert of an existing MapKey, update of a missing one, or update with an entity of another @Id throws; delete removes whatever entity holds the MapKey and does nothing when it is missing. `getOrCreate` records the factory's entity as an INSERT and caches it when none exists; the factory runs outside any lock, must return an entity whose @Id equals the key, and under contention the first recorder wins while the other caller gets the cached entity.
+
+The save thread reads entity fields while encoding (D-OWN-01). Collection fields that business code changes on its Route while the save thread may iterate them should be thread-safe collections (for example ConcurrentHashMap, CopyOnWriteArrayList, ConcurrentLinkedDeque), and scalar fields that need cross-thread visibility volatile or atomic; otherwise encoding may hit ConcurrentModificationException or observe a half-updated state. The framework takes no snapshot, by design, for performance.
+
+A mutation validates state and identity, passes the admission count (one CAS, no read-write lock), and then runs inside `EntityCache.update` for its key: the existence checks above run, `writer.record` coalesces the intent (an illegal sequence throws and leaves the cache unchanged), then the cache entry or group Map changes. Running the record inside the cache's per-key atomic update is what makes eviction safe (section 5.1). Recording is not a field transaction: fields changed directly before the call are not rolled back. deleteGroup records a primary-key DELETE for each current member, then clears the original Map.
 
 Spring integration is application code: the [game-demo adapter](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java) registers scanned singleton `@Repository` beans with the builder and supplies `data.repository(type)` as the bean instance ([DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java), [DataSpringWiringTest](../../game-demo/src/test/java/cn/managame/demo/DataSpringWiringTest.java)).
 
@@ -90,6 +97,7 @@ try (GameData data = GameDataBuilder.builder()
 | mysql(DataSource) | none | Borrowed DataSource for repositories registered without an explicit backend |
 | jsonCodec / binaryCodec | default Jackson / none | Codecs of the implicit MySQL mapper and of logs unless logCodecs overrides them |
 | logCodecs(json, binary) | inherited | Log-only codecs; null JSON selects the default |
+| logQueueCapacity | 100,000 | Logs one LogRepository may hold waiting for storage. At the limit insert returns false, reports the log to DataErrorHandler on the inserting thread as a LOG_INSERT failure (attempt 0) and counts it in DataStats.droppedLogs; a refused log was never accepted and does not make close fail |
 
 repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore mysql(DataSource). Registrations without a backend and no DataSource fail build with IllegalArgumentException. build validates repositories, identity and log mappings, then runs each state Mapper's initialize (mapping and schema; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
 
@@ -242,7 +250,9 @@ DataOperation (INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT) is the coalesc
 | Contract | Test |
 | --- | --- |
 | No preflight SELECT; load failures not cached | DataContractTest.negativeCacheDeleteAndInsertNeverSelect / loadFailuresAreNotNegativeCached |
-| Group must be loaded; same Map returned | DataContractTest.groupsRequireExplicitLoadAndReturnSameMap |
+| Group writes load the group; getGroup is a read-only view | DataContractTest.groupWritesLoadTheGroupAndGetGroupIsAReadOnlyLiveView |
+| Writes check existence at once; uncached writes never read storage | DataContractTest.groupWritesAreCheckedAgainstTheLoadedGroup / cachedSingleWritesFailFastAndUncachedOnesNeverSelect |
+| getOrCreate creates once | DataContractTest.getOrCreateInsertsOnceAndReturnsTheCachedEntity |
 | Merge matrix | DataContractTest.legalMergeTable / illegalMergeTable |
 | Batch order and splitting | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossFlushes |
 | Retryable kept, bad row isolated | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / nonRetryableBadRowIsIsolatedFromItsBatch |
@@ -259,6 +269,6 @@ Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [
 
 ## 10. Explicit flush and DataStats
 
-`GameData.flush()` runs one pass synchronously: every change accepted before the call is saved, while changes written concurrently may wait for the next pass. It throws DataOperationException when closed or called from a persistence callback, and DataSaveException when any change was ever dropped or retryable failures remain kept (those stay pending). Avoid a service-wide flush on a busy game Route.
+`GameData.flush()` runs one pass synchronously: every change accepted before the call is saved, while changes written concurrently may wait for the next pass. It throws DataOperationException when closed or called from a persistence callback, and DataSaveException when this pass dropped a change (already reported to DataErrorHandler) or retryable failures remain kept (those stay pending). A drop in an earlier pass does not fail a later clean flush; close still throws DataSaveException for any drop during the GameData's lifetime. Avoid a service-wide flush on a busy game Route.
 
-`GameData.stats()` returns DataStats: accepting, pendingChanges (pending entries, including kept failures; changes claimed by a running pass are not counted), queuedLogs, failedBatches (dropped changes), flushes (passes, excluding close's final one), saveNanos, singleCacheEntries (including cached absence) and groupCacheEntries (groups, not entities). Values are approximate snapshots; queuedLogs is O(n).
+`GameData.stats()` returns DataStats: accepting, pendingChanges (pending entries, including kept failures; changes claimed by a running pass are not counted), queuedLogs, failedBatches (dropped changes), flushes (passes, excluding close's final one), saveNanos, singleCacheEntries (including cached absence) and groupCacheEntries (groups, not entities) and droppedLogs (logs refused because their queue was full). Values are approximate snapshots; queuedLogs is kept by a counter and is O(1).

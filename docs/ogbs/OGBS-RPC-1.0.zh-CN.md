@@ -84,7 +84,7 @@ Slot 是传输细节；来源 Slot 仅作为 reply 提示，不写入业务 body
 
 **R-SEND-03** ACCEPTED 只表示本地网络接纳，不保证交付/执行。接纳后即使发生异步写失败、断线或超时，也不得补发该业务帧。重连只恢复通道。
 
-**R-SEND-04** notify/reply 只返回 ACCEPTED、PEER_NOT_FOUND、UNAVAILABLE。背压、无 READY 连接均归为 UNAVAILABLE，不排队等待。call 另有语言绑定配置的有限 Node 级接纳上限，覆盖编码、在途调用及尚未返回的完成通知。容量耗尽时释放已接管 body，立即交付本地 UNAVAILABLE，不编码、不发送、不等待、不重试。此上限不拒绝 notify/reply。
+**R-SEND-04** notify/reply 只返回 ACCEPTED、PEER_NOT_FOUND、UNAVAILABLE。背压、无 READY 连接均归为 UNAVAILABLE，不排队等待。call 另有语言绑定配置的有限 Peer 级待完成调用上限：同一 Peer 已登记且尚未完成（响应、超时、失败）的调用达到上限时，新调用释放已接管 body，立即交付本地 UNAVAILABLE，不编码、不发送、不等待、不重试。按 Peer 计数使一个可达但很慢的 Peer 不会耗尽发往其他 Peer 的调用容量。此上限不拒绝 notify/reply。
 
 例：routeKey 指向 slot2，但 Request 由 slot3 回退发送。正常 reply 优先 slot3；slot3 不可用后再从 routeKey 指向的 slot2 开始回退。来源 Slot 上的新连接可以承接回复，不保存原物理连接。
 

@@ -41,7 +41,7 @@ class RpcResilienceTest extends RpcTestSupport {
                 try {
                     for (int i = 0; i < rounds; i++) {
                         start.await();
-                        if (peer.target == null) peer.target = LOCAL;
+                        if (peer.detached) peer.detached = false;
                         else slot.connection.set(null);
                         if (slot.connecting.compareAndSet(false, true)) owners.incrementAndGet();
                         end.await();
@@ -50,7 +50,7 @@ class RpcResilienceTest extends RpcTestSupport {
             });
             boolean missing = false, duplicate = false;
             for (int i = 0; i < rounds; i++) {
-                peer.target = i % 2 == 0 ? LOCAL : null;
+                peer.detached = i % 2 != 0;
                 slot.connection.set(i % 2 == 0 ? new Fake() : null);
                 slot.connecting.set(true); owners.set(0);
                 start.await(5, TimeUnit.SECONDS); end.await(5, TimeUnit.SECONDS);

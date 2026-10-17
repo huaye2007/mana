@@ -1,5 +1,7 @@
 package cn.managame.runtime.internal;
 
+import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
 import com.fasterxml.jackson.core.*;
 import io.netty.buffer.ByteBufInputStream;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -17,13 +19,13 @@ interface HttpRouteKey {
     static HttpRouteKey field(String field) {
         return request -> {
             if (request.method().name().equals("GET")) {
-                var values = new QueryStringDecoder(request.uri(), java.nio.charset.StandardCharsets.UTF_8,
+                var values = new QueryStringDecoder(request.uri(), StandardCharsets.UTF_8,
                         true, Integer.MAX_VALUE).parameters().get(field);
                 if (values == null || values.size() != 1) throw invalid();
                 return decimal(values.getFirst());
             }
             // duplicate() keeps the original reader/writer indices and borrowed reference untouched.
-            try (var parser = JSON.createParser((java.io.InputStream) new ByteBufInputStream(request.content().duplicate(), false))) {
+            try (var parser = JSON.createParser((InputStream) new ByteBufInputStream(request.content().duplicate(), false))) {
                 if (parser.nextToken() != JsonToken.START_OBJECT) throw invalid();
                 Long key = null;
                 while (parser.nextToken() != JsonToken.END_OBJECT) {

@@ -29,7 +29,7 @@ router.close();
 rpc.close();
 ```
 
-Router 不需要成员、Peer 列表或注册：由服务连接它。它为每个在已连接 Peer 上声明过的 Node 保存一个条目，记录该 Node 的 epoch 和服务。声明（ATTACH，或该 Node 发出的任何路由消息）新增或替换条目；epoch 相同的 DETACH 删除条目。RPC 不通知断线，因此已关闭连接的条目在向它发送失败或容量用尽时才删除。`isAttached(nodeId)` 报告 Peer 仍连接的条目；`serviceNodes(serviceId)` 返回某服务此类 Node 的不可变快照。`stats()` 返回 `GameRouter.Stats(forwarded, targetNotFound, sendRefused, responsesDropped)`，即构造以来单调递增的计数：RPC 已接纳发往下一跳的消息（含每份广播副本和响应）、目标未附着的请求、发往已附着 Node 但被 RPC 拒绝的消息，以及调用方已离开或无法送达的响应。close 幂等，停止中继（之后的 Router 请求以 HANDLER_ERROR 失败）并忘记所有条目。
+Router 不需要成员、Peer 列表或注册：由服务连接它。它为每个在已连接 Peer 上声明过的 Node 保存一个条目，记录该 Node 的 epoch 和服务。声明（ATTACH，或该 Node 发出的任何路由消息）新增或替换条目；epoch 相同的 DETACH 删除条目。RPC 不通知断线，因此已关闭连接的条目在向它发送失败或容量用尽时才删除。`isAttached(nodeId)` 报告 Peer 仍连接的条目；`serviceNodes(serviceId)` 返回某服务此类 Node 的不可变快照。Router 在附着表之外维护按服务的 Node 索引，广播和 `serviceNodes` 只访问该服务的 Node，代价与该服务的 Node 数成正比，而不是与全部附着 Node 成正比。`stats()` 返回 `GameRouter.Stats(forwarded, targetNotFound, sendRefused, responsesDropped)`，即构造以来单调递增的计数：RPC 已接纳发往下一跳的消息（含每份广播副本和响应）、目标未附着的请求、发往已附着 Node 但被 RPC 拒绝的消息，以及调用方已离开或无法送达的响应。close 幂等，停止中继（之后的 Router 请求以 HANDLER_ERROR 失败）并忘记所有条目。
 
 所有处理都在收到消息的 Netty 线程上完成；Router 没有线程、定时器或锁。最多保存 100,000 个条目：满时先删除 Peer 已断开的条目；仍然满则拒绝该声明并记录日志（携带该声明的 Call 以 HANDLER_ERROR 失败）。
 
@@ -70,7 +70,7 @@ RouterHandler.onRoutedRequest 接收 RoutedRequest：来源 nodeId 与 nodeEpoch
 
 ## 5. 线程与边界
 
-路由包不使用锁。Router 在接收消息的 Netty 线程上完成全部工作。服务在调用线程上发送，在 Netty 线程上执行路由回调；它自己唯一的线程负责发送声明。默认值（无配置 API）：每 100 ms 检查一次声明、每秒重复声明；看到 Router 连接一秒后该 Router 可用；每个 Router 100,000 个附着；内层帧最多 4 MiB 减 67 字节，使带 Router 头的外层 RPC 帧恰好不超过 4 MiB，也受 Node 自身帧上限约束。
+数据路径不使用锁：转发只做无锁查表。附着表的变化（新声明或代际/服务变化、DETACH、发送失败后的删除、容量清理、close）在一个短锁内同时更新附着表与按服务索引；重复的相同声明直接返回，不取锁。Router 在接收消息的 Netty 线程上完成全部工作。服务在调用线程上发送，在 Netty 线程上执行路由回调；它自己唯一的线程负责发送声明。默认值（无配置 API）：每 100 ms 检查一次声明、每秒重复声明；看到 Router 连接一秒后该 Router 可用；每个 Router 100,000 个附着；内层帧最多为所在 RpcNode 的 `maxFrameSize()` 减 67 字节，使带 Router 头的外层 RPC 帧恰好不超过 Node 的帧上限；帧上限只在 RpcNodeBuilder.maxFrameSize 一处配置，Router 不另设常量。路由头的偏移取自 RpcWire 公开的帧布局常量。
 
 Router 从不缓存业务数据：下一跳所有 Slot 都超过写缓冲高水位时拒绝路由消息，Notify 被丢弃，Call 失败。所有服务的流量都经过 Router，因此 Router Node（以及大量发送的服务）应按在途字节量配置 `RpcNodeBuilder.writeBufferWaterMark`，例如 512 KiB / 1 MiB，而不是 Netty 默认的 32 KiB / 64 KiB；测量数据见 [2026-10-13 审查记录](../reviews/2026-10-13-router-forwarding-review.zh-CN.md)。
 
@@ -90,7 +90,7 @@ Router 从不缓存业务数据：下一跳所有 Slot 都超过写缓冲高水�
 - **迟到的声明**：旧代际仍在途的消息可能重新声明它，直到当前代际下一次声明或其连接关闭；close 或 removeRouter 前刚发出的消息可能重新声明本 Node，直到该 Router 下一次向它投递，届时它以 DETACH 回答。
 - **连接不完整**：目标未连接所选 Router 时，调用经其他 Router 重发；Notify 被丢弃（计入 targetNotFound）。
 - **顺序**：同一键发往同一目标只在可用 Router 集合不变且该键没有调用被重发期间保持顺序。
-- **调用准入**：业务 Call pending 没有有限准入，依赖 RPC R-SEND-04（未实现）。
+- **调用准入**：路由 Call 在服务 Node 上登记为发往所选 Router 的 RPC 待完成调用，因此受 RPC R-SEND-04 的每 Peer 上限（RpcNodeBuilder.maxPendingCalls）约束；Router 自身不缓存业务消息。
 - **连接数**：服务数 × Router 数条连接，每条按配置的 Slot 数。
 - **Spring 组合**：托管 RPC 通过 `GameRpcConfigurer.decorate/attach/detach` 组合两个角色（[Spring Java 规范](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)）；把路由请求分派进 Runtime 以及为回复保存 RoutedRequest 仍由应用实现。
 - 生产吞吐、内存与分区行为未验证。

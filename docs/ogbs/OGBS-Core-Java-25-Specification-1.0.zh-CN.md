@@ -107,7 +107,7 @@ stringKey 使用 JDK StandardCharsets.UTF_8 的 String 编解码；bytesKey 解�
 
 FrameworkErrorCodes 不发布 Router 常量：game-router 报告 RPC 错误码，已退役的 5001..5004 不重新使用。报告路径见 [Router Java 规范](OGBS-Router-Java-25-Specification-1.0.zh-CN.md)。
 
-Java FrameworkErrorCodes 暴露 public static final int 常量，对应 [Core 标准的错误码分配](OGBS-Core-1.0.zh-CN.md#4-frameworkerrorcode)。不得在 Java 文档复制维护第二套编号表。已定义常量值不可随意重排；新增编号先修订标准，再同步 Java 常量及消费方。
+Java FrameworkErrorCodes 暴露 public static final int 常量，对应 [Core 标准的错误码分配](OGBS-Core-1.0.zh-CN.md#4-frameworkerrorcode)。不得在 Java 文档复制维护第二套编号表。已定义常量值不可随意重排；新增编号先修订标准，再同步 Java 常量及消费方。`FrameworkErrorCodes.name(code)` 返回常量名（例如 `RPC_TIMEOUT`），`describe(code)` 返回名称加编号（`RPC_TIMEOUT(2003)`），未分配或业务编号为 `UNKNOWN(<code>)`；二者只用于日志与诊断，程序逻辑必须比较数值。
 
 RPC 实现采用 Core 定义的 2001..2007 编号分配，替代未实现草案；RpcErrorCodes 只引用 FrameworkErrorCodes。errorCode 不再有高位包装，0 成功、1..9999 框架、10000..Integer.MAX_VALUE 业务，负数非法。旧 RPC 常量发生源码/编号变更，不能与旧草案混用；Runtime/Data 编号未变。
 

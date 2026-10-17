@@ -40,7 +40,7 @@ Maven：`cn.managame:game-network:1.0.0-SNAPSHOT`，JDK 25，无 preview。Netty
 | 请求限制 | maxContentLength(int); maxInitialLineLength(int); maxHeaderSize(int) | 正数；默认 body 1 MiB、首行 4096 字节、请求头 8192 字节 |
 | 入站时间 | readTimeoutMillis(long) | 默认 30,000 ms；0 禁用；负数拒绝；持续无入站字节达到该时长即关闭 |
 | 业务执行 | executorGroup(EventExecutorGroup) | 可选、借用；每个执行器必须是 OrderedEventExecutor |
-| 传输 | bossGroup、workerGroup、channelFactory、option、childOption | 默认 NIO，自有 boss（1 个 loop）与自有 worker（Netty 默认大小）；注入的 group 为借用 |
+| 传输 | bossGroup、workerGroup、channelFactory、option、childOption | 默认按平台选择传输（见 NetworkTransports），自有 boss（1 个 loop）与自有 worker（Netty 默认大小）；注入的 group 为借用；channelFactory 默认与 group 的传输匹配 |
 | 构建 | HttpServer build() | 不可变快照；start() 前不启动默认 group |
 
 异常：null 参数 → NullPointerException；非法限制或无序执行器 → IllegalArgumentException；缺少必需项、重复 start、close 后 start → IllegalStateException；绑定失败在清理后抛 NetworkException 并保留原因。管线初始化失败只关闭该接入 Channel。
@@ -115,7 +115,7 @@ public interface ConnectionHandler {
 }
 ```
 
-Connection 的状态与地址委托给 Channel（地址可能为 null）。`write` 拒绝 null，先检查 active 再检查 writable，然后调用 `writeAndFlush(message, voidPromise())`。只有 INACTIVE/NOT_WRITABLE 保证消息仍归调用方。写失败路由到 onException（§6.3），不提供逐次写入的 Future。
+Connection 的状态与地址委托给 Channel（地址可能为 null）。`write` 拒绝 null，先检查 active 再检查 writable，然后调用 `writeAndFlush(message, voidPromise())`，即每次写入自带 flush；接口不提供延迟 flush 的入口，需要让多次写入共用一次 syscall 时由应用在 pipeline 中安排（例如 Netty 的 FlushConsolidationHandler）。只有 INACTIVE/NOT_WRITABLE 保证消息仍归调用方。写失败路由到 onException（§6.3），不提供逐次写入的 Future。
 
 ```java
 ByteBuf buffer = ...;
@@ -152,8 +152,8 @@ start 同步绑定。重复 start 或 close 后 start → IllegalStateException�
 | handler(ConnectionHandler) | 必需 |
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | 每次调用追加 |
 | webSocket(String path) / webSocket(String path, int maxMessageSize) | 启用 WS；默认最大消息 1 MiB |
-| bossGroup / workerGroup | 默认自有 NioEventLoopGroup(1) / NioEventLoopGroup() |
-| channelFactory | NioServerSocketChannel::new |
+| bossGroup / workerGroup | 默认自有 `NetworkTransports.newEventLoopGroup(1)` / `newEventLoopGroup(0)`（Epoll 可用时为 Epoll，否则 NIO） |
+| channelFactory | 默认与 boss group 的传输匹配（EpollServerSocketChannel 或 NioServerSocketChannel） |
 | option / childOption | ServerBootstrap 选项 |
 | build() | 校验并快照；不监听 |
 
@@ -184,8 +184,8 @@ public interface ConnectCallback {
 | handler(ConnectionHandler) | 必需 |
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | 按顺序追加 |
 | webSocket() / webSocket(int maxMessageSize) | WS 模式；默认 1 MiB |
-| eventLoopGroup | 默认自有 NioEventLoopGroup() |
-| channelFactory | NioSocketChannel::new |
+| eventLoopGroup | 默认自有 `NetworkTransports.newEventLoopGroup(0)` |
+| channelFactory | 默认与 group 的传输匹配（EpollSocketChannel 或 NioSocketChannel） |
 | option | Bootstrap 选项 |
 | build() | 快照；每次 build 得到独立客户端 |
 
@@ -312,7 +312,7 @@ NetworkClient client = NetworkClient.builder()
 | --- | --- |
 | 默认 group | 自有；close() 以 `shutdownGracefully(0, 5 s)` 关闭，其上 Channel 随之关闭 |
 | 注入 group | 借用；从不关闭；close() 后已有 Channel 保持打开 |
-| 原生传输（Epoll 等） | 不自动选择；需提供匹配的 group 与 channelFactory |
+| 原生传输 | `NetworkTransports` 在 Linux 上加载到 netty-transport-native-epoll 原生库时选择 Epoll，否则 NIO；game-network 以 runtime 依赖携带 linux-x86_64 与 linux-aarch_64 原生库。注入 NIO group 时即使 Epoll 可用也使用 NIO channel；`NetworkTransports.socketChannelFactory/serverChannelFactory(group)` 返回与 group 匹配的类型 |
 
 close 只标记入口已关闭，从不遍历连接或建连尝试。就绪时发现入口已关闭则拒绝（客户端报告 IllegalStateException）。借用 group 时，未完成的握手由其自身结果或超时结束——不要禁用原生超时再指望 close 取消。start/close 不得在入口自己的 EventLoop 上执行（不要在 onDisconnected 中调用 Server.close）。重复 close 无效果。Connection.close 非阻塞，可在任何回调中调用。
 

@@ -45,7 +45,11 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
     }
 
     private final RpcHandler direct;
+    /** Node ID → announced identity. Read lock-free on the data path; changed only under {@code writeLock}. */
     private final ConcurrentHashMap<Integer, Attachment> nodes = new ConcurrentHashMap<>();
+    /** Service ID → attached Node IDs, kept consistent with {@code nodes} so broadcasts visit only that service. */
+    private final ConcurrentHashMap<Integer, Set<Integer>> services = new ConcurrentHashMap<>();
+    private final Object writeLock = new Object();
     private final LongAdder forwarded = new LongAdder(), targetNotFound = new LongAdder(),
             sendRefused = new LongAdder(), responsesDropped = new LongAdder();
     private volatile RpcNode rpc;
@@ -60,7 +64,7 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
         rpc = rpcNode;
     }
     /** Stops relaying and forgets every attachment. Idempotent; the application closes the RpcNode afterwards. */
-    @Override public void close() { closed = true; nodes.clear(); }
+    @Override public void close() { closed = true; clearAttachments(); }
 
     public Stats stats() {
         return new Stats(forwarded.sum(), targetNotFound.sum(), sendRefused.sum(), responsesDropped.sum());
@@ -73,8 +77,10 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
     /** Nodes of the service attached over live connections; a snapshot, not a delivery guarantee. */
     public Set<Integer> serviceNodes(int serviceId) {
         if (serviceId <= 0) throw new IllegalArgumentException("serviceId must be positive");
+        Set<Integer> ids = services.get(serviceId);
+        if (ids == null) return Set.of();
         Set<Integer> result = new HashSet<>();
-        nodes.forEach((id, a) -> { if (a.service == serviceId && isAttached(id)) result.add(id); });
+        for (int id : ids) if (isAttached(id)) result.add(id);
         return Set.copyOf(result);
     }
 
@@ -105,7 +111,10 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
         } else if (op == DETACH) {
             need(b, 8);
             long epoch = b.readLong(); end(b);
-            nodes.computeIfPresent(source, (id, a) -> a.epoch == epoch ? null : a);
+            synchronized (writeLock) {
+                Attachment current = nodes.get(source);
+                if (current != null && current.epoch == epoch) removeAttachment(source, current);
+            }
         } else throw new IllegalArgumentException("Unknown Router operation");
     }
     /** Records the Node announced on the connection from {@code id}; a new incarnation replaces the old one. */
@@ -113,13 +122,33 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
         if (epoch == 0 || service <= 0) throw new IllegalArgumentException("Invalid Node attachment");
         Attachment current = nodes.get(id);
         if (current != null && current.epoch == epoch && current.service == service) return;
-        if (current == null && nodes.size() >= MAX_NODES) {
-            RpcNode node = rpc;
-            nodes.forEach((key, a) -> { if (!node.isPeerConnected(key)) nodes.remove(key, a); });
-            if (nodes.size() >= MAX_NODES) throw new IllegalStateException("Router attachment capacity exceeded");
+        synchronized (writeLock) {
+            if (!nodes.containsKey(id) && nodes.size() >= MAX_NODES) {
+                RpcNode node = rpc;
+                nodes.forEach((key, a) -> { if (!node.isPeerConnected(key)) removeAttachment(key, a); });
+                if (nodes.size() >= MAX_NODES) throw new IllegalStateException("Router attachment capacity exceeded");
+            }
+            Attachment next = new Attachment(epoch, service), old = nodes.put(id, next);
+            if (old != null && old.service != service) unindex(id, old.service);
+            services.computeIfAbsent(service, ignored -> ConcurrentHashMap.newKeySet()).add(id);
         }
-        nodes.put(id, new Attachment(epoch, service));
-        if (closed) nodes.clear();                         // raced with close: leave nothing behind
+        if (closed) clearAttachments();                    // raced with close: leave nothing behind
+    }
+    /** Caller holds writeLock. */
+    private boolean removeAttachment(int id, Attachment a) {
+        if (!nodes.remove(id, a)) return false;
+        unindex(id, a.service);
+        return true;
+    }
+    /** Caller holds writeLock. */
+    private void unindex(int id, int service) {
+        Set<Integer> ids = services.get(service);
+        if (ids == null) return;
+        ids.remove(id);
+        if (ids.isEmpty()) services.remove(service, ids);
+    }
+    private void clearAttachments() {
+        synchronized (writeLock) { nodes.clear(); services.clear(); }
     }
 
     // ---------------------------------------------------------------- data path
@@ -144,7 +173,11 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
             }
             case BROADCAST -> {
                 if (outer.requestId() != 0 || d.requestId() != 0) throw new IllegalArgumentException("Broadcast must be a notify");
-                nodes.forEach((id, a) -> { if (a.service == d.targetService()) send(node, id, a, forward(d, id, a.epoch, 0)); });
+                Set<Integer> ids = services.get(d.targetService());
+                if (ids != null) for (int id : ids) {
+                    Attachment a = nodes.get(id);
+                    if (a != null && a.service == d.targetService()) send(node, id, a, forward(d, id, a.epoch, 0));
+                }
             }
             case RESPONSE -> {
                 if (outer.requestId() != 0) throw new IllegalArgumentException("Routed response must be a notify");
@@ -162,7 +195,7 @@ public final class GameRouter implements RpcHandler, AutoCloseable {
         RpcSendStatus status = RouterWire.notify(node, id, message);
         if (status == RpcSendStatus.ACCEPTED) { forwarded.increment(); return status; }
         sendRefused.increment();
-        if (!node.isPeerConnected(id)) nodes.remove(id, a);
+        if (!node.isPeerConnected(id)) synchronized (writeLock) { removeAttachment(id, a); }
         return status;
     }
     /** Answers the caller's outer Call at once; a Notify has nobody waiting. */

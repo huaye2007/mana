@@ -318,5 +318,47 @@ class RpcNodeTest extends RpcTestSupport {
             assertThrows(IllegalArgumentException.class, () -> b.callTimeout(Duration.ofNanos(1)));
         } finally { first.close(); second.close(); }
     }
-}
+    @Test void pendingCallLimitFailsFastAndReleasesOnCompletion() throws Exception {
+        Probe p = new Probe();
+        RpcNode n = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(p).maxPendingCalls(2).build();
+        n.start();
+        try (n) {
+            assertEquals(4 * 1024 * 1024, n.maxFrameSize());
+            Fake c = bind(n, 2, 0, 1);
+            n.call(2, new RpcRequest(1, null), CALLBACK);
+            n.call(2, new RpcRequest(1, null), CALLBACK);
+            ByteBuf body = Unpooled.buffer().writeByte(1);
+            n.call(2, new RpcRequest(1, body), CALLBACK);
+            assertEquals(0, body.refCnt());
+            assertEquals(UNAVAILABLE, p.failures.remove());
+            assertEquals(2, n.peers.get(2).pending.size());
+            int id = n.peers.get(2).pending.keys().nextElement();
+            receive(n, c, RpcWire.encodeResponse(new RpcResponse(id, 0, null, null), 1024));
+            take(p.responses);
+            n.call(2, new RpcRequest(1, null), CALLBACK);
+            assertTrue(p.failures.isEmpty());
+            assertEquals(2, n.peers.get(2).pending.size());
+        }
+        assertEquals(2, p.failures.size());
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder().maxPendingCalls(0));
+    }
 
+    @Test void callerOwnedEventLoopGroupSurvivesClose() throws Exception {
+        io.netty.channel.EventLoopGroup group = cn.managame.network.netty.NetworkTransports.newEventLoopGroup(2);
+        Probe pa = new Probe(), pb = new Probe();
+        try {
+            RpcNode a = RpcNode.builder().nodeId(1).bindAddress(LOCAL).handler(pa).eventLoopGroup(group).build();
+            RpcNode b = RpcNode.builder().nodeId(2).bindAddress(LOCAL).handler(pb).eventLoopGroup(group).build();
+            pa.node = a; pb.node = b;
+            a.start(); b.start();
+            try {
+                a.addPeer(2, b.localAddress(), 1);
+                await(() -> a.isPeerConnected(2) && b.isPeerConnected(1));
+                a.notify(2, new RpcRequest(7, null));
+                assertEquals(7, take(pb.requests).command());
+            } finally { a.close(); b.close(); }
+            assertFalse(group.isShuttingDown());
+            assertTrue(a.peers.isEmpty());
+        } finally { group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly(); }
+    }
+}

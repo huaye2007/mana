@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN" "https://checkstyle.org/dtds/configuration_1_3.dtd">
+<!--
+  mana3 style gate, main sources only (see the quality profile in pom.xml).
+
+  Layout is deliberately dense: a short member, a guard and its throw, or a group of field assignments share
+  one line. Rules that fight that style (LineLength, OneStatementPerLine) are therefore left out, and so is
+  NewlineAtEndOfFile, which 14 existing files do not satisfy; wrapping and line length stay a review matter.
+  What remains are mistakes a reader cannot see in the diff.
+-->
+<module name="Checker">
+  <property name="charset" value="UTF-8"/>
+  <property name="severity" value="error"/>
+  <module name="FileTabCharacter"/>
+  <module name="TreeWalker">
+    <!-- processJavadoc, so a type referenced only from a {@link} still counts as used. -->
+    <module name="UnusedImports">
+      <property name="processJavadoc" value="true"/>
+    </module>
+    <module name="RedundantImport"/>
+    <module name="EmptyStatement"/>
+    <module name="EqualsHashCode"/>
+    <module name="StringLiteralEquality"/>
+    <module name="UpperEll"/>
+    <module name="ArrayTypeStyle"/>
+  </module>
+</module>

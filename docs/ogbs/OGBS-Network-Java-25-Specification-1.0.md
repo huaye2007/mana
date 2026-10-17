@@ -40,7 +40,7 @@ Implements [N-HTTP-01–08](OGBS-Network-1.0.md#http-server-profile). HttpServer
 | Request limits | maxContentLength(int); maxInitialLineLength(int); maxHeaderSize(int) | Positive; defaults 1 MiB body, 4096-byte line, 8192-byte headers |
 | Inbound timing | readTimeoutMillis(long) | Default 30,000 ms; 0 disables; negative rejected; closes after that long without inbound bytes |
 | Business execution | executorGroup(EventExecutorGroup) | Optional, borrowed; every executor must be an OrderedEventExecutor |
-| Transport | bossGroup, workerGroup, channelFactory, option, childOption | Default NIO, owned boss (1 loop) and owned worker (Netty default size); injected groups are borrowed |
+| Transport | bossGroup, workerGroup, channelFactory, option, childOption | Transport chosen for the platform by default (see NetworkTransports), owned boss (1 loop) and owned worker (Netty default size); injected groups are borrowed; channelFactory defaults to the group's transport |
 | Construction | HttpServer build() | Immutable snapshot; no default group is started before start() |
 
 Errors: null arguments → NullPointerException; invalid limits or unordered executors → IllegalArgumentException; missing required fields, repeated start, start after close → IllegalStateException; bind failure → NetworkException with the cause, after cleanup. A pipeline-initialization failure closes only that accepted channel.
@@ -117,7 +117,7 @@ public interface ConnectionHandler {
 }
 ```
 
-Connection delegates state and addresses to the Channel (addresses may be null). `write` rejects null, checks active then writable, and calls `writeAndFlush(message, voidPromise())`. Only INACTIVE/NOT_WRITABLE guarantee that the caller still owns the message. Write failures are routed to onException (§6.3); there is no per-write Future.
+Connection delegates state and addresses to the Channel (addresses may be null). `write` rejects null, checks active then writable, and calls `writeAndFlush(message, voidPromise())`, so every write flushes; the interface offers no deferred flush, and an application that wants several writes to share one syscall arranges that in the pipeline (for example Netty's FlushConsolidationHandler). Only INACTIVE/NOT_WRITABLE guarantee that the caller still owns the message. Write failures are routed to onException (§6.3); there is no per-write Future.
 
 ```java
 ByteBuf buffer = ...;
@@ -154,8 +154,8 @@ start binds synchronously. Repeated start or start after close → IllegalStateE
 | handler(ConnectionHandler) | Required |
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | Appended per call |
 | webSocket(String path) / webSocket(String path, int maxMessageSize) | Enable WS; default maximum message 1 MiB |
-| bossGroup / workerGroup | Owned NioEventLoopGroup(1) / NioEventLoopGroup() by default |
-| channelFactory | NioServerSocketChannel::new |
+| bossGroup / workerGroup | Owned `NetworkTransports.newEventLoopGroup(1)` / `newEventLoopGroup(0)` by default (Epoll when available, otherwise NIO) |
+| channelFactory | Matches the boss group's transport by default (EpollServerSocketChannel or NioServerSocketChannel) |
 | option / childOption | ServerBootstrap options |
 | build() | Validate and snapshot; does not listen |
 
@@ -186,8 +186,8 @@ public interface ConnectCallback {
 | handler(ConnectionHandler) | Required |
 | pipeline(Consumer&lt;ChannelPipeline&gt;) | Appended in order |
 | webSocket() / webSocket(int maxMessageSize) | WS mode; default 1 MiB |
-| eventLoopGroup | Owned NioEventLoopGroup() by default |
-| channelFactory | NioSocketChannel::new |
+| eventLoopGroup | Owned `NetworkTransports.newEventLoopGroup(0)` by default |
+| channelFactory | Matches the group's transport by default (EpollSocketChannel or NioSocketChannel) |
 | option | Bootstrap option |
 | build() | Snapshot; each build is an independent client |
 
@@ -314,7 +314,7 @@ Passing a host to newHandler does not enable hostname verification; set it expli
 | --- | --- |
 | Default groups | Owned; close() shuts them down with `shutdownGracefully(0, 5 s)`, which closes their channels |
 | Injected group | Borrowed; never shut down; existing channels stay open after close() |
-| Native transport (Epoll etc.) | Never auto-selected; supply matching group and channelFactory |
+| Native transport | `NetworkTransports` selects Epoll on Linux when the netty-transport-native-epoll library loads, otherwise NIO; game-network carries the linux-x86_64 and linux-aarch_64 native libraries as runtime dependencies. An injected NIO group keeps NIO channels even where Epoll is available; `NetworkTransports.socketChannelFactory/serverChannelFactory(group)` return the matching type |
 
 close marks the endpoint closed; it never iterates connections or attempts. Readiness that observes a closed endpoint is rejected (the client reports IllegalStateException). With borrowed groups, unfinished handshakes end through their own result or timeout — do not disable native timeouts and rely on close to cancel. start/close must not run on the endpoint's own EventLoops (do not call Server.close from onDisconnected). Repeated close is a no-op. Connection.close is non-blocking and allowed in any callback.
 

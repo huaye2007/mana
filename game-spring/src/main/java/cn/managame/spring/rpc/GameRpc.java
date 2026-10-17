@@ -8,6 +8,7 @@ import cn.managame.rpc.transport.RpcSendStatus;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.context.*;
 import cn.managame.runtime.protocol.*;
+import cn.managame.runtime.route.CapturedRouteCallback;
 import cn.managame.runtime.route.RouteCallback;
 import io.netty.buffer.*;
 import java.util.List;
@@ -63,7 +64,7 @@ public final class GameRpc implements AutoCloseable {
         if (responseType == null) throw new IllegalArgumentException("No response binding: " + request.getClass());
         Objects.requireNonNull(callback);
         ByteBuf body = encode(request);
-        RouteCallback<T> captured;
+        CapturedRouteCallback<T> captured;
         try { captured = runtime.callback(callback); }
         catch (RuntimeException | Error failure) { body.release(); throw failure; }
         Completion<T> completion = new Completion<>(responseType, captured);
@@ -72,7 +73,8 @@ public final class GameRpc implements AutoCloseable {
                     businessId, metadata, body), completion);
         } catch (RuntimeException | Error failure) {
             if (body.refCnt() > 0) body.release();
-            captured.onFail(UNAVAILABLE);
+            // The caller learns about the failure from the exception alone; only release the Route capture.
+            captured.cancel();
             throw failure;
         }
     }
@@ -131,10 +133,11 @@ public final class GameRpc implements AutoCloseable {
         return protocol;
     }
 
-    private ByteBuf encode(Object message) { return Unpooled.wrappedBuffer(Objects.requireNonNull(codec.encode(message))); }
+    private ByteBuf encode(Object message) {
+        return Objects.requireNonNull(codec.encode(message, ByteBufAllocator.DEFAULT), "GameRpcCodec.encode returned null");
+    }
     private Object decode(ByteBuf body, Class<?> type) {
-        byte[] bytes = body == null ? new byte[0] : ByteBufUtil.getBytes(body);
-        return Objects.requireNonNull(type.cast(codec.decode(bytes, type)));
+        return Objects.requireNonNull(type.cast(codec.decode(body, type)));
     }
 
     private final class Handler implements RpcHandler {

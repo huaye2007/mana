@@ -41,18 +41,33 @@ final class CronSchedule {
         }
     }
     private static boolean any(String field) { return field.equals("*") || field.equals("?"); }
+    /**
+     * First occurrence strictly after {@code after}. Within a matching day the hour, minute and second fields
+     * jump straight to their next allowed value ({@link BitSet#nextSetBit}) instead of stepping one unit at a
+     * time; every step moves forward, and each candidate is rechecked from the month field down.
+     */
     Instant next(Instant after) {
         ZonedDateTime t = after.atZone(zone).plusSeconds(1).withNano(0);
         int endYear = t.getYear() + 8;
         while (t.getYear() <= endYear) {
             if (!fields[4].get(t.getMonthValue())) { t = t.plusMonths(1).withDayOfMonth(1).toLocalDate().atStartOfDay(zone); continue; }
             int dow = t.getDayOfWeek().getValue() % 7 + 1;
-            if (!fields[3].get(t.getDayOfMonth()) || !fields[5].get(dow)) { t = t.toLocalDate().plusDays(1).atStartOfDay(zone); continue; }
-            if (!fields[2].get(t.getHour())) { t = t.plusHours(1).withMinute(0).withSecond(0); continue; }
-            if (!fields[1].get(t.getMinute())) { t = t.plusMinutes(1).withSecond(0); continue; }
-            if (!fields[0].get(t.getSecond())) { t = t.plusSeconds(1); continue; }
+            if (!fields[3].get(t.getDayOfMonth()) || !fields[5].get(dow)) { t = nextDay(t); continue; }
+            int hour = fields[2].nextSetBit(t.getHour());
+            if (hour < 0) { t = nextDay(t); continue; }
+            if (hour != t.getHour()) { t = t.withHour(hour).withMinute(0).withSecond(0); continue; }
+            int minute = fields[1].nextSetBit(t.getMinute());
+            if (minute < 0) { t = t.plusHours(1).withMinute(0).withSecond(0); continue; }
+            if (minute != t.getMinute()) { t = t.withMinute(minute).withSecond(0); continue; }
+            int second = fields[0].nextSetBit(t.getSecond());
+            if (second < 0) { t = t.plusMinutes(1).withSecond(0); continue; }
+            if (second != t.getSecond()) { t = t.withSecond(second); continue; }
             return t.toInstant();
         }
         throw new IllegalArgumentException("Cron has no occurrence in the next eight years");
+    }
+
+    private ZonedDateTime nextDay(ZonedDateTime t) {
+        return t.toLocalDate().plusDays(1).atStartOfDay(zone);
     }
 }

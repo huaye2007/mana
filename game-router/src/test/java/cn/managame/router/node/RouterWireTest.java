@@ -11,9 +11,12 @@ import static org.junit.jupiter.api.Assertions.*;
 import static cn.managame.router.node.RouterWire.*;
 
 class RouterWireTest {
+    /** A Node configured with the default 4 MiB RPC frame limit. */
+    static final int MAX_FRAME = 4 * 1024 * 1024;
+    static final int MAX_INNER = MAX_FRAME - cn.managame.rpc.netty.RpcWire.MIN_REQUEST_FRAME - DATA_HEADER;
     @Test void goldenVectors() {
         ByteBuf attach = attach(5, 6).body(), detach = detach(5).body();
-        RpcRequest data = data(DIRECT, 1, 2, 3, 4, 5, 0, new RpcRequest(44, 0, 9, 0, 0, null, null));
+        RpcRequest data = data(DIRECT, 1, 2, 3, 4, 5, 0, new RpcRequest(44, 0, 9, 0, 0, null, null), MAX_INNER);
         try {
             assertEquals("0401" + "0000000000000005" + "00000006", ByteBufUtil.hexDump(attach));
             assertEquals("0402" + "0000000000000005", ByteBufUtil.hexDump(detach));
@@ -25,7 +28,7 @@ class RouterWireTest {
     }
     @Test void innerMessageFieldsAndBorrowedOwnershipSurviveTheFrame() {
         ByteBuf body = Unpooled.buffer().writeLong(42);
-        RpcRequest encoded = data(DIRECT, 1, 11, 3, 2, 22, 0, new RpcRequest(44, 123, 99, 7, 777, null, body));
+        RpcRequest encoded = data(DIRECT, 1, 11, 3, 2, 22, 0, new RpcRequest(44, 123, 99, 7, 777, null, body), MAX_INNER);
         assertEquals(0, body.refCnt());
         try {
             ByteBuf payload = encoded.body().duplicate(); assertEquals(DATA, operation(payload));
@@ -56,7 +59,7 @@ class RouterWireTest {
         for (int size : new int[]{8, 3 * COPY_LIMIT}) {
             byte[] bytes = new byte[size];
             for (int i = 0; i < size; i++) bytes[i] = (byte) i;
-            RpcRequest encoded = data(DIRECT, 1, 11, 3, 2, 0, 0, new RpcRequest(44, 99, 7, 777, metadata, Unpooled.wrappedBuffer(bytes)));
+            RpcRequest encoded = data(DIRECT, 1, 11, 3, 2, 0, 0, new RpcRequest(44, 99, 7, 777, metadata, Unpooled.wrappedBuffer(bytes)), MAX_INNER);
             ByteBuf in = encoded.body().duplicate(); operation(in);
             Data source = data(in);
             RpcRequest forwarded = forward(source, 2, 22, 321);
@@ -77,7 +80,7 @@ class RouterWireTest {
             } finally { forwarded.body().release(); }
             assertEquals(1, encoded.body().refCnt()); encoded.body().release();
         }
-        RpcRequest response = data(RESPONSE, 2, 22, 2, 1, 11, 0, new RpcResponse(321, 5, null, Unpooled.wrappedBuffer(new byte[]{1, 2})));
+        RpcRequest response = data(RESPONSE, 2, 22, 2, 1, 11, 0, new RpcResponse(321, 5, null, Unpooled.wrappedBuffer(new byte[]{1, 2})), MAX_INNER);
         ByteBuf in = response.body().duplicate(); operation(in);
         RpcRequest back = forward(data(in), 1, 11, 0);
         try {
@@ -88,18 +91,18 @@ class RouterWireTest {
         } finally { back.body().release(); response.body().release(); }
     }
     @Test void theLargestInnerFrameStillFitsTheRpcFrameLimit() {
-        RpcRequest largest = data(DIRECT, 1, 11, 3, 2, 0, 0, new RpcRequest(44, Unpooled.wrappedBuffer(new byte[MAX_INNER - 32])));
+        RpcRequest largest = data(DIRECT, 1, 11, 3, 2, 0, 0, new RpcRequest(44, Unpooled.wrappedBuffer(new byte[MAX_INNER - 32])), MAX_INNER);
         ByteBuf frame = cn.managame.rpc.netty.RpcWire.encodeRequest(largest, 1, MAX_FRAME);
         try { assertEquals(MAX_FRAME, frame.readableBytes()); } finally { frame.release(); }
         ByteBuf body = Unpooled.wrappedBuffer(new byte[MAX_INNER - 31]);
         assertThrows(cn.managame.rpc.error.RpcEncodeException.class,
-                () -> data(DIRECT, 1, 11, 3, 2, 0, 0, new RpcRequest(44, body)));
+                () -> data(DIRECT, 1, 11, 3, 2, 0, 0, new RpcRequest(44, body), MAX_INNER));
         assertEquals(0, body.refCnt());
     }
     @Test void unknownVersionsAndBroadcastsWithoutAServiceAreRejected() {
         ByteBuf v3 = Unpooled.wrappedBuffer(new byte[]{3, 3});
         try { assertThrows(CorruptedFrameException.class, () -> operation(v3)); } finally { v3.release(); }
-        RpcRequest broadcast = data(BROADCAST, 1, 11, 3, 0, 0, 0, new RpcRequest(44, null));
+        RpcRequest broadcast = data(BROADCAST, 1, 11, 3, 0, 0, 0, new RpcRequest(44, null), MAX_INNER);
         try {
             ByteBuf b = broadcast.body().duplicate(); operation(b);
             assertThrows(CorruptedFrameException.class, () -> data(b));

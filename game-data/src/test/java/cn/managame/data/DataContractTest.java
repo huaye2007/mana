@@ -87,20 +87,64 @@ class DataContractTest {
             assertEquals(2, mapper.loads.get());
         }
     }
-    @Test void groupsRequireExplicitLoadAndReturnSameMap() {
+    @Test void groupWritesLoadTheGroupAndGetGroupIsAReadOnlyLiveView() {
         var mapper = new RecordingMapper(); var task = new Task(20,1,5);
         try (var data = builder(mapper).build()) {
             var tasks = data.repository(Tasks.class);
-            assertThrows(DataOperationException.class, () -> tasks.insert(task));
-            assertThrows(DataOperationException.class, () -> tasks.deleteGroup(GroupKey.of(1L)));
-            assertEquals(0, mapper.groupLoads.get());
-            var group = tasks.getGroup(GroupKey.of(1L));
-            assertInstanceOf(ConcurrentHashMap.class, group);
-            tasks.insert(task); assertSame(task, group.get(5L));
-            tasks.deleteGroup(GroupKey.of(1L));
-            assertSame(group, tasks.getGroup(GroupKey.of(1L))); assertTrue(group.isEmpty());
+            tasks.insert(task);                            // no getGroup first: the write loads the group
             assertEquals(1, mapper.groupLoads.get());
+            var group = tasks.getGroup(GroupKey.of(1L));
+            assertSame(task, group.get(5L)); assertSame(group, tasks.getGroup(GroupKey.of(1L)));
+            assertThrows(UnsupportedOperationException.class, () -> group.remove(5L));
+            assertThrows(UnsupportedOperationException.class, () -> group.put(6L, new Task(21,1,6)));
+            tasks.deleteGroup(GroupKey.of(1L)); assertTrue(group.isEmpty());
+            tasks.deleteGroup(GroupKey.of(2L));            // loads and deletes nothing
+            assertEquals(2, mapper.groupLoads.get());
             data.writer.flush(); assertTrue(mapper.events.isEmpty());
+        }
+    }
+    @Test void groupWritesAreCheckedAgainstTheLoadedGroup() {
+        var mapper = new RecordingMapper(); mapper.group = List.of(new Task(20,1,5));
+        try (var data = builder(mapper).build()) {
+            var tasks = data.repository(Tasks.class);
+            assertThrows(DataOperationException.class, () -> tasks.insert(new Task(30,1,5)));   // MapKey taken
+            assertThrows(DataOperationException.class, () -> tasks.update(new Task(31,1,6)));   // MapKey missing
+            assertThrows(DataOperationException.class, () -> tasks.update(new Task(32,1,5)));   // another @Id
+            tasks.delete(new Task(33,1,6));                                                     // absent: no-op
+            var replacement = new Task(20,1,5); tasks.update(replacement);
+            assertSame(replacement, tasks.get(GroupKey.of(1L), 5L));
+            tasks.delete(new Task(20,1,5));                // deletes whatever holds the MapKey
+            assertNull(tasks.get(GroupKey.of(1L), 5L));
+            data.writer.flush();
+            assertEquals(List.of("DELETE"), mapper.events); assertEquals(List.of(20L), mapper.batches.getFirst());
+        }
+    }
+    @Test void cachedSingleWritesFailFastAndUncachedOnesNeverSelect() {
+        var mapper = new RecordingMapper();
+        try (var data = builder(mapper).build()) {
+            var players = data.repository(Players.class);
+            assertNull(players.get(1L));
+            assertThrows(DataOperationException.class, () -> players.update(new Player(1)));  // cached as absent
+            players.delete(1L);                                                               // absent: no-op
+            var p = new Player(1); players.insert(p);
+            assertThrows(DataOperationException.class, () -> players.insert(new Player(1)));
+            players.update(new Player(9)); players.delete(8L);                                // uncached: recorded as is
+            assertEquals(1, mapper.loads.get());
+            data.writer.flush();
+            assertEquals(List.of("DELETE", "INSERT", "UPDATE"), mapper.events);
+        }
+    }
+    @Test void getOrCreateInsertsOnceAndReturnsTheCachedEntity() {
+        var mapper = new RecordingMapper();
+        try (var data = builder(mapper).build()) {
+            var players = data.repository(Players.class); var created = new AtomicInteger();
+            var first = players.getOrCreate(1L, id -> { created.incrementAndGet(); return new Player(id); });
+            assertSame(first, players.getOrCreate(1L, id -> fail("must not create again")));
+            assertSame(first, players.get(1L)); assertEquals(1, created.get());
+            assertThrows(DataOperationException.class, () -> players.getOrCreate(2L, id -> new Player(3)));
+            assertNull(players.get(2L));
+            data.writer.flush();
+            assertEquals(List.of("INSERT"), mapper.events); assertEquals(List.of(first), mapper.batches.getFirst());
         }
     }
     @Test void loadedGroupDeletesByDatabaseId() {
@@ -324,14 +368,63 @@ class DataContractTest {
         }
     }
 
-    @Test void explicitFlushReportsHistoricalFailuresAndKeepsLaterBatchesWorking() {
+    @Test void explicitFlushReportsOnlyItsOwnFailuresWhileCloseReportsTheLifetime() {
         var mapper = new RecordingMapper(); mapper.saveFailure = true;
         var data = builder(mapper).errorHandler(error -> {}).build();
         data.repository(Players.class).insert(new Player(1));
         assertThrows(DataSaveException.class, data::flush); assertEquals(1, data.stats().failedBatches());
         mapper.saveFailure = false; data.repository(Players.class).insert(new Player(2));
-        assertThrows(DataSaveException.class, data::flush); assertEquals(List.of("INSERT"), mapper.events);
+        data.flush();                                  // the earlier drop does not fail a clean flush
+        assertEquals(List.of("INSERT"), mapper.events);
         assertThrows(DataSaveException.class, data::close);
         assertThrows(DataOperationException.class, data::flush); assertFalse(data.stats().accepting());
+    }
+    /** A mapper whose loads of key 1 block until released, counting loads per key. */
+    static final class BlockingLoads implements EntityMapper {
+        final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        final ConcurrentHashMap<Object, AtomicInteger> loads = new ConcurrentHashMap<>();
+        public void initialize(EntityMeta meta) {}
+        public Object load(EntityMeta meta, Object id) {
+            loads.computeIfAbsent(id, k -> new AtomicInteger()).incrementAndGet();
+            if (Long.valueOf(1).equals(id)) { entered.countDown(); await(release); return new Player(1); }
+            return null;
+        }
+        public List<?> loadGroup(EntityMeta meta, GroupKey key) { return List.of(); }
+        public void insertBatch(EntityMeta m, List<?> e) {}
+        public void updateBatch(EntityMeta m, List<?> e) {}
+        public void deleteBatch(EntityMeta m, List<Object> e) {}
+        public void deleteInsertBatch(EntityMeta m, List<?> e) {}
+    }
+
+    @Test void concurrentLoadsOfOneKeyShareOneLoadAndDoNotBlockOtherKeys() throws Exception {
+        var mapper = new BlockingLoads();
+        try (var data = GameDataBuilder.builder().repositories(mapper, Players.class).flushInterval(Duration.ofMinutes(1)).build();
+             var threads = Executors.newFixedThreadPool(2)) {
+            var players = data.repository(Players.class);
+            Future<Player> first = threads.submit(() -> players.get(1L));
+            assertTrue(mapper.entered.await(3, TimeUnit.SECONDS));
+            Future<Player> second = threads.submit(() -> players.get(1L));
+            assertNull(players.get(2L));                 // another key is not blocked by the running load
+            mapper.release.countDown();
+            assertSame(first.get(3, TimeUnit.SECONDS), second.get(3, TimeUnit.SECONDS));
+            assertEquals(1, mapper.loads.get(1L).get());
+        }
+    }
+
+    @Test void aMutationDuringTheFirstLoadWinsOverTheLoadedValue() throws Exception {
+        var mapper = new BlockingLoads();
+        try (var data = GameDataBuilder.builder().repositories(mapper, Players.class).flushInterval(Duration.ofMinutes(1)).build();
+             var threads = Executors.newSingleThreadExecutor()) {
+            var players = data.repository(Players.class);
+            Future<Player> loading = threads.submit(() -> players.get(1L));
+            assertTrue(mapper.entered.await(3, TimeUnit.SECONDS));
+            var updated = new Player(1); updated.score = 9;
+            var mutation = CompletableFuture.runAsync(() -> players.update(updated)); // waits for the load
+            mapper.release.countDown();
+            mutation.get(3, TimeUnit.SECONDS);
+            loading.get(3, TimeUnit.SECONDS);
+            assertSame(updated, players.get(1L));
+            assertEquals(1, mapper.loads.get(1L).get());
+        }
     }
 }

@@ -16,7 +16,7 @@ Status: repository draft with Java 25 reference implementation `game-data`. Java
 
 No ORM Session, proxies, automatic dirty tracking, entity snapshots, rollback, relationships, generated primary keys, arbitrary query DSL, distributed transactions, cross-process cache coherence, or Redis L2 cache. Use native database access for specialized queries.
 
-**D-OWN-01** Applications serialize business modifications of the same entity/group. Thread-safe containers do not make fields thread-safe. Applications ensure visibility between business writes and background field reads, plus required multi-field consistency. Pending references may continue changing; persistence observes encoding-time state, not an update-time snapshot.
+**D-OWN-01** Applications serialize business modifications of the same entity/group. Thread-safe containers do not make fields thread-safe. Applications ensure visibility between business writes and background field reads, plus required multi-field consistency. Pending references may continue changing; persistence observes encoding-time state, not an update-time snapshot. Collections inside an entity that business code changes while the background save may iterate them should be thread-safe collections (the language binding names concrete types); no snapshot is taken, to avoid copying the entity on every change.
 
 <a id="2-身份"></a>
 
@@ -48,17 +48,17 @@ Moving a task from player A to B cannot mutate an existing roleId. Explicitly de
 
 **D-SINGLE-01** Cache hits return the same entity reference. Absence returns an empty result and may be negatively cached. Storage failure must synchronously report load failure, never absence or negative caching.
 
-**D-SINGLE-02** insert declares a new entity without an extra existence SELECT. update saves all mutable state. Both immediately update cache and record change without waiting for the database. Background error handling reports storage conflicts.
+**D-SINGLE-02** insert declares a new entity without an extra existence SELECT. update saves all mutable state. Both immediately update cache and record change without waiting for the database. When the key's cache state is known, insert of an existing entity and update of an entity known to be absent MUST be rejected synchronously with nothing recorded; for an uncached key, storage conflicts are reported by background error handling. getOrCreate returns the entity or, when it is absent, inserts the supplied new one in the same step.
 
-**D-SINGLE-03** delete needs no prior load. Once accepted, cache immediately shows absence; while that cached state remains valid, get must not reload the not-yet-deleted old row.
+**D-SINGLE-03** delete needs no prior load. Once accepted, cache immediately shows absence; while that cached state remains valid, get must not reload the not-yet-deleted old row. Deleting a key already cached as absent records nothing.
 
 ## 4. Group
 
 **D-GROUP-01** Load a complete group by its complete key and build a Map by in-group key. Zero rows means a loaded empty group. Load failures, duplicate in-group keys, and foreign-group rows are load errors.
 
-**D-GROUP-02** Before insert/update/delete/deleteGroup, the group must still be cached. Unloaded/expired groups reject synchronously without implicit database access. delete accepts an entity to obtain complete identity. deleteGroup records primary-key DELETE for each cached member, then clears the original Map; the empty group remains loaded.
+**D-GROUP-02** insert/update/delete/deleteGroup load a missing group exactly as getGroup does, so applications never load a group just to write it. They are then checked against the group synchronously: insert of an existing in-group key, update of a missing one, or update with an entity of another primary key is rejected with nothing recorded; delete removes the entity holding the in-group key (taking its primary key) and does nothing when the key is missing. deleteGroup records primary-key DELETE for each cached member, then clears the group; the empty group remains loaded.
 
-**D-GROUP-03** getGroup returns the actual cached Map reference. Applications may iterate/read entities and modify fields, but must not put/remove/clear its structure directly. Structural changes use Repository; field persistence requires explicit update.
+**D-GROUP-03** getGroup returns a read-only live view of the cached group: it reflects later Repository changes and rejects put/remove/clear, so a structural change can only go through Repository. Applications may iterate, read entities and modify their fields; field persistence requires explicit update.
 
 <a id="41-操作前提与即时效果"></a>
 
@@ -67,29 +67,29 @@ Moving a task from player A to B cannot mutate an existing roleId. Explicitly de
 | Operation | Synchronous database load | Accepted in-memory effect | Persistence intent |
 | --- | --- | --- | --- |
 | Single.get | On cache miss | Cache entity or absence | None |
+| Single.getOrCreate | On cache miss | Cache entity, or the new one | INSERT when created |
 | Single.insert / update | No | Cache the supplied object | INSERT / UPDATE, then coalesce |
 | Single.delete | No | Cache absence | DELETE |
 | Group.getGroup / get | Entire group on miss | Cache actual Map, including empty | None |
-| Group.insert / update | No; reject uncached group | Write in-group position | Record by entity primary key |
-| Group.delete | No; reject uncached group | Remove in-group position | Primary-key DELETE |
-| Group.deleteGroup | No; reject uncached group | Clear original Map, still loaded | DELETE each current primary key |
+| Group.insert / update | Entire group on miss | Write in-group position | Record by entity primary key |
+| Group.delete | Entire group on miss | Remove in-group position | Primary-key DELETE |
+| Group.deleteGroup | Entire group on miss | Clear the group, still loaded | DELETE each current primary key |
 | Log.insert | No | Append to log queue | Later INSERT by physical table |
 
-Loaded means current cache state, not historical getGroup usage. Holding an expired Map locally does not replace fetching the current group. A loaded empty group accepts its first insert; a never-loaded group does not.
+A view held locally keeps showing the group it was taken from; after an idle eviction the next Repository access loads a new group, so fetch the current group through Repository for each business access.
 
 <a id="42-返回原-map-的使用约定"></a>
 
-### 4.2 Using the original Map
+### 4.2 Using the returned view
 
-Returning the original Map is a confirmed choice for direct entity access without extra views/wrappers. It requires these structural boundaries:
+The view is created once per group load, so reading it costs no wrapper per call. Its boundaries:
 
 - Iteration and in-group lookup are allowed.
 - Mutable field changes are allowed with explicit update and visibility discipline.
-- Direct put is prohibited because it records no INSERT.
-- Direct remove/clear is prohibited because it records no DELETE.
-- Map thread safety does not authorize concurrent external entity mutation.
+- put/remove/clear throw, because they would record no INSERT or DELETE.
+- Concurrent reads do not authorize concurrent external entity mutation.
 
-deleteGroup clears the original Map, so holders observe it empty. It covers known cached members, not an arbitrary database predicate deletion. Rows written outside Repository are outside that guarantee.
+deleteGroup clears the group, so holders of its view observe it empty. It covers known cached members, not an arbitrary database predicate deletion. Rows written outside Repository are outside that guarantee.
 
 <a id="5-缓存与保存生命周期"></a>
 
@@ -213,7 +213,7 @@ close does not stop upstream Runtime or network ingress and does not close exter
 
 **D-DIAG-01**: Pending-change, queued-log, terminal-failed-batch and cache counts are approximate observations, not durable acknowledgements or memory limits. Group cache counts identify cached groups, not entities. Flush success confirms only the covered mapper operations, not a distributed transaction or protection against process loss before earlier write-back.
 
-Changing an entity still requires update; direct mutation of a returned Group Map still bypasses persistence. Automatic dirty tracking, immutable save snapshots and cache-capacity eviction are not added. A business-critical operation can quiesce its writers and flush from a management context, while ordinary gameplay stays asynchronous. See [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
+Changing an entity still requires update; the returned Group view is read-only. Automatic dirty tracking, immutable save snapshots and cache-capacity eviction are not added. A business-critical operation can quiesce its writers and flush from a management context, while ordinary gameplay stays asynchronous. See [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
 
 <a id="8-存储适配语义"></a>
 
@@ -279,4 +279,4 @@ No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, 
 
 Contract tests: [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java), [LogContractTest](../../game-data/src/test/java/cn/managame/data/LogContractTest.java). Database mapping, JDBC transaction, and real-service test entries: [module README](../../game-data/README.md).
 
-Implementation is not production certification. Deployments evaluate cross-thread mutable reads, unbounded queues and driver timeouts; live database validation status is maintained in the Java implementation specification.
+Implementation is not production certification. Deployments evaluate cross-thread mutable reads, log queue capacity (the binding bounds it and refuses and reports when full) and driver timeouts; live database validation status is maintained in the Java implementation specification.

@@ -11,7 +11,7 @@ final class RpcConnectionHandler implements ConnectionHandler {
     public void onMessage(Connection connection, Object message) { node.receive(connection, message); }
     public void onDisconnected(Connection connection) { node.disconnected(connection); }
     public void onException(Connection connection, Throwable cause) {
-        RpcNode.log("RPC connection failed", cause);
+        node.warn("RPC connection failed at " + connection.remoteAddress(), cause);
         connection.close();
     }
     public void onEvent(Connection connection, Object event) {

@@ -6,15 +6,15 @@ import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.time.GameTime;
 import cn.managame.runtime.timer.CronScheduler;
 import cn.managame.runtime.timer.TimerRef;
-import cn.managame.runtime.internal.RuntimeCompiler.CronBinding;
-import cn.managame.runtime.internal.RuntimeCompiler.CronKey;
+import cn.managame.runtime.internal.RuntimeBindings.CronBinding;
+import cn.managame.runtime.internal.RuntimeBindings.CronKey;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.function.BiConsumer;
 import static cn.managame.core.FrameworkErrorCodes.RUNTIME_CLOSED;
 
-/** Cron is a cancellable chain of one-shot RuntimeTimers, with no clock listener. */
+/** A {@link Cron} is a cancellable chain of one-shot RuntimeTimers, with no clock listener. */
 final class DefaultCronScheduler implements CronScheduler, AutoCloseable {
     private static final class Entry {
         final CronBinding binding;

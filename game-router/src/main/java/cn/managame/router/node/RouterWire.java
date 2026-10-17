@@ -10,21 +10,27 @@ import io.netty.handler.codec.CorruptedFrameException;
 /** Router Profile v4 payloads inside ordinary RPC requests. Package-private protocol. */
 final class RouterWire {
     private static final System.Logger LOG = System.getLogger(RouterWire.class.getName());
-    static final int COMMAND = -2147483000, VERSION = 4, MAX_FRAME = 4 * 1024 * 1024;
+    static final int COMMAND = -2147483000, VERSION = 4;
     /** Service → Router notifies that announce or withdraw the Node on this connection, and routed data. */
     static final int ATTACH = 1, DETACH = 2, DATA = 3;
     /** DATA modes. */
     static final int DIRECT = 1, BROADCAST = 2, RESPONSE = 3;
     /** Bytes before the inner frame of a DATA payload, and the inner frame size above which it is referenced, not copied. */
     static final int DATA_HEADER = 35, COPY_LIMIT = 2048;
-    /** Largest inner frame: the outer RPC request (4-byte length, 28 fixed bytes) and the Router header must fit MAX_FRAME. */
-    static final int MAX_INNER = MAX_FRAME - 32 - DATA_HEADER;
     /** Attach and Detach share one routeKey, so they use one Slot and arrive in the order they were sent. */
     private static final long CONTROL_ROUTE_KEY = 1;
-    /** Offsets in an inner request frame (from its length prefix): the call ID, and the end of the call ID. */
-    private static final int CALL_ID = 9, CALL_ID_END = 13;
+    /** Offsets in an inner request frame (from its length prefix): the call ID and the routeKey that follows it. */
+    private static final int CALL_ID = RpcWire.REQUEST_ID_OFFSET, CALL_ID_END = RpcWire.REQUEST_ROUTE_KEY_OFFSET;
     /** Smallest inner request/response frames: length prefix plus the fixed RPC fields. */
-    private static final int REQUEST_MIN = 32, RESPONSE_MIN = 15;
+    private static final int REQUEST_MIN = RpcWire.MIN_REQUEST_FRAME, RESPONSE_MIN = RpcWire.MIN_RESPONSE_FRAME;
+
+    /**
+     * Largest inner frame for {@code node}: the outer RPC request (length prefix and fixed fields) plus the
+     * Router header must fit the Node's single configured {@link RpcNode#maxFrameSize()}.
+     */
+    static int maxInner(RpcNode node) {
+        return node.maxFrameSize() - RpcWire.MIN_REQUEST_FRAME - DATA_HEADER;
+    }
 
     /**
      * A received DATA payload: the routing header plus the inner RPC frame (with its length prefix), borrowed
@@ -34,9 +40,9 @@ final class RouterWire {
     record Data(int mode, int source, long sourceEpoch, int sourceService, int target, long targetEpoch,
                 int targetService, int requestId, long routeKey, ByteBuf inner) {
         /** Decodes the inner request; its body is borrowed like the frame. */
-        RpcRequest request() { return RpcWire.decodeRequest(inner.duplicate().skipBytes(5)); }
+        RpcRequest request() { return RpcWire.decodeRequest(inner.duplicate().skipBytes(RpcWire.TYPE_OFFSET + 1)); }
         /** Decodes the inner response; its body is borrowed like the frame. */
-        RpcResponse response() { return RpcWire.decodeResponse(requestId, inner.duplicate().skipBytes(9)); }
+        RpcResponse response() { return RpcWire.decodeResponse(requestId, inner.duplicate().skipBytes(RpcWire.RESPONSE_ID_OFFSET + 4)); }
     }
 
     static RpcRequest attach(long nodeEpoch, int serviceId) {
@@ -57,13 +63,16 @@ final class RouterWire {
         if (body.isReadable()) throw new CorruptedFrameException("Trailing Router payload bytes");
     }
 
-    /** A service's DATA request around {@code message}. Consumes the message body, even on failure. */
+    /**
+     * A service's DATA request around {@code message}, whose inner frame may use at most {@code maxInner} bytes.
+     * Consumes the message body, even on failure.
+     */
     static RpcRequest data(int mode, int source, long sourceEpoch, int sourceService, int target, long targetEpoch,
-                           int targetService, Object message) {
+                           int targetService, Object message, int maxInner) {
         long routeKey = message instanceof RpcRequest r ? r.routeKey() : 0;
         ByteBuf inner = switch (message) {
-            case RpcRequest r -> RpcWire.encodeRequest(r, r.requestId(), MAX_INNER);
-            case RpcResponse r -> RpcWire.encodeResponse(r, MAX_INNER);
+            case RpcRequest r -> RpcWire.encodeRequest(r, r.requestId(), maxInner);
+            case RpcResponse r -> RpcWire.encodeResponse(r, maxInner);
             default -> throw new IllegalArgumentException("Expected an RPC request or response");
         };
         try {
@@ -88,13 +97,14 @@ final class RouterWire {
         int at = b.readerIndex(), length = b.readableBytes();
         if (b.getInt(at) != length - 4) throw new CorruptedFrameException("Invalid inner frame length");
         boolean response = mode == RESPONSE;
-        if (b.getUnsignedByte(at + 4) != (response ? RpcWire.RESPONSE : RpcWire.REQUEST))
+        if (b.getUnsignedByte(at + RpcWire.TYPE_OFFSET) != (response ? RpcWire.RESPONSE : RpcWire.REQUEST))
             throw new CorruptedFrameException("Router mode/message mismatch");
         int fixed = response ? RESPONSE_MIN : REQUEST_MIN;
         if (length < fixed || b.getUnsignedShort(at + fixed - 2) > length - fixed)
             throw new CorruptedFrameException("Truncated inner RPC frame");
         return new Data(mode, source, sourceEpoch, sourceService, target, targetEpoch, targetService,
-                b.getInt(at + (response ? 5 : CALL_ID)), response ? 0 : b.getLong(at + CALL_ID_END), b.slice(at, length));
+                b.getInt(at + (response ? RpcWire.RESPONSE_ID_OFFSET : CALL_ID)), response ? 0 : b.getLong(at + CALL_ID_END),
+                b.slice(at, length));
     }
     /**
      * The same payload addressed to one exact Node incarnation. The inner frame is never decoded: it is copied

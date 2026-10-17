@@ -1,5 +1,9 @@
 package cn.managame.rpc.netty;
 
+import java.security.MessageDigest;
+import java.security.GeneralSecurityException;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import cn.managame.core.*;
 import cn.managame.rpc.message.*;
 import io.netty.buffer.*;
@@ -10,13 +14,24 @@ import io.netty.handler.timeout.IdleStateHandler;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Wire Profile v1 binding for standalone transport integration and RpcNode.
+ * Wire Profile v2 binding (see docs/rpc-wire.md) for standalone transport integration and RpcNode.
  * Encode methods consume one body reference, even on encoding failure.
  * Decode methods borrow the frame and return body slices with no extra reference.
  * A decoded body lives only as long as that frame, unless explicitly retained.
  */
 public final class RpcWire {
     public static final int HANDSHAKE = 1, HEARTBEAT = 2, REQUEST = 3, RESPONSE = 4;
+    /** Size of the uint32 length prefix that starts every frame; published through MIN_*_FRAME. */
+    private static final int LENGTH_PREFIX = 4;
+    /** Offsets measured from the first byte of a frame (its length prefix): the type byte. */
+    public static final int TYPE_OFFSET = 4;
+    /** Request frame offsets: the call ID (0 for a notify) and the routeKey that follows it. */
+    public static final int REQUEST_ID_OFFSET = 9, REQUEST_ROUTE_KEY_OFFSET = 13;
+    /** Response frame offset of the call ID. */
+    public static final int RESPONSE_ID_OFFSET = 5;
+    /** Smallest complete frames: the length prefix plus the fixed fields up to and including metadata length. */
+    public static final int MIN_REQUEST_FRAME = LENGTH_PREFIX + RpcProtocol.REQUEST_FIXED,
+            MIN_RESPONSE_FRAME = LENGTH_PREFIX + RpcProtocol.RESPONSE_FIXED;
     private RpcWire() {}
 
     /** Adds frame decoding and heartbeat idle detection, in that order, to the pipeline. */
@@ -89,7 +104,7 @@ public final class RpcWire {
         frame.readBytes(nonce).readBytes(peerNonce);
         byte[] expected = mac(secret, frame, start, frame.readerIndex() - start);
         frame.readBytes(mac);
-        if (!java.security.MessageDigest.isEqual(expected, mac)) throw new CorruptedFrameException("RPC handshake authentication failed");
+        if (!MessageDigest.isEqual(expected, mac)) throw new CorruptedFrameException("RPC handshake authentication failed");
         RpcHandshake identity;
         try { identity = new RpcHandshake(nodeId, slotId, slotCount); }
         catch (IllegalArgumentException invalid) { throw new CorruptedFrameException("Invalid RPC handshake identity"); }
@@ -98,11 +113,11 @@ public final class RpcWire {
     private static byte[] mac(byte[] secret, ByteBuf frame, int index, int length) {
         if (secret == null) return new byte[RpcProtocol.MAC];
         try {
-            javax.crypto.Mac hmac = javax.crypto.Mac.getInstance("HmacSHA256");
-            hmac.init(new javax.crypto.spec.SecretKeySpec(secret, "HmacSHA256"));
+            Mac hmac = Mac.getInstance("HmacSHA256");
+            hmac.init(new SecretKeySpec(secret, "HmacSHA256"));
             hmac.update(frame.nioBuffer(index, length));
             return hmac.doFinal();
-        } catch (java.security.GeneralSecurityException impossible) { throw new IllegalStateException(impossible); }
+        } catch (GeneralSecurityException impossible) { throw new IllegalStateException(impossible); }
     }
     /** Reads request payload after the type byte. */
     public static RpcRequest decodeRequest(ByteBuf frame) {

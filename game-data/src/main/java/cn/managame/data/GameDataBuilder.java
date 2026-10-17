@@ -15,7 +15,10 @@ public final class GameDataBuilder {
     private record Prepared(Binding binding, Object repository, EntityMeta meta, MysqlLogWriter logWriter) {}
     private final List<Binding> bindings = new ArrayList<>();
     private Duration cacheExpire = Duration.ofMinutes(30), flushInterval = Duration.ofSeconds(1);
+    /** Default bound of queued logs per LogRepository. */
+    public static final int DEFAULT_LOG_QUEUE_CAPACITY = 100_000;
     private int batchSize = 500;
+    private int logQueueCapacity = DEFAULT_LOG_QUEUE_CAPACITY;
     private Duration shutdownTimeout = Duration.ofSeconds(30);
     private ZoneId partitionZone = ZoneOffset.UTC;
     private JsonCodec jsonCodec;
@@ -51,6 +54,14 @@ public final class GameDataBuilder {
     public GameDataBuilder cacheExpire(Duration value) { cacheExpire = positive(value); return this; }
     public GameDataBuilder flushInterval(Duration value) { flushInterval = positive(value); return this; }
     public GameDataBuilder batchSize(int value) { if (value < 1) throw new IllegalArgumentException("batchSize"); batchSize = value; return this; }
+    /**
+     * Logs one LogRepository may hold waiting for storage (default {@value #DEFAULT_LOG_QUEUE_CAPACITY}).
+     * Beyond it {@code insert} returns false and reports the log to the DataErrorHandler instead of growing memory.
+     */
+    public GameDataBuilder logQueueCapacity(int value) {
+        if (value < 1) throw new IllegalArgumentException("logQueueCapacity");
+        logQueueCapacity = value; return this;
+    }
     /** How long close keeps retrying retryable failures before dropping and reporting the rest. */
     public GameDataBuilder shutdownTimeout(Duration value) {
         Objects.requireNonNull(value); if (value.isNegative()) throw new IllegalArgumentException("shutdownTimeout");
@@ -114,7 +125,7 @@ public final class GameDataBuilder {
             else if (p.repository() instanceof GroupRepository<?,?> repository)
                 repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire);
             else if (p.repository() instanceof LogRepository<?> repository) {
-                repository.initialize(p.logWriter(), writer); writer.addLog(repository);
+                repository.initialize(p.logWriter(), writer, logQueueCapacity); writer.addLog(repository);
             }
         }
         GameData result = new GameData(repositories, writer);

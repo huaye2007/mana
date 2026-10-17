@@ -8,21 +8,21 @@ Document type: **Java Development Specification**. Standard: [Runtime Specificat
 
 ## 1. Module and main API
 
-Maven `cn.managame:game-runtime:1.0.0-SNAPSHOT`, Java 25. Depends on game-core, game-network (HTTP entry), Jackson Databind 2.21.3 (HTTP results and JSON Key extraction) and Caffeine 3.2.3 (idle mailbox reuse); no RPC dependency.
+Maven `cn.managame:game-runtime:1.0.0-SNAPSHOT`, Java 25. Depends on game-core, game-network (HTTP entry), Jackson Databind 2.21.3 (HTTP results and JSON Key extraction) ; timers use the Netty HashedWheelTimer that game-network brings; no RPC dependency.
 
 ```java
 public interface GameRuntime extends AutoCloseable {
     void dispatch(HandlerContext context);
     void dispatch(Connection connection, long routeKey, Object message);
-    void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
+    default void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
     void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message);
-    void dispatch(Connection connection, Object message);
+    default void dispatch(Connection connection, Object message);
     void dispatch(Connection connection, Metadata metadata, Object message);
     void dispatch(Connection connection, int businessIdType, long businessId, Object message);
     void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
                      int businessIdType, long businessId, Metadata metadata, Object message);
     <T> void call(int routeDomain, long routeKey, Supplier<T> action, RouteCallback<T> callback);
-    <T> RouteCallback<T> callback(RouteCallback<T> callback);
+    <T> CapturedRouteCallback<T> callback(RouteCallback<T> callback);
     HttpDispatcher http();
     EventBus eventBus();
     RuntimeTimer timer();
@@ -34,7 +34,12 @@ public interface GameRuntime extends AutoCloseable {
     RuntimeStats stats();
     void close();
 }
-public interface RouteCallback<T> { void onSuccess(T result); void onFail(int errorCode); }
+public interface RouteCallback<T> {
+    void onSuccess(T result);
+    void onFail(int errorCode);
+    default void onFail(int errorCode, Throwable cause) { onFail(errorCode); }
+}
+public interface CapturedRouteCallback<T> extends RouteCallback<T> { boolean cancel(); }
 ```
 
 A built Runtime is usable at once; there is no start, dynamic registration or arbitrary Runnable dispatch. The usual business entry is `dispatch(connection, routeKey, businessIdType, businessId, message)`; Domain comes from the Handler annotation (§6.2). With a `handlerContextFactory`, `dispatch(connection, message)` selects Key and identity per Domain (§6.4). HTTP connects through `asyncHandler(runtime.http()::dispatch)` (§13).
@@ -186,7 +191,7 @@ Handler objects carry `@Handler(domain = …)` (inherited). A nonzero `@HandlerM
 | `void handle(Connection c, M m)` | No; read it from ClientHandlerContext |
 | `M handle(M m)`, `static void handle(M m)`, `void handle(M a, M b)`, `void handle(TimerContext c, M m)`, `void handle(M... m)` | No |
 
-Precondition and admission failures throw RuntimeDispatchException with a Core code; once execution starts, exceptions go to RuntimeErrorHandler (also when inlined), never to the caller.
+Precondition and admission failures throw RuntimeDispatchException with a Core code (no stack trace is captured, so an overload rejection costs one allocation; toString includes `FrameworkErrorCodes.describe`); once execution starts, exceptions go to RuntimeErrorHandler (also when inlined), never to the caller.
 
 <a id="automatic-handler-dispatch"></a>
 
@@ -254,7 +259,7 @@ interface RouteExecutor extends AutoCloseable {
 | Executor | Serialization | Capacity |
 | --- | --- | --- |
 | RouteExecutors.platformThreads(n) / StripedRouteExecutor(n, queue) | Route hashed to one of n single-thread stripes; Routes on a stripe wait for each other | Waiting tasks per stripe (default 65,536), excluding the running one |
-| RouteExecutors.virtualThreads() / VirtualThreadRouteExecutor(capacity[, routeCapacity, idleTimeout]) | One mailbox and one virtual-thread consumer per active Route | Unfinished tasks across all Routes (default 65,536, running included) and waiting tasks per Route (default min(capacity, 1024)) |
+| RouteExecutors.virtualThreads() / VirtualThreadRouteExecutor(capacity[, routeCapacity]) | One lock-free mailbox and one virtual-thread consumer per Route with work | Unfinished tasks across all Routes (default 65,536, running included) and tasks waiting per Route behind the running one (default min(capacity, 1024)) |
 
 Both reject without blocking and keep running accepted tasks after close. The per-Route limit stops one flooding Route from taking the shared capacity; still rate-limit connections in the network pipeline. Same-Route inline execution bypasses capacity (recursion still consumes stack). A custom executor must guarantee per-Route mutual exclusion and order, never run rejected tasks, run accepted tasks exactly once, and handle close/submit races.
 
@@ -262,7 +267,7 @@ Both reject without blocking and keep running accepted tasks after close. The pe
 
 ### 7.3 Virtual-thread mailboxes
 
-Active mailboxes live in a ConcurrentHashMap keyed by Domain/Key; enqueue, consumer start and the active-to-idle handoff happen inside that key's compute operations, business code outside them. When the consumer finds its queue empty it moves the empty mailbox into an idle Caffeine cache (maximumSize = capacity, expireAfterWrite = idleTimeout, default 60 s) so the next burst on that Route reuses it; expiry only loses reuse, never a task. One AtomicLong holds the closed bit and all reservations, so admission and close are atomic; close invalidates idle entries and lets admitted work drain. Tests: [VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java), [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java).
+A mailbox is in the ConcurrentHashMap keyed by Domain/Key only while its Route has queued or running tasks. It is a lock-free queue plus a count of queued and running tasks: a submitter CAS-increments the count and then enqueues, and the submitter that raises the count from 0 to 1 starts the consumer; the consumer decrements after each task and, on reaching 0, marks the count retired, removes the mailbox and exits. A submitter that sees the retired mark replaces the mailbox. Since the count reaches 0 only after the last task finished, at most one consumer runs a Route's tasks, in submission order; neither enqueue nor dequeue takes a lock, and there is no idle cache — idle Routes cost no memory and Caffeine is no longer needed. One AtomicLong holds the closed bit and all reservations, so admission and close are atomic; after close admitted work drains. Tests: [VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java), [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java).
 
 <a id="8-跨-route-调用与回调"></a>
 
@@ -287,7 +292,7 @@ interface EventBus { void publish(Event event); }
 @EventMethod(order = 10) public void onChanged(MyEvent event) { … }
 ```
 
-Listeners registered with eventHandlers take one Event subtype, match by exact class and run in ascending order (ties unspecified) on the event's Route in a DefaultEventContext; a listener failure is reported (3009) and the others still run. Publishing from this Runtime inherits identity and Metadata; otherwise 0/0 and empty. Route and admission are validated even without listeners.
+Listeners registered with eventHandlers take one Event subtype, match by exact class and run in ascending order (ties unspecified) on the event's Route in a DefaultEventContext; a listener failure is reported (3009) and the others still run. Publishing from this Runtime inherits identity and Metadata; otherwise 0/0 and empty. Route and admission are validated even without listeners; an event without listeners then returns at once, with no context, no Route task and no RuntimeStats count.
 
 <a id="static-event-publication"></a>
 
@@ -311,7 +316,7 @@ The [demo](../../game-demo/README.md#demo-runtime-services) collects @Cron beans
 
 ### 10.2 One-shot Timer
 
-`TimerRef RuntimeTimer.schedule(domain, key, Duration delay, Runnable task)` validates the Route at once (negative delay rejected) and, when due, submits the task to the Route in a fresh DefaultTimerContext. One scheduler thread per Runtime. `TimerRef.cancel()` succeeds only before the timer fires; it cannot retract submitted work.
+`TimerRef RuntimeTimer.schedule(domain, key, Duration delay, Runnable task)` validates the Route at once (negative delay rejected) and, when due, submits the task to the Route in a fresh DefaultTimerContext. One timing-wheel thread per Runtime (Netty HashedWheelTimer, 10 ms tick, 1024 slots): O(1) schedule and cancel, suited to very many buff, cooldown and expiry timers; resolution is one tick — a timer fires no earlier than its delay and normally within one tick after it. The wheel thread only submits to the Route; business code never runs on it. `TimerRef.cancel()` succeeds only before the timer fires; it cannot retract submitted work.
 
 <a id="103-cron-表达式"></a>
 
@@ -388,7 +393,7 @@ Paths match the raw, case-sensitive path without the query: `/player?id=42` matc
 
 ### 13.2 Completion, encoding and ownership
 
-`HttpResultCallback`: `onResponse(result)` (status 200), `onResponse(status, result)` (200..599), `onFail(cause)`. A returned object (including null → JSON `null`) completes automatically; a void method completes explicitly, now or later. Completion is claimed once; only the winning result is encoded, synchronously on the completing thread, by `HttpResultCodec` (default Jackson JSON, `application/json; charset=UTF-8`; a custom codec returns an owned byte[] and a content type, and must be thread-safe). Encoding failure or a transport object as result → RUNTIME_EXECUTION_ERROR and the Network failure path (500 and close).
+`HttpResultCallback`: `onResponse(result)` (status 200), `onResponse(status, result)` (200..599), `onFail(cause)`. A returned object (including null → JSON `null`) completes automatically; a void method completes explicitly, now or later. Completion is claimed once; only the winning result is encoded, synchronously on the completing thread, by `HttpResultCodec` (default Jackson JSON, `application/json; charset=UTF-8`, with the same property rules as the default request decoding — fields of any visibility plus ordinary getters/setters — so one DTO reads and writes the same fields; request bodies are parsed straight from the ByteBuf without a String copy; a custom codec returns an owned byte[] and a content type, and must be thread-safe). Encoding failure or a transport object as result → RUNTIME_EXECUTION_ERROR and the Network failure path (500 and close).
 
 | Case | HTTP | Method runs |
 | --- | --- | --- |
@@ -422,8 +427,8 @@ Example: [RuntimeHttpExample](../../game-demo/src/main/java/cn/managame/demo/exa
 
 `dispatchRpc(...)` resolves the Handler's Domain and creates a DefaultRpcHandlerContext; the application has already decoded the body and chosen Key and identity. It sends nothing; the typed adapter lives in game-spring.
 
-`runtime.callback(cb)` requires this Runtime's current Route. It reserves one outstanding continuation counted by drain and returns a thread-safe one-shot adapter: the first onSuccess/onFail returns to the source Route (inline when already there); later calls are ignored; onFail needs a positive code. Always complete it, including on synchronous failure of the external call and through an external timeout.
+`runtime.callback(cb)` requires this Runtime's current Route. It reserves one outstanding continuation counted by drain and returns a thread-safe one-shot CapturedRouteCallback: the first onSuccess/onFail returns to the source Route (inline when already there); later calls are ignored; onFail needs a positive code, and `onFail(code, cause)` passes the cause to the business callback's method of the same name (which ignores it by default). Always complete or cancel it, including through an external timeout. When the external call failed synchronously and the caller already learned that from an exception, `cancel()` releases the reservation without running the business callback, so one failure is not reported twice; cancel returns false once completed or cancelled. When `call`'s action throws, the callback receives `onFail(3008, cause)`.
 
 `shutdown()` stops external admission and timers (irreversible, idempotent); running work may still submit downstream work. `awaitTermination(timeout)` requires shutdown and an external thread (IllegalStateException otherwise) and waits for admitted actions and registered callbacks; it returns false on timeout without closing anything. `close()` closes executors without waiting. Graceful order: shutdown → awaitTermination → close → close network, RPC and data. Tests: [RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java).
 
-`stats()` returns RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos); counters are approximate and not a success record. Spring assembly is specified by [game-spring](OGBS-Spring-Java-25-Specification-1.0.md).
+`stats()` returns RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos); counters are approximate and not a success record. They are striped LongAdders, so worker threads do not contend on one word; `GameRuntimeBuilder.executionTiming(false)` drops the two monotonic clock reads per task, leaving executionNanos at 0. Spring assembly is specified by [game-spring](OGBS-Spring-Java-25-Specification-1.0.md).

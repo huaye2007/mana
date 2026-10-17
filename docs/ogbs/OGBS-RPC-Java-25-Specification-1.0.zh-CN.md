@@ -4,7 +4,7 @@
 
 文档类型：**Java 开发规范**。对应 [RPC 标准规范](OGBS-RPC-1.0.zh-CN.md)，字节布局见 [Wire Profile](../rpc-wire.zh-CN.md)。
 
-状态：已实现并通过本地验证。有限调用准入（R-SEND-04）未实现。JDK 25，无 preview；Maven `cn.managame:game-rpc:1.0.0-SNAPSHOT` 依赖 game-core、game-network（由此传递 Netty）。RPC 不依赖 Runtime、Data、Spring、业务 codec 或服务发现；可选 Runtime 接入见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
+状态：已实现并通过本地验证。JDK 25，无 preview；Maven `cn.managame:game-rpc:1.0.0-SNAPSHOT` 依赖 game-core、game-network（由此传递 Netty）。RPC 不依赖 Runtime、Data、Spring、业务 codec 或服务发现；可选 Runtime 接入见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
 
 ## 1. 包与封装
 
@@ -53,13 +53,15 @@ nodeId、bindAddress、handler 必填。nodeId 非零；int 保存 uint32 原始
 | reconnectRandomDelay(Duration) | 基础延迟 / 4 | 每次重试附加的非负上限（均匀整毫秒）；0 为固定延迟。1000 ms + 250 ms 时等待 1000..1250 ms |
 | heartbeatInterval(Duration) | 10 秒 | 正值 |
 | heartbeatTimeout(Duration) | 30 秒 | 大于 interval |
-| maxFrameSize(int) | 4 MiB | ≥32，含长度前缀 |
+| maxFrameSize(int) | 4 MiB | ≥32，含长度前缀；`RpcNode.maxFrameSize()` 返回该值，Router 等组合组件据此计算自身上限，不另设配置 |
+| maxPendingCalls(int) | 65536 | ≥1，每个 Peer 的待完成 call 上限（R-SEND-04）；达到上限的 call 以 onFail(UNAVAILABLE) 立即失败，body 已释放；notify/reply 不计入 |
+| eventLoopGroup(EventLoopGroup) | 无（Node 自建） | 调用方持有的事件循环，例如与客户端网关共用；Node 不关闭它，close 仍会等待自身连接结束（最多 5 秒）。未设置时 Node 按平台自建 Epoll 或 NIO 事件循环 |
 | writeBufferWaterMark(low, high) | Netty 32 KiB / 64 KiB | 超过 `high` 连接不可写，发送转到下一 Slot，全部不可写返回 UNAVAILABLE；内部链路通常需要调大 |
 | channelOption(option, value) | 无 | 作用于入站和出站连接（TCP_NODELAY、SO_SNDBUF 等） |
 | transport(Consumer&lt;ChannelPipeline&gt;) | 无 | 放在 RPC 分帧之前的字节级 handler：SslHandler（addFirst）、流量整形、日志；不得解码 RPC 帧 |
 | handshakeSecret(byte[] [, Duration]) | 无 | ≥16 字节，全集群一致；时钟偏差默认 60 秒 |
 
-Duration.toMillis 溢出抛 ArithmeticException；其他越界值抛 IllegalArgumentException。RpcNode 自行持有 TCP NetworkServer/NetworkClient 与 EventLoopGroup；分帧、心跳、握手留在内部。
+Duration.toMillis 溢出抛 ArithmeticException；其他越界值抛 IllegalArgumentException。RpcNode 自行持有 TCP NetworkServer/NetworkClient；EventLoopGroup 默认由 Node 按 [NetworkTransports](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) 自建（Linux 加载到原生库时为 Epoll，否则 NIO），也可通过 eventLoopGroup 传入调用方持有的组。分帧、心跳、握手留在内部。
 
 `start` 只能调用一次：创建计时器和事件循环，绑定成功后才进入 RUNNING；失败时关闭已创建资源并抛 RpcException。`localAddress` 绑定前为 null，绑定后返回实际（可能是动态分配的）端口。
 
@@ -143,13 +145,13 @@ onRequest 抛出 RuntimeException 时记录日志；对 Call 尝试回复空的 
 6. 按亲和与回退发送；同一帧最多被接受一次。
 7. ACCEPTED 后登记超时；若调用已完成则取消该超时。
 
-响应、超时、移除、关闭、发送失败与最后一条连接丢失通过条件删除竞争，每个调用恰好完成一次。多个 Slot 中只丢一个时保留待完成调用：响应可能从其他 Slot 返回。待完成表没有数量或字节上限（R-SEND-04）：可达但很慢的 Peer 会在超时时间内累积调用。
+响应、超时、移除、关闭、发送失败与最后一条连接丢失通过条件删除竞争，每个调用恰好完成一次。多个 Slot 中只丢一个时保留待完成调用：响应可能从其他 Slot 返回。每个 Peer 的待完成调用数受 maxPendingCalls 限制（R-SEND-04）：登记前预留名额，任何完成路径（响应、超时、移除、关闭、发送失败）在条件删除成功时归还；ID 冲突等同步失败也归还预留。没有字节上限：单个调用的大小仍受 maxFrameSize 约束。
 
 ## 6. 网络装配与并发
 
 pipeline 顺序：应用的 `transport` handler，然后是 `rpc-flush`（Netty FlushConsolidationHandler(256, true)，把并发发送方的多次 flush 合并为每轮 EventLoop 一次写出），然后是由 `RpcWire.configurePipeline` 加入的 `rpc-frame`（LengthFieldBasedFrameDecoder）和 `rpc-idle`（IdleStateHandler）。只有完整的帧才会刷新读超时。
 
-每个 Node 一个 HashedWheelTimer（10 ms tick），负责调用和握手超时以及延迟重连，不在其中直接执行业务通知。Peer 存放在 ConcurrentHashMap；拓扑变化（start、close、addPeer、removePeer、握手绑定）获取生命周期锁，发送从不获取。每个 Slot 用 AtomicReference 保存连接（按身份绑定与解绑），用 AtomicBoolean 标记唯一的恢复链（延迟、连接、握手）。某个 Slot 的连接结束时，若该 Peer 已没有任何连接，Node 让其待完成调用失败，然后为主动 Peer 启动恢复。
+每个 Node 一个 HashedWheelTimer（10 ms tick），负责调用和握手超时以及延迟重连；调用超时的 onFail 直接在该线程上通知（见上文 Handler 线程规则），业务处理须由 Handler 转交到自己的执行器。Peer 存放在写时复制的 int→Peer 表中：发送按原始 int 查找，不装箱、不加锁；拓扑变化（start、close、addPeer、removePeer、握手绑定、被动 Peer 回收）在生命周期锁内复制并发布新表，发送从不获取该锁。每个 Slot 用 AtomicReference 保存连接（按身份绑定与解绑），用 AtomicBoolean 标记唯一的恢复链（延迟、连接、握手）。某个 Slot 的连接结束时，若该 Peer 已没有任何连接，Node 让其待完成调用失败，然后为主动 Peer 启动恢复。
 
 ## 7. 关闭屏障与线程边界
 
@@ -161,7 +163,7 @@ close 返回后不再有待完成调用、连接、计时器或自有通知线�
 
 ## 8. 示例与源码
 
-[RpcEchoExample](../../game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) 运行两个 Node，演示调用、解码和 retain 后的回显回复，由 RpcExampleTest 执行。源码：[RpcNode](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNode.java)、[RpcNodeBuilder](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNodeBuilder.java)、[RpcWire](../../game-rpc/src/main/java/cn/managame/rpc/netty/RpcWire.java)。RpcWire 提供 configurePipeline、各消息类型的编解码与握手证明；直接使用时没有 Node 的握手状态、Peer 与完成仲裁。
+[RpcEchoExample](../../game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) 运行两个 Node，演示调用、解码和 retain 后的回显回复，由 RpcExampleTest 执行。源码：[RpcNode](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNode.java)、[RpcNodeBuilder](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNodeBuilder.java)、[RpcWire](../../game-rpc/src/main/java/cn/managame/rpc/netty/RpcWire.java)。RpcWire 提供 configurePipeline、各消息类型的编解码与握手证明，并公开帧布局常量（`TYPE_OFFSET`、`REQUEST_ID_OFFSET`、`REQUEST_ROUTE_KEY_OFFSET`、`RESPONSE_ID_OFFSET`、`MIN_REQUEST_FRAME`、`MIN_RESPONSE_FRAME` 等），供 Router 等组件只读路由头而不重复定义偏移；直接使用时没有 Node 的握手状态、Peer 与完成仲裁。
 
 ## 9. 验证与边界
 
@@ -177,4 +179,4 @@ close 返回后不再有待完成调用、连接、计时器或自有通知线�
 <a id="92-后续审阅与扩展候选"></a>
 <a id="rpc-router-review-2026-10-07"></a>
 
-剩余边界：没有有限调用准入（R-SEND-04），也不限制入站握手与被动 Peer 数量；关闭时按 Peer 扫描全部连接；wire 不携带 Node 代际，新进程重新从头分配 ID 时可能匹配到对端保存的旧回复（R-CALL-04）。Handler 运行在 EventLoop 上，阻塞会拖慢该 EventLoop 上的所有连接。未实现：TLS/WebSocket Builder 选项、服务发现、业务重试、远端取消、持久投递。未验证：跨语言互通、生产吞吐与内存。Router 在现有 Node 上组合，除普通 API 外只使用 `isPeerConnected`（见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)）。
+剩余边界：不限制入站握手与被动 Peer 数量；关闭时按 Peer 扫描全部连接；wire 不携带 Node 代际，新进程重新从头分配 ID 时可能匹配到对端保存的旧回复（R-CALL-04）。Handler 运行在 EventLoop 上，阻塞会拖慢该 EventLoop 上的所有连接。未实现：TLS/WebSocket Builder 选项、服务发现、业务重试、远端取消、持久投递。未验证：跨语言互通、生产吞吐与内存。Router 在现有 Node 上组合，除普通 API 外只使用 `isPeerConnected`（见[审查记录](../reviews/2026-10-07-router-rpc-review.zh-CN.md#rpc-integration)）。

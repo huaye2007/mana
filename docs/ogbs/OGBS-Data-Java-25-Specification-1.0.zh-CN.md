@@ -8,7 +8,7 @@
 
 ## 1. 模块与公共入口
 
-一个 artifact 包含 Repository、缓存、写回、MySQL/JDBC、MongoDB 与日志。依赖 game-core 与 Jackson Databind 2.21.3（默认 JSON）。MongoDB Sync Driver 5.5.1 为可选依赖，使用 Mongo 的应用自行加入。JDBC 使用应用提供的 DataSource 和 MySQL 驱动；Data 不选择连接池。
+一个 artifact 包含 Repository、缓存、写回、MySQL/JDBC、MongoDB 与日志。依赖 game-core 与 Jackson Databind 2.21.3（默认 JSON）。MongoDB Sync Driver 5.5.1 为可选依赖，使用 Mongo 的应用自行加入。JDBC 使用应用提供的 DataSource 和 MySQL 驱动；Data 不选择连接池。保存按 JDBC 批次执行，MySQL Connector/J 需在连接属性中设置 `rewriteBatchedStatements=true` 才会把批次合并发送（[game-demo 的 MysqlConfig](../../game-demo/src/main/java/cn/managame/demo/common/mysql/MysqlConfig.java) 已设置）；否则每行一次往返。
 
 | 包 | 职责 |
 | --- | --- |
@@ -24,12 +24,13 @@
 ```java
 public abstract class SingleRepository<K, E> {
     public final E get(K key);
+    public final E getOrCreate(K key, Function<? super K, ? extends E> factory);
     public final void insert(E entity);
     public final void update(E entity);
     public final void delete(K key);
 }
 public abstract class GroupRepository<K, E> {
-    public final Map<K, E> getGroup(GroupKey key);
+    public final Map<K, E> getGroup(GroupKey key);   // 只读实时视图
     public final E get(GroupKey key, K mapKey);
     public final void insert(E entity);
     public final void update(E entity);
@@ -37,7 +38,7 @@ public abstract class GroupRepository<K, E> {
     public final void deleteGroup(GroupKey key);
 }
 public abstract class LogRepository<E> {
-    public final void insert(E entity);
+    public final boolean insert(E entity);   // false：日志队列已满，已报告给 DataErrorHandler
 }
 ```
 
@@ -48,9 +49,15 @@ public abstract class LogRepository<E> {
 
 ### 2.1 缓存与修改路径
 
-每个 Repository 持有一个 EntityCache：Single 按 id 缓存实体或已确认的不存在（null）；Group 按 GroupKey 缓存实际的 `ConcurrentHashMap<K,E>`。只有 get/getGroup 会加载；缺失的 Key 只加载一次，同 Key 的并发调用等待该次加载。加载失败抛 DataLoadException，不会缓存为不存在。
+每个 Repository 持有一个 EntityCache：Single 按 id 缓存实体或已确认的不存在（null）；Group 按 GroupKey 缓存一个 `ConcurrentHashMap<K,E>`，getGroup 返回它的只读实时视图（每次加载创建一次，同一缓存期内返回同一对象）；业务只能通过 insert/update/delete 修改分组，直接 put/remove 抛 UnsupportedOperationException。Single 的读取（get/getOrCreate）与 Group 的读写都会加载缺失的 Key；Single 的写入从不加载。加载在调用线程上同步执行；缺失的 Key 只加载一次，同 Key 的并发调用等待该次加载。加载在缓存 Map 的锁之外执行，其他 Key 不会因此被阻塞；加载期间对同一 Key 的修改先等待该次加载，再作用于其结果；若加载期间该 Key 被淘汰，结果作废并重新加载，保证不会装入比内存旧的数据。在加载器内再次读取同一 Key 抛 IllegalStateException。加载失败抛 DataLoadException，不会缓存为不存在。
 
-修改先校验状态与身份，进入准入读锁，然后在该 Key 的 `EntityCache.update` 中执行：Group 检查分组仍在缓存中，`writer.record` 合并意图（非法序列抛异常，缓存不变），再修改缓存条目或分组 Map。登记在缓存的单 Key 原子操作内完成，这是淘汰安全的前提（见 5.1）。登记不是字段事务：调用前直接修改的字段不会回滚。deleteGroup 为每个当前成员登记按主键 DELETE，再清空原 Map。
+Data 不提供异步读取。默认的虚拟线程 Route 执行器上，同步加载只挂起当前 Route 的虚拟线程，同一 Route 的后续消息本就要等它完成，顺序语义不变，且业务不需要回调。使用平台线程 Route 执行器时，应在玩家进入 Route 时预加载其数据，让游戏内读取都命中缓存。
+
+写入在 Key 已缓存时立即校验：Single 对已存在实体 insert、对已确认不存在的 Key update 抛 DataOperationException，delete 已不存在的 Key 什么也不做；Key 未缓存时按原样登记，不为校验读取存储。Group 写入前先加载分组，因此总能校验：MapKey 已存在时 insert、不存在时 update 抛异常，update 换成另一 @Id 的实体也抛异常；delete 按 MapKey 删除分组中现有的实体，MapKey 不存在时什么也不做。`getOrCreate` 在不存在时把工厂创建的实体登记为 INSERT 并放入缓存；工厂在锁外执行，返回实体的 @Id 必须等于 key，并发时先登记者胜出，另一方返回已缓存实体。
+
+实体字段由保存线程在编码时读取（D-OWN-01）。实体中被业务在 Route 上修改、同时可能被保存线程遍历的集合字段应使用线程安全集合（例如 ConcurrentHashMap、CopyOnWriteArrayList、ConcurrentLinkedDeque），标量字段需要跨线程可见时使用 volatile 或原子类型；否则编码可能遇到 ConcurrentModificationException 或读到半更新状态。框架不做快照，这是性能取舍。
+
+修改先校验状态与身份，通过准入计数（一次 CAS，不使用读写锁），然后在该 Key 的 `EntityCache.update` 中执行：校验存在性（见上），`writer.record` 合并意图（非法序列抛异常，缓存不变），再修改缓存条目或分组 Map。登记在缓存的单 Key 原子操作内完成，这是淘汰安全的前提（见 5.1）。登记不是字段事务：调用前直接修改的字段不会回滚。deleteGroup 为每个当前成员登记按主键 DELETE，再清空原 Map。
 
 Spring 接入属于应用代码：[game-demo 适配](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java) 把扫描到的单例 `@Repository` Bean 注册到 Builder，并以 `data.repository(type)` 作为 Bean 实例（见 [DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java)、[DataSpringWiringTest](../../game-demo/src/test/java/cn/managame/demo/DataSpringWiringTest.java)）。
 
@@ -84,6 +91,7 @@ try (GameData data = GameDataBuilder.builder()
 | mysql(DataSource) | 无 | 未显式指定后端的 Repository 借用的 DataSource |
 | jsonCodec / binaryCodec | 默认 Jackson / 无 | 隐式 MySQL Mapper 及日志（除非 logCodecs 覆盖）使用的 codec |
 | logCodecs(json, binary) | 继承 | 仅日志使用的 codec；JSON 传 null 表示默认 |
+| logQueueCapacity | 100,000 | 每个 LogRepository 等待保存的日志上限。达到上限时 insert 返回 false，以 LOG_INSERT 失败（attempt 0）在插入线程上报告给 DataErrorHandler，并计入 DataStats.droppedLogs；被拒绝的日志不是已接纳的变更，不使 close 失败 |
 
 repositories(...)、logRepositories(...) 接受类或列表；显式传入 EntityMapper 或 MysqlAccess 的重载不使用 mysql(DataSource)。存在未指定后端的注册但没有 DataSource 时，build 抛 IllegalArgumentException。build 先校验 Repository、身份与日志映射，再执行各状态 Mapper 的 initialize（映射与 Schema；后续步骤失败时已执行的 DDL 不回滚），最后创建缓存并启动一个保存线程。
 
@@ -212,7 +220,9 @@ DataOperation（INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT）是实�
 | 契约 | 测试 |
 | --- | --- |
 | 不预先 SELECT；加载失败不缓存 | DataContractTest.negativeCacheDeleteAndInsertNeverSelect / loadFailuresAreNotNegativeCached |
-| 分组须先加载；返回同一 Map | DataContractTest.groupsRequireExplicitLoadAndReturnSameMap |
+| Group 写入自动加载；getGroup 为只读视图 | DataContractTest.groupWritesLoadTheGroupAndGetGroupIsAReadOnlyLiveView |
+| 写入立即校验存在性；未缓存写入不读存储 | DataContractTest.groupWritesAreCheckedAgainstTheLoadedGroup / cachedSingleWritesFailFastAndUncachedOnesNeverSelect |
+| getOrCreate 只创建一次 | DataContractTest.getOrCreateInsertsOnceAndReturnsTheCachedEntity |
 | 合并矩阵 | DataContractTest.legalMergeTable / illegalMergeTable |
 | 批次顺序与拆分 | DataContractTest.batchesOrderedAndSplitAndNeverMergeAcrossFlushes |
 | 可重试保留、坏行隔离 | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / nonRetryableBadRowIsIsolatedFromItsBatch |
@@ -228,6 +238,6 @@ DataOperation（INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT）是实�
 
 ## 10. 显式 flush 与 DataStats
 
-`GameData.flush()` 同步执行一轮：调用前接纳的变更全部保存，并发写入的变更可能留到下一轮。已关闭或在保存回调中调用时抛 DataOperationException；曾有变更被丢弃，或仍有被保留的可重试失败时抛 DataSaveException（后者仍待保存）。不要在繁忙的游戏 Route 上执行全服 flush。
+`GameData.flush()` 同步执行一轮：调用前接纳的变更全部保存，并发写入的变更可能留到下一轮。已关闭或在保存回调中调用时抛 DataOperationException；本轮有变更被丢弃（已报告给 DataErrorHandler），或仍有被保留的可重试失败时抛 DataSaveException（后者仍待保存）。更早轮次的丢弃不会让之后干净的 flush 失败；close 仍会对 GameData 生命周期内的任何丢弃抛 DataSaveException。不要在繁忙的游戏 Route 上执行全服 flush。
 
-`GameData.stats()` 返回 DataStats：accepting、pendingChanges（待保存条目，含被保留的失败；正在执行的一轮已认领的变更不计入）、queuedLogs、failedBatches（被丢弃的变更）、flushes（轮次，不含 close 的最后一轮）、saveNanos、singleCacheEntries（含已缓存的不存在）、groupCacheEntries（分组数，而非实体数）。数值是近似快照；queuedLogs 为 O(n)。
+`GameData.stats()` 返回 DataStats：accepting、pendingChanges（待保存条目，含被保留的失败；正在执行的一轮已认领的变更不计入）、queuedLogs、failedBatches（被丢弃的变更）、flushes（轮次，不含 close 的最后一轮）、saveNanos、singleCacheEntries（含已缓存的不存在）、groupCacheEntries（分组数，而非实体数）、droppedLogs（因日志队列已满被拒绝的日志）。数值是近似快照；queuedLogs 由计数器维护，为 O(1)。

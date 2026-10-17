@@ -115,7 +115,7 @@ stringKey uses JDK StandardCharsets.UTF_8 for String encoding/decoding; bytesKey
 
 FrameworkErrorCodes publishes no Router constants: game-router reports RPC error codes, and the retired 5001..5004 values are not reused. See [Router Java specification](OGBS-Router-Java-25-Specification-1.0.md) for reporting paths.
 
-Java FrameworkErrorCodes exposes public static final int constants for [Core's error allocation](OGBS-Core-1.0.md#4-frameworkerrorcode). Do not maintain a duplicate allocation table here. Defined values cannot be arbitrarily reordered; amend the standard before adding allocations, then update Java constants and consumers.
+Java FrameworkErrorCodes exposes public static final int constants for [Core's error allocation](OGBS-Core-1.0.md#4-frameworkerrorcode). Do not maintain a duplicate allocation table here. Defined values cannot be arbitrarily reordered; amend the standard before adding allocations, then update Java constants and consumers. `FrameworkErrorCodes.name(code)` returns the constant name (for example `RPC_TIMEOUT`) and `describe(code)` the name with the number (`RPC_TIMEOUT(2003)`); unallocated and business codes give `UNKNOWN(<code>)`. Both are for logs and diagnostics only; program logic compares the numbers.
 
 The RPC implementation uses Core's 2001..2007 allocation, replacing the unimplemented draft. RpcErrorCodes references FrameworkErrorCodes only. errorCode has no high-bit wrapping: 0 success, 1..9999 framework, 10000..Integer.MAX_VALUE business; negative values are invalid. Old RPC constants have source/allocation changes and must not be mixed with the old draft. Runtime/Data allocations are unchanged.
 

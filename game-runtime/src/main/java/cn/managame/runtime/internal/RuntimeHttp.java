@@ -15,7 +15,7 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.*;
 import static cn.managame.core.FrameworkErrorCodes.*;
-import static cn.managame.runtime.internal.RuntimeCompiler.*;
+import static cn.managame.runtime.internal.RuntimeBindings.*;
 
 /** Frozen HTTP lookup and invocation adapter; uses the runtime's existing scoped Route submission. */
 final class RuntimeHttp implements HttpDispatcher {

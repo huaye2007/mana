@@ -20,6 +20,8 @@ public class MysqlConfig {
         config.setJdbcUrl(url);
         config.setUsername(username);
         config.setPassword(password);
+        // GameData saves in JDBC batches; without this Connector/J sends them one statement per round trip.
+        config.addDataSourceProperty("rewriteBatchedStatements", "true");
         return new HikariDataSource(config);
     }
 

@@ -96,7 +96,7 @@ For example, an upper layer can recheck its protocol on reconnect without rebuil
 
 **R-SEND-03** ACCEPTED means local network acceptance, not delivery/execution. Never resend an accepted business frame after asynchronous write failure, disconnection, or timeout. Reconnection restores channels only.
 
-**R-SEND-04** notify/reply return only ACCEPTED, PEER_NOT_FOUND, or UNAVAILABLE. Backpressure and no READY connection both mean UNAVAILABLE; no waiting queue. call additionally has a finite, binding-configured Node-wide admission limit covering encoding, pending calls, and their unfinished completion notifications. Exhaustion releases the owned body and reports local UNAVAILABLE immediately without encoding, sending, waiting, or retry. This limit does not reject notify/reply.
+**R-SEND-04** notify/reply return only ACCEPTED, PEER_NOT_FOUND, or UNAVAILABLE. Backpressure and no READY connection both mean UNAVAILABLE; no waiting queue. call additionally has a finite, binding-configured per-Peer limit of pending calls: when a Peer already has that many registered calls that have not completed (response, timeout or failure), a new call releases the owned body and reports local UNAVAILABLE immediately without encoding, sending, waiting, or retry. Counting per Peer keeps one slow but reachable Peer from exhausting the call capacity for every other Peer. This limit does not reject notify/reply.
 
 Example: routeKey chooses slot2 but fallback sends through slot3. reply prefers slot3; if unavailable, fallback starts at slot2. A new connection in the source Slot can carry the reply; no original physical connection is retained.
 

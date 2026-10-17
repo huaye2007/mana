@@ -3,6 +3,7 @@ package cn.managame.rpc.node;
 import cn.managame.rpc.call.RpcHandler;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import java.net.SocketAddress;
 import java.time.Duration;
@@ -11,6 +12,8 @@ import java.util.function.Consumer;
 
 /** Mutable, reusable builder; each build snapshots configuration without starting resources. */
 public final class RpcNodeBuilder {
+    /** Default bound of outstanding calls per Peer. */
+    public static final int DEFAULT_MAX_PENDING_CALLS = 65_536;
     int nodeId;
     SocketAddress address;
     RpcHandler handler;
@@ -18,6 +21,8 @@ public final class RpcNodeBuilder {
     long reconnectRandomDelay = -1;
     long heartbeatInterval = 10000, heartbeatTimeout = 30000;
     int maxFrameSize = 4 * 1024 * 1024;
+    int maxPendingCalls = DEFAULT_MAX_PENDING_CALLS;
+    EventLoopGroup eventLoopGroup;
     final Map<ChannelOption<?>, Object> channelOptions = new LinkedHashMap<>();
     final List<Consumer<ChannelPipeline>> transports = new ArrayList<>();
     byte[] handshakeSecret;
@@ -41,6 +46,21 @@ public final class RpcNodeBuilder {
     public RpcNodeBuilder heartbeatInterval(Duration value) { heartbeatInterval = millis(value); return this; }
     public RpcNodeBuilder heartbeatTimeout(Duration value) { heartbeatTimeout = millis(value); return this; }
     public RpcNodeBuilder maxFrameSize(int value) { maxFrameSize = value; return this; }
+    /**
+     * Outstanding calls allowed per Peer (default {@value #DEFAULT_MAX_PENDING_CALLS}). A call beyond it fails
+     * at once through RpcHandler.onFail with UNAVAILABLE, so a slow but connected Peer cannot grow memory
+     * without bound. Notifies and replies are not counted.
+     */
+    public RpcNodeBuilder maxPendingCalls(int value) {
+        if (value < 1) throw new IllegalArgumentException("maxPendingCalls must be positive");
+        maxPendingCalls = value; return this;
+    }
+    /**
+     * Caller-owned EventLoopGroup used to accept, dial and serve every RPC connection, for example one
+     * shared with the client gateway. The Node never shuts it down; close still waits for its own
+     * connections to finish. By default the Node owns a group of the preferred transport (Epoll or NIO).
+     */
+    public RpcNodeBuilder eventLoopGroup(EventLoopGroup group) { eventLoopGroup = Objects.requireNonNull(group); return this; }
     /**
      * Per-connection outbound buffer bounds. A Slot stops accepting sends above {@code high} until the
      * buffer drains below {@code low}; sends then fail fast as UNAVAILABLE instead of growing memory.

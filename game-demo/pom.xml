@@ -8,6 +8,8 @@
   <artifactId>game-demo</artifactId>
   <properties>
     <fory.version>1.7.6</fory.version>
+    <!-- The sample application keeps commented-out example code and the imports it needs. -->
+    <checkstyle.skip>true</checkstyle.skip>
   </properties>
   <dependencies>
     <dependency>

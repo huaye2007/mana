@@ -16,6 +16,7 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
 | [game-spring](game-spring/README.md) | Optional plain Spring: annotation discovery, managed HTTP/RPC lifecycle, typed RPC adaptation, initialized Repository injection, Runtime shutdown drain |
 | [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories, GamePacket TCP dispatch, Runtime HTTP, timer/cron and standalone TCP/HTTP/RPC entries |
+| game-benchmark | JMH micro-benchmarks (Metadata, RPC codec, Route executors) guarding hot paths; not part of any framework artifact |
 
 Dependency direction:
 
@@ -28,7 +29,7 @@ game-rpc ───→ game-router ───→ game-demo (routing sample)
 game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
 ```
 
-game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. game-core has no third-party dependencies; Runtime declares Caffeine for its idle mailbox cache. Runtime depends on game-core and game-network for HTTP annotations and Route integration; it does not depend on RPC, Spring, or business serialization.
+game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. game-core has no third-party dependencies. Runtime depends on game-core and game-network for HTTP annotations and Route integration; it does not depend on RPC, Spring, or business serialization.
 
 Network and RPC each publish one Maven artifact, with responsibility-based subpackages. Start at [game-network](game-network/README.md) and [game-rpc](game-rpc/README.md).
 
@@ -63,7 +64,17 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-The root build includes game-core, game-network, game-rpc, game-router, game-runtime, game-data, game-spring, and game-demo. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-demo, under `cn.managame.demo.examples.<component>`; framework artifacts contain no example classes. Run mvn -pl game-demo -am test to validate the examples. Optional RPC→Runtime integration is available through game-spring; Data usage is demonstrated by the Spring application.
+Code quality and benchmarks:
+
+```shell
+mvn -Pquality -DskipTests verify    # Checkstyle rules on main sources (config/checkstyle.xml)
+mvn -Perrorprone -DskipTests compile  # optional: Error Prone static analysis
+mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/target/benchmarks.jar
+```
+
+CI (`.github/workflows/ci.yml`) runs `mvn clean verify` and the quality checks on JDK 25.
+
+The root build includes game-core, game-network, game-rpc, game-router, game-runtime, game-data, game-spring, game-demo, and game-benchmark. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-demo, under `cn.managame.demo.examples.<component>`; framework artifacts contain no example classes. Run mvn -pl game-demo -am test to validate the examples. Optional RPC→Runtime integration is available through game-spring; Data usage is demonstrated by the Spring application.
 
 Run [NetworkEchoExample](game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 

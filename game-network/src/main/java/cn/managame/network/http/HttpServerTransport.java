@@ -20,8 +20,42 @@ import static io.netty.handler.codec.http.HttpResponseStatus.*;
 
 /** Each connection has one ordered HTTP pipeline, including automatic protocol responses. */
 final class HttpServerTransport extends ChannelDuplexHandler {
+    /** Progress of the current request/response exchange; a new request may start only from IDLE. */
+    private enum Exchange {
+        /** No request in progress. */
+        IDLE,
+        /** Request head seen, body still arriving, no final response yet. */
+        RECEIVING,
+        /** Request complete, final response not yet written. */
+        PROCESSING,
+        /** Final response written (for example 417) while the request body is still arriving. */
+        RESPONDED_EARLY,
+        /** Request complete and final response written; the next pipelined request may start. */
+        DONE;
+
+        boolean requestEnded() { return this == PROCESSING || this == DONE; }
+
+        Exchange onRequestEnd() {
+            return switch (this) {
+                case RECEIVING -> PROCESSING;
+                case RESPONDED_EARLY -> DONE;
+                default -> this;
+            };
+        }
+
+        Exchange onResponseFinished() {
+            return switch (this) {
+                case RECEIVING -> RESPONDED_EARLY;
+                case PROCESSING -> DONE;
+                default -> this;
+            };
+        }
+    }
+
+    private Exchange exchange = Exchange.IDLE;
+    /** Terminal: the connection is closing and accepts no further input. */
     private boolean closing;
-    private boolean waitingResponse, requestEnded, responseFinished, writingFinal, pausedReads, draining, advanceScheduled;
+    private boolean writingFinal, pausedReads, draining, advanceScheduled;
     private final ArrayDeque<Object> pendingInput = new ArrayDeque<>();
 
     static void configure(ChannelPipeline pipeline, EventExecutorGroup executor,
@@ -76,7 +110,7 @@ final class HttpServerTransport extends ChannelDuplexHandler {
     @Override public void channelRead(ChannelHandlerContext ctx, Object message) {
         if (closing || !ctx.channel().isActive()) { ReferenceCountUtil.release(message); return; }
         // Pause subsequent requests before validation/aggregation can emit 100, 413 or 417.
-        if (waitingResponse && requestEnded) { pendingInput.addLast(message); return; }
+        if (exchange.requestEnded()) { pendingInput.addLast(message); return; }
         if (message instanceof HttpRequest request) {
             HttpResponseStatus error = null;
             if (!request.decoderResult().isSuccess()) error = BAD_REQUEST;
@@ -91,11 +125,10 @@ final class HttpServerTransport extends ChannelDuplexHandler {
                 ReferenceCountUtil.release(message);
                 reject(ctx, error); return;
             }
-            waitingResponse = true;
-            requestEnded = responseFinished = false;
+            exchange = Exchange.RECEIVING;
         }
         if (message instanceof LastHttpContent) {
-            requestEnded = true;
+            exchange = exchange.onRequestEnd();
             if (ctx.channel().config().isAutoRead()) {
                 pausedReads = true;
                 ctx.channel().config().setAutoRead(false);
@@ -126,7 +159,7 @@ final class HttpServerTransport extends ChannelDuplexHandler {
             promise = promise.unvoid();
             promise.addListener(future -> execute(ctx, () -> {
                 if (!future.isSuccess()) { closing = true; releasePending(); ctx.close(); return; }
-                responseFinished = true;
+                exchange = exchange.onResponseFinished();
                 advance(ctx);
             }, null));
         }
@@ -134,7 +167,7 @@ final class HttpServerTransport extends ChannelDuplexHandler {
     }
 
     private void advance(ChannelHandlerContext ctx) {
-        if (!waitingResponse || !requestEnded || !responseFinished || closing || advanceScheduled) return;
+        if (exchange != Exchange.DONE || closing || advanceScheduled) return;
         advanceScheduled = true;
         // Defer to avoid nesting later business handlers inside a synchronous response call.
         execute(ctx, () -> drain(ctx), null, true);
@@ -143,14 +176,13 @@ final class HttpServerTransport extends ChannelDuplexHandler {
     private void drain(ChannelHandlerContext ctx) {
         advanceScheduled = false;
         if (draining) return;
-        if (waitingResponse && requestEnded && responseFinished)
-            waitingResponse = requestEnded = responseFinished = false;
+        if (exchange == Exchange.DONE) exchange = Exchange.IDLE;
         draining = true;
         try {
             while (!pendingInput.isEmpty() && !closing && ctx.channel().isActive()
-                    && !(waitingResponse && requestEnded)) channelRead(ctx, pendingInput.removeFirst());
+                    && !exchange.requestEnded()) channelRead(ctx, pendingInput.removeFirst());
             if (closing || !ctx.channel().isActive()) releasePending();
-            else if (!(waitingResponse && requestEnded) && pausedReads) {
+            else if (!exchange.requestEnded() && pausedReads) {
                 pausedReads = false;
                 ctx.channel().config().setAutoRead(true);
             }

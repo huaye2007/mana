@@ -4,7 +4,7 @@
 
 Document type: **Java Development Specification**. Standard: [RPC Specification](OGBS-RPC-1.0.md). Byte layout: [Wire Profile](../rpc-wire.md).
 
-Status: implemented and locally verified. Finite call admission (R-SEND-04) is not implemented. JDK 25 without preview; Maven `cn.managame:game-rpc:1.0.0-SNAPSHOT` depends on game-core and game-network (and through them Netty). RPC has no Runtime, Data, Spring, codec or discovery dependency; the optional Runtime integration lives in [game-spring](OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
+Status: implemented and locally verified. JDK 25 without preview; Maven `cn.managame:game-rpc:1.0.0-SNAPSHOT` depends on game-core and game-network (and through them Netty). RPC has no Runtime, Data, Spring, codec or discovery dependency; the optional Runtime integration lives in [game-spring](OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
 
 <a id="1-包与封装"></a>
 
@@ -57,13 +57,15 @@ nodeId, bindAddress and handler are required. nodeId is nonzero; the int holds r
 | reconnectRandomDelay(Duration) | base / 4 | Nonnegative maximum added per retry (uniform whole milliseconds); 0 = fixed delay. 1000 ms + 250 ms waits 1000..1250 ms |
 | heartbeatInterval(Duration) | 10 s | Positive |
 | heartbeatTimeout(Duration) | 30 s | Greater than the interval |
-| maxFrameSize(int) | 4 MiB | ≥32, including the length prefix |
+| maxFrameSize(int) | 4 MiB | ≥32, including the length prefix; `RpcNode.maxFrameSize()` returns it, and components composed on the Node (Router) derive their limits from it instead of a setting of their own |
+| maxPendingCalls(int) | 65536 | ≥1, pending calls allowed per Peer (R-SEND-04); a call beyond it fails at once with onFail(UNAVAILABLE) and its body released; notify/reply are not counted |
+| eventLoopGroup(EventLoopGroup) | none (Node-owned) | Caller-owned event loops, for example shared with the client gateway; the Node never shuts it down and close still waits (up to 5 s) for its own connections to end. Without it the Node creates Epoll or NIO loops for the platform |
 | writeBufferWaterMark(low, high) | Netty 32 KiB / 64 KiB | Above `high` a connection is unwritable; sends move to the next Slot and return UNAVAILABLE when none is writable. Internal links usually need larger values |
 | channelOption(option, value) | none | Applied to inbound and outbound connections (TCP_NODELAY, SO_SNDBUF, …) |
 | transport(Consumer&lt;ChannelPipeline&gt;) | none | Byte-level handlers placed before RPC framing: SslHandler (addFirst), traffic shaping, logging. They must not decode RPC frames |
 | handshakeSecret(byte[] [, Duration]) | none | ≥16 bytes, identical across the cluster; clock skew 60 s by default |
 
-Duration.toMillis overflow throws ArithmeticException; other out-of-range values throw IllegalArgumentException. RpcNode owns its TCP NetworkServer/NetworkClient and EventLoopGroups; framing, heartbeat and handshake stay internal.
+Duration.toMillis overflow throws ArithmeticException; other out-of-range values throw IllegalArgumentException. RpcNode owns its TCP NetworkServer/NetworkClient; by default it also creates its EventLoopGroups through [NetworkTransports](OGBS-Network-Java-25-Specification-1.0.md) (Epoll when the native library loads on Linux, NIO otherwise), or it runs on a caller-owned group passed to eventLoopGroup. Framing, heartbeat and handshake stay internal.
 
 `start` is one-shot: it creates the timer and event loops and enters RUNNING only after a successful bind; failure closes partial resources and throws RpcException. `localAddress` is null before bind and returns the bound (possibly dynamic) port afterwards.
 
@@ -152,7 +154,7 @@ A RuntimeException from onRequest is logged; for a Call an empty HANDLER_ERROR r
 6. Send with affinity and fallback; the frame is accepted at most once.
 7. After ACCEPTED, schedule the timeout; if the call already completed, cancel it.
 
-Response, timeout, removal, closure, send failure and last-connection loss compete through a conditional remove, so each call completes exactly once. Losing one of several Slots keeps pending calls: the response may arrive on another Slot. The pending map has no count or byte bound (R-SEND-04): a slow reachable Peer accumulates calls for up to the timeout.
+Response, timeout, removal, closure, send failure and last-connection loss compete through a conditional remove, so each call completes exactly once. Losing one of several Slots keeps pending calls: the response may arrive on another Slot. Each Peer's pending calls are bounded by maxPendingCalls (R-SEND-04): a place is reserved before registration and returned by whichever completion (response, timeout, removal, closure, send failure) wins the conditional remove; a synchronous failure such as an ID collision returns the reservation too. There is no byte bound: each call is still limited by maxFrameSize.
 
 <a id="6-网络装配与-peer-并发"></a>
 
@@ -160,7 +162,7 @@ Response, timeout, removal, closure, send failure and last-connection loss compe
 
 The pipeline is: application `transport` handlers, then `rpc-flush` (Netty FlushConsolidationHandler(256, true), which merges flushes from concurrent senders into one write per EventLoop turn), then `rpc-frame` (LengthFieldBasedFrameDecoder) and `rpc-idle` (IdleStateHandler), both added by `RpcWire.configurePipeline`. Only complete frames refresh the read deadline.
 
-One HashedWheelTimer per Node (10 ms tick) drives call and handshake deadlines and delayed reconnects; it never runs business notifications inline. Peers live in a ConcurrentHashMap; topology changes (start, close, addPeer, removePeer, handshake binding) take a lifecycle lock, sending never does. Each Slot holds its connection in an AtomicReference (identity-checked bind/unbind) and an AtomicBoolean marking the single recovery chain (delay, connect, handshake). When a Slot's connection ends, the Node fails the Peer's pending calls if no Slot is connected any more, then starts recovery for active Peers.
+One HashedWheelTimer per Node (10 ms tick) drives call and handshake deadlines and delayed reconnects; a call timeout's onFail is delivered directly on that thread (see the thread rules above), so the handler hands business work to its own executor. Peers live in a copy-on-write int→Peer table: sends look up by primitive int without boxing or locking; topology changes (start, close, addPeer, removePeer, handshake binding, passive-Peer reclamation) copy and publish a new table under the lifecycle lock, which sending never takes. Each Slot holds its connection in an AtomicReference (identity-checked bind/unbind) and an AtomicBoolean marking the single recovery chain (delay, connect, handshake). When a Slot's connection ends, the Node fails the Peer's pending calls if no Slot is connected any more, then starts recovery for active Peers.
 
 <a id="7-关闭屏障与线程边界"></a>
 
@@ -176,7 +178,7 @@ After close returns, no pending call, connection, timer or owned notification re
 
 ## 8. Example and source
 
-[RpcEchoExample](../../game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) runs two Nodes with a call, decoding and a retained echo reply; RpcExampleTest executes it. Sources: [RpcNode](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNode.java), [RpcNodeBuilder](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNodeBuilder.java), [RpcWire](../../game-rpc/src/main/java/cn/managame/rpc/netty/RpcWire.java). RpcWire offers configurePipeline, encode/decode for every message type and the handshake proof; direct use lacks the Node's handshake state, Peers and completion arbitration.
+[RpcEchoExample](../../game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) runs two Nodes with a call, decoding and a retained echo reply; RpcExampleTest executes it. Sources: [RpcNode](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNode.java), [RpcNodeBuilder](../../game-rpc/src/main/java/cn/managame/rpc/node/RpcNodeBuilder.java), [RpcWire](../../game-rpc/src/main/java/cn/managame/rpc/netty/RpcWire.java). RpcWire offers configurePipeline, encode/decode for every message type and the handshake proof, and publishes the frame layout constants (`TYPE_OFFSET`, `REQUEST_ID_OFFSET`, `REQUEST_ROUTE_KEY_OFFSET`, `RESPONSE_ID_OFFSET`, `MIN_REQUEST_FRAME`, `MIN_RESPONSE_FRAME`, …) so components such as the Router read routing headers without redefining offsets; direct use lacks the Node's handshake state, Peers and completion arbitration.
 
 <a id="9-验证与未实现范围"></a>
 
@@ -194,4 +196,4 @@ Run `mvn -pl game-rpc -am test`; cross-module changes need root `mvn clean verif
 <a id="92-后续审阅与扩展候选"></a>
 <a id="rpc-router-review-2026-10-07"></a>
 
-Remaining limits: no finite call admission (R-SEND-04) and no limits on inbound handshakes or passive Peers; closure scans all connections per Peer; the wire carries no Node incarnation, so IDs restarting with a new process can match replies saved by a peer (R-CALL-04). Handlers run on EventLoops: blocking one delays every connection on it. Not implemented: TLS/WebSocket builder options, discovery, business retries, remote cancellation, durable delivery. Unverified: cross-language interoperability, production throughput and memory. Router composes on an existing Node and uses only `isPeerConnected` beyond the ordinary API ([review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration)).
+Remaining limits: no limits on inbound handshakes or passive Peers; closure scans all connections per Peer; the wire carries no Node incarnation, so IDs restarting with a new process can match replies saved by a peer (R-CALL-04). Handlers run on EventLoops: blocking one delays every connection on it. Not implemented: TLS/WebSocket builder options, discovery, business retries, remote cancellation, durable delivery. Unverified: cross-language interoperability, production throughput and memory. Router composes on an existing Node and uses only `isPeerConnected` beyond the ordinary API ([review record](../reviews/2026-10-07-router-rpc-review.md#rpc-integration)).

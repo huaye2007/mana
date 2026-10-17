@@ -11,7 +11,7 @@ public interface CronScheduler {
     boolean cancel(Class<?> type, String methodName);
 
     /**
-     * Replaces the current schedule using GameTime, reactivating a cancelled cron.
+     * Replaces the current schedule using {@link GameTime}, reactivating a cancelled cron.
      * Unknown keys return false. A closed runtime rejects rescheduling.
      */
     boolean reschedule(Class<?> type, String methodName);

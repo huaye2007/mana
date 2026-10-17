@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -62,7 +63,7 @@ class RpcSecurityTest extends RpcTestSupport {
             Fake unsigned = new Fake(); n.connected(unsigned);
             receive(n, unsigned, RpcWire.encodeHandshake(new RpcHandshake(6, 0, 1)));
             assertFalse(unsigned.active);
-            assertEquals(List.of(2), n.peers.keySet().stream().toList());
+            assertEquals(Set.of(2), n.peers.nodeIds());
         }
     }
 

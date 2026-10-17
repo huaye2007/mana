@@ -1,175 +1,171 @@
 package cn.managame.runtime.executor;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import org.junit.jupiter.api.Test;
-import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.concurrent.locks.ReentrantLock;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
+import org.junit.jupiter.api.Test;
+
 class VirtualThreadRouteExecutorTest {
-    private static Map<?, ?> active(VirtualThreadRouteExecutor executor) throws ReflectiveOperationException {
-        var field = VirtualThreadRouteExecutor.class.getDeclaredField("activeMailboxes");
-        field.setAccessible(true); return (Map<?, ?>) field.get(executor);
-    }
-    @SuppressWarnings("unchecked")
-    private static Cache<Object, Object> idle(VirtualThreadRouteExecutor executor) throws ReflectiveOperationException {
-        var field = VirtualThreadRouteExecutor.class.getDeclaredField("idleMailboxes");
-        field.setAccessible(true); return (Cache<Object, Object>) field.get(executor);
-    }
-    private static void awaitInactive(VirtualThreadRouteExecutor executor) throws Exception {
+    private static void awaitRetired(VirtualThreadRouteExecutor executor) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (!active(executor).isEmpty()) {
-            if (System.nanoTime() >= deadline) fail("Accepted Route work did not finish");
-            Thread.sleep(1);
+        while (executor.activeRoutes() != 0) {
+            if (System.nanoTime() >= deadline) fail("Route mailboxes were not retired");
+            Thread.onSpinWait();
+            Thread.yield();
         }
     }
-    private static Object awaitCached(VirtualThreadRouteExecutor executor) throws Exception {
-        awaitInactive(executor);
-        var values = idle(executor).asMap().values().iterator();
-        assertTrue(values.hasNext(), "Expected a retained idle mailbox"); return values.next();
-    }
-    private static void awaitEmpty(VirtualThreadRouteExecutor executor) throws Exception {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (!active(executor).isEmpty() || idle(executor).estimatedSize() != 0) {
-            if (System.nanoTime() >= deadline) fail("Route mailboxes were not reclaimed");
-            Thread.sleep(1);
-        }
-    }
+
     private static void awaitRelease(CountDownLatch release) {
         try {
             if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("Task release timed out");
         } catch (InterruptedException cause) {
-            Thread.currentThread().interrupt(); throw new AssertionError(cause);
+            Thread.currentThread().interrupt();
+            throw new AssertionError(cause);
         }
     }
 
-    @Test void idleMailboxIsReusedAndExpiryResetsAfterAnotherDrain() throws Exception {
-        var time = new AtomicLong();
-        try (var executor = new VirtualThreadRouteExecutor(2, Duration.ofMinutes(1), time::get)) {
+    @Test void idleRouteRetiresItsMailboxAndRunsAgainOnNextSubmission() throws Exception {
+        try (var executor = new VirtualThreadRouteExecutor(2)) {
             var first = new CountDownLatch(1);
             assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, first::countDown));
-            assertTrue(first.await(5, TimeUnit.SECONDS)); Object original = awaitCached(executor);
-            time.set(TimeUnit.SECONDS.toNanos(59)); idle(executor).cleanUp();
-            assertSame(original, idle(executor).asMap().values().iterator().next());
+            assertTrue(first.await(5, TimeUnit.SECONDS));
+            awaitRetired(executor);
             var second = new CountDownLatch(1);
             assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, second::countDown));
-            assertTrue(second.await(5, TimeUnit.SECONDS)); assertSame(original, awaitCached(executor));
-            time.set(TimeUnit.SECONDS.toNanos(60)); idle(executor).cleanUp();
-            assertEquals(1, idle(executor).estimatedSize());
-            time.set(TimeUnit.SECONDS.toNanos(119)); idle(executor).cleanUp();
-            assertEquals(0, idle(executor).estimatedSize());
+            assertTrue(second.await(5, TimeUnit.SECONDS));
+            awaitRetired(executor);
         }
     }
 
-    @Test void expiredIdleMailboxIsNotReusedOnNextSubmission() throws Exception {
-        var time = new AtomicLong();
-        try (var executor = new VirtualThreadRouteExecutor(2, Duration.ofMinutes(1), time::get)) {
-            var first = new CountDownLatch(1);
-            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, first::countDown));
-            assertTrue(first.await(5, TimeUnit.SECONDS)); Object original = awaitCached(executor);
-            // No explicit cleanup: activation must reject the expired cached mailbox.
-            time.set(TimeUnit.MINUTES.toNanos(1));
-            var second = new CountDownLatch(1);
-            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, second::countDown));
-            assertTrue(second.await(5, TimeUnit.SECONDS)); assertNotSame(original, awaitCached(executor));
-        }
-    }
-
-    @Test void idleExpiryPreservesRunningWorkAndQueuedOrder() throws Exception {
-        var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var done = new CountDownLatch(2);
-        var order = new CopyOnWriteArrayList<Integer>(); var time = new AtomicLong();
-        try (var executor = new VirtualThreadRouteExecutor(2, Duration.ofMinutes(1), time::get)) {
+    @Test void queuedWorkRunsAfterRunningWorkInOrder() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var done = new CountDownLatch(2);
+        var order = new CopyOnWriteArrayList<Integer>();
+        try (var executor = new VirtualThreadRouteExecutor(2)) {
             try {
                 executor.tryExecute(1, 42, () -> {
-                    entered.countDown(); awaitRelease(release); order.add(1); done.countDown();
+                    entered.countDown();
+                    awaitRelease(release);
+                    order.add(1);
+                    done.countDown();
                 });
-                assertTrue(entered.await(5, TimeUnit.SECONDS)); time.set(TimeUnit.MINUTES.toNanos(2));
-                idle(executor).cleanUp();
-                assertEquals(1, active(executor).size()); assertEquals(0, idle(executor).estimatedSize());
-                assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, () -> { order.add(2); done.countDown(); }));
-                release.countDown(); assertTrue(done.await(5, TimeUnit.SECONDS)); awaitCached(executor);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(1, executor.activeRoutes());
+                assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, () -> {
+                    order.add(2);
+                    done.countDown();
+                }));
+                release.countDown();
+                assertTrue(done.await(5, TimeUnit.SECONDS));
                 assertEquals(List.of(1, 2), order);
-                time.addAndGet(TimeUnit.MINUTES.toNanos(1)); idle(executor).cleanUp(); awaitEmpty(executor);
+                awaitRetired(executor);
             } finally { release.countDown(); }
         }
     }
 
     @Test void runningRoutesSurviveCloseAndRetireAfterAcceptedWorkDrains() throws Exception {
         int routes = 128;
-        var entered = new CountDownLatch(routes); var release = new CountDownLatch(1); var done = new CountDownLatch(routes);
+        var entered = new CountDownLatch(routes);
+        var release = new CountDownLatch(1);
+        var done = new CountDownLatch(routes);
         try (var executor = new VirtualThreadRouteExecutor(routes)) {
             try {
                 for (int i = 0; i < routes; i++) {
                     assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(i % 2 + 1, i / 2 + 1, () -> {
-                        entered.countDown(); try { awaitRelease(release); } finally { done.countDown(); }
+                        entered.countDown();
+                        try { awaitRelease(release); } finally { done.countDown(); }
                     }));
                 }
-                assertTrue(entered.await(5, TimeUnit.SECONDS)); executor.close();
-                assertEquals(routes, active(executor).size()); assertEquals(0, idle(executor).estimatedSize());
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                executor.close();
+                assertEquals(routes, executor.activeRoutes());
                 assertEquals(RouteExecuteStatus.CLOSED, executor.tryExecute(1, 999, () -> fail("Closed task ran")));
-                release.countDown(); assertTrue(done.await(5, TimeUnit.SECONDS)); awaitEmpty(executor);
+                release.countDown();
+                assertTrue(done.await(5, TimeUnit.SECONDS));
+                awaitRetired(executor);
             } finally { release.countDown(); }
         }
     }
 
-    @Test void taskFailureDoesNotStrandMailboxAndRouteCanBeRecreatedAfterExpiry() throws Exception {
-        var time = new AtomicLong(); var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
-        try (var executor = new VirtualThreadRouteExecutor(2, Duration.ofMinutes(1), time::get)) {
-            try {
-                executor.tryExecute(1, 42, () -> { entered.countDown(); awaitRelease(release); throw new IllegalStateException("expected task failure"); });
-                assertTrue(entered.await(5, TimeUnit.SECONDS)); Object failed = active(executor).values().iterator().next();
-                release.countDown(); assertSame(failed, awaitCached(executor));
-                time.set(TimeUnit.MINUTES.toNanos(1)); idle(executor).cleanUp(); assertEquals(0, idle(executor).estimatedSize());
-                var ran = new AtomicInteger(); var done = new CountDownLatch(1);
-                assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, () -> { ran.incrementAndGet(); done.countDown(); }));
-                assertTrue(done.await(5, TimeUnit.SECONDS)); assertNotSame(failed, awaitCached(executor)); assertEquals(1, ran.get());
-            } finally { release.countDown(); }
-        }
-    }
-
-    @Test void concurrentExpiryAndResubmissionRemainSerialOrderedAndExecuteOnce() throws Exception {
-        var expected = new ArrayList<Integer>(); var observed = new ConcurrentLinkedQueue<Integer>();
-        var running = new AtomicInteger(); var overlap = new AtomicBoolean(); var time = new AtomicLong();
-        var submission = new ReentrantLock(); var cleaning = new AtomicBoolean(true);
-        try (var executor = new VirtualThreadRouteExecutor(64, Duration.ofSeconds(1), time::get);
-             var producers = Executors.newFixedThreadPool(5)) {
-            var cache = idle(executor);
-            var cleanup = producers.submit(() -> {
-                while (cleaning.get()) { time.addAndGet(TimeUnit.SECONDS.toNanos(1)); cache.cleanUp(); Thread.yield(); }
+    @Test void taskFailureDoesNotStrandTheRoute() throws Exception {
+        try (var executor = new VirtualThreadRouteExecutor(2)) {
+            var failed = new CountDownLatch(1);
+            executor.tryExecute(1, 42, () -> {
+                failed.countDown();
+                throw new IllegalStateException("expected task failure");
             });
-            try {
-                for (int wave = 0; wave < 80; wave++) {
-                    var start = new CountDownLatch(1); var done = new CountDownLatch(32); List<Future<?>> submitted = new ArrayList<>();
-                    for (int producer = 0; producer < 4; producer++) {
-                        submitted.add(producers.submit(() -> {
-                            awaitRelease(start);
-                            for (int i = 0; i < 8; i++) {
-                                submission.lock();
-                                try {
-                                    int sequence = expected.size(); expected.add(sequence);
-                                    assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, () -> {
-                                        if (running.incrementAndGet() != 1) overlap.set(true);
-                                        try { Thread.yield(); observed.add(sequence); }
-                                        finally { running.decrementAndGet(); done.countDown(); }
-                                    }));
-                                } finally { submission.unlock(); }
-                            }
-                        }));
-                    }
-                    start.countDown(); for (var future : submitted) future.get(5, TimeUnit.SECONDS);
-                    assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertTrue(failed.await(5, TimeUnit.SECONDS));
+            awaitRetired(executor);
+            var ran = new AtomicInteger();
+            var done = new CountDownLatch(1);
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, () -> {
+                ran.incrementAndGet();
+                done.countDown();
+            }));
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertEquals(1, ran.get());
+            awaitRetired(executor);
+        }
+    }
+
+    @Test void concurrentRetirementAndResubmissionRemainSerialOrderedAndExecuteOnce() throws Exception {
+        var expected = new ArrayList<Integer>();
+        var observed = new ConcurrentLinkedQueue<Integer>();
+        var running = new AtomicInteger();
+        var overlap = new AtomicBoolean();
+        var submission = new ReentrantLock();
+        try (var executor = new VirtualThreadRouteExecutor(64); var producers = Executors.newFixedThreadPool(4)) {
+            for (int wave = 0; wave < 200; wave++) {
+                var start = new CountDownLatch(1);
+                var done = new CountDownLatch(32);
+                List<Future<?>> submitted = new ArrayList<>();
+                for (int producer = 0; producer < 4; producer++) {
+                    submitted.add(producers.submit(() -> {
+                        awaitRelease(start);
+                        for (int i = 0; i < 8; i++) {
+                            submission.lock();
+                            try {
+                                int sequence = expected.size();
+                                expected.add(sequence);
+                                assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 42, () -> {
+                                    if (running.incrementAndGet() != 1) overlap.set(true);
+                                    try { observed.add(sequence); }
+                                    finally { running.decrementAndGet(); done.countDown(); }
+                                }));
+                            } finally { submission.unlock(); }
+                            // Let the Route drain and retire between some submissions.
+                            if (i % 3 == 0) Thread.yield();
+                        }
+                    }));
                 }
-                executor.close(); awaitEmpty(executor); assertFalse(overlap.get()); assertEquals(0, running.get());
-                assertEquals(2560, observed.size()); assertEquals(expected, new ArrayList<>(observed));
-            } finally { cleaning.set(false); cleanup.get(5, TimeUnit.SECONDS); }
+                start.countDown();
+                for (var future : submitted) future.get(5, TimeUnit.SECONDS);
+                assertTrue(done.await(5, TimeUnit.SECONDS));
+            }
+            executor.close();
+            awaitRetired(executor);
+            assertFalse(overlap.get());
+            assertEquals(0, running.get());
+            assertEquals(6400, observed.size());
+            assertEquals(expected, new ArrayList<>(observed));
         }
     }
 
     @Test void concurrentCapacityReservationsNeverOverAdmit() throws Exception {
-        var start = new CountDownLatch(1); var release = new CountDownLatch(1); var entered = new CountDownLatch(8);
+        var start = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var entered = new CountDownLatch(8);
         var ran = new AtomicInteger();
         try (var executor = new VirtualThreadRouteExecutor(8); var producers = Executors.newFixedThreadPool(32)) {
             try {
@@ -178,44 +174,52 @@ class VirtualThreadRouteExecutorTest {
                     int key = i + 1;
                     results.add(producers.submit(() -> {
                         awaitRelease(start);
-                        return executor.tryExecute(1, key, () -> { entered.countDown(); awaitRelease(release); ran.incrementAndGet(); });
+                        return executor.tryExecute(1, key, () -> {
+                            entered.countDown();
+                            awaitRelease(release);
+                            ran.incrementAndGet();
+                        });
                     }));
                 }
-                start.countDown(); int accepted = 0, rejected = 0;
+                start.countDown();
+                int accepted = 0, rejected = 0;
                 for (var result : results) {
                     var status = result.get(5, TimeUnit.SECONDS);
                     if (status == RouteExecuteStatus.ACCEPTED) accepted++;
-                    else { assertEquals(RouteExecuteStatus.OVERLOADED, status); rejected++; }
+                    else {
+                        assertEquals(RouteExecuteStatus.OVERLOADED, status);
+                        rejected++;
+                    }
                 }
-                assertEquals(8, accepted); assertEquals(24, rejected); assertTrue(entered.await(5, TimeUnit.SECONDS));
-                executor.close(); release.countDown(); awaitEmpty(executor); assertEquals(8, ran.get());
-            } finally { start.countDown(); release.countDown(); }
-        }
-    }
-
-    @Test void idleCacheIsSizeBoundedIndependentlyOfTaskCapacity() throws Exception {
-        try (var executor = new VirtualThreadRouteExecutor(4)) {
-            for (int key = 1; key <= 40; key++) {
-                var done = new CountDownLatch(1);
-                assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, key, done::countDown));
-                assertTrue(done.await(5, TimeUnit.SECONDS)); awaitInactive(executor);
+                assertEquals(8, accepted);
+                assertEquals(24, rejected);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                executor.close();
+                release.countDown();
+                awaitRetired(executor);
+                assertEquals(8, ran.get());
+            } finally {
+                start.countDown();
+                release.countDown();
             }
-            idle(executor).cleanUp(); assertTrue(idle(executor).estimatedSize() <= 4);
         }
     }
 
-    @Test void invalidCapacityAndIdleTimeoutAreRejected() {
+    @Test void invalidCapacityIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> new VirtualThreadRouteExecutor(0));
-        for (Duration value : List.of(Duration.ZERO, Duration.ofSeconds(-1), Duration.ofSeconds(Long.MAX_VALUE)))
-            assertThrows(IllegalArgumentException.class, () -> new VirtualThreadRouteExecutor(1, value));
-        assertThrows(NullPointerException.class, () -> new VirtualThreadRouteExecutor(1, null));
+        assertThrows(IllegalArgumentException.class, () -> new VirtualThreadRouteExecutor(4, 0));
+        assertThrows(IllegalArgumentException.class, () -> new VirtualThreadRouteExecutor(4, 5));
     }
 
     @Test void routeCapacityRejectsOnlyTheHotRoute() throws Exception {
-        try (var executor = new VirtualThreadRouteExecutor(10, 2, Duration.ofMinutes(1))) {
-            var running = new CountDownLatch(1); var release = new CountDownLatch(1);
-            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 7, () -> { running.countDown(); awaitRelease(release); }));
-            assertTrue(running.await(5, TimeUnit.SECONDS));       // the running task no longer occupies the queue
+        try (var executor = new VirtualThreadRouteExecutor(10, 2)) {
+            var running = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 7, () -> {
+                running.countDown();
+                awaitRelease(release);
+            }));
+            assertTrue(running.await(5, TimeUnit.SECONDS));       // the running task does not occupy the queue
             assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 7, () -> {}));
             assertEquals(RouteExecuteStatus.ACCEPTED, executor.tryExecute(1, 7, () -> {}));
             assertEquals(RouteExecuteStatus.OVERLOADED, executor.tryExecute(1, 7, () -> {}));
@@ -224,6 +228,5 @@ class VirtualThreadRouteExecutorTest {
             assertTrue(other.await(5, TimeUnit.SECONDS));
             release.countDown();
         }
-        assertThrows(IllegalArgumentException.class, () -> new VirtualThreadRouteExecutor(4, 5, Duration.ofMinutes(1)));
     }
 }

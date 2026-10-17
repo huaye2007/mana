@@ -83,7 +83,7 @@ demo 通过业务 [GameDomain 枚举](../game-demo/src/main/java/cn/managame/dem
 
 Route identity 是完整的 domain + key，不是 worker/thread/executor。key=0 无效，其他 64 位值可用。Domain 为用户定义的正整数。
 
-默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器按完整 Route 在 ConcurrentHashMap 持有活跃 FIFO mailbox，仅把完全空闲的 mailbox 放入 Caffeine 有界复用（默认 60 秒，缓存最大条数等于任务容量）。按 Key 的原子 Map 操作协调激活/排空，不使用执行器全局监视器。Caffeine 从 game-core 传递引入，使用默认被动维护，不配置过期调度器。过期 mailbox 不可复用，物理回收可等待后续缓存访问。虚拟线程执行器除总容量外还限制单 Route 等待任务数（默认 1024），一个热点 Route 只会让自己返回 OVERLOADED。两种实现均隔离任务异常并提供非阻塞 admission。
+默认平台线程执行器按完整 Route hash 分 Stripe，每个 Stripe 单线程有界队列；不同 Route 可能共享 Stripe。虚拟线程执行器只在完整 Route 有排队或运行中工作时为其保留一个无锁 FIFO mailbox；排队加运行中任务的计数决定由哪个提交方启动消费者，并让消费者在排空后退役 mailbox，空闲 Route 不占内存，也不涉及缓存。虚拟线程执行器除总容量外还限制单 Route 等待任务数（默认 1024），一个热点 Route 只会让自己返回 OVERLOADED。两种实现均隔离任务异常并提供非阻塞 admission。
 
 Runtime 负责 same-route inline，Executor SPI 不感知 Context。同 Route 嵌套先执行内层任务，内层返回后恢复外层 Context。不同 Runtime 实例即使 domain/key 相同也不 inline。
 

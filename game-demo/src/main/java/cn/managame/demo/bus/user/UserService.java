@@ -10,12 +10,10 @@ public class UserService {
 
 
     public User getAndCreateUser(Long userId){
-        User user = userRepository.get(userId);
-        if(user == null){
-            user = new User();
-            user.setUserId(userId);
-            userRepository.insert(user);
-        }
-        return user;
+        return userRepository.getOrCreate(userId, id -> {
+            User user = new User();
+            user.setUserId(id);
+            return user;
+        });
     }
 }

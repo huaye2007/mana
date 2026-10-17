@@ -1,51 +1,83 @@
 package cn.managame.rpc.node;
 
-import cn.managame.network.connection.*;
+import static cn.managame.rpc.error.RpcErrorCodes.HANDLER_ERROR;
+import static cn.managame.rpc.error.RpcErrorCodes.NODE_CLOSED;
+import static cn.managame.rpc.error.RpcErrorCodes.PEER_NOT_FOUND;
+import static cn.managame.rpc.error.RpcErrorCodes.PEER_REMOVED;
+import static cn.managame.rpc.error.RpcErrorCodes.PROTOCOL_ERROR;
+import static cn.managame.rpc.error.RpcErrorCodes.TIMEOUT;
+import static cn.managame.rpc.error.RpcErrorCodes.UNAVAILABLE;
+
+import cn.managame.network.connection.Connection;
+import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.connector.ConnectCallback;
-import cn.managame.network.netty.*;
-import cn.managame.rpc.call.*;
-import cn.managame.rpc.error.*;
-import cn.managame.rpc.message.*;
+import cn.managame.network.netty.NetworkClient;
+import cn.managame.network.netty.NetworkClientBuilder;
+import cn.managame.network.netty.NetworkServer;
+import cn.managame.network.netty.NetworkServerBuilder;
+import cn.managame.network.netty.NetworkTransports;
+import cn.managame.rpc.call.RpcCallback;
+import cn.managame.rpc.call.RpcHandler;
+import cn.managame.rpc.error.RpcException;
+import cn.managame.rpc.message.RpcHandshake;
+import cn.managame.rpc.message.RpcRequest;
+import cn.managame.rpc.message.RpcResponse;
 import cn.managame.rpc.netty.RpcWire;
 import cn.managame.rpc.transport.RpcSendStatus;
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.handler.codec.CorruptedFrameException;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.timeout.IdleState;
-import io.netty.util.*;
+import io.netty.util.AttributeKey;
+import io.netty.util.HashedWheelTimer;
+import io.netty.util.ReferenceCountUtil;
+import io.netty.util.Timeout;
 import java.net.SocketAddress;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
-import static cn.managame.rpc.error.RpcErrorCodes.*;
+import java.util.function.Consumer;
 
 /**
  * TCP RPC endpoint with peer-scoped calls and fixed connection slots.
  * start/close are blocking management operations, forbidden inside this node's handlers,
  * EventLoops and timer. Sending does not acquire the topology lifecycle lock.
+ *
+ * <p>Threads: requests, responses and connection-detected failures reach the RpcHandler on Netty EventLoops;
+ * immediate send failures on the caller; removal and closure on the management thread; call timeouts on
+ * this Node's timer thread. The handler must hand longer work to its own executor (for example a Runtime
+ * Route), because a blocked timer thread delays later timeouts, handshake timeouts and reconnects.
  */
 public final class RpcNode implements AutoCloseable {
     private enum State { NEW, RUNNING, CLOSED }
     private static final AttributeKey<RpcConnectionContext> CONTEXT =
             AttributeKey.valueOf(RpcNode.class, "context");
     private static final System.Logger LOG = System.getLogger(RpcNode.class.getName());
-    private final int nodeId, maxFrameSize;
+    /** How long close waits for connections on a caller-owned EventLoopGroup to finish. */
+    private static final long EXTERNAL_CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(5);
+    private final int nodeId, maxFrameSize, maxPendingCalls;
     private final SocketAddress bindAddress;
     private final RpcHandler handler;
     private final long callTimeout, handshakeTimeout, reconnectDelay, heartbeatInterval, heartbeatTimeout;
     private final long reconnectRandomDelay;
-    private final Map<io.netty.channel.ChannelOption<?>, Object> channelOptions;
-    private final List<java.util.function.Consumer<io.netty.channel.ChannelPipeline>> transports;
-    private final byte[] secret;
-    private final long clockSkewMillis;
-    private final java.security.SecureRandom random = new java.security.SecureRandom();
-    // Accepted initiator nonces within the clock-skew window; rejects replayed handshakes.
-    private final ConcurrentHashMap<java.nio.ByteBuffer, Long> seenNonces = new ConcurrentHashMap<>();
+    private final Map<ChannelOption<?>, Object> channelOptions;
+    private final List<Consumer<ChannelPipeline>> transports;
+    private final HandshakeGuard guard;
+    private final EventLoopGroup externalGroup;
     private final Object lifecycleLock = new Object();
-    final ConcurrentHashMap<Integer, RpcPeer> peers = new ConcurrentHashMap<>();
+    /** Written only under lifecycleLock. */
+    final PeerTable peers = new PeerTable();
     final AtomicInteger requestIds = new AtomicInteger(1);
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     // Close barrier for admitted API work, including late pending registrations. Striped, so concurrent
@@ -62,27 +94,34 @@ public final class RpcNode implements AutoCloseable {
 
     RpcNode(RpcNodeBuilder b) {
         nodeId = b.nodeId; bindAddress = b.address; handler = b.handler; maxFrameSize = b.maxFrameSize;
+        maxPendingCalls = b.maxPendingCalls;
         callTimeout = b.callTimeout; handshakeTimeout = b.handshakeTimeout; reconnectDelay = b.reconnectDelay;
         heartbeatInterval = b.heartbeatInterval; heartbeatTimeout = b.heartbeatTimeout;
         reconnectRandomDelay = b.reconnectRandomDelay < 0 ? reconnectDelay / 4 : b.reconnectRandomDelay;
         channelOptions = Map.copyOf(b.channelOptions); transports = List.copyOf(b.transports);
-        secret = b.handshakeSecret == null ? null : b.handshakeSecret.clone(); clockSkewMillis = b.handshakeClockSkew;
+        guard = new HandshakeGuard(b.handshakeSecret, b.handshakeClockSkew);
+        externalGroup = b.eventLoopGroup;
     }
+
     public static RpcNodeBuilder builder() { return new RpcNodeBuilder(); }
+
     public int nodeId() { return nodeId; }
+
+    /** Largest frame this Node encodes or accepts, length prefix included. */
+    public int maxFrameSize() { return maxFrameSize; }
+
     /** Snapshot only: at least one bound connection is active; does not promise delivery. */
     public boolean isPeerConnected(int remoteNodeId) {
         RpcPeer peer = peers.get(remoteNodeId);
-        return state == State.RUNNING && peer != null && Arrays.stream(peer.slots).anyMatch(slot -> {
-            Connection connection = slot.connection.get();
-            return connection != null && connection.isActive();
-        });
+        return state == State.RUNNING && peer != null && peer.connected();
     }
+
     /** Configured Slot count, or zero for an absent Peer. */
     public int peerSlotCount(int remoteNodeId) {
         RpcPeer peer = peers.get(remoteNodeId);
         return peer == null ? 0 : peer.slots.length;
     }
+
     public SocketAddress localAddress() {
         synchronized (lifecycleLock) { return server == null ? null : server.localAddress(); }
     }
@@ -100,19 +139,23 @@ public final class RpcNode implements AutoCloseable {
                     return thread;
                 }, 10, TimeUnit.MILLISECONDS);
                 timer.start();
-                boss = new NioEventLoopGroup(1);
-                workers = new NioEventLoopGroup();
+                if (externalGroup != null) {
+                    boss = workers = externalGroup;
+                } else {
+                    boss = NetworkTransports.newEventLoopGroup(1);
+                    workers = NetworkTransports.newEventLoopGroup(0);
+                }
                 RpcConnectionHandler bridge = new RpcConnectionHandler(this);
-                java.util.function.Consumer<io.netty.channel.ChannelPipeline> pipeline = p -> {
+                Consumer<ChannelPipeline> pipeline = p -> {
                     for (var transport : transports) transport.accept(p);   // byte-level handlers first
                     // Coalesce flushes from concurrent senders into one syscall per EventLoop turn.
-                    p.addLast("rpc-flush", new io.netty.handler.flush.FlushConsolidationHandler(256, true));
+                    p.addLast("rpc-flush", new FlushConsolidationHandler(256, true));
                     RpcWire.configurePipeline(p, maxFrameSize, heartbeatInterval, heartbeatTimeout);
                 };
                 var clientBuilder = NetworkClient.builder().eventLoopGroup(workers).handler(bridge).pipeline(pipeline);
                 var serverBuilder = NetworkServer.builder().bindAddress(bindAddress).bossGroup(boss).workerGroup(workers)
                         .handler(bridge).pipeline(pipeline);
-                channelOptions.forEach((option, value) -> { applyOption(clientBuilder, serverBuilder, option, value); });
+                channelOptions.forEach((option, value) -> applyOption(clientBuilder, serverBuilder, option, value));
                 client = clientBuilder.build();
                 server = serverBuilder.build();
                 server.start();
@@ -131,10 +174,10 @@ public final class RpcNode implements AutoCloseable {
     }
 
     @SuppressWarnings("unchecked")
-    private static <T> void applyOption(cn.managame.network.netty.NetworkClientBuilder client,
-                                        cn.managame.network.netty.NetworkServerBuilder server,
-                                        io.netty.channel.ChannelOption<T> option, Object value) {
-        client.option(option, (T) value); server.childOption(option, (T) value);
+    private static <T> void applyOption(NetworkClientBuilder client, NetworkServerBuilder server,
+                                        ChannelOption<T> option, Object value) {
+        client.option(option, (T) value);
+        server.childOption(option, (T) value);
     }
 
     /**
@@ -149,18 +192,18 @@ public final class RpcNode implements AutoCloseable {
         RpcPeer peer;
         synchronized (lifecycleLock) {
             ensureRunning();
-            peer = peers.compute(remoteNodeId, (id, current) -> {
-                if (current == null) return new RpcPeer(id, slotCount, address);
-                if (current.target == null)
-                    throw new IllegalStateException("Peer " + Integer.toUnsignedString(id)
-                            + " already dialed this node; only one side of a pair may call addPeer");
-                if (current.slots.length != slotCount)
-                    throw new IllegalStateException("Peer slotCount differs; remove it first");
-                if (current.target != null && !current.target.equals(address))
-                    throw new IllegalStateException("Peer address differs; remove it first");
-                current.target = address;
-                return current;
-            });
+            peer = peers.get(remoteNodeId);
+            if (peer == null) {
+                peer = new RpcPeer(remoteNodeId, slotCount, address);
+                peers.put(remoteNodeId, peer);
+            } else if (!peer.outbound) {
+                throw new IllegalStateException("Peer " + Integer.toUnsignedString(remoteNodeId)
+                        + " already dialed this node; only one side of a pair may call addPeer");
+            } else if (peer.slots.length != slotCount) {
+                throw new IllegalStateException("Peer slotCount differs; remove it first");
+            } else if (!peer.target.equals(address)) {
+                throw new IllegalStateException("Peer address differs; remove it first");
+            }
         }
         for (ConnectionSlot slot : peer.slots) {
             if (slot.connection.get() == null && slot.connecting.compareAndSet(false, true)) connect(peer, slot);
@@ -186,6 +229,7 @@ public final class RpcNode implements AutoCloseable {
     public <T> void call(int remoteNodeId, RpcRequest request, RpcCallback<T> callback) {
         call(remoteNodeId, request, callTimeout, callback);
     }
+
     public <T> void call(int remoteNodeId, RpcRequest request, long timeoutMillis, RpcCallback<T> callback) {
         validateRequest(remoteNodeId, request);
         Objects.requireNonNull(callback, "callback");
@@ -195,6 +239,7 @@ public final class RpcNode implements AutoCloseable {
         ByteBuf body = request.body(), frame = null;
         RpcPeer peer = null;
         PendingCall pending = null;
+        boolean reserved = false; // a pending place is held but not yet owned by a registered call
         try {
             peer = peers.get(remoteNodeId);
             if (peer == null) {
@@ -202,17 +247,21 @@ public final class RpcNode implements AutoCloseable {
                 fireFail(remoteNodeId, request.command(), state == State.RUNNING ? PEER_NOT_FOUND : NODE_CLOSED, callback);
                 return;
             }
-            if (!peer.hasCandidate()) {
+            if (!peer.reservePending(maxPendingCalls)) {
                 ReferenceCountUtil.release(body); body = null;
                 fireFail(remoteNodeId, request.command(), UNAVAILABLE, callback);
                 return;
             }
+            reserved = true;
             int id = nextRequestId();
             body = null; // RpcWire consumes it, including exceptions.
             frame = RpcWire.encodeRequest(request, id, maxFrameSize);
             pending = new PendingCall(id, request.command(), callback);
-            if (peer.pending.putIfAbsent(id, pending) != null)
+            if (!peer.addPending(pending)) {
+                pending = null;
                 throw new RpcException("requestId collided with an outstanding call");
+            }
+            reserved = false;
             if (!current(peer)) {
                 fail(peer, pending, state == State.RUNNING ? PEER_REMOVED : NODE_CLOSED);
                 return;
@@ -231,7 +280,8 @@ public final class RpcNode implements AutoCloseable {
             if (peer.pending.get(id) != pending) timeout.cancel();
         } catch (RuntimeException | Error error) {
             // Encoding/collision/write exceptions are synchronous, never a second completion.
-            if (peer != null && pending != null && peer.pending.remove(pending.id, pending)) {
+            if (reserved) peer.releasePending();
+            if (peer != null && pending != null && peer.removePending(pending)) {
                 pending.cancelTimeout();
                 tryRemovePassive(peer);
             }
@@ -251,7 +301,6 @@ public final class RpcNode implements AutoCloseable {
         try {
             RpcPeer peer = peers.get(remoteNodeId);
             if (peer == null) return RpcSendStatus.PEER_NOT_FOUND;
-            if (!peer.hasCandidate()) return RpcSendStatus.UNAVAILABLE;
             body = null;
             return send(peer, -1, request.routeKey(), RpcWire.encodeRequest(request, 0, maxFrameSize));
         } finally {
@@ -273,7 +322,6 @@ public final class RpcNode implements AutoCloseable {
                 throw new IllegalArgumentException("sourceSlotId outside peer");
             body = response.body(); // Pure argument checks are complete.
             if (peer == null) return RpcSendStatus.PEER_NOT_FOUND;
-            if (!peer.hasCandidate()) return RpcSendStatus.UNAVAILABLE;
             body = null;
             return send(peer, sourceSlotId, routeKey, RpcWire.encodeResponse(response, maxFrameSize));
         } finally {
@@ -282,7 +330,10 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
-    // This helper always consumes frame. Rejection retains it for the next slot; ACCEPTED ends traversal.
+    /**
+     * One pass over the Slots: the preferred one, then from the routeKey start. Always consumes the frame;
+     * a rejected attempt keeps it for the next Slot and ACCEPTED ends the traversal.
+     */
     RpcSendStatus send(RpcPeer peer, int preferred, long routeKey, ByteBuf frame) {
         boolean accepted = false;
         try {
@@ -291,11 +342,11 @@ public final class RpcNode implements AutoCloseable {
                 accepted = true;
                 return RpcSendStatus.ACCEPTED;
             }
-            int start = peer.startSlot(routeKey);
-            for (int i = 0; i < peer.slots.length; i++) {
-                int index = (start + i) % peer.slots.length;
+            int count = peer.slots.length, start = peer.startSlot(routeKey);
+            for (int i = 0; i < count; i++) {
+                int index = start + i < count ? start + i : start + i - count;
                 if (index == preferred) continue;
-                if (!current(peer)) break;
+                if (i > 0 && !current(peer)) break;
                 if (tryWrite(peer.slots[index], frame)) {
                     accepted = true;
                     return RpcSendStatus.ACCEPTED;
@@ -304,12 +355,15 @@ public final class RpcNode implements AutoCloseable {
             return RpcSendStatus.UNAVAILABLE;
         } finally { if (!accepted) frame.release(); }
     }
+
     private boolean tryWrite(ConnectionSlot slot, ByteBuf frame) {
         Connection connection = slot.connection.get();
         if (connection == null || !connection.isActive() || !connection.isWritable()) return false;
         try { return connection.write(frame) == WriteStatus.ACCEPTED; }
         catch (RuntimeException error) { connection.close(); throw error; }
     }
+
+    // ---------------------------------------------------------------- outbound connection recovery
 
     private void connect(RpcPeer peer, ConnectionSlot slot) {
         if (!continueRecovery(peer, slot)) return;
@@ -318,7 +372,7 @@ public final class RpcNode implements AutoCloseable {
                 RpcConnectionContext context = connection.get(CONTEXT);
                 boolean associated;
                 synchronized (lifecycleLock) {
-                    associated = current(peer) && peer.target != null && context != null
+                    associated = current(peer) && peer.recovering() && context != null
                             && !context.handshakeFinished.get() && connection.isActive();
                     if (associated) {
                         context.expectedPeer = peer;
@@ -330,14 +384,12 @@ public final class RpcNode implements AutoCloseable {
                     reconnect(peer, slot);
                     return;
                 }
-                byte[] nonce = newNonce();
-                context.sentNonce = nonce;
-                writeControl(connection, RpcWire.encodeHandshake(new RpcHandshake(nodeId, slot.id, peer.slots.length),
-                        new RpcWire.HandshakeProof(System.currentTimeMillis(), nonce, ZERO_NONCE), secret));
+                writeControl(connection, guard.initiate(context, new RpcHandshake(nodeId, slot.id, peer.slots.length)));
             }
             public void onFailure(Throwable cause) { reconnect(peer, slot); }
         });
     }
+
     private void reconnect(RpcPeer peer, ConnectionSlot slot) {
         if (!continueRecovery(peer, slot)) return;
         try {
@@ -355,15 +407,17 @@ public final class RpcNode implements AutoCloseable {
             slot.connecting.set(false);
             return false;
         }
-        if (peer.target != null && slot.connection.get() == null) return true;
+        if (peer.recovering() && slot.connection.get() == null) return true;
         slot.connecting.set(false);
-        return current(peer) && peer.target != null && slot.connection.get() == null
+        return current(peer) && peer.recovering() && slot.connection.get() == null
                 && slot.connecting.compareAndSet(false, true);
     }
 
     long nextReconnectDelayMillis() {
         return reconnectDelay + (reconnectRandomDelay == 0 ? 0 : ThreadLocalRandom.current().nextLong(reconnectRandomDelay + 1));
     }
+
+    // ---------------------------------------------------------------- connection events (EventLoops)
 
     void connected(Connection connection) {
         synchronized (lifecycleLock) {
@@ -386,7 +440,7 @@ public final class RpcNode implements AutoCloseable {
                 throw new CorruptedFrameException("Empty/non-buffer RPC frame");
             int type = frame.readUnsignedByte();
             if (type == RpcWire.HANDSHAKE) {
-                handshake(connection, context, RpcWire.decodeHandshake(frame, secret));
+                handshake(connection, context, guard.decode(frame));
                 return;
             }
             if (context.slot == null || !current(context.peer))
@@ -400,89 +454,71 @@ public final class RpcNode implements AutoCloseable {
                 default -> throw new CorruptedFrameException("Unknown RPC message type: " + type);
             }
         } catch (RuntimeException error) {
-            log("Invalid RPC frame", error);
+            RpcPeer peer = context.peer;
+            warn("Invalid RPC frame from " + (peer == null ? "unidentified peer" : "node " + Integer.toUnsignedString(peer.nodeId))
+                    + " at " + connection.remoteAddress(), error);
             connection.close();
         }
     }
 
     private void handshake(Connection connection, RpcConnectionContext context, RpcWire.AuthenticatedHandshake received) {
         RpcHandshake hello = received.identity();
-        RpcWire.HandshakeProof proof = received.proof();
         if (hello.nodeId() == nodeId || context.slot != null || !context.handshakeFinished.compareAndSet(false, true))
             throw new CorruptedFrameException("Duplicate, expired or self handshake");
-        if (context.expectedPeer != null) {
-            // Our own outbound connection: the reply must echo the nonce we sent.
-            byte[] sent = context.sentNonce;
-            if (sent == null || !Arrays.equals(sent, proof.peerNonce()))
-                throw new CorruptedFrameException("Handshake reply does not answer this connection");
-        } else {
-            if (!Arrays.equals(ZERO_NONCE, proof.peerNonce())) throw new CorruptedFrameException("Unexpected handshake reply");
-            if (secret != null) checkFresh(proof);
-        }
+        guard.verify(context, received.proof());
         context.timeout.cancel();
         synchronized (lifecycleLock) {
             if (state != State.RUNNING || !connection.isActive()) { connection.close(); return; }
-            if (context.expectedPeer != null) {
-                RpcPeer peer = context.expectedPeer;
-                ConnectionSlot slot = context.expectedSlot;
-                if (!current(peer) || peer.nodeId != hello.nodeId() || slot.id != hello.slotId()
-                        || peer.slots.length != hello.slotCount())
-                    throw new CorruptedFrameException("Unexpected handshake identity");
-                if (!slot.connection.compareAndSet(null, connection))
-                    throw new CorruptedFrameException("Duplicate slot");
-                context.peer = peer;
-                context.slot = slot;
-                slot.connecting.set(false);
-            } else {
-                peers.compute(hello.nodeId(), (id, old) -> {
-                    if (old != null && old.target != null)
-                        throw new CorruptedFrameException("Both nodes called addPeer for each other (remote "
-                                + Integer.toUnsignedString(id) + "); only one side of a pair may dial");
-                    RpcPeer peer = old == null ? new RpcPeer(id, hello.slotCount(), null) : old;
-                    if (peer.slots.length != hello.slotCount())
-                        throw new CorruptedFrameException("Peer slotCount mismatch");
-                    ConnectionSlot slot = peer.slots[hello.slotId()];
-                    if (slot.connection.get() != null) throw new CorruptedFrameException("Duplicate slot");
-                    // A READY connection is not published until its reply handshake is admitted.
-                    if (!writeControl(connection, RpcWire.encodeHandshake(
-                            new RpcHandshake(nodeId, slot.id, peer.slots.length),
-                            new RpcWire.HandshakeProof(System.currentTimeMillis(), newNonce(), proof.nonce()), secret))) return old;
-                    if (!connection.isActive() || !slot.connection.compareAndSet(null, connection)) {
-                        connection.close();
-                        return old;
-                    }
-                    context.peer = peer;
-                    context.slot = slot;
-                    // An existing outbound recovery chain stops itself on observing this binding.
-                    return peer;
-                });
-            }
+            if (context.expectedPeer != null) bindOutbound(connection, context, hello);
+            else bindInbound(connection, context, hello, received.proof());
         }
     }
 
-    private static final byte[] ZERO_NONCE = new byte[16];
-    private byte[] newNonce() {
-        if (secret == null) return ZERO_NONCE.clone();
-        byte[] nonce = new byte[16]; random.nextBytes(nonce); return nonce;
+    /** Reply to our own dial. Caller holds lifecycleLock. */
+    private void bindOutbound(Connection connection, RpcConnectionContext context, RpcHandshake hello) {
+        RpcPeer peer = context.expectedPeer;
+        ConnectionSlot slot = context.expectedSlot;
+        if (!current(peer) || peer.nodeId != hello.nodeId() || slot.id != hello.slotId()
+                || peer.slots.length != hello.slotCount())
+            throw new CorruptedFrameException("Unexpected handshake identity");
+        if (!slot.connection.compareAndSet(null, connection))
+            throw new CorruptedFrameException("Duplicate slot");
+        context.peer = peer;
+        context.slot = slot;
+        slot.connecting.set(false);
     }
-    /** Initiating handshake with a secret: timestamp within the skew window and nonce never seen in it. */
-    private void checkFresh(RpcWire.HandshakeProof proof) {
-        long now = System.currentTimeMillis();
-        if (Math.abs(now - proof.timestampMillis()) > clockSkewMillis) throw new CorruptedFrameException("Stale RPC handshake");
-        long expires = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(2 * clockSkewMillis);
-        if (seenNonces.putIfAbsent(java.nio.ByteBuffer.wrap(proof.nonce()), expires) != null)
-            throw new CorruptedFrameException("Replayed RPC handshake");
-        if (seenNonces.size() > 1024) {
-            long nanos = System.nanoTime();
-            seenNonces.values().removeIf(expiry -> expiry - nanos < 0);
+
+    /**
+     * An initiating handshake from a remote dialer. Caller holds lifecycleLock, which also serializes
+     * passive-Peer removal, so a new Peer is published only after its Slot is bound.
+     */
+    private void bindInbound(Connection connection, RpcConnectionContext context, RpcHandshake hello,
+                             RpcWire.HandshakeProof proof) {
+        RpcPeer existing = peers.get(hello.nodeId());
+        if (existing != null && existing.outbound)
+            throw new CorruptedFrameException("Both nodes called addPeer for each other (remote "
+                    + Integer.toUnsignedString(hello.nodeId()) + "); only one side of a pair may dial");
+        RpcPeer peer = existing != null ? existing : new RpcPeer(hello.nodeId(), hello.slotCount(), null);
+        if (peer.slots.length != hello.slotCount()) throw new CorruptedFrameException("Peer slotCount mismatch");
+        ConnectionSlot slot = peer.slots[hello.slotId()];
+        if (slot.connection.get() != null) throw new CorruptedFrameException("Duplicate slot");
+        // A READY connection is not published until its reply handshake is admitted (writeControl closes on refusal).
+        if (!writeControl(connection, guard.reply(new RpcHandshake(nodeId, slot.id, peer.slots.length), proof))) return;
+        if (!connection.isActive() || !slot.connection.compareAndSet(null, connection)) {
+            connection.close();
+            return;
         }
+        if (existing == null) peers.put(peer.nodeId, peer);
+        context.peer = peer;
+        context.slot = slot;
+        // An existing outbound recovery chain stops itself on observing this binding.
     }
 
     private void response(RpcPeer peer, ByteBuf frame) {
         if (frame.readableBytes() < 4) throw new CorruptedFrameException("Response lacks requestId");
         int id = frame.readInt();
         if (id == 0) throw new CorruptedFrameException("Zero response requestId");
-        PendingCall pending = peer.pending.remove(id);
+        PendingCall pending = peer.removePending(id);
         if (pending == null) return;
         pending.cancelTimeout();
         try {
@@ -507,8 +543,8 @@ public final class RpcNode implements AutoCloseable {
             if (context.slot.connection.compareAndSet(connection, null)) {
                 // Without any connection no response can arrive: fail now instead of waiting for timeouts.
                 // A remaining Slot can still carry the response, so partial loss keeps pending calls.
-                if (!connected(peer)) for (PendingCall call : peer.pending.values()) fail(peer, call, UNAVAILABLE);
-                if (current(peer) && peer.target != null
+                if (!peer.bound()) for (PendingCall call : peer.pending.values()) fail(peer, call, UNAVAILABLE);
+                if (current(peer) && peer.recovering()
                         && context.slot.connecting.compareAndSet(false, true)) reconnect(peer, context.slot);
                 tryRemovePassive(peer);
             }
@@ -516,16 +552,14 @@ public final class RpcNode implements AutoCloseable {
             reconnect(context.expectedPeer, context.expectedSlot);
         }
     }
-    private static boolean connected(RpcPeer peer) {
-        for (ConnectionSlot slot : peer.slots) if (slot.connection.get() != null) return true;
-        return false;
-    }
+
     void idle(Connection connection, IdleState idle) {
         RpcConnectionContext context = connection.get(CONTEXT);
         if (context == null || context.slot == null || !current(context.peer)) return;
         if (idle == IdleState.READER_IDLE) connection.close();
         else if (idle == IdleState.WRITER_IDLE) writeControl(connection, RpcWire.encodeHeartbeat());
     }
+
     private boolean writeControl(Connection connection, ByteBuf frame) {
         boolean accepted = false;
         try {
@@ -536,60 +570,69 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
+    // ---------------------------------------------------------------- handler notification
+
     private void fireRequest(RpcPeer peer, int slotId, RpcRequest request) {
         boolean previous = inHandler.get();
         inHandler.set(true);
         try { handler.onRequest(peer.nodeId, slotId, request); }
         catch (RuntimeException error) {
-            log("RpcHandler.onRequest failed", error);
+            warn("RpcHandler.onRequest failed for command " + request.command() + " from node "
+                    + Integer.toUnsignedString(peer.nodeId), error);
             if (request.requestId() != 0 && current(peer)) {
                 RpcResponse response = new RpcResponse(request.requestId(), HANDLER_ERROR, null, null);
                 try {
                     RpcSendStatus status = send(peer, slotId, request.routeKey(),
                             RpcWire.encodeResponse(response, maxFrameSize));
-                    if (status != RpcSendStatus.ACCEPTED) log("Handler error response was not admitted", null);
-                } catch (RuntimeException sendError) { log("Handler error response failed", sendError); }
+                    if (status != RpcSendStatus.ACCEPTED) warn("Handler error response was not admitted", null);
+                } catch (RuntimeException sendError) { warn("Handler error response failed", sendError); }
             }
         } finally { inHandler.set(previous); }
     }
+
     private void fireFail(int remoteNodeId, int command, int error, RpcCallback<?> callback) {
         invoke(() -> handler.onFail(remoteNodeId, command, error, callback));
     }
+
     private void invoke(Runnable action) {
         boolean previous = inHandler.get();
         inHandler.set(true);
         try { action.run(); }
-        catch (RuntimeException error) { log("RPC handler failed", error); }
+        catch (RuntimeException error) { warn("RPC handler failed", error); }
         finally { inHandler.set(previous); }
     }
+
     private void fail(RpcPeer peer, PendingCall pending, int error) {
-        if (!peer.pending.remove(pending.id, pending)) return;
+        if (!peer.removePending(pending)) return;
         pending.cancelTimeout();
         try { fireFail(peer.nodeId, pending.command, error, pending.callback); }
         finally { tryRemovePassive(peer); }
     }
+
     private int nextRequestId() {
         int id;
         do { id = requestIds.getAndIncrement(); } while (id == 0);
         return id;
     }
+
+    /** Runs on the timer thread; the application hands the failure to its own executor if needed. */
     private void timeout(RpcPeer peer, PendingCall pending) {
-        if (!peer.pending.remove(pending.id, pending)) return;
+        if (!peer.removePending(pending)) return;
         pending.cancelTimeout();
         tryRemovePassive(peer);
-        // Runs on the timer thread: the application hands the failure to its own executor if needed.
         fireFail(peer.nodeId, pending.command, TIMEOUT, pending.callback);
     }
+
+    /** Drops an inbound Peer that has no connection and no outstanding call. Cheap when it does not apply. */
     private void tryRemovePassive(RpcPeer peer) {
-        if (peer.target != null) return;
-        peers.computeIfPresent(peer.nodeId, (id, current) -> {
-            if (current != peer || peer.target != null || !peer.pending.isEmpty()) return current;
-            for (ConnectionSlot slot : peer.slots) if (slot.connection.get() != null) return current;
-            return null;
-        });
+        if (peer.outbound || !peer.pending.isEmpty() || peer.bound()) return;
+        synchronized (lifecycleLock) {
+            if (peer.pending.isEmpty() && !peer.bound()) peers.remove(peer.nodeId, peer);
+        }
     }
+
     private void detach(RpcPeer peer, int error) {
-        peer.target = null;
+        peer.detached = true;
         // Also close unfinished handshakes belonging to this peer, not just READY slots.
         for (Connection connection : connections) {
             RpcConnectionContext context = connection.get(CONTEXT);
@@ -606,8 +649,10 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
+    // ---------------------------------------------------------------- shutdown
+
     /**
-     * Idempotent synchronous barrier. All admitted sends, callbacks on owned workers, connections
+     * Idempotent synchronous barrier. All admitted sends, callbacks on this Node's EventLoops, connections
      * and timers finish before return. Does not wait for application work dispatched elsewhere.
      */
     @Override public void close() {
@@ -618,8 +663,7 @@ public final class RpcNode implements AutoCloseable {
             if (state != State.CLOSED) {
                 state = State.CLOSED;
                 closingThread = Thread.currentThread();
-                closing = new ArrayList<>(peers.values());
-                peers.clear();
+                closing = peers.clear();
             }
         }
         if (closing == null) { awaitClosed(); return; }
@@ -631,19 +675,34 @@ public final class RpcNode implements AutoCloseable {
             finally { closed.countDown(); }
         }
     }
+
     private void closeResources() {
         for (Connection connection : connections) connection.close();
         cleanup(() -> { if (server != null) server.close(); });
         cleanup(() -> { if (client != null) client.close(); });
-        cleanup(() -> { if (boss != null) boss.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly(); });
-        cleanup(() -> { if (workers != null) workers.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly(); });
+        if (externalGroup == null) {
+            cleanup(() -> { if (boss != null) boss.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly(); });
+            cleanup(() -> { if (workers != null) workers.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly(); });
+        } else {
+            awaitConnectionsClosed();
+        }
         cleanup(() -> { if (timer != null) timer.stop(); });
         connections.clear();
     }
-    private static void cleanup(Runnable action) {
-        try { action.run(); }
-        catch (RuntimeException error) { log("RPC shutdown resource failed", error); }
+
+    /** With a caller-owned group, waits (bounded) until every connection reported its disconnection. */
+    private void awaitConnectionsClosed() {
+        long deadline = System.nanoTime() + EXTERNAL_CLOSE_WAIT_NANOS;
+        while (!connections.isEmpty() && System.nanoTime() - deadline < 0) LockSupport.parkNanos(1_000_000);
+        if (!connections.isEmpty())
+            warn(connections.size() + " RPC connections were still closing when close returned", null);
     }
+
+    private void cleanup(Runnable action) {
+        try { action.run(); }
+        catch (RuntimeException error) { warn("RPC shutdown resource failed", error); }
+    }
+
     private void awaitClosed() {
         boolean interrupted = false;
         while (true) {
@@ -652,10 +711,12 @@ public final class RpcNode implements AutoCloseable {
         }
         if (interrupted) Thread.currentThread().interrupt();
     }
+
     /** Admitted operations are short and nonblocking apart from application failure callbacks. */
     private void awaitOperations() {
         while (operations.sum() != 0) LockSupport.parkNanos(50_000);
     }
+
     private void enterOperation() {
         ensureRunning();
         operations.increment();
@@ -664,32 +725,38 @@ public final class RpcNode implements AutoCloseable {
             throw new IllegalStateException("RPC node is not running");
         }
     }
+
     private void ensureRunning() {
         if (state != State.RUNNING) throw new IllegalStateException("RPC node is not running");
     }
+
     private boolean current(RpcPeer peer) {
         return state == State.RUNNING && peers.get(peer.nodeId) == peer;
     }
+
     private void validateTarget(int remoteNodeId) {
         if (remoteNodeId == 0 || remoteNodeId == nodeId)
             throw new IllegalArgumentException("remote nodeId must be nonzero and different from local");
     }
+
     private void validateRequest(int remoteNodeId, RpcRequest request) {
         validateTarget(remoteNodeId);
         Objects.requireNonNull(request, "request");
         if (request.requestId() != 0) throw new IllegalArgumentException("Outbound requestId must be zero");
     }
+
     private void checkManagementThread() {
         if (inHandler.get() || Thread.currentThread() == timerThread)
             throw new IllegalStateException("Blocking lifecycle operation in RPC callback/timer");
-        for (EventLoopGroup group : new EventLoopGroup[] { boss, workers }) {
+        for (EventLoopGroup group : new EventLoopGroup[] {boss, workers, externalGroup}) {
             if (group != null) for (var executor : group)
                 if (executor.inEventLoop()) throw new IllegalStateException("Blocking lifecycle operation on RPC EventLoop");
         }
     }
-    static void log(String message, Throwable cause) {
-        LOG.log(System.Logger.Level.WARNING, message, cause);
+
+    /** Warning tagged with this Node; the message is built only by callers that already decided to log. */
+    void warn(String message, Throwable cause) {
+        if (LOG.isLoggable(System.Logger.Level.WARNING))
+            LOG.log(System.Logger.Level.WARNING, "[rpc node " + Integer.toUnsignedString(nodeId) + "] " + message, cause);
     }
 }
-
-

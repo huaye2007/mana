@@ -9,11 +9,9 @@ import io.netty.handler.codec.TooLongFrameException;
 import io.netty.handler.codec.PrematureChannelClosureException;
 import io.netty.handler.codec.http.websocketx.WebSocketHandshakeException;
 import javax.net.ssl.SSLException;
-import java.nio.channels.ClosedChannelException;
-import java.net.SocketException;
-import io.netty.util.concurrent.Future;
 import java.net.URI;
-import java.util.concurrent.TimeUnit;
+import cn.managame.network.internal.ListenerLifecycle;
+import java.io.IOException;
 
 final class NetworkSupport {
     static final System.Logger LOG = System.getLogger("cn.managame.network");
@@ -30,8 +28,8 @@ final class NetworkSupport {
         if (detail instanceof SSLException || detail instanceof WebSocketHandshakeException
                 || detail instanceof CorruptedFrameException || detail instanceof TooLongFrameException)
             reason = "Protocol establishment rejected";
-        else if (detail instanceof ClosedChannelException || detail instanceof SocketException
-                || detail instanceof PrematureChannelClosureException)
+        // IOException also covers native-transport resets (Errors.NativeIoException) and socket errors.
+        else if (detail instanceof IOException || detail instanceof PrematureChannelClosureException)
             reason = "Peer disconnected";
         else {
             log(message + "; peer=" + channel.remoteAddress(), cause);
@@ -62,12 +60,7 @@ final class NetworkSupport {
         }
     }
     static void shutdown(EventLoopGroup group) {
-        await(group.shutdownGracefully(0, 5, TimeUnit.SECONDS), "EventLoop shutdown failed");
-    }
-    // Finish cleanup even when interrupted; the outer lifecycle operation reports interruption.
-    static void await(Future<?> future, String message) {
-        future.awaitUninterruptibly();
-        if (!future.isSuccess()) throw new NetworkException(message, future.cause());
+        ListenerLifecycle.shutdown(group);
     }
     static void checkInterrupted(String operation) {
         if (Thread.currentThread().isInterrupted())

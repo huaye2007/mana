@@ -16,6 +16,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
 | [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、HTTP/RPC 托管生命周期、对象 RPC 适配、初始化 Repository 注入、Runtime 停机排空 |
 | [game-demo](game-demo/README.zh-CN.md) | Spring 应用，装配 MySQL Data Repository、GamePacket TCP 分发、Runtime HTTP、定时/cron 及独立 TCP/HTTP/RPC 入口 |
+| game-benchmark | JMH 微基准（Metadata、RPC 编解码、Route 执行器），守护热点路径；不属于任何框架 artifact |
 
 依赖方向：
 
@@ -28,7 +29,7 @@ game-rpc ───→ game-router ───→ game-demo（路由示例）
 game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
 ```
 
-game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。game-core 没有第三方依赖；Runtime 为空闲 Mailbox 缓存自行声明 Caffeine。Runtime 为 HTTP 注解与 Route 接入依赖 game-core 和 game-network，不依赖 RPC、Spring 或业务序列化。
+game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。game-core 没有第三方依赖。Runtime 为 HTTP 注解与 Route 接入依赖 game-core 和 game-network，不依赖 RPC、Spring 或业务序列化。
 
 Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包。Network 入口见 [game-network](game-network/README.zh-CN.md)；RPC 入口见 [game-rpc](game-rpc/README.zh-CN.md)。
 
@@ -59,7 +60,17 @@ mvn clean verify
 mvn -pl game-network -am test
 ```
 
-当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-spring、game-demo。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。可选 RPC→Runtime 集成已由 game-spring 提供，Data 使用由 Spring 应用演示。
+代码质量与基准：
+
+```shell
+mvn -Pquality -DskipTests verify    # 检查主源码的 Checkstyle 规则（config/checkstyle.xml）
+mvn -Perrorprone -DskipTests compile  # 可选：Error Prone 静态检查
+mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/target/benchmarks.jar
+```
+
+CI（`.github/workflows/ci.yml`）在 JDK 25 上运行 `mvn clean verify` 与质量检查。
+
+当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-spring、game-demo、game-benchmark。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。可选 RPC→Runtime 集成已由 game-spring 提供，Data 使用由 Spring 应用演示。
 
 在 IDE 运行 [NetworkEchoExample](game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 

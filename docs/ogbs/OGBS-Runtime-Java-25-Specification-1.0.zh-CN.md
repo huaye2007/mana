@@ -6,21 +6,21 @@
 
 ## 1. 模块与主 API
 
-Maven `cn.managame:game-runtime:1.0.0-SNAPSHOT`，Java 25。依赖 game-core、game-network（HTTP 入口）、Jackson Databind 2.21.3（HTTP 结果与 JSON Key 提取）和 Caffeine 3.2.3（空闲 Mailbox 复用）；不依赖 RPC。
+Maven `cn.managame:game-runtime:1.0.0-SNAPSHOT`，Java 25。依赖 game-core、game-network（HTTP 入口）、Jackson Databind 2.21.3（HTTP 结果与 JSON Key 提取）；定时器使用 game-network 带来的 Netty HashedWheelTimer；不依赖 RPC。
 
 ```java
 public interface GameRuntime extends AutoCloseable {
     void dispatch(HandlerContext context);
     void dispatch(Connection connection, long routeKey, Object message);
-    void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
+    default void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
     void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message);
-    void dispatch(Connection connection, Object message);
+    default void dispatch(Connection connection, Object message);
     void dispatch(Connection connection, Metadata metadata, Object message);
     void dispatch(Connection connection, int businessIdType, long businessId, Object message);
     void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
                      int businessIdType, long businessId, Metadata metadata, Object message);
     <T> void call(int routeDomain, long routeKey, Supplier<T> action, RouteCallback<T> callback);
-    <T> RouteCallback<T> callback(RouteCallback<T> callback);
+    <T> CapturedRouteCallback<T> callback(RouteCallback<T> callback);
     HttpDispatcher http();
     EventBus eventBus();
     RuntimeTimer timer();
@@ -32,7 +32,12 @@ public interface GameRuntime extends AutoCloseable {
     RuntimeStats stats();
     void close();
 }
-public interface RouteCallback<T> { void onSuccess(T result); void onFail(int errorCode); }
+public interface RouteCallback<T> {
+    void onSuccess(T result);
+    void onFail(int errorCode);
+    default void onFail(int errorCode, Throwable cause) { onFail(errorCode); }
+}
+public interface CapturedRouteCallback<T> extends RouteCallback<T> { boolean cancel(); }
 ```
 
 构建成功即可使用；没有 start、动态注册或任意 Runnable 派发。业务常用入口是 `dispatch(connection, routeKey, businessIdType, businessId, message)`，Domain 来自 Handler 注解（§6.2）。配置 `handlerContextFactory` 后，`dispatch(connection, message)` 按 Domain 选择 Key 与身份（§6.4）。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入（§13）。
@@ -169,7 +174,7 @@ Handler 对象标注 `@Handler(domain = …)`（可继承）。方法上非零�
 | `void handle(Connection c, M m)` | 否；从 ClientHandlerContext 读取 |
 | `M handle(M m)`、`static void handle(M m)`、`void handle(M a, M b)`、`void handle(TimerContext c, M m)`、`void handle(M... m)` | 否 |
 
-前置条件与准入失败抛带 Core 错误码的 RuntimeDispatchException；开始执行后的异常交给 RuntimeErrorHandler（内联执行也一样），不会抛给调用方。
+前置条件与准入失败抛带 Core 错误码的 RuntimeDispatchException（不采集栈，过载拒绝只付出一次分配；toString 含 `FrameworkErrorCodes.describe`）；开始执行后的异常交给 RuntimeErrorHandler（内联执行也一样），不会抛给调用方。
 
 <a id="automatic-handler-dispatch"></a>
 
@@ -233,7 +238,7 @@ interface RouteExecutor extends AutoCloseable {
 | 执行器 | 串行方式 | 容量 |
 | --- | --- | --- |
 | RouteExecutors.platformThreads(n) / StripedRouteExecutor(n, queue) | Route 哈希到 n 个单线程分片之一；同分片的 Route 互相等待 | 每个分片的等待任务数（默认 65,536），不含正在运行的任务 |
-| RouteExecutors.virtualThreads() / VirtualThreadRouteExecutor(capacity[, routeCapacity, idleTimeout]) | 每个活跃 Route 一个 Mailbox 和一个虚拟线程消费者 | 全部 Route 的未完成任务数（默认 65,536，含运行中）及每个 Route 的等待任务数（默认 min(capacity, 1024)） |
+| RouteExecutors.virtualThreads() / VirtualThreadRouteExecutor(capacity[, routeCapacity]) | 每个有工作的 Route 一个无锁 Mailbox 和一个虚拟线程消费者 | 全部 Route 的未完成任务数（默认 65,536，含运行中）及每个 Route 在运行任务之外的等待任务数（默认 min(capacity, 1024)） |
 
 两者都不阻塞地拒绝，关闭后继续执行已接纳的任务。单 Route 上限防止一个刷请求的 Route 占满共享容量；网络 pipeline 中仍应做连接级限流。同 Route 内联执行不受容量限制（递归仍消耗栈）。自定义执行器必须保证同 Route 互斥与顺序、被拒绝的任务不执行、已接纳的任务恰好执行一次，并处理关闭与提交的竞争。
 
@@ -241,7 +246,7 @@ interface RouteExecutor extends AutoCloseable {
 
 ### 7.3 虚拟线程 Mailbox
 
-活跃 Mailbox 存放在以 Domain/Key 为键的 ConcurrentHashMap 中；入队、启动消费者以及从活跃转为空闲都在该键的 compute 操作中完成，业务代码在操作之外执行。消费者发现队列为空时，把空 Mailbox 放入空闲 Caffeine 缓存（maximumSize = capacity，expireAfterWrite = idleTimeout，默认 60 秒），同一 Route 的下一批请求可直接复用；过期只损失复用，不会丢任务。一个 AtomicLong 同时保存关闭位与全部预留，准入与关闭是原子的；关闭时清除空闲条目，已接纳的任务继续执行完。测试：[VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java)、[RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java)。
+Mailbox 只在 Route 有排队或运行中的任务时存在于以 Domain/Key 为键的 ConcurrentHashMap 中。Mailbox 由无锁队列和一个计数组成（排队加运行中的任务）：提交方 CAS 递增计数后入队，把计数从 0 变为 1 的提交方负责启动消费者；消费者执行完一个任务后递减计数，降到 0 时把计数标记为退役并从表中移除 Mailbox，然后退出。看到退役标记的提交方替换为新 Mailbox。因为计数只有在最后一个任务执行完后才归零，同一 Route 任意时刻至多一个消费者，任务按提交顺序执行；入队和出队都不取锁，也没有空闲缓存——空闲 Route 不占内存，不再依赖 Caffeine。一个 AtomicLong 同时保存关闭位与全部预留，准入与关闭是原子的；关闭后已接纳的任务继续执行完。测试：[VirtualThreadRouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/VirtualThreadRouteExecutorTest.java)、[RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java)。
 
 ## 8. 跨 Route 调用与回调
 
@@ -262,7 +267,7 @@ interface EventBus { void publish(Event event); }
 @EventMethod(order = 10) public void onChanged(MyEvent event) { … }
 ```
 
-通过 eventHandlers 注册的监听方法接收一个 Event 子类型，按精确类匹配、按 order 升序执行（相同 order 顺序不定），在事件所在 Route 的 DefaultEventContext 中运行；某个监听失败会被报告（3009），其余监听照常执行。从本 Runtime 内发布时继承身份与 Metadata，否则为 0/0 与空。即使没有监听也会校验 Route 与准入。
+通过 eventHandlers 注册的监听方法接收一个 Event 子类型，按精确类匹配、按 order 升序执行（相同 order 顺序不定），在事件所在 Route 的 DefaultEventContext 中运行；某个监听失败会被报告（3009），其余监听照常执行。从本 Runtime 内发布时继承身份与 Metadata，否则为 0/0 与空。即使没有监听也会校验 Route 与准入；没有监听的事件在校验后直接返回，不创建上下文、不提交 Route 任务，也不计入 RuntimeStats。
 
 <a id="static-event-publication"></a>
 
@@ -282,7 +287,7 @@ interface EventBus { void publish(Event event); }
 
 ### 10.2 一次性 Timer
 
-`TimerRef RuntimeTimer.schedule(domain, key, Duration delay, Runnable task)` 立即校验 Route（拒绝负延迟），到期后在新的 DefaultTimerContext 中把任务提交到该 Route。每个 Runtime 一个调度线程。`TimerRef.cancel()` 只在触发前成功，不能撤回已提交的任务。
+`TimerRef RuntimeTimer.schedule(domain, key, Duration delay, Runnable task)` 立即校验 Route（拒绝负延迟），到期后在新的 DefaultTimerContext 中把任务提交到该 Route。每个 Runtime 一个时间轮线程（Netty HashedWheelTimer，tick 10 ms、1024 槽）：调度与取消为 O(1)，适合大量 buff、冷却、过期计时器；精度为一个 tick——到期不早于延迟，通常在其后一个 tick 内触发。时间轮线程只把任务提交到 Route，业务代码不在其上运行。`TimerRef.cancel()` 只在触发前成功，不能撤回已提交的任务。
 
 ### 10.3 Cron 表达式
 
@@ -347,7 +352,7 @@ int RuntimeDispatchException.errorCode();
 
 ### 13.2 完成、编码与所有权
 
-`HttpResultCallback`：`onResponse(result)`（状态 200）、`onResponse(status, result)`（200..599）、`onFail(cause)`。返回对象（包括 null → JSON `null`）自动完成；void 方法须显式完成，可以立即也可以稍后。完成只认领一次；只编码胜出的结果，在完成线程上同步由 `HttpResultCodec` 编码（默认 Jackson JSON，`application/json; charset=UTF-8`；自定义 codec 返回独立持有的 byte[] 与内容类型，并须线程安全）。编码失败或把传输对象作为结果 → RUNTIME_EXECUTION_ERROR 并走 Network 失败路径（500 并关闭）。
+`HttpResultCallback`：`onResponse(result)`（状态 200）、`onResponse(status, result)`（200..599）、`onFail(cause)`。返回对象（包括 null → JSON `null`）自动完成；void 方法须显式完成，可以立即也可以稍后。完成只认领一次；只编码胜出的结果，在完成线程上同步由 `HttpResultCodec` 编码（默认 Jackson JSON，`application/json; charset=UTF-8`，与默认请求解码共用同一套属性规则：任意可见性的字段加普通 getter/setter，因此同一个 DTO 读写的字段一致；请求体直接从 ByteBuf 流式解析，不先复制成 String；自定义 codec 返回独立持有的 byte[] 与内容类型，并须线程安全）。编码失败或把传输对象作为结果 → RUNTIME_EXECUTION_ERROR 并走 Network 失败路径（500 并关闭）。
 
 | 情况 | HTTP | 是否执行方法 |
 | --- | --- | --- |
@@ -379,8 +384,8 @@ Runtime 持有 request 直到方法返回并完成自动编码（被拒绝时立
 
 `dispatchRpc(...)` 解析 Handler 的 Domain 并创建 DefaultRpcHandlerContext；应用已解码 body 并选好 Key 与身份。它不发送任何内容；类型化适配位于 game-spring。
 
-`runtime.callback(cb)` 须在本 Runtime 的当前 Route 中调用。它预留一个计入排空的待完成续接，返回线程安全的一次性适配器：第一次 onSuccess/onFail 回到来源 Route（已在该 Route 时内联执行），之后的调用被忽略；onFail 需要正的错误码。必须保证它被完成，包括外部调用同步失败时以及通过外部超时。
+`runtime.callback(cb)` 须在本 Runtime 的当前 Route 中调用。它预留一个计入排空的待完成续接，返回线程安全的一次性 CapturedRouteCallback：第一次 onSuccess/onFail 回到来源 Route（已在该 Route 时内联执行），之后的调用被忽略；onFail 需要正的错误码，`onFail(code, cause)` 把原因交给业务回调的同名方法（默认忽略原因）。必须保证它被完成或取消，包括通过外部超时。外部调用同步失败、且已经用异常告知调用方时，用 `cancel()` 释放预留而不运行业务回调，避免同一失败被报告两次；已完成或已取消时 cancel 返回 false。`call` 的 action 抛异常时，回调收到 `onFail(3008, cause)`。
 
 `shutdown()` 停止外部准入与定时器（不可逆、幂等）；正在运行的工作仍可提交下游工作。`awaitTermination(timeout)` 须在 shutdown 之后、由外部线程调用（否则 IllegalStateException），等待已接纳的动作与已登记的回调；超时返回 false，不关闭任何东西。`close()` 关闭执行器且不等待。优雅顺序：shutdown → awaitTermination → close → 关闭网络、RPC 与数据。测试：[RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java)。
 
-`stats()` 返回 RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos)；计数为近似值，不代表业务成功。Spring 装配见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
+`stats()` 返回 RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos)；计数为近似值，不代表业务成功。计数使用分段 LongAdder，所有工作线程不争用同一变量；`GameRuntimeBuilder.executionTiming(false)` 关闭每个任务两次读取单调时钟，此时 executionNanos 保持 0。Spring 装配见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。

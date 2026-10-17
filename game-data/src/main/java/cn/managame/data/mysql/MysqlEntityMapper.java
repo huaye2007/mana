@@ -1,5 +1,6 @@
 package cn.managame.data.mysql;
 
+import java.sql.SQLException;
 import cn.managame.data.codec.*;
 import cn.managame.data.key.GroupKey;
 import cn.managame.data.mapper.EntityMapper;
@@ -49,7 +50,7 @@ public final class MysqlEntityMapper implements EntityMapper {
         access.transaction(tx -> {
             int[] counts = tx.batchUpdate(m.update, rows);
             for (int i = 0; i < counts.length; i++)
-                if (counts[i] == 0) throw new MysqlException(m.update, new java.sql.SQLException(
+                if (counts[i] == 0) throw new MysqlException(m.update, new SQLException(
                         "UPDATE matched no row for id " + key.getId(entities.get(i)), "02000"));
             return null;
         });

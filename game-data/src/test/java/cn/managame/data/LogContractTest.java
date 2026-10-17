@@ -90,4 +90,23 @@ class LogContractTest {
         }
         assertTrue(access.sqls.getFirst().contains("actions_202610"));
     }
+    @Test void fullLogQueueRefusesAndReportsInsteadOfGrowing() {
+        var access=new Access(); var failures=new ArrayList<DataFailure>();
+        var data=GameDataBuilder.builder().logRepositories(access,Logs.class).logQueueCapacity(2)
+                .flushInterval(Duration.ofMinutes(1)).errorHandler(failures::add).build();
+        var logs=data.repository(Logs.class);
+        long time=Instant.parse("2026-09-01T00:00:00Z").toEpochMilli();
+        assertTrue(logs.insert(new Log(1,time,"a"))); assertTrue(logs.insert(new Log(2,time,"b")));
+        var refused=new Log(3,time,"c");
+        assertFalse(logs.insert(refused));
+        assertEquals(1,failures.size()); assertEquals(List.of(refused),failures.getFirst().batch());
+        assertEquals(DataOperation.LOG_INSERT,failures.getFirst().operation());
+        assertEquals(2,data.stats().queuedLogs()); assertEquals(1,data.stats().droppedLogs());
+        data.flush();
+        assertEquals(0,data.stats().queuedLogs());
+        assertTrue(logs.insert(new Log(4,time,"d")));
+        data.close();
+        assertEquals(2,access.batches.size());
+        assertThrows(IllegalArgumentException.class,()->GameDataBuilder.builder().logQueueCapacity(0));
+    }
 }

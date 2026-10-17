@@ -5,6 +5,7 @@ import cn.managame.data.meta.*;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Internal log mapping bridge; does not use EntityMapper. The base table is managed externally; a missing
@@ -18,6 +19,10 @@ public final class MysqlLogWriter {
     private final FieldAccessor partition;
     private final PartitionType partitionType;
     private final ZoneId zone;
+    /** Time partition suffix format, compiled once; null for VALUE partitions. */
+    private final DateTimeFormatter suffixFormat;
+    /** INSERT statement per physical table; the set of tables only grows (one per day/month/value). */
+    private final Map<String, String> insertSql = new ConcurrentHashMap<>();
     public MysqlLogWriter(Class<?> type, MysqlAccess access, JsonCodec json, BinaryCodec binary, ZoneId zone) {
         this.type = type; this.access = access; this.zone = zone;
         Table table = type.getAnnotation(Table.class);
@@ -36,6 +41,12 @@ public final class MysqlLogWriter {
                     : p == Long.class;
             if (!valid) throw new IllegalArgumentException("Time partitions require epoch-millisecond long; VALUE requires integral/String");
         }
+        suffixFormat = switch (partitionType) {
+            case DAY -> DateTimeFormatter.ofPattern("uuuuMMdd", Locale.ROOT).withZone(zone);
+            case MONTH -> DateTimeFormatter.ofPattern("uuuuMM", Locale.ROOT).withZone(zone);
+            case YEAR -> DateTimeFormatter.ofPattern("uuuu", Locale.ROOT).withZone(zone);
+            default -> null;
+        };
     }
     public Class<?> logType() { return type; }
     public void validate(Object log) {
@@ -45,20 +56,22 @@ public final class MysqlLogWriter {
     public String table(Object log) {
         if (partition == null) return baseTable;
         Object value = Objects.requireNonNull(partition.get(log), "Null PartitionKey");
-        String suffix;
-        if (partitionType == PartitionType.VALUE) suffix = value.toString();
-        else {
-            var date = Instant.ofEpochMilli((Long) value).atZone(zone);
-            suffix = date.format(DateTimeFormatter.ofPattern(switch (partitionType) {
-                case DAY -> "uuuuMMdd"; case MONTH -> "uuuuMM"; case YEAR -> "uuuu"; default -> throw new AssertionError();
-            }, Locale.ROOT));
-        }
-        if (!suffix.matches("[A-Za-z0-9_]+")) throw new IllegalArgumentException("Unsafe partition suffix: " + suffix);
+        String suffix = suffixFormat == null ? value.toString() : suffixFormat.format(Instant.ofEpochMilli((Long) value));
+        if (!safeSuffix(suffix)) throw new IllegalArgumentException("Unsafe partition suffix: " + suffix);
         return SqlNames.identifier(baseTable + "_" + suffix);
+    }
+    /** {@code [A-Za-z0-9_]+} without compiling a regular expression per log. */
+    private static boolean safeSuffix(String suffix) {
+        if (suffix.isEmpty()) return false;
+        for (int i = 0; i < suffix.length(); i++) {
+            char c = suffix.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return false;
+        }
+        return true;
     }
     public void insert(String table, List<?> logs) {
         // One transaction per batch so a retried or split batch never duplicates log rows.
-        String sql = MysqlEntityMeta.insertSql(table, fields);
+        String sql = insertSql.computeIfAbsent(table, name -> MysqlEntityMeta.insertSql(name, fields));
         var rows = logs.stream().map(log -> MysqlEntityMeta.arguments(fields, log)).toList();
         try { access.transaction(tx -> tx.batchUpdate(sql, rows)); }
         catch (MysqlException missing) {

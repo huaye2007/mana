@@ -1,58 +1,55 @@
 package cn.managame.runtime.executor;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.BiFunction;
-import java.util.function.LongSupplier;
 
 /**
- * Active Routes stay pinned; Caffeine caches only idle mailboxes for bounded reuse.
- * Admission is bounded twice: {@code capacity} tasks across all Routes protects memory, and
- * {@code routeCapacity} queued tasks per Route stops one hot Route (for example a flooding client)
- * from consuming the shared capacity. Either limit returns OVERLOADED without blocking.
+ * One lock-free mailbox per active Route, drained by a virtual thread that exists only while the Route has
+ * work. A mailbox lives in the active map only while it holds or runs tasks; the consumer that finds it
+ * empty retires it, and the next submission creates a fresh one, so idle Routes cost no memory.
+ *
+ * <p>Admission is bounded twice: {@code capacity} tasks across all Routes protects memory, and
+ * {@code routeCapacity} queued tasks per Route stops one hot Route (for example a flooding client) from
+ * consuming the shared capacity. Either limit returns OVERLOADED without blocking.
  */
 public final class VirtualThreadRouteExecutor implements RouteExecutor {
+    /** Default per-Route queue limit used when none is given. */
+    public static final int DEFAULT_ROUTE_CAPACITY = 1024;
+    private static final ThreadFactory THREADS = Thread.ofVirtual().name("managame-route").factory();
+
     private record Route(int domain, long key) {}
+
+    /**
+     * Tasks plus a count of queued-and-running tasks. A submission that raises the count from zero starts the
+     * consumer; the consumer decrements after each task and, on reaching zero, retires the mailbox by setting
+     * the count to RETIRED. A submitter that sees RETIRED replaces the mailbox. Because the count reaches zero
+     * only after the last task finished, at most one consumer runs a Route's tasks, in submission order.
+     */
     private static final class Mailbox {
-        final ArrayDeque<Runnable> queue = new ArrayDeque<>();
+        static final int RETIRED = -1;
+        final ConcurrentLinkedQueue<Runnable> queue = new ConcurrentLinkedQueue<>();
+        final AtomicInteger count = new AtomicInteger();
     }
+
     private final ConcurrentHashMap<Route, Mailbox> activeMailboxes = new ConcurrentHashMap<>();
-    private final Cache<Route, Mailbox> idleMailboxes;
     // High bit means closed; remaining bits count reserved, queued and running tasks.
     private final AtomicLong admission = new AtomicLong();
     private final int capacity, routeCapacity;
-    /** Default per-Route queue limit used when none is given. */
-    public static final int DEFAULT_ROUTE_CAPACITY = 1024;
 
-    public VirtualThreadRouteExecutor(int capacity) { this(capacity, Duration.ofMinutes(1)); }
-    public VirtualThreadRouteExecutor(int capacity, Duration idleTimeout) {
-        this(capacity, Math.min(capacity, DEFAULT_ROUTE_CAPACITY), idleTimeout);
+    public VirtualThreadRouteExecutor(int capacity) {
+        this(capacity, Math.min(Math.max(capacity, 1), DEFAULT_ROUTE_CAPACITY));
     }
-    public VirtualThreadRouteExecutor(int capacity, int routeCapacity, Duration idleTimeout) {
-        this(capacity, routeCapacity, idleTimeout, System::nanoTime);
-    }
-    VirtualThreadRouteExecutor(int capacity, Duration idleTimeout, LongSupplier ticker) {
-        this(capacity, Math.min(capacity, DEFAULT_ROUTE_CAPACITY), idleTimeout, ticker);
-    }
-    VirtualThreadRouteExecutor(int capacity, int routeCapacity, Duration idleTimeout, LongSupplier ticker) {
+
+    public VirtualThreadRouteExecutor(int capacity, int routeCapacity) {
         if (capacity < 1) throw new IllegalArgumentException("capacity must be positive");
         if (routeCapacity < 1 || routeCapacity > capacity)
             throw new IllegalArgumentException("routeCapacity must be 1..capacity");
-        this.routeCapacity = routeCapacity;
-        Objects.requireNonNull(idleTimeout); Objects.requireNonNull(ticker);
-        long idleNanos;
-        try { idleNanos = idleTimeout.toNanos(); }
-        catch (ArithmeticException cause) { throw new IllegalArgumentException("idleTimeout exceeds nanosecond range", cause); }
-        if (idleNanos <= 0) throw new IllegalArgumentException("idleTimeout must be positive");
         this.capacity = capacity;
-        idleMailboxes = Caffeine.newBuilder().maximumSize(capacity).expireAfterWrite(idleNanos, TimeUnit.NANOSECONDS)
-                .ticker(ticker::getAsLong).build();
+        this.routeCapacity = routeCapacity;
     }
 
     public RouteExecuteStatus tryExecute(int domain, long key, Runnable task) {
@@ -62,24 +59,41 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
         boolean submitted = false;
         try {
             Route route = new Route(domain, key);
-            boolean[] full = {false};
-            activeMailboxes.compute(route, (ignored, existing) -> {
-                if (existing != null && existing.queue.size() >= routeCapacity) { full[0] = true; return existing; }
-                Mailbox cached = existing == null ? idleMailboxes.asMap().remove(route) : existing;
-                Mailbox mailbox = cached == null ? new Mailbox() : cached;
-                mailbox.queue.addLast(task);
-                if (existing == null) {
-                    try { Thread.ofVirtual().name("managame-route-" + domain + "-" + key).start(() -> drain(route)); }
-                    catch (RuntimeException | Error cause) {
-                        mailbox.queue.removeLast(); throw cause;
-                    }
+            for (;;) {
+                Mailbox mailbox = activeMailboxes.computeIfAbsent(route, ignored -> new Mailbox());
+                int count = mailbox.count.get();
+                if (count == Mailbox.RETIRED) {
+                    activeMailboxes.remove(route, mailbox); // the retiring consumer may not have removed it yet
+                    continue;
                 }
-                return mailbox;
-            });
-            if (full[0]) return RouteExecuteStatus.OVERLOADED;
-            submitted = true; return RouteExecuteStatus.ACCEPTED;
+                // The count includes the running task, so a busy Route may queue routeCapacity tasks behind it.
+                if (count > routeCapacity) return RouteExecuteStatus.OVERLOADED;
+                if (!mailbox.count.compareAndSet(count, count + 1)) continue;
+                mailbox.queue.offer(task);
+                if (count == 0) start(route, mailbox, task);
+                submitted = true;
+                return RouteExecuteStatus.ACCEPTED;
+            }
         } finally { if (!submitted) admission.decrementAndGet(); }
     }
+
+    /** Starts the consumer this submission is obliged to start; on failure hands the obligation back. */
+    private void start(Route route, Mailbox mailbox, Runnable task) {
+        try {
+            THREADS.newThread(() -> drain(route, mailbox)).start();
+        } catch (RuntimeException | Error cause) {
+            // Withdraw this task. Later submitters saw a nonzero count and started nothing, so if they left
+            // tasks behind, this thread must still start their consumer.
+            mailbox.queue.remove(task);
+            if (mailbox.count.decrementAndGet() == 0) {
+                if (mailbox.count.compareAndSet(0, Mailbox.RETIRED)) activeMailboxes.remove(route, mailbox);
+            } else {
+                THREADS.newThread(() -> drain(route, mailbox)).start();
+            }
+            throw cause;
+        }
+    }
+
     private RouteExecuteStatus reserve() {
         for (;;) {
             long state = admission.get();
@@ -88,36 +102,32 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
             if (admission.compareAndSet(state, state + 1)) return RouteExecuteStatus.ACCEPTED;
         }
     }
-    private boolean closed() { return admission.get() < 0; }
 
-    private void drain(Route route) {
-        // Each consumer owns its holder: a replacement consumer may start before this one returns.
-        Runnable[] next = new Runnable[1];
-        BiFunction<Route, Mailbox, Mailbox> poll = (ignored, current) -> {
-            next[0] = current.queue.pollFirst();
-            if (next[0] == null) {
-                cacheIdle(route, current); return null;
+    private void drain(Route route, Mailbox mailbox) {
+        for (int spins = 0;;) {
+            Runnable task = mailbox.queue.poll();
+            if (task == null) {
+                // A submitter counted its task but has not offered it yet; it is moments away.
+                if (++spins % 64 == 0) Thread.yield(); else Thread.onSpinWait();
+                continue;
             }
-            return current;
-        };
-        for (;;) {
-            activeMailboxes.computeIfPresent(route, poll);
-            Runnable task = next[0]; next[0] = null;
-            if (task == null) return;
-            try { task.run(); } catch (Throwable cause) { StripedRouteExecutor.log(cause); }
+            spins = 0;
+            try { task.run(); }
+            catch (Throwable cause) { StripedRouteExecutor.log(cause); }
             finally { admission.decrementAndGet(); }
+            if (mailbox.count.decrementAndGet() == 0) {
+                // A submitter that raises 0 → 1 first starts a new consumer; otherwise this one retires the mailbox.
+                if (mailbox.count.compareAndSet(0, Mailbox.RETIRED)) activeMailboxes.remove(route, mailbox);
+                return;
+            }
         }
     }
 
-    private void cacheIdle(Route route, Mailbox mailbox) {
-        if (closed()) return;
-        idleMailboxes.put(route, mailbox);
-        // close may invalidate the cache just before this put; do not leave late idle entries behind.
-        if (closed()) idleMailboxes.invalidate(route);
-    }
+    /** Routes that currently hold or run work. */
+    int activeRoutes() { return activeMailboxes.size(); }
+
+    /** Stops admission; accepted tasks still run to completion. */
     public void close() {
-        long previous = admission.getAndUpdate(state -> state | Long.MIN_VALUE);
-        if (previous < 0) return;
-        idleMailboxes.invalidateAll();
+        admission.getAndUpdate(state -> state | Long.MIN_VALUE);
     }
 }

@@ -1,7 +1,6 @@
 package cn.managame.network.http;
 
 import io.netty.channel.*;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.util.concurrent.EventExecutorGroup;
 import io.netty.util.concurrent.OrderedEventExecutor;
@@ -24,7 +23,8 @@ public final class HttpServerBuilder {
     final List<Consumer<ChannelPipeline>> pipelines = new ArrayList<>();
     EventLoopGroup boss, worker;
     EventExecutorGroup executor;
-    ChannelFactory<? extends ServerChannel> factory = NioServerSocketChannel::new;
+    /** Null selects the listener type matching the boss group (Epoll or NIO). */
+    ChannelFactory<? extends ServerChannel> factory;
     final Map<ChannelOption<?>, Object> options = new LinkedHashMap<>(), childOptions = new LinkedHashMap<>();
     int maxContentLength = DEFAULT_MAX_CONTENT_LENGTH;
     int maxInitialLineLength = DEFAULT_MAX_INITIAL_LINE_LENGTH;

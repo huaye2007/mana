@@ -1,17 +1,23 @@
 package cn.managame.data;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-import java.util.function.UnaryOperator;
 
 /**
  * Repository cache that never evicts an entry with unsaved changes. Storage is therefore read only
  * for keys that have nothing pending, and a reload can never return data older than memory.
  * Mutations run inside {@link #update}, atomically with eviction of the same key; eviction runs only on
  * the persistence thread between flushes, when every change is either saved or pending again.
+ *
+ * <p>Loads run outside the map's locks: one caller loads a missing key while concurrent callers of the same
+ * key wait for that load, and callers of other keys are never blocked by it. A value installed by a
+ * mutation during the load wins over the loaded one, because memory is newer than storage.
  */
 final class EntityCache<K, V> {
     private static final class Entry<V> {
@@ -19,7 +25,16 @@ final class EntityCache<K, V> {
         volatile long lastAccess;
         Entry(V value) { this.value = value; lastAccess = System.nanoTime(); }
     }
+
+    /** An in-flight load of one key; {@code owner} detects a loader that re-enters the same key. */
+    private static final class Loading<V> extends CompletableFuture<V> {
+        final Thread owner = Thread.currentThread();
+        /** Set by a sweep that evicted this key while the load ran: the loaded value may be stale. */
+        volatile boolean evicted;
+    }
+
     private final ConcurrentHashMap<K, Entry<V>> entries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<K, Loading<V>> loading = new ConcurrentHashMap<>();
     private final long idleNanos;
     // Access time is refreshed at most once per touchNanos, so threads reading the same hot entity
     // do not keep writing (and invalidating) its cache line; eviction waits touchNanos longer to compensate.
@@ -29,30 +44,95 @@ final class EntityCache<K, V> {
         this.idleNanos = idleNanos;
         touchNanos = Math.min(idleNanos / 16, TimeUnit.SECONDS.toNanos(1));
     }
+
     private void touch(Entry<V> entry) {
         long now = System.nanoTime();
         if (now - entry.lastAccess > touchNanos) entry.lastAccess = now;
     }
 
-    /** Loads a missing key once; concurrent callers of the same key wait for that load. */
+    /** The cached value, or {@code loader}'s result for a missing key; concurrent callers of one key share a load. */
     V get(K key, Function<K, V> loader) {
-        Entry<V> entry = entries.get(key);
-        if (entry == null) entry = entries.computeIfAbsent(key, k -> new Entry<>(loader.apply(k)));
-        else touch(entry);
-        return entry.value;
+        for (;;) {
+            Entry<V> entry = entries.get(key);
+            if (entry != null) {
+                touch(entry);
+                return entry.value;
+            }
+            Loading<V> mine = new Loading<>(), other = loading.putIfAbsent(key, mine);
+            if (other != null) {
+                if (other.owner == Thread.currentThread())
+                    throw new IllegalStateException("Recursive load of the same key: " + key);
+                await(other);      // then read the installed entry (or retry after a failed load)
+                continue;
+            }
+            try {
+                V value = load(key, loader, mine);
+                mine.complete(value);
+                return value;
+            } catch (RuntimeException | Error failure) {
+                mine.completeExceptionally(failure);
+                throw failure;
+            } finally {
+                loading.remove(key, mine);
+            }
+        }
     }
+
+    /** Loads outside any map lock and installs the result unless a mutation got there first. */
+    private V load(K key, Function<K, V> loader, Loading<V> mine) {
+        for (;;) {
+            mine.evicted = false;
+            V loaded = loader.apply(key);
+            Object[] result = {null};
+            boolean[] stale = {false};
+            entries.compute(key, (k, current) -> {
+                if (current != null) { result[0] = current.value; return current; }
+                // An eviction during the load may have dropped a newer value that was saved meanwhile.
+                if (mine.evicted) { stale[0] = true; return null; }
+                result[0] = loaded;
+                return new Entry<>(loaded);
+            });
+            if (!stale[0]) {
+                @SuppressWarnings("unchecked") V value = (V) result[0];
+                return value;
+            }
+        }
+    }
+
+    private static void await(CompletableFuture<?> load) {
+        try {
+            load.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for a concurrent load", interrupted);
+        } catch (ExecutionException | CompletionException failed) {
+            // The loading caller reports its own failure; this caller retries the load itself.
+        }
+    }
+
+    /** A change applied by {@link #update}; {@code cached} tells a cached null ("absent in storage") from no entry. */
+    @FunctionalInterface
+    interface Change<V> {
+        V apply(boolean cached, V current);
+    }
+
     /**
-     * Applies a change atomically with eviction of this key. {@code change} receives the current value
-     * (null when absent) and returns the value to keep; a present value may be returned unchanged.
+     * Applies a change atomically with eviction of this key. {@code change} receives whether the key is cached
+     * and its value (null when absent), and returns the value to keep; a present value may be returned unchanged.
+     * A change that throws leaves the entry as it was.
      */
-    void update(K key, UnaryOperator<V> change) {
+    void update(K key, Change<V> change) {
+        // A mutation never races a first load of its key: it waits for that load and then applies to its result.
+        Loading<V> inFlight = loading.get(key);
+        if (inFlight != null && inFlight.owner != Thread.currentThread()) await(inFlight);
         entries.compute(key, (k, current) -> {
             V previous = current == null ? null : current.value;
-            V next = change.apply(previous);
+            V next = change.apply(current != null, previous);
             if (current != null && next == previous) { touch(current); return current; }
             return new Entry<>(next);
         });
     }
+
     /**
      * Evicts entries idle for the configured time unless they still have unsaved changes. The clock is read
      * before {@code dirtyKeys} builds its view, so a change that view misses was recorded later and has
@@ -63,9 +143,14 @@ final class EntityCache<K, V> {
         Predicate<K> dirty = dirtyKeys.get();
         for (var e : entries.entrySet()) {
             if (now - e.getValue().lastAccess < limit) continue;
-            entries.computeIfPresent(e.getKey(), (key, current) ->
-                    now - current.lastAccess >= limit && !dirty.test(key) ? null : current);
+            entries.computeIfPresent(e.getKey(), (key, current) -> {
+                if (now - current.lastAccess < limit || dirty.test(key)) return current;
+                Loading<V> inFlight = loading.get(key);
+                if (inFlight != null) inFlight.evicted = true;
+                return null;
+            });
         }
     }
+
     long size() { return entries.size(); }
 }

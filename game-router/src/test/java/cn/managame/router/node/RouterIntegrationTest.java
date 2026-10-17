@@ -278,7 +278,7 @@ class RouterIntegrationTest {
                 await(() -> a.routing.isAttached(2));
                 // A message for the old incarnation (epoch 20) is refused; the current one (21) is reached.
                 BlockingQueue<Integer> stale = new LinkedBlockingQueue<>();
-                n1.rpc.call(101, RouterWire.data(RouterWire.DIRECT, 1, 10, 1, 2, 20, 0, new RpcRequest(5, null)),
+                n1.rpc.call(101, RouterWire.data(RouterWire.DIRECT, 1, 10, 1, 2, 20, 0, new RpcRequest(5, null), RouterWire.maxInner(n1.rpc)),
                         (Integer error) -> stale.add(error));
                 assertEquals(PEER_NOT_FOUND, take(stale));
                 n1.routing.notifyNode(2, new RpcRequest(6, null));
@@ -319,12 +319,12 @@ class RouterIntegrationTest {
              NodeFixture n1 = node(1, 1, p1, a); NodeFixture n2 = node(2, 2, p2, a)) {
             // n1 may not claim to be Node 3.
             BlockingQueue<Integer> spoofed = new LinkedBlockingQueue<>();
-            n1.rpc.call(101, RouterWire.data(RouterWire.DIRECT, 3, 30, 1, 2, 0, 0, new RpcRequest(5, null)), (Integer error) -> spoofed.add(error));
+            n1.rpc.call(101, RouterWire.data(RouterWire.DIRECT, 3, 30, 1, 2, 0, 0, new RpcRequest(5, null), RouterWire.maxInner(n1.rpc)), (Integer error) -> spoofed.add(error));
             assertEquals(HANDLER_ERROR, take(spoofed));
             // n2 is connected to 102 but never declared it as a Router, so 102 cannot deliver to it.
             n2.rpc.addPeer(102, rogue.rpc.localAddress(), 1);
             await(() -> n2.rpc.isPeerConnected(102));
-            assertEquals(RpcSendStatus.ACCEPTED, rogue.rpc.notify(2, RouterWire.data(RouterWire.DIRECT, 1, 10, 1, 2, 20, 0, new RpcRequest(7, null))));
+            assertEquals(RpcSendStatus.ACCEPTED, rogue.rpc.notify(2, RouterWire.data(RouterWire.DIRECT, 1, 10, 1, 2, 20, 0, new RpcRequest(7, null), RouterWire.maxInner(n1.rpc))));
             n1.routing.notifyNode(2, new RpcRequest(8, null));
             assertEquals(8, take(p2.requests).request().command());
             assertNull(p2.requests.poll(200, TimeUnit.MILLISECONDS));
