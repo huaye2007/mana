@@ -8,6 +8,7 @@ import cn.managame.runtime.handler.*;
 import cn.managame.runtime.protocol.ProtocolDescriptor;
 import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.*;
+import cn.managame.runtime.timer.TimerRef;
 import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.*;
@@ -126,6 +127,37 @@ class RuntimeDrainTest {
             bound.get().onFail(100); assertTrue(runtime.awaitTermination(Duration.ofSeconds(1)));
             assertEquals(1, errors.size()); assertEquals(ROUTE_CALLBACK_DISPATCH_FAILED, errors.getFirst().errorCode());
             assertEquals(0, runtime.stats().inFlight());
+        }
+    }
+
+    @Test void stopAdmissionEndsPendingTimersAndDrainingWorkCannotScheduleMore() throws Exception {
+        var queue = new QueueExecutor(); var errors = new ArrayList<RuntimeError>();
+        var fired = new AtomicBoolean(); var nested = new AtomicBoolean();
+        var scheduling = new AtomicInteger();
+        try (var runtime = runtime(queue, errors)) {
+            TimerRef pending = runtime.timer().schedule(1, 7L, Duration.ofMillis(20), () -> fired.set(true));
+            runtime.dispatch(null, 7L, new Request(() -> {
+                // Work a draining task starts itself is still admitted, inline on its own Route.
+                runtime.dispatch(null, 7L, new Request(() -> nested.set(true)));
+                // Deferred work is not: a drain has to be finite, and a timer is by definition later.
+                scheduling.set(assertThrows(RuntimeDispatchException.class,
+                        () -> runtime.timer().schedule(1, 7L, Duration.ZERO, () -> fail("scheduled while draining")))
+                        .errorCode());
+            }));
+
+            runtime.shutdown();
+            queue.next();
+            assertTrue(runtime.awaitTermination(Duration.ofSeconds(5)));
+            assertTrue(nested.get());
+            assertEquals(RUNTIME_CLOSED, scheduling.get());
+
+            // The timer was pending when admission stopped, so its action never runs and never will.
+            Thread.sleep(100);
+            assertFalse(fired.get());
+            // Its trigger never became eligible, so cancellation still wins under RT-TIMER-02; the
+            // caller gets a truthful "I stopped it in time" rather than a report of a lost race.
+            assertTrue(pending.cancel());
+            assertTrue(errors.isEmpty(), errors.toString());
         }
     }
 

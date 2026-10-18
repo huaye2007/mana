@@ -426,6 +426,14 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 
 **RT-DRAIN-01**：停止接纳不可恢复且幂等。拒绝新的外部 Handler、HTTP 和 Event 工作，停止未来 Timer/Cron 触发。执行器仍供已接纳任务及本 Runtime 正在执行的任务明确发起的后续工作使用。接纳竞争要么拒绝，要么在排空完成前登记，不能漏掉已接纳工作。已取消的 Cron 世代按既有取消规则作为空操作结束。
 
+<a id="drain-and-scheduling"></a>
+
+**RT-DRAIN-03 — 排空期间的调度。** Timer 与 Cron 在停止接纳时结束，而不是在 Runtime 关闭时结束，因此排空永远不等待时钟。那一刻仍待触发的定时器永不运行；已经提交了动作的定时器属于普通的已接纳工作，与其余工作一同排空。Cron 同理：已入队的世代按其取消规则作为空操作结束，此后拒绝重排。
+
+这正是排空得以有限的原因。让待触发的定时器继续触发，就必须决定兑现到未来多远；而 Cron 只在当前周期执行之后才注册下一周期，放任它运行会使排空在结构上永不结束。代价被明说而不是藏起来：定时器本来要做的工作在停止接纳那一刻被丢弃，静默且无补偿，与进程退出时被丢弃完全一样。定时器不具持久性（RT-TIMER-01），因此不能丢失那份工作的应用应当把它放进自己的停机流程，而不是交给定时器。
+
+排空中的任务仍然可以发起工作——它可以分发、发布、跨 Route 调用，这是 RT-DRAIN-01 已经允许的——但不得调度定时器或重排 Cron。延后的工作不可能属于一次有界的排空，因此这类尝试以 Runtime 已关闭的错误码被拒绝，而不是先接受再丢弃。取消不受影响且依然如实：停止接纳时仍待触发的定时器从未取得触发资格，因此此后取消它仍按 RT-TIMER-02 报告成功，而不是报告一次输掉的竞争。验证见 [RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java) 与 [CronSchedulerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/CronSchedulerTest.java)。
+
 **RT-DRAIN-02**：停止接纳后，外部管理调用方可以等待已登记工作。成功表示没有已登记的排队/执行任务或异步后续工作，不表示网络送达、持久化或未登记的应用回调已完成。超时不丢弃任务、不关闭资源。禁止在本 Runtime 的 Route 上等待。立即 close 保留不等待契约；平滑停机先停止接纳、等待，再关闭 Runtime 及依赖。
 
 **RT-CALL-05**：明确捕获的异步后续回调登记未完成工作，首次成功/失败在原始 Context/Route 恢复后执行。重复完成忽略；回源接纳失败报告诊断，不在其他线程重试。接入方必须完成每个捕获回调，包括外部调用同步异常及超时；被遗弃的预留会让排空无限等待，而 Runtime 不自行设置期限——让仅仅是慢的续延失败，会把超时交给业务代码，再在真实结果到达时把它静默丢弃。Runtime 做的是让这种遗弃可见：预留数与最久一笔的年龄与 Route 工作分开报告（RT-DIAG-01），因此永不结束的排空会指明原因，而不只是症状。捕获不延长借用请求或连接的生命周期。
@@ -448,6 +456,7 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 | --- | --- |
 | 构建注册、Context、分发、事件、回调、Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
 | 按 Domain 的读数、拒绝归属、执行器上界 | [DomainStatsTest](../../game-runtime/src/test/java/cn/managame/runtime/DomainStatsTest.java) |
+| 排空期间的调度：待触发定时器、Cron、被拒绝的调度 | [RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java) |
 | 监听器声明的 Domain、构建期冲突、发布期拒绝、跨 Route 桥接 | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
 | 客户端相关性、返回式与自行写出的响应、失败封装、封装结果所有权、构建规则 | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
 | Handler 观察：阶段、时长、不干预、作用范围 | [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java) |

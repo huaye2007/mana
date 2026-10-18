@@ -217,6 +217,22 @@ class CronSchedulerTest {
         assertThrows(NullPointerException.class, () -> runtime.cron().reschedule(Job.class, null));
     }
 
+    @Test void stopAdmissionEndsCronBeforeTheDrainRatherThanAtClose() throws Exception {
+        nearMinuteEnd();
+        Job job = new Job();
+        build(job);
+        Runnable queued = next();
+
+        // shutdown, not close: Cron ends when admission stops, so the drain that follows is finite.
+        runtime.shutdown();
+        queued.run();
+        assertEquals(0, job.calls.get());
+        assertFalse(runtime.cron().cancel(Job.class, "tick"));
+        assertEquals(RUNTIME_CLOSED, assertThrows(RuntimeDispatchException.class, () ->
+            runtime.cron().reschedule(Job.class, "tick")).errorCode());
+        noTask();
+    }
+
     @Test void duplicateKeysFailBuildAndCloseInvalidatesQueuedCron() throws Exception {
         assertThrows(IllegalArgumentException.class, () ->
             builder(RouteExecutors.virtualThreads(), new Job(), new InheritedJob()).build());
