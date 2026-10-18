@@ -28,6 +28,7 @@ import cn.managame.runtime.context.DefaultRpcHandlerContext;
 import cn.managame.runtime.context.DefaultTimerContext;
 import cn.managame.runtime.context.HandlerContext;
 import cn.managame.runtime.context.InvocationContext;
+import cn.managame.runtime.diagnostic.DomainStats;
 import cn.managame.runtime.diagnostic.RuntimeStats;
 import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.error.RuntimeError;
@@ -35,6 +36,7 @@ import cn.managame.runtime.error.RuntimeErrorHandler;
 import cn.managame.runtime.event.Event;
 import cn.managame.runtime.event.EventBus;
 import cn.managame.runtime.executor.RouteExecutor;
+import cn.managame.runtime.executor.RouteExecutorStats;
 import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.handler.HandlerObserver;
@@ -51,10 +53,14 @@ import cn.managame.runtime.timer.CronScheduler;
 import cn.managame.runtime.timer.RuntimeTimer;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
@@ -79,12 +85,17 @@ final class DefaultGameRuntime implements GameRuntime {
     private final AdmissionGate admission = new AdmissionGate();
     /** Captured continuations that drain still waits for; see RuntimeStats.continuations. */
     private final Set<Captured<?>> outstanding = ConcurrentHashMap.newKeySet();
+    /** One counter set per registered Domain; the map is built at construction and never mutated. */
+    private final Map<Integer, DomainCounters> perDomain;
     // Striped counters: every Route task updates them, so a single atomic word would be contended by all workers.
     private final LongAdder queued = new LongAdder(), running = new LongAdder(), completed = new LongAdder(),
             rejected = new LongAdder(), errorCount = new LongAdder(), executionNanos = new LongAdder();
 
     DefaultGameRuntime(Compiled compiled) {
         routes = compiled.routes();
+        var counters = new HashMap<Integer, DomainCounters>();
+        for (Integer domain : routes.keySet()) counters.put(domain, new DomainCounters());
+        perDomain = Map.copyOf(counters);
         protocols = compiled.protocols();
         keys = compiled.routeKeys();
         handlers = compiled.handlers();
@@ -116,7 +127,9 @@ final class DefaultGameRuntime implements GameRuntime {
     // ---------------------------------------------------------------- admission
 
     private void validate(int domain, long key) {
-        requireAdmission();
+        // The Domain is known here, so a closure refusal is attributed to it; an unknown one counts only
+        // for the Runtime, as do the entries that reject before any Handler has named a Domain.
+        requireAdmission(perDomain.get(domain));
         if (!routes.containsKey(domain)) throw failure(ROUTE_DOMAIN_MISMATCH);
         if (key == 0) throw failure(INVALID_ROUTE_KEY);
     }
@@ -125,9 +138,11 @@ final class DefaultGameRuntime implements GameRuntime {
         return new RuntimeDispatchException(code, "Runtime dispatch rejected: " + FrameworkErrorCodes.describe(code));
     }
 
-    private void requireAdmission() {
+    private void requireAdmission() { requireAdmission(null); }
+
+    private void requireAdmission(DomainCounters domain) {
         if (closed.get() || (!admission.accepting() && !RuntimeContexts.ownedBy(this))) {
-            rejected.increment();
+            reject(domain);
             throw failure(RUNTIME_CLOSED);
         }
     }
@@ -139,17 +154,19 @@ final class DefaultGameRuntime implements GameRuntime {
         if (executor == null) return ROUTE_DOMAIN_MISMATCH;
         if (context.routeKey() == 0) return INVALID_ROUTE_KEY;
         boolean owned = RuntimeContexts.ownedBy(this);
-        if (!admission.acquire(allowClosed || owned)) { rejected.increment(); return RUNTIME_CLOSED; }
-        queued.increment();
+        // The executor lookup above proves the Domain is registered, so its counters exist.
+        DomainCounters domain = perDomain.get(context.routeDomain());
+        if (!admission.acquire(allowClosed || owned)) { reject(domain); return RUNTIME_CLOSED; }
+        queued.increment(); domain.queued().increment();
         Runnable bound = () -> {
-            queued.decrement();
-            running.increment();
+            queued.decrement(); domain.queued().decrement();
+            running.increment(); domain.running().increment();
             long started = executionTiming ? System.nanoTime() : 0;
             try { RuntimeContexts.run(this, context, action); }
             finally {
                 if (executionTiming) executionNanos.add(System.nanoTime() - started);
-                running.decrement();
-                completed.increment();
+                running.decrement(); domain.running().decrement();
+                completed.increment(); domain.completed().increment();
                 admission.release();
             }
         };
@@ -166,13 +183,24 @@ final class DefaultGameRuntime implements GameRuntime {
                 case OVERLOADED -> ROUTE_EXECUTOR_OVERLOADED;
                 case CLOSED -> ROUTE_EXECUTOR_CLOSED;
             };
-            if (result != 0) { queued.decrement(); admission.release(); rejected.increment(); }
+            if (result != 0) { queued.decrement(); domain.queued().decrement(); admission.release(); reject(domain); }
             return result;
         } catch (Throwable e) {
-            queued.decrement(); admission.release(); rejected.increment();
+            queued.decrement(); domain.queued().decrement(); admission.release(); reject(domain);
             report(RUNTIME_EXECUTION_ERROR, context, e);
             return RUNTIME_EXECUTION_ERROR;
         }
+    }
+
+    /** One refusal, counted for the Runtime and for the Domain it was refused on. */
+    private void reject(DomainCounters domain) {
+        rejected.increment();
+        if (domain != null) domain.rejected().increment();
+    }
+
+    /** Per-Domain counters, created at build for every registered Domain and never replaced. */
+    private record DomainCounters(LongAdder queued, LongAdder running, LongAdder completed, LongAdder rejected) {
+        DomainCounters() { this(new LongAdder(), new LongAdder(), new LongAdder(), new LongAdder()); }
     }
 
     // ---------------------------------------------------------------- dispatch entries
@@ -448,7 +476,28 @@ final class DefaultGameRuntime implements GameRuntime {
     public RuntimeStats stats() {
         return new RuntimeStats(admission.accepting() && !closed.get(), admission.count(), queued.sum(), running.sum(),
                 completed.sum(), rejected.sum(), errorCount.sum(), executionNanos.sum(),
-                outstanding.size(), oldestReservation());
+                outstanding.size(), oldestReservation(), domainStats());
+    }
+
+    /** One entry per registered Domain, in ascending Domain order so successive readings line up. */
+    private List<DomainStats> domainStats() {
+        var byDomain = new ArrayList<DomainStats>(perDomain.size());
+        for (var entry : new TreeMap<>(perDomain).entrySet()) {
+            DomainCounters counters = entry.getValue();
+            byDomain.add(new DomainStats(entry.getKey(), counters.queued().sum(), counters.running().sum(),
+                    counters.completed().sum(), counters.rejected().sum(), executorStats(entry.getKey())));
+        }
+        return List.copyOf(byDomain);
+    }
+
+    /** A custom executor must not break a metrics read, so a failing stats() reports nothing instead. */
+    private RouteExecutorStats executorStats(int domain) {
+        try {
+            RouteExecutorStats reported = routes.get(domain).stats();
+            return reported == null ? RouteExecutorStats.unreported() : reported;
+        } catch (Throwable e) {
+            return RouteExecutorStats.unreported();
+        }
     }
 
     /** Scans the outstanding reservations, which are few unless something is leaking them. */

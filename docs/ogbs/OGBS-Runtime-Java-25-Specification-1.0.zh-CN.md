@@ -57,7 +57,7 @@ public interface ClientResultCodec {
 | .protocol | 协议描述、注册、请求/响应配对 |
 | .handler | Handler 注解、HandlerArgumentBinding、HandlerContextFactory、ClientResultCodec、HandlerObserver |
 | .http | HTTP 注解、HttpDispatcher、HttpContext、HttpContextFactory、HttpResultCallback、codec |
-| .event / .timer / .time / .error / .diagnostic | 事件、定时器与 Cron、GameTime、错误、RuntimeStats |
+| .event / .timer / .time / .error / .diagnostic | 事件、定时器与 Cron、GameTime、错误、RuntimeStats 与 DomainStats |
 | .internal | 编译、调度、上下文绑定；不是应用 API |
 
 ## 2. 构建
@@ -289,6 +289,7 @@ public interface HandlerObserver {
 ```java
 interface RouteExecutor extends AutoCloseable {
     RouteExecuteStatus tryExecute(int domain, long key, Runnable task);   // ACCEPTED、OVERLOADED、CLOSED
+    default RouteExecutorStats stats() { return RouteExecutorStats.unreported(); }   // capacity、routeCapacity、activeRoutes
     default void close() {}
 }
 ```
@@ -451,4 +452,4 @@ Runtime 持有 request 直到方法返回并完成自动编码（被拒绝时立
 
 `shutdown()` 停止外部准入与定时器（不可逆、幂等）；正在运行的工作仍可提交下游工作。`awaitTermination(timeout)` 须在 shutdown 之后、由外部线程调用（否则 IllegalStateException），等待已接纳的动作与已登记的回调；超时返回 false，不关闭任何东西。`close()` 关闭执行器且不等待。优雅顺序：shutdown → awaitTermination → close → 关闭网络、RPC 与数据。测试：[RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java)。
 
-`stats()` 返回 RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos, continuations, oldestContinuationNanos)；计数为近似值，不代表业务成功。`continuations` 是尚未完成或取消的 `callback(...)` 预留数量，`oldestContinuationNanos` 是其中最久一笔的年龄，没有未完成预留时两者都为 0；`inFlight - continuations` 才是纯 Route 工作，这正是区分"业务方法慢"与"接入方遗弃了捕获"的依据。年龄由扫描未完成预留得到，除非有泄漏，它们数量很少。计数使用分段 LongAdder，所有工作线程不争用同一变量；`GameRuntimeBuilder.executionTiming(false)` 关闭每个任务两次读取单调时钟，此时 executionNanos 保持 0。Spring 装配见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
+`stats()` 返回 RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos, continuations, oldestContinuationNanos, domains)；计数为近似值，不代表业务成功。`domains` 是每个已注册 Domain 一条 `DomainStats(routeDomain, queued, running, completed, rejected, executor)`，按 Domain 升序，每次读取时重新构建；`executor` 是绑定到该 Domain 的执行器的 `RouteExecutorStats(capacity, routeCapacity, activeRoutes)`——判读其队列深度的分母，0 表示执行器不报告该上界（RT-DIAG-02）。`RouteExecutor.stats()` 默认报告"无"，因此自定义执行器照常编译；抛异常的实现被捕获并按"无"处理，不会使整次读取失败。VirtualThreadRouteExecutor 报告两个上界与当前活跃 mailbox 数；StripedRouteExecutor 报告线程数乘队列容量，且没有按 Route 的上界，因为多个 Route 共用 stripe。`continuations` 是尚未完成或取消的 `callback(...)` 预留数量，`oldestContinuationNanos` 是其中最久一笔的年龄，没有未完成预留时两者都为 0；`inFlight - continuations` 才是纯 Route 工作，这正是区分"业务方法慢"与"接入方遗弃了捕获"的依据。年龄由扫描未完成预留得到，除非有泄漏，它们数量很少。计数使用分段 LongAdder，所有工作线程不争用同一变量；`GameRuntimeBuilder.executionTiming(false)` 关闭每个任务两次读取单调时钟，此时 executionNanos 保持 0。Spring 装配见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。

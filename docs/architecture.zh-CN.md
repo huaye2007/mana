@@ -159,7 +159,7 @@ Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。�
 
 ## 可观测性组合
 
-Core 在 `cn.managame.core.metrics` 里拥有"一条读数的形状"——gauge 还是 counter、点分名称、拉取式收集——仅此而已：没有导出格式、没有端点、没有依赖。各组件拥有"自己有哪些读数"，并以一个普通快照 record 上报：`RuntimeStats`、`DataStats`、`GameRouter.Stats`、`RpcStats` 与 `NetworkStats`。集成层拥有收集：`@EnableGameMetrics` 把每个存在的组件的 record 适配成挂在固定前缀下的 `MetricsSource`，在业务分发之前提供 `/metrics` 与 `/readiness`，并在那里组合就绪条件。
+Core 在 `cn.managame.core.metrics` 里拥有"一条读数的形状"——gauge 还是 counter、点分名称、拉取式收集——仅此而已：没有导出格式、没有端点、没有依赖。各组件拥有"自己有哪些读数"，并以一个普通快照 record 上报：`RuntimeStats`、`DataStats`、`GameRouter.Stats`、`RpcStats` 与 `NetworkStats`。RuntimeStats 另外把工作按已注册 Domain 拆分，并为每个 Domain 带上绑定到它的执行器的上界，使队列深度有分母、拒绝有归属；Route Key 基数无界，有意不作为维度。集成层拥有收集：`@EnableGameMetrics` 把每个存在的组件的 record 适配成挂在固定前缀下的 `MetricsSource`，在业务分发之前提供 `/metrics` 与 `/readiness`，并在那里组合就绪条件。
 
 正是这个分工让不依赖任何其他框架模块的 game-network 也能被加上仪表：它发布一个 record，而本来就依赖一切的 game-spring 去映射它。组件永远不需要知道指标契约，依赖图也不必为承载它而改变。
 

@@ -99,6 +99,12 @@ class MetricsAssemblyTest {
             assertEquals(1L, readings.get("runtime.accepting"));
             assertEquals(0L, readings.get("runtime.route.queued"));
             assertTrue(readings.containsKey("runtime.route.completed"), readings.keySet().toString());
+            // The one registered Domain is published under its id, and a name segment must be letter-led,
+            // so the id follows "domain" rather than standing alone.
+            assertEquals(0L, readings.get("runtime.domain1.queued"));
+            assertTrue(readings.containsKey("runtime.domain1.rejected"), readings.keySet().toString());
+            // Its executor's configured bound travels with it; without that, queued has no denominator.
+            assertEquals(65536L, readings.get("runtime.domain1.executor.capacity"));
 
             var ready = get(client, app.base() + "/readiness");
             assertEquals(200, ready.statusCode());

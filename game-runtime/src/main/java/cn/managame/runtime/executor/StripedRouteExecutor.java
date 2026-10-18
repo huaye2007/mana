@@ -4,9 +4,11 @@ import java.util.*;
 import java.util.concurrent.*;
 public final class StripedRouteExecutor implements RouteExecutor {
     private final ThreadPoolExecutor[] stripes;
+    private final int queueCapacity;
     private volatile boolean closed;
     public StripedRouteExecutor(int workers, int queueCapacity) {
         if (workers < 1 || queueCapacity < 1) throw new IllegalArgumentException();
+        this.queueCapacity = queueCapacity;
         stripes = new ThreadPoolExecutor[workers];
         for (int i = 0; i < workers; i++)
             stripes[i] = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
@@ -19,6 +21,10 @@ public final class StripedRouteExecutor implements RouteExecutor {
         ThreadPoolExecutor stripe = stripes[Math.floorMod(hash, stripes.length)];
         try { stripe.execute(() -> { try { task.run(); } catch (Throwable e) { log(e); } }); return RouteExecuteStatus.ACCEPTED; }
         catch (RejectedExecutionException e) { return closed || stripe.isShutdown() ? RouteExecuteStatus.CLOSED : RouteExecuteStatus.OVERLOADED; }
+    }
+    /** Routes share stripes, so a per-Route limit and an active-Route count do not exist here. */
+    @Override public RouteExecutorStats stats() {
+        return new RouteExecutorStats((long) stripes.length * queueCapacity, 0, 0);
     }
     public synchronized void close() { if (!closed) { closed = true; for (var stripe : stripes) stripe.shutdown(); } }
     static void log(Throwable e) { System.getLogger("cn.managame.runtime").log(System.Logger.Level.ERROR, "Route task failed", e); }

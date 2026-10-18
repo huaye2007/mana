@@ -29,6 +29,20 @@ final class FrameworkMetrics {
             // What a drain that will not finish is waiting for, and how long it has waited.
             sink.gauge("continuations", s.continuations());
             sink.gauge("continuations.oldest.nanos", s.oldestContinuationNanos());
+            // Per Domain, so "the instance is shedding" becomes "this Domain is". The sink carries no
+            // dimensions, so the Domain is part of the name; its cardinality is fixed at build.
+            for (var domain : s.domains()) {
+                // A name segment must start with a letter, so the Domain id follows one rather than standing alone.
+                String prefix = "domain" + domain.routeDomain() + ".";
+                sink.gauge(prefix + "queued", domain.queued());
+                sink.gauge(prefix + "running", domain.running());
+                sink.counter(prefix + "completed", domain.completed());
+                sink.counter(prefix + "rejected", domain.rejected());
+                // The denominator queued is judged against; 0 means the executor reports no bound.
+                sink.gauge(prefix + "executor.capacity", domain.executor().capacity());
+                sink.gauge(prefix + "executor.route.capacity", domain.executor().routeCapacity());
+                sink.gauge(prefix + "executor.active.routes", domain.executor().activeRoutes());
+            }
             sink.counter("route.completed", s.completed());
             sink.counter("route.rejected", s.rejected());
             sink.counter("route.errors", s.errors());

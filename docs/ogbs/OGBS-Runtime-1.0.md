@@ -468,6 +468,14 @@ V1 defines no cross-process Route migration, persistent tasks, automatic retry, 
 
 **RT-DIAG-01**: Diagnostics are approximate observations, not admission decisions or business/persistence/delivery acknowledgements. Queued/running actions and continuation reservations have distinct meanings and are reported separately: the drain total, the reservations within it, and how long the oldest reservation has been held. Route work alone is the total minus the reservations, and a drain that will not finish therefore says which of the two it is waiting for and for how long — the difference between a slow business method and an integration that never completed what it captured. The age is of the oldest outstanding reservation, so it stops meaning anything once that one completes. Nested inline durations can overlap. Error counts include execution/return-path errors. Validation failures need not appear in executor rejection counts.
 
+<a id="domain-diagnostics"></a>
+
+**RT-DIAG-02 — Readings per Domain, and the bound they are read against.** Queued, running, completed and rejected work is also reported for each registered Domain, so a rising rejection count names where it is rising. Domains are registered at build and few, so this dimension is bounded by configuration rather than by traffic; Route Keys are not, and per-Key readings are therefore not offered at all. An implementation reports every registered Domain from the moment it builds, including those that have done nothing, so a reading that is absent means the Domain was never registered.
+
+Attribution follows what the entry already knew. Work refused after its Domain was resolved is counted for that Domain and for the Runtime; work refused before any Domain was named — a closed Runtime turning away a convenience entry that has not yet resolved its Handler — is counted only for the Runtime. The per-Domain figures therefore need not sum to the Runtime figures, and an implementation must not fabricate a Domain to make them.
+
+Each Domain also reports the limits of the executor bound to it: the work admissible across all Routes before refusal, the work admissible for one Route where such a limit exists, and the Routes currently holding work where the executor knows them. These are what a queue depth is judged against — without them a rising number cannot be told from a healthy one. An executor need not report any of them, and reports nothing rather than guessing; Domains that share one executor repeat its figures, which are the executor's and not a share of it, so they must not be summed. A failure to report must not fail the reading. Validation: [DomainStatsTest](../../game-runtime/src/test/java/cn/managame/runtime/DomainStatsTest.java).
+
 An admitted player Handler may submit guild work after admission stops; both and its source callback remain covered. A new network request rejects. Another thread cannot initiate work merely because its numeric Key matches. [RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java) validates shutdown races, rejection cleanup, reservations and restoration.
 
 
@@ -478,6 +486,7 @@ An admitted player Handler may submit guild work after admission stops; both and
 | Contract | Implementation/test |
 | --- | --- |
 | Build, Context, dispatch, events, callbacks, Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
+| Per-Domain readings, rejection attribution, executor bounds | [DomainStatsTest](../../game-runtime/src/test/java/cn/managame/runtime/DomainStatsTest.java) |
 | Declared listener Domain, build conflict, publish rejection, cross-Route bridging | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
 | Client correlation, returned and hand-written responses, failure framing, frame ownership, build rules | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
 | Handler observation: phases, duration, non-intervention, scope | [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java) |

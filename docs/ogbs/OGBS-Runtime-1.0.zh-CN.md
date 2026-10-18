@@ -432,6 +432,14 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 
 **RT-DIAG-01**：统计是近似观察，不作为接纳决策或业务/持久化/送达确认。排队/执行动作与续延预留含义不同，并分别报告：排空总数、其中的预留数，以及最久一笔预留已被持有多长时间。纯 Route 工作就是总数减去预留数，因此排空迟迟不结束时，统计会说明它在等哪一类、等了多久——区分"业务方法慢"与"接入方从未完成它捕获的续延"。年龄取自当前最久的那一笔未完成预留，一旦它完成，该读数就不再代表任何东西。嵌套内联计时可能重叠。错误计数包括执行及回源错误；校验失败不一定计入执行器拒绝数量。
 
+<a id="domain-diagnostics"></a>
+
+**RT-DIAG-02 — 按 Domain 的读数，以及判读它们所依据的上界。** 排队、执行、完成与拒绝的工作同时按每个已注册 Domain 报告，因此拒绝数上升时能指出是在哪里上升。Domain 在构建期注册且数量很少，所以这个维度由配置而非流量决定基数；Route Key 不是如此，因此根本不提供按 Key 的读数。实现从构建那一刻起就报告每一个已注册 Domain，包括什么都没做过的，因此读数缺失只意味着该 Domain 从未注册。
+
+归属取决于入口当时已经知道什么。在 Domain 解析之后被拒绝的工作同时计入该 Domain 与 Runtime；在任何 Domain 被确定之前就被拒绝的工作——例如已关闭的 Runtime 回绝一个尚未解析 Handler 的便捷入口——只计入 Runtime。因此按 Domain 的数字不必与 Runtime 的数字相加相等，实现也不得为了让它们相等而编造一个 Domain。
+
+每个 Domain 还报告绑定到它的执行器的上界：所有 Route 合计在被拒绝前可接纳的工作量、存在该限制时单个 Route 可接纳的工作量，以及执行器知晓时当前持有工作的 Route 数。这些正是判读队列深度的依据——没有它们，上升的数字与健康的数字无法区分。执行器可以一项都不报告，此时它报告"无"而不是猜测；共用一个执行器的多个 Domain 重复该执行器的数字，那是执行器的上界而非它的份额，因此不得相加。报告失败不得使整次读取失败。验证见 [DomainStatsTest](../../game-runtime/src/test/java/cn/managame/runtime/DomainStatsTest.java)。
+
 已接纳的玩家 Handler 可在停止接纳后发起公会工作，两者及回源回调都在等待范围内；网络的新请求拒绝。其他线程不能仅因数字 Key 相同而发起工作。[RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java) 验证停机竞争、拒绝清理、登记与恢复。
 
 ## 11. 实现与验证映射
@@ -439,6 +447,7 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 | 契约 | 当前实现/测试 |
 | --- | --- |
 | 构建注册、Context、分发、事件、回调、Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
+| 按 Domain 的读数、拒绝归属、执行器上界 | [DomainStatsTest](../../game-runtime/src/test/java/cn/managame/runtime/DomainStatsTest.java) |
 | 监听器声明的 Domain、构建期冲突、发布期拒绝、跨 Route 桥接 | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
 | 客户端相关性、返回式与自行写出的响应、失败封装、封装结果所有权、构建规则 | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
 | Handler 观察：阶段、时长、不干预、作用范围 | [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java) |

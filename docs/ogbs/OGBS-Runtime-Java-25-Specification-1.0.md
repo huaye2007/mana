@@ -59,7 +59,7 @@ A built Runtime is usable at once; there is no start, dynamic registration or ar
 | .protocol | Protocol descriptors, registration, request/response pairs |
 | .handler | Handler annotations, HandlerArgumentBinding, HandlerContextFactory, ClientResultCodec, HandlerObserver |
 | .http | HTTP annotations, HttpDispatcher, HttpContext, HttpContextFactory, HttpResultCallback, codecs |
-| .event / .timer / .time / .error / .diagnostic | Events, timers and Cron, GameTime, errors, RuntimeStats |
+| .event / .timer / .time / .error / .diagnostic | Events, timers and Cron, GameTime, errors, RuntimeStats and DomainStats |
 | .internal | Compilation, scheduling, context binding; not application API |
 
 <a id="2-构建"></a>
@@ -310,6 +310,7 @@ Only `@HandlerMethod` dispatch is observed. Event listeners, timer and Cron acti
 ```java
 interface RouteExecutor extends AutoCloseable {
     RouteExecuteStatus tryExecute(int domain, long key, Runnable task);   // ACCEPTED, OVERLOADED, CLOSED
+    default RouteExecutorStats stats() { return RouteExecutorStats.unreported(); }   // capacity, routeCapacity, activeRoutes
     default void close() {}
 }
 ```
@@ -494,4 +495,4 @@ Example: [RuntimeHttpExample](../../game-demo/src/main/java/cn/managame/demo/exa
 
 `shutdown()` stops external admission and timers (irreversible, idempotent); running work may still submit downstream work. `awaitTermination(timeout)` requires shutdown and an external thread (IllegalStateException otherwise) and waits for admitted actions and registered callbacks; it returns false on timeout without closing anything. `close()` closes executors without waiting. Graceful order: shutdown → awaitTermination → close → close network, RPC and data. Tests: [RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java).
 
-`stats()` returns RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos, continuations, oldestContinuationNanos); counters are approximate and not a success record. `continuations` is the number of `callback(...)` reservations not yet completed or cancelled and `oldestContinuationNanos` the age of the oldest, both 0 when none is outstanding; `inFlight - continuations` is Route work alone, which is what separates a slow business method from an integration that abandoned a capture. The age comes from scanning the outstanding reservations, which are few unless one is leaking. They are striped LongAdders, so worker threads do not contend on one word; `GameRuntimeBuilder.executionTiming(false)` drops the two monotonic clock reads per task, leaving executionNanos at 0. Spring assembly is specified by [game-spring](OGBS-Spring-Java-25-Specification-1.0.md).
+`stats()` returns RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos, continuations, oldestContinuationNanos, domains); counters are approximate and not a success record. `domains` is one `DomainStats(routeDomain, queued, running, completed, rejected, executor)` per registered Domain in ascending Domain order, built fresh per reading, and `executor` is the `RouteExecutorStats(capacity, routeCapacity, activeRoutes)` of the executor bound to that Domain — the denominator for its queue depth, where 0 means the executor reports no such bound (RT-DIAG-02). `RouteExecutor.stats()` defaults to reporting nothing, so a custom executor keeps compiling; one that throws is caught and reported as nothing rather than failing the reading. VirtualThreadRouteExecutor reports both bounds and its active mailbox count; StripedRouteExecutor reports workers times queue capacity and no per-Route bound, because Routes share stripes. `continuations` is the number of `callback(...)` reservations not yet completed or cancelled and `oldestContinuationNanos` the age of the oldest, both 0 when none is outstanding; `inFlight - continuations` is Route work alone, which is what separates a slow business method from an integration that abandoned a capture. The age comes from scanning the outstanding reservations, which are few unless one is leaking. They are striped LongAdders, so worker threads do not contend on one word; `GameRuntimeBuilder.executionTiming(false)` drops the two monotonic clock reads per task, leaving executionNanos at 0. Spring assembly is specified by [game-spring](OGBS-Spring-Java-25-Specification-1.0.md).

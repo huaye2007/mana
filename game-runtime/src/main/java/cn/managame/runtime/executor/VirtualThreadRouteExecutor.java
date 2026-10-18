@@ -127,6 +127,11 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
     int activeRoutes() { return activeMailboxes.size(); }
 
     /** Stops admission; accepted tasks still run to completion. */
+    /** Both bounds are configured, and the mailbox map is exactly the Routes holding work. */
+    @Override public RouteExecutorStats stats() {
+        return new RouteExecutorStats(capacity, routeCapacity, activeMailboxes.size());
+    }
+
     public void close() {
         admission.getAndUpdate(state -> state | Long.MIN_VALUE);
     }
