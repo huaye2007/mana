@@ -85,7 +85,7 @@ SystemCron 是应用定义的 Cron 类。cancel 停止后续周期；reschedule 
 
 ## 静态事件发布
 
-业务可通过 `cn.managame.runtime.event.Events` 直接调用 `Events.publish(event)`。Runtime 执行上下文内使用当前所属 Runtime；外部线程需要启动阶段先调用 `Events.bind(runtime)`，demo 的 Spring 配置自动完成此步骤。无所属/默认实例时抛 IllegalStateException。默认绑定冲突时拒绝；重复绑定同一实例幂等。`Events.unbind(runtime)` 仅移除指定实例的默认绑定，不关闭它；内置 Runtime.close 会解除自身绑定。启动绑定需与关闭协调，且只绑定仍运行的实例。既有 `runtime.eventBus().publish(event)` 保留。事件继续使用配置的 RouteExecutor，顺序、上下文继承、接纳错误及关闭行为不变。详见 [选择及生命周期边界](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#static-event-publication)、[框架测试](src/test/java/cn/managame/runtime/event/EventsTest.java) 和 [demo](../game-demo/README.zh-CN.md#发布-runtime-事件)。
+业务可通过 `cn.managame.runtime.event.Events` 直接调用 `Events.publish(event)`。Runtime 执行上下文内使用当前所属 Runtime；外部线程需要启动阶段先调用 `Events.bind(runtime)`。容器不替你做这件事：`@EnableGameRuntime` 构建 Runtime，但把绑定留给应用，因为 bean 工厂每个上下文运行一次，而绑定与进程等寿命。[GameDemo](../game-demo/src/main/java/cn/managame/demo/GameDemo.java) 在上下文启动后立即绑定。无所属/默认实例时抛 IllegalStateException。默认绑定冲突时拒绝；重复绑定同一实例幂等。没有 unbind：进程在启动时绑定一次，该绑定与进程等寿命，因此 `Runtime.close` 不会撤销它，关闭后再发布得到 RUNTIME_CLOSED，而不是报告缺少配置。这同时保证了已在途的发布不会被重定向到替代实例。既有 `runtime.eventBus().publish(event)` 保留。事件继续使用配置的 RouteExecutor，顺序、上下文继承、接纳错误及关闭行为不变。详见 [选择及生命周期边界](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#static-event-publication)、[框架测试](src/test/java/cn/managame/runtime/event/EventsTest.java) 和 [demo](../game-demo/README.zh-CN.md#发布-runtime-事件)。
 
 ## 虚拟线程 Route 队列
 

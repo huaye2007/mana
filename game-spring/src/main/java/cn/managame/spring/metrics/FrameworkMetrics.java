@@ -26,6 +26,9 @@ final class FrameworkMetrics {
             sink.gauge("route.inflight", s.inFlight());
             sink.gauge("route.queued", s.queued());
             sink.gauge("route.running", s.running());
+            // What a drain that will not finish is waiting for, and how long it has waited.
+            sink.gauge("continuations", s.continuations());
+            sink.gauge("continuations.oldest.nanos", s.oldestContinuationNanos());
             sink.counter("route.completed", s.completed());
             sink.counter("route.rejected", s.rejected());
             sink.counter("route.errors", s.errors());

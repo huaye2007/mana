@@ -29,9 +29,10 @@ class RuntimeConfiguration {
                 .httpHandlers(handlers(context, beans, HttpHandler.class))
                 .cronHandlers(CronBeans.discover(beans));
         configurers.orderedStream().forEach(configurer -> configurer.configure(builder));
-        var runtime = builder.build();
-        try { Events.bind(runtime); return runtime; }
-        catch (RuntimeException | Error failure) { runtime.close(); throw failure; }
+        // Deliberately not bound as the process default here. The binding lasts as long as the process
+        // (RT-EVENT-05) while a bean factory runs once per context, so binding here would make a second
+        // context in one JVM — every test suite — collide with the first. The application binds at startup.
+        return builder.build();
     }
 
     @Bean RuntimeDrainListener runtimeDrainListener(GameRuntime runtime, ApplicationContext context,

@@ -128,4 +128,34 @@ class RuntimeDrainTest {
             assertEquals(0, runtime.stats().inFlight());
         }
     }
+
+    @Test void outstandingContinuationsAreCountedAndAgedApartFromRouteWork() {
+        var queue = new QueueExecutor();
+        var captured = new ArrayList<CapturedRouteCallback<String>>();
+        try (var runtime = runtime(queue, new ArrayList<>())) {
+            runtime.dispatch(null, 7L, new Request(() -> {
+                for (int i = 0; i < 2; i++) captured.add(runtime.callback(new RouteCallback<String>() {
+                    public void onSuccess(String result) {}
+                    public void onFail(int errorCode) {}
+                }));
+                var inside = runtime.stats();
+                // The running Route task is counted too, so the reservations are what tells them apart.
+                assertEquals(2, inside.continuations());
+                assertEquals(3, inside.inFlight());
+                assertTrue(inside.oldestContinuationNanos() > 0);
+            }));
+            queue.next();
+
+            var afterTask = runtime.stats();
+            assertEquals(2, afterTask.continuations()); assertEquals(2, afterTask.inFlight());
+            captured.getFirst().onSuccess("done");
+            queue.next(); // the completion returns to the source Route
+            assertEquals(1, runtime.stats().continuations());
+
+            assertTrue(captured.getLast().cancel());
+            var drained = runtime.stats();
+            assertEquals(0, drained.continuations()); assertEquals(0, drained.inFlight());
+            assertEquals(0, drained.oldestContinuationNanos());
+        }
+    }
 }

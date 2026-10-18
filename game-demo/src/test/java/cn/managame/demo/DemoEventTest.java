@@ -10,6 +10,7 @@ import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.event.EventHandler;
 import cn.managame.runtime.event.EventMethod;
 import cn.managame.runtime.event.Events;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Profile;
@@ -29,6 +30,8 @@ class DemoEventTest {
             context.refresh();
             assertEquals(1, context.getBeansOfType(DemoEventHandler.class).size());
             runtime = context.getBean(GameRuntime.class);
+            // What GameDemo does at process startup; the container no longer binds it for you.
+            Events.bind(runtime);
             Events.publish(event);
             Received received = context.getBean(Probe.class).events.poll(5, TimeUnit.SECONDS);
             assertNotNull(received, "DemoEvent was not handled");
@@ -39,8 +42,11 @@ class DemoEventTest {
             assertTrue(received.virtualThread());
         }
         assertThrows(RuntimeDispatchException.class, () -> runtime.eventBus().publish(event));
-        assertThrows(IllegalStateException.class, () -> Events.publish(event));
+        // The binding outlives the Runtime it names, so the publisher learns it is closed.
+        assertThrows(RuntimeDispatchException.class, () -> Events.publish(event));
     }
+
+    @AfterEach void unbindEvents() { Events.resetForTests(); }
 
     record Received(DemoEvent event, EventContext context, boolean virtualThread) {}
 

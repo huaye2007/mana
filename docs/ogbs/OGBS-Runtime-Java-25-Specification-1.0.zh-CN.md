@@ -334,7 +334,7 @@ interface EventBus { void publish(Event event); }
 
 ### 9.1 静态发布
 
-`Events.publish(event)` 通过当前执行所属的 Runtime 发布，否则使用启动时 `Events.bind(runtime)` 设置的进程默认 Runtime；两者都没有时抛 IllegalStateException。已绑定时绑定另一个 Runtime 会抛异常；重复绑定同一个不做任何事；`Events.unbind(runtime)` 只移除该对象的绑定。Runtime.close 会移除自己的默认绑定；自定义 GameRuntime 实现须调用 `Events.unbind(this)`。测试：[EventsTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventsTest.java)。
+`Events.publish(event)` 通过当前执行所属的 Runtime 发布，否则使用启动时 `Events.bind(runtime)` 设置的进程默认 Runtime；两者都没有时抛 IllegalStateException。已绑定时绑定另一个 Runtime 会抛异常；重复绑定同一个不做任何事。没有 unbind：绑定是与进程等寿命的启动事实，`Runtime.close` 不会撤销它，因此关闭后再发布得到 RUNTIME_CLOSED（3001）而不是 IllegalStateException。绑定由应用在进程启动时完成：`@EnableGameRuntime` 构建 Runtime bean 但有意不绑定它，因为 bean 工厂每个上下文运行一次，而绑定与进程等寿命，在那里绑定会使同一 JVM 内的第二个上下文与第一个冲突。`Events.resetForTests()` 供构建多个 Runtime 的测试套件使用，它不是生命周期操作。测试：[EventsTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventsTest.java)。
 
 ## 10. GameTime、Timer 与 Cron
 
@@ -451,4 +451,4 @@ Runtime 持有 request 直到方法返回并完成自动编码（被拒绝时立
 
 `shutdown()` 停止外部准入与定时器（不可逆、幂等）；正在运行的工作仍可提交下游工作。`awaitTermination(timeout)` 须在 shutdown 之后、由外部线程调用（否则 IllegalStateException），等待已接纳的动作与已登记的回调；超时返回 false，不关闭任何东西。`close()` 关闭执行器且不等待。优雅顺序：shutdown → awaitTermination → close → 关闭网络、RPC 与数据。测试：[RuntimeDrainTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeDrainTest.java)。
 
-`stats()` 返回 RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos)；计数为近似值，不代表业务成功。计数使用分段 LongAdder，所有工作线程不争用同一变量；`GameRuntimeBuilder.executionTiming(false)` 关闭每个任务两次读取单调时钟，此时 executionNanos 保持 0。Spring 装配见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
+`stats()` 返回 RuntimeStats(accepting, inFlight, queued, running, completed, rejected, errors, executionNanos, continuations, oldestContinuationNanos)；计数为近似值，不代表业务成功。`continuations` 是尚未完成或取消的 `callback(...)` 预留数量，`oldestContinuationNanos` 是其中最久一笔的年龄，没有未完成预留时两者都为 0；`inFlight - continuations` 才是纯 Route 工作，这正是区分"业务方法慢"与"接入方遗弃了捕获"的依据。年龄由扫描未完成预留得到，除非有泄漏，它们数量很少。计数使用分段 LongAdder，所有工作线程不争用同一变量；`GameRuntimeBuilder.executionTiming(false)` 关闭每个任务两次读取单调时钟，此时 executionNanos 保持 0。Spring 装配见 [game-spring](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。

@@ -22,6 +22,9 @@ public class GameDemo {
         run(context);
 
         try {
+            // Process startup is where the event default is bound, and it stays bound until the process
+            // ends; publishing from a thread with no Route context depends on it.
+            Events.bind(context.getBean(cn.managame.runtime.GameRuntime.class));
             GamePacketHandler handler = context.getBean(GamePacketHandler.class);
             NetworkServer server = NetworkServer.builder()
                     .bindAddress(new InetSocketAddress(9000))

@@ -41,7 +41,8 @@ class EventsTest {
         @HandlerMethod public void run(Request request) { request.action().run(); }
     }
     private final List<GameRuntime> runtimes = new ArrayList<>();
-    @AfterEach void close() { runtimes.forEach(GameRuntime::close); }
+    // Closing no longer releases the binding, so the test harness clears what a process never would.
+    @AfterEach void close() { runtimes.forEach(GameRuntime::close); Events.resetForTests(); }
 
     private GameRuntime runtime(Listener listener) {
         var runtime = GameRuntimeBuilder.builder()
@@ -59,10 +60,9 @@ class EventsTest {
         assertThrows(IllegalStateException.class, () -> Events.publish(new Notice(1, 7)));
         assertThrows(NullPointerException.class, () -> Events.publish(null));
         assertThrows(NullPointerException.class, () -> Events.bind(null));
-        assertThrows(NullPointerException.class, () -> Events.unbind(null));
     }
 
-    @Test void externalPublicationUsesDefaultAndCloseReleasesIt() throws Exception {
+    @Test void externalPublicationUsesTheDefaultAndKeepsItAfterClose() throws Exception {
         var listener = new Listener(); var runtime = runtime(listener);
         Events.bind(runtime); Events.bind(runtime);
         var event = new Notice(1, 7);
@@ -76,7 +76,10 @@ class EventsTest {
         assertEquals(INVALID_ROUTE_KEY, assertThrows(RuntimeDispatchException.class,
                 () -> Events.publish(new Notice(1, 0))).errorCode());
         runtime.close();
-        assertThrows(IllegalStateException.class, () -> Events.publish(event));
+        // The binding outlives the Runtime it names, so a publisher learns it is closed rather than
+        // finding no default at all.
+        assertEquals(RUNTIME_CLOSED, assertThrows(RuntimeDispatchException.class,
+                () -> Events.publish(event)).errorCode());
     }
 
     @Test void currentRuntimeWinsAndSameRouteInlinesWithIdentityAndContextRestoration() throws Exception {
@@ -109,14 +112,18 @@ class EventsTest {
         assertThrows(IllegalStateException.class, () -> Events.publish(new Notice(1, 7)));
     }
 
-    @Test void conflictingBindingAndOldRuntimeClosureCannotRemoveAnotherBinding() throws Exception {
-        var first = runtime(new Listener()); var listener = new Listener(); var second = runtime(listener);
-        Events.bind(first);
+    @Test void theBindingIsFixedForTheProcess() throws Exception {
+        var listener = new Listener(); var first = runtime(listener); var second = runtime(new Listener());
+        Events.bind(first); Events.bind(first);
         assertThrows(IllegalStateException.class, () -> Events.bind(second));
-        assertFalse(Events.unbind(second)); assertTrue(Events.unbind(first));
-        Events.bind(second); first.close();
         Events.publish(new Notice(1, 7));
         assertNotNull(listener.seen.poll(5, TimeUnit.SECONDS));
+
+        first.close();
+        // Closing releases nothing, so no replacement can take the bound Runtime's place afterwards.
+        assertThrows(IllegalStateException.class, () -> Events.bind(second));
+        assertEquals(RUNTIME_CLOSED, assertThrows(RuntimeDispatchException.class,
+                () -> Events.publish(new Notice(1, 7))).errorCode());
     }
 
     @Test void closedCurrentRuntimeDoesNotFallBackToAnOpenDefault() throws Exception {
@@ -135,9 +142,8 @@ class EventsTest {
         } finally { proceed.countDown(); }
     }
 
-    @Test void selectedDefaultIsNotRedirectedByConcurrentUnbinding() throws Exception {
+    @Test void aPublicationThatSelectedTheDefaultObservesItsClosure() throws Exception {
         var firstListener = new Listener(); var first = runtime(firstListener);
-        var secondListener = new Listener(); var second = runtime(secondListener);
         var selected = new CountDownLatch(1); var proceed = new CountDownLatch(1);
         var gated = (GameRuntime) Proxy.newProxyInstance(GameRuntime.class.getClassLoader(),
                 new Class[]{GameRuntime.class}, (proxy, method, args) -> switch (method.getName()) {
@@ -146,7 +152,7 @@ class EventsTest {
                         if (!proceed.await(5, TimeUnit.SECONDS)) throw new AssertionError("Publication stalled");
                         yield first.eventBus();
                     }
-                    case "close" -> { Events.unbind((GameRuntime) proxy); first.close(); yield null; }
+                    case "close" -> { first.close(); yield null; }
                     default -> throw new UnsupportedOperationException(method.getName());
                 });
         runtimes.add(gated); Events.bind(gated);
@@ -157,9 +163,13 @@ class EventsTest {
         });
         try {
             assertTrue(selected.await(5, TimeUnit.SECONDS));
-            assertTrue(Events.unbind(gated)); Events.bind(second); proceed.countDown();
-            done.get(5, TimeUnit.SECONDS);
-            assertNotNull(firstListener.seen.poll(5, TimeUnit.SECONDS)); assertNull(secondListener.seen.poll());
+            // The binding cannot be withdrawn, so this publication can only reach the Runtime it already
+            // selected. Closing that Runtime meanwhile makes it fail there rather than succeed elsewhere.
+            first.close(); proceed.countDown();
+            var failure = assertInstanceOf(RuntimeDispatchException.class,
+                    assertThrows(ExecutionException.class, () -> done.get(5, TimeUnit.SECONDS)).getCause());
+            assertEquals(RUNTIME_CLOSED, failure.errorCode());
+            assertNull(firstListener.seen.poll());
         } finally { proceed.countDown(); publisher.join(5000); }
     }
 }

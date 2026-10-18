@@ -33,7 +33,6 @@ import cn.managame.runtime.error.RuntimeError;
 import cn.managame.runtime.error.RuntimeErrorHandler;
 import cn.managame.runtime.event.Event;
 import cn.managame.runtime.event.EventBus;
-import cn.managame.runtime.event.Events;
 import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerContextFactory;
@@ -55,6 +54,7 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Supplier;
@@ -76,6 +76,8 @@ final class DefaultGameRuntime implements GameRuntime {
     private final HttpDispatcher http;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AdmissionGate admission = new AdmissionGate();
+    /** Captured continuations that drain still waits for; see RuntimeStats.continuations. */
+    private final Set<Captured<?>> outstanding = ConcurrentHashMap.newKeySet();
     // Striped counters: every Route task updates them, so a single atomic word would be contended by all workers.
     private final LongAdder queued = new LongAdder(), running = new LongAdder(), completed = new LongAdder(),
             rejected = new LongAdder(), errorCount = new LongAdder(), executionNanos = new LongAdder();
@@ -371,13 +373,17 @@ final class DefaultGameRuntime implements GameRuntime {
         Objects.requireNonNull(callback);
         if (!RuntimeContexts.ownedBy(this)) throw new IllegalStateException("callback requires this Runtime's current Route");
         if (closed.get() || !admission.acquire(true)) throw failure(RUNTIME_CLOSED);
-        return new Captured<>(Contexts.current(), callback);
+        var captured = new Captured<>(Contexts.current(), callback);
+        outstanding.add(captured);
+        return captured;
     }
 
     /** One-shot capture of a source Route; completing or cancelling releases its drain slot exactly once. */
     private final class Captured<T> extends AtomicBoolean implements CapturedRouteCallback<T> {
         private final Context source;
         private final RouteCallback<T> callback;
+        /** When the reservation was taken, so an abandoned one can be seen aging in diagnostics. */
+        final long reservedAt = System.nanoTime();
 
         Captured(Context source, RouteCallback<T> callback) {
             this.source = source;
@@ -386,6 +392,7 @@ final class DefaultGameRuntime implements GameRuntime {
 
         private void finish(T value, int error, Throwable cause) {
             if (!compareAndSet(false, true)) return;
+            outstanding.remove(this);
             try { complete(source, callback, value, error, cause); }
             finally { admission.release(); }
         }
@@ -401,6 +408,7 @@ final class DefaultGameRuntime implements GameRuntime {
 
         @Override public boolean cancel() {
             if (!compareAndSet(false, true)) return false;
+            outstanding.remove(this);
             admission.release();
             return true;
         }
@@ -429,13 +437,23 @@ final class DefaultGameRuntime implements GameRuntime {
 
     public RuntimeStats stats() {
         return new RuntimeStats(admission.accepting() && !closed.get(), admission.count(), queued.sum(), running.sum(),
-                completed.sum(), rejected.sum(), errorCount.sum(), executionNanos.sum());
+                completed.sum(), rejected.sum(), errorCount.sum(), executionNanos.sum(),
+                outstanding.size(), oldestReservation());
+    }
+
+    /** Scans the outstanding reservations, which are few unless something is leaking them. */
+    private long oldestReservation() {
+        long now = System.nanoTime(), oldest = 0;
+        for (Captured<?> captured : outstanding) {
+            long age = now - captured.reservedAt;
+            if (age > oldest) oldest = age;
+        }
+        return oldest;
     }
 
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
         shutdown();
-        Events.unbind(this);
         Set<RouteExecutor> unique = Collections.newSetFromMap(new IdentityHashMap<>());
         unique.addAll(routes.values());
         for (RouteExecutor executor : unique) {

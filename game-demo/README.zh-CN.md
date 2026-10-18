@@ -26,7 +26,7 @@ User 的 JSON Map 初始化为 ConcurrentHashMap<Integer,Long>，默认加载保
 
 ## 发布 Runtime 事件
 
-[GameRuntimeConfig](src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) 构建由 Spring 管理的 GameRuntime，为 Domain 1（`ROLE`）注册虚拟线程 RouteExecutor，并收集标记 `@EventHandler` 的 Spring Bean，通过 `builder.eventHandlers(...)` 注册。业务监听器只需 `@EventHandler`：配置为 `cn.managame.demo` 增加注解 include filter，Spring 即可将这些类扫描为 Bean，无需 `@Component`。扫描适配通过 @EnableGameRuntime 位于可选 game-spring，Runtime 注解本身不依赖 Spring。配置在启动阶段调用 Events.bind(runtime)，使外部业务也能通过静态入口发布。默认绑定与其他实例冲突时关闭新构建的 Runtime。Context 关闭时关闭 Runtime、解除其默认事件绑定，并关闭其持有的执行/定时器资源。
+[GameRuntimeConfig](src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) 构建由 Spring 管理的 GameRuntime，为 Domain 1（`ROLE`）注册虚拟线程 RouteExecutor，并收集标记 `@EventHandler` 的 Spring Bean，通过 `builder.eventHandlers(...)` 注册。业务监听器只需 `@EventHandler`：配置为 `cn.managame.demo` 增加注解 include filter，Spring 即可将这些类扫描为 Bean，无需 `@Component`。扫描适配通过 @EnableGameRuntime 位于可选 game-spring，Runtime 注解本身不依赖 Spring。配置不绑定静态事件默认实例：bean 工厂每个上下文运行一次，而绑定与进程等寿命，因此改由 [GameDemo](src/main/java/cn/managame/demo/GameDemo.java) 在进程启动时绑定，这才使外部业务能通过静态入口发布。Context 关闭时关闭 Runtime 及其持有的执行与定时器资源；绑定保留，因此之后的静态发布报告 RUNTIME_CLOSED，而不是缺少默认实例。
 
 TCP 监听器启动后，GameDemo 发布一条不可变的 [DemoEvent](src/main/java/cn/managame/demo/event/DemoEvent.java)：
 
