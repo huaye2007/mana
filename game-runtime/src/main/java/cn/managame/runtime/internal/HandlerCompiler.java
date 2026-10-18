@@ -3,9 +3,10 @@ package cn.managame.runtime.internal;
 import static cn.managame.runtime.internal.Reflection.bind;
 import static cn.managame.runtime.internal.Reflection.invalid;
 import static cn.managame.runtime.internal.Reflection.methods;
+import static cn.managame.runtime.internal.Reflection.requireHandlerMethod;
 import static cn.managame.runtime.internal.Reflection.requireKeyRule;
-import static cn.managame.runtime.internal.Reflection.requireVoidMethod;
 
+import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.context.Context;
 import cn.managame.runtime.context.HandlerContext;
 import cn.managame.runtime.handler.Handler;
@@ -62,7 +63,7 @@ final class HandlerCompiler {
     }
 
     private void compileMethod(Object target, Handler annotation, HandlerMethod entry, Method m) {
-        requireVoidMethod(m);
+        requireHandlerMethod(m);
         int domain = entry.domain() != 0 ? entry.domain() : annotation.domain();
         if (!domains.contains(domain)) throw invalid("Unregistered handler domain: " + m);
         Class<?> contextType = null, messageType = null;
@@ -89,11 +90,31 @@ final class HandlerCompiler {
             }
         }
         if (messageType == null) throw invalid("Handler needs one registered message: " + m);
-        if (protocols.get(messageType).type() == ProtocolDescriptor.Type.RESPONSE)
+        ProtocolDescriptor protocol = protocols.get(messageType);
+        if (protocol.type() == ProtocolDescriptor.Type.RESPONSE)
             throw invalid("Response cannot be an inbound handler: " + m);
+        boolean returnsResult = m.getReturnType() != void.class;
+        if (returnsResult && protocol.responseType() == null)
+            throw invalid("A Handler that returns a response needs a message with a registered response: " + m);
+        if (returnsResult && m.getReturnType() != protocol.responseType())
+            throw invalid("Handler must return the message's registered response "
+                    + protocol.responseType().getName() + ": " + m);
+        contextType = answeringContext(contextType, returnsResult, m);
         registerRouteKey(annotation, entry, messageType);
-        HandlerBinding binding = new HandlerBinding(domain, contextType, List.copyOf(custom), adapt(bind(target, m), sources));
+        HandlerBinding binding = new HandlerBinding(domain, contextType, List.copyOf(custom), returnsResult,
+                adapt(bind(target, m), sources, returnsResult));
         if (handlers.putIfAbsent(messageType, binding) != null) throw invalid("Duplicate handler " + messageType);
+    }
+
+    /**
+     * A Handler whose return value is its response requires a client context at dispatch, so a declared
+     * supertype is tightened to {@link ClientHandlerContext} and a sibling transport context is rejected.
+     */
+    private static Class<?> answeringContext(Class<?> declared, boolean returnsResult, Method m) {
+        if (!returnsResult) return declared;
+        if (declared == null || declared.isAssignableFrom(ClientHandlerContext.class)) return ClientHandlerContext.class;
+        if (ClientHandlerContext.class.isAssignableFrom(declared)) return declared;
+        throw invalid("A Handler that returns a response needs a ClientHandlerContext: " + m);
     }
 
     /** The method's RouteKey rule overrides the class rule. */
@@ -108,9 +129,13 @@ final class HandlerCompiler {
             throw invalid("Duplicate route-key binding: " + messageType.getName());
     }
 
-    /** Adapts the bound method to {@code (Object context, Object message, Object[] customArguments) -> void}. */
-    private static MethodHandle adapt(MethodHandle handle, int[] sources) {
-        handle = handle.asType(MethodType.genericMethodType(sources.length).changeReturnType(void.class));
+    /**
+     * Adapts the bound method to {@code (Object context, Object message, Object[] customArguments) -> Object}.
+     * A void method yields a constant null result, which Runtime never sends.
+     */
+    private static MethodHandle adapt(MethodHandle handle, int[] sources, boolean returnsResult) {
+        if (!returnsResult) handle = MethodHandles.filterReturnValue(handle, MethodHandles.constant(Object.class, null));
+        handle = handle.asType(MethodType.genericMethodType(sources.length));
         int customIndex = 0;
         for (int i = 0; i < sources.length; i++) {
             if (sources[i] != FROM_ARGUMENTS) continue;
@@ -119,6 +144,6 @@ final class HandlerCompiler {
             handle = MethodHandles.filterArguments(handle, i, getter);
         }
         return MethodHandles.permuteArguments(handle,
-                MethodType.methodType(void.class, Object.class, Object.class, Object[].class), sources);
+                MethodType.methodType(Object.class, Object.class, Object.class, Object[].class), sources);
     }
 }

@@ -17,7 +17,8 @@ public interface GameRuntime extends AutoCloseable {
     default void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
     void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message);
     default void dispatch(Connection connection, Object message);
-    void dispatch(Connection connection, Metadata metadata, Object message);
+    default void dispatch(Connection connection, Metadata metadata, Object message);
+    void dispatch(Connection connection, int command, int requestId, Metadata metadata, Object message);
     void dispatch(Connection connection, int businessIdType, long businessId, Object message);
     void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
                      int businessIdType, long businessId, Metadata metadata, Object message);
@@ -40,9 +41,14 @@ public interface RouteCallback<T> {
     default void onFail(int errorCode, Throwable cause) { onFail(errorCode); }
 }
 public interface CapturedRouteCallback<T> extends RouteCallback<T> { boolean cancel(); }
+
+public interface ClientResultCodec {
+    Object encode(ClientHandlerContext context, Object result) throws Exception;
+    Object encodeError(ClientHandlerContext context, int errorCode) throws Exception;
+}
 ```
 
-A built Runtime is usable at once; there is no start, dynamic registration or arbitrary Runnable dispatch. The usual business entry is `dispatch(connection, routeKey, businessIdType, businessId, message)`; Domain comes from the Handler annotation (§6.2). With a `handlerContextFactory`, `dispatch(connection, message)` selects Key and identity per Domain (§6.4). HTTP connects through `asyncHandler(runtime.http()::dispatch)` (§13).
+A built Runtime is usable at once; there is no start, dynamic registration or arbitrary Runnable dispatch. The usual business entry is `dispatch(connection, routeKey, businessIdType, businessId, message)`; Domain comes from the Handler annotation (§6.2). With a `handlerContextFactory`, `dispatch(connection, command, requestId, metadata, message)` selects Key and identity per Domain (§6.4) and carries the correlation a response needs (§6.5); the shorter `dispatch(connection, …)` overloads are defaults that pass correlation 0. HTTP connects through `asyncHandler(runtime.http()::dispatch)` (§13).
 
 | Package | Contents |
 | --- | --- |
@@ -51,7 +57,7 @@ A built Runtime is usable at once; there is no start, dynamic registration or ar
 | .route | RouteDomain, RouteKeyBinding/Extractor/Registry, RouteCallback |
 | .executor | RouteExecutor SPI, bindings, official executors |
 | .protocol | Protocol descriptors, registration, request/response pairs |
-| .handler | Handler annotations, HandlerArgumentBinding, HandlerContextFactory |
+| .handler | Handler annotations, HandlerArgumentBinding, HandlerContextFactory, ClientResultCodec |
 | .http | HTTP annotations, HttpDispatcher, HttpContext, HttpContextFactory, HttpResultCallback, codecs |
 | .event / .timer / .time / .error / .diagnostic | Events, timers and Cron, GameTime, errors, RuntimeStats |
 | .internal | Compilation, scheduling, context binding; not application API |
@@ -71,6 +77,7 @@ GameRuntimeBuilder.builder()
     .handlers(Iterable<?>)
     .handlerArguments(Iterable<? extends HandlerArgumentBinding<?>>)
     .handlerContextFactory(HandlerContextFactory)
+    .clientResultCodec(ClientResultCodec)
     .httpHandlers(Iterable<?>)
     .httpContextFactory(HttpContextFactory)
     .httpResultCodec(HttpResultCodec)
@@ -84,13 +91,14 @@ GameRuntimeBuilder.builder()
 
 List setters copy and **replace** earlier values (`handlers(A)` then `handlers(B)` registers only B). Defaults: empty lists, UTC Cron zone, System.Logger error handler. `RouteDomain.of(id, name)` needs id > 0; every Domain binds exactly one executor through `RouteExecutorBinding.of(executor, domains...)`.
 
-build compiles everything before returning: Domain/executor bindings, protocols and response pairs, Key extractors, Handler/Event/Cron/HTTP methods (MethodHandles) and Cron expressions. There is no classpath scanning; callers pass instances. Handler/Event/Cron methods are public, non-static, non-varargs and return void; HTTP methods may also return a business object. Duplicates and unresolvable definitions throw IllegalArgumentException (null arguments NullPointerException):
+build compiles everything before returning: Domain/executor bindings, protocols and response pairs, Key extractors, Handler/Event/Cron/HTTP methods (MethodHandles) and Cron expressions. There is no classpath scanning; callers pass instances. Event/Cron methods are public, non-static, non-varargs and return void; Handler and HTTP methods may also return a business object. Duplicates and unresolvable definitions throw IllegalArgumentException (null arguments NullPointerException):
 
 | Check | Typical error |
 | --- | --- |
 | Domain/executor | Duplicate ID, unknown Domain, missing binding |
 | Protocol | Duplicate message class or type+command; response pair to an unregistered or wrong-direction type |
 | Handler | Unregistered message, two methods for one message, unknown Domain, context parameter outside the HandlerContext hierarchy |
+| Handler response (§6.5) | Return type that is not the message's registered response, a message that registers none, a non-client context, or no `clientResultCodec` |
 | Event | Not exactly one Event parameter |
 | Cron | Invalid expression or Route, duplicate declaring class + method |
 
@@ -147,9 +155,9 @@ Each has an extensible Default implementation (DefaultHandlerContext, DefaultCli
 
 ### 4.2 Client and RPC Handler contexts
 
-ClientHandlerContext is client ingress over any game-network Connection (including WebSocket); it implies no authentication. Every Connection dispatch overload builds a DefaultClientHandlerContext, with a possibly null connection that Runtime neither inspects nor closes. RpcHandlerContext is inter-service RPC ingress (Call and Notify; requestId 0 = Notify) and exposes no connection. DefaultRpcHandlerContext requires nonzero sourceNodeId and command and sourceSlotId 0..254. The RPC adapter decodes the borrowed body before its callback returns and must pick a nonzero business Key; the context owns no RPC buffer.
+ClientHandlerContext is client ingress over any game-network Connection (including WebSocket); it implies no authentication. It carries the inbound `command()` and `requestId()` so its Handler can answer (§6.5), with the same meaning as on the RPC side: requestId 0 = no response expected. Every Connection dispatch overload builds a DefaultClientHandlerContext, with a possibly null connection that Runtime neither inspects nor closes. RpcHandlerContext is inter-service RPC ingress (Call and Notify; requestId 0 = Notify) and exposes no connection. DefaultRpcHandlerContext requires nonzero sourceNodeId and command and sourceSlotId 0..254. The RPC adapter decodes the borrowed body before its callback returns and must pick a nonzero business Key; the context owns no RPC buffer.
 
-A Handler method may take HandlerContext (transport-independent), ClientHandlerContext or RpcHandlerContext; an incompatible actual context is rejected with HANDLER_CONTEXT_MISMATCH (3003) before argument resolution and admission. Each message class still has one Handler, so a message used over several transports takes HandlerContext. Tests: [TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java).
+A Handler method may take HandlerContext (transport-independent), ClientHandlerContext or RpcHandlerContext; an incompatible actual context is rejected with HANDLER_CONTEXT_MISMATCH (3003) before argument resolution and admission. Each message class still has one Handler, so a message used over several transports takes HandlerContext — and therefore cannot return a response, since returning one tightens the required context to ClientHandlerContext; it may still write on a connection it obtains some other way. Tests: [TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java).
 
 <a id="5-protocol-与-routekey-注册"></a>
 
@@ -180,7 +188,7 @@ long RouteKeyRegistry.getRouteKey(Object message);   // 0 when no binding
 
 ## 6. Handler
 
-Handler objects carry `@Handler(domain = …)` (inherited). A nonzero `@HandlerMethod(domain = …)` overrides the class Domain. A method takes exactly one registered REQUEST/NOTIFY message, at most one context parameter (Context, InvocationContext, HandlerContext or a subtype) and any explicitly bound custom arguments (§6.3), in any order. Messages match by exact class, one Handler each.
+Handler objects carry `@Handler(domain = …)` (inherited). A nonzero `@HandlerMethod(domain = …)` overrides the class Domain. A method takes exactly one registered REQUEST/NOTIFY message, at most one context parameter (Context, InvocationContext, HandlerContext or a subtype) and any explicitly bound custom arguments (§6.3), in any order. It returns void, or the message's registered response type (§6.5). Messages match by exact class, one Handler each.
 
 <a id="61-方法签名判定示例"></a>
 
@@ -189,7 +197,9 @@ Handler objects carry `@Handler(domain = …)` (inherited). A nonzero `@HandlerM
 | `void handle(M m)`, `void handle(HandlerContext c, M m)`, `void handle(M m, CustomContext c)` | Yes |
 | `void handle(Extra x, M m)` | Yes, with a binding for Extra |
 | `void handle(Connection c, M m)` | No; read it from ClientHandlerContext |
-| `M handle(M m)`, `static void handle(M m)`, `void handle(M a, M b)`, `void handle(TimerContext c, M m)`, `void handle(M... m)` | No |
+| `R handle(ClientHandlerContext c, M m)` where M registers response R | Yes (§6.5) |
+| `R handle(M m)` where R is not M's registered response, `R handle(RpcHandlerContext c, M m)` | No (§6.5) |
+| `int handle(M m)`, `static void handle(M m)`, `void handle(M a, M b)`, `void handle(TimerContext c, M m)`, `void handle(M... m)` | No |
 
 Precondition and admission failures throw RuntimeDispatchException with a Core code (no stack trace is captured, so an overload rejection costs one allocation; toString includes `FrameworkErrorCodes.describe`); once execution starts, exceptions go to RuntimeErrorHandler (also when inlined), never to the caller.
 
@@ -224,24 +234,53 @@ Business identity is read from the context: `context.businessId()` / `businessId
 ```java
 @FunctionalInterface
 interface HandlerContextFactory {
-    ClientHandlerContext create(int domain, Connection connection, Metadata metadata, Object message);
+    ClientHandlerContext create(int domain, int command, int requestId, Connection connection,
+                                Metadata metadata, Object message);
 }
 ```
 
-When configured, `dispatch(connection, message)` and `dispatch(connection, metadata, message)` call it once, on the submitting thread before admission, with the Handler's effective annotation Domain; it does not run any Key extractor. It selects Key and identity per Domain — for example from a Connection attribute or a thread-safe identity map — and may return an application subtype. It must keep the Domain and the exact message, connection and Metadata references; a changed Domain → ROUTE_DOMAIN_MISMATCH (3004), replaced objects or an incompatible context → HANDLER_CONTEXT_MISMATCH (3003), Key 0 → INVALID_ROUTE_KEY (3005), null → NullPointerException. Throwing rejects the dispatch (no retry, no error handler). Explicit-Key, explicit-context and explicit-identity overloads bypass the factory. Runtime neither closes nor copies the factory.
+When configured, every `dispatch(connection, …, message)` client overload calls it once, on the submitting thread before admission, with the Handler's effective annotation Domain and the correlation the caller supplied; it does not run any Key extractor. It selects Key and identity per Domain — for example from a Connection attribute or a thread-safe identity map — and may return an application subtype. It must keep the Domain, the correlation and the exact message, connection and Metadata references; a changed Domain → ROUTE_DOMAIN_MISMATCH (3004), replaced objects, a changed command or request id, or an incompatible context → HANDLER_CONTEXT_MISMATCH (3003), Key 0 → INVALID_ROUTE_KEY (3005), null → NullPointerException. Throwing rejects the dispatch (no retry, no error handler). Explicit-Key, explicit-context and explicit-identity overloads bypass the factory and carry correlation 0, so a Handler that answers is reached through this factory or through an explicitly built context. Runtime neither closes nor copies the factory.
 
 ```java
-builder.handlerContextFactory((domain, connection, metadata, message) -> {
+builder.handlerContextFactory((domain, command, requestId, connection, metadata, message) -> {
     Identity id = Objects.requireNonNull(identities.get(connection), "Not authenticated");
     return switch (domain) {
-        case ROLE_ID -> new DefaultClientHandlerContext(domain, id.roleRouteKey(), ROLE_TYPE, id.roleId(), metadata, message, connection);
+        case ROLE_ID -> new DefaultClientHandlerContext(domain, id.roleRouteKey(), ROLE_TYPE, id.roleId(),
+                metadata, message, connection, command, requestId);
         default -> throw new IllegalArgumentException("Unsupported domain: " + domain);
     };
 });
-runtime.dispatch(connection, decodedMessage);
+runtime.dispatch(connection, packet.command(), packet.seq(), Metadata.empty(), decodedMessage);
 ```
 
 The demo stores an authenticated [GameSession](../../game-demo/src/main/java/cn/managame/demo/network/GameSession.java) on the Connection and lets [GameDomain](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameDomain.java) choose per Domain. Tests: [HandlerContextFactoryTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java).
+
+<a id="client-responses"></a>
+
+### 6.5 Client responses
+
+`ClientHandlerContext` adds `command()` and `requestId()` to the borrowed `connection()`. `DefaultClientHandlerContext` takes them in its widest constructor; its shorter constructors pass 0, which means "expects no response". Implementing `ClientHandlerContext` directly now requires both accessors. The context stays a description of the request: it carries no completion object, and no Handler parameter supplies one.
+
+A Handler answers in one of two ways:
+
+```java
+// Return it: Runtime frames it through the codec and writes it on this request's connection.
+@HandlerMethod public LoginRes login(ClientHandlerContext c, LoginReq r) { return new LoginRes(...); }
+
+// Or send it yourself, here from a guild Route callback that has restored c.
+@HandlerMethod public void join(ClientHandlerContext c, JoinReq r) {
+    runtime.call(GUILD_ID, r.guildId(), () -> guild.join(...), new RouteCallback<GuildInfo>() {
+        public void onSuccess(GuildInfo info) { c.connection().write(packet(c.command(), c.requestId(), info)); }
+        public void onFail(int errorCode) { c.connection().write(error(c.command(), c.requestId(), errorCode)); }
+    });
+}
+```
+
+Build rules for the first form, all `IllegalArgumentException` from `build()`: the returned type must be exactly the message's registered `responseType`; the message must register one; the context must be assignable to `ClientHandlerContext` (a wider declared context is tightened to it, `RpcHandlerContext` is rejected); and `clientResultCodec` must be configured. A void Handler has no such requirements — it owns whatever it writes.
+
+At dispatch the tightened context type is checked like any other, so a non-client context gives HANDLER_CONTEXT_MISMATCH (3003) before admission. Runtime then sends at most once per dispatch, on the request's Route, right after the method returns or throws: it calls `ClientResultCodec` and writes the framed object with `Connection.write`, and treats only `WriteStatus.ACCEPTED` as written; `INACTIVE`/`NOT_WRITABLE` are not reported. A null return writes nothing and is not an error. Missing correlation, a null connection, a codec exception and a null codec result are RUNTIME_EXECUTION_ERROR (3010) on RuntimeErrorHandler; a failed business framing then attempts `encodeError` once, and a failing `encodeError` is only reported. A Handler exception is reported first and then answered with one `encodeError(3010)` framing (RT-DISPATCH-03), so no exception detail is encoded; a void Handler's exception is only reported, since Runtime does not know whether it already answered.
+
+`builder.clientResultCodec(codec)` is required before any Handler returns a response and is otherwise unused. Runtime neither closes nor copies it. Tests: [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java); demo codec: [GamePacketResultCodec](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketResultCodec.java).
 
 <a id="7-routeexecutor"></a>
 <a id="71-两种容量的计算示例"></a>
@@ -375,7 +414,7 @@ Error handlers run on the triggering thread; return quickly and do not throw (th
 
 ## 12. Source and tests
 
-Sources: [GameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntime.java), [GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java), [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java), [RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java). Key tests in [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java): same-Route inline events and isolation, no inlining across Runtimes, cross-Route call and source restoration, target versus return rejection, fresh Timer context, shared executor closed once. Run `mvn -pl game-runtime -am test`.
+Sources: [GameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntime.java), [GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java), [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java), [RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java). Key tests in [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java): same-Route inline events and isolation, no inlining across Runtimes, cross-Route call and source restoration, target versus return rejection, fresh Timer context, shared executor closed once. [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) covers §6.5: a returned response framed with its correlation, a void Handler answering through the connection itself while Runtime frames nothing, null silence, handler exceptions answered with a code only, missing correlation or connection, codec failure and its single fallback, refused writes, and the build rules. Run `mvn -pl game-runtime -am test`.
 
 <a id="runtime-http-api"></a>
 
@@ -423,7 +462,7 @@ Example: [RuntimeHttpExample](../../game-demo/src/main/java/cn/managame/demo/exa
 
 ## 14. Metadata ingress, external callbacks, drain and diagnostics
 
-`dispatch(connection, metadata, message)` passes the exact Metadata to the context factory (or uses message Key extraction with identity 0/0 when none is configured); the six-argument overload preserves explicit Key, identity and Metadata. Other overloads use empty Metadata.
+`dispatch(connection, command, requestId, metadata, message)` passes the exact Metadata and the correlation to the context factory (or uses message Key extraction with identity 0/0 when none is configured, keeping the correlation on the built context); the six-argument Key overload preserves explicit Key, identity and Metadata. Other overloads use empty Metadata, and every overload without correlation parameters passes 0.
 
 `dispatchRpc(...)` resolves the Handler's Domain and creates a DefaultRpcHandlerContext; the application has already decoded the body and chosen Key and identity. It sends nothing; the typed adapter lives in game-spring.
 

@@ -48,7 +48,7 @@ DemoEvent received: routeDomain=1, routeKey=1001, message=hello game-runtime, vi
 
 [GameDomain](src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 是应用自定义的执行域枚举，ROLE 使用显式 ID 1，LOGIN 使用显式 ID 2，SYSTEM 使用显式 ID 3；GameRuntimeConfig 将枚举值转为 RouteDomain 注册，再把它们的 ID 绑定到执行器。Handler 注解使用编译期常量 `@Handler(domain = GameDomain.ROLE_ID)`，因为 Java 注解元素不能接收任意应用枚举类型，也不能使用 ROLE.id() 等方法调用。ID 不使用 ordinal()，枚举调整顺序不会改变路由。Domain 组织执行，本身不决定角色身份、不要求鉴权，也不自动选择 routeKey；routeKey 与鉴权后的 roleId 均由业务接入明确传入。
 
-GameRuntimeConfig 也通过扫描发现仅标记 `@Handler` 的 Bean，再通过 `builder.handlers(...)` 注册。[UserHandler](src/main/java/cn/managame/demo/bus/user/UserHandler.java) 使用 `@Handler(domain=GameDomain.ROLE_ID)`，并在 `login(ClientHandlerContext context, LoginReq request)` 上用 `@HandlerMethod(domain=GameDomain.LOGIN_ID)` 覆盖登录域，通过 `context.connection()` 获取连接，不使用独立 Connection 方法参数。GameProtocols 在协议号 1003 注册 LoginReq/LoginRes、关联响应，并分配 Fory 类型 ID 3/4。
+GameRuntimeConfig 也通过扫描发现仅标记 `@Handler` 的 Bean，再通过 `builder.handlers(...)` 注册。[UserHandler](src/main/java/cn/managame/demo/bus/user/UserHandler.java) 使用 `@Handler(domain=GameDomain.ROLE_ID)`，并在 `login(ClientHandlerContext context, LoginReq request)` 上用 `@HandlerMethod(domain=GameDomain.LOGIN_ID)` 覆盖登录域，该方法返回 LoginRes 交由 Runtime 封装并写出，通过 `context.connection()` 获取连接，不使用独立 Connection 方法参数。GameProtocols 在协议号 1003 注册 LoginReq/LoginRes、关联响应，并分配 Fory 类型 ID 3/4。
 
 调用方通常已知 Key，只需要：
 
@@ -66,7 +66,7 @@ runtime.dispatch(connection, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, new 
 
 Domain 1 来自 @Handler，Key 为 99，context.businessId() 为 10001；Key 和协议 timestamp 均不选择身份。接入层鉴权并提供可信身份。网络入口的 ROLE 策略在入队前拒绝缺少会话的请求，再将角色类别和 ID 捕获到 Context。显式 Key/身份/上下文重载绕过该策略，调用方必须传入正确的可信身份；Context 参数本身不会自动校验业务类别或完成鉴权。只有 Handler 在自己的 Route 执行。[DemoIdentityTest](src/test/java/cn/managame/demo/DemoIdentityTest.java) 无需数据库/socket，验证无需参数绑定的 Spring 分发、身份/Key/协议值独立、虚拟线程执行及缺少会话时拒绝。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
 
-[DemoHandlerTest](src/test/java/cn/managame/demo/DemoHandlerTest.java) 只装配 Runtime 配置，用手动测试探针替换空的登录实现，验证 LoginReq.userId=10001 时使用调用方 Key 99、Domain 2、原连接/请求及虚拟线程；还验证未绑定 LOGIN 按 userId 仅选择路由、不访问连接属性，以及 Key 0 在接纳前拒绝，无需数据库或 socket。TCP 入口现已将解码消息分发到 Runtime Handler；UserHandler 登录业务仍为空，不自动生成 LoginRes。完整 demo 启动仍需数据库配置。
+[DemoHandlerTest](src/test/java/cn/managame/demo/DemoHandlerTest.java) 只装配 Runtime 配置，用手动测试探针替换空的登录实现，验证 LoginReq.userId=10001 时使用调用方 Key 99、Domain 2、原连接/请求及虚拟线程；还验证未绑定 LOGIN 按 userId 仅选择路由、不访问连接属性，以及 Key 0 在接纳前拒绝，无需数据库或 socket。TCP 入口将解码消息连同报文头的 command 与 seq 一起分发到 Runtime Handler，使 Handler 能够应答；骨架 UserHandler 仍不校验 token，以 roleId 0 应答。完整 demo 启动仍需数据库配置。
 
 <a id="demo-runtime-services"></a>
 
@@ -143,12 +143,16 @@ runtime.dispatch(connection, decodedMessage);
 
 ```java
 @HandlerMethod(domain = GameDomain.LOGIN_ID)
-public void login(ClientHandlerContext context, LoginReq loginReq) {
+public LoginRes login(ClientHandlerContext context, LoginReq loginReq) {
     // verify 必须拒绝无效 token，并返回服务端核实的身份。
     var identity = tokenVerifier.verify(loginReq.getToken());
     long selectedRouteKey = selectRoleRouteKey(identity);
     context.connection().set(GameSession.KEY,
             new GameSession(selectedRouteKey, identity.roleId()));
+    // 返回给 Runtime，由 GamePacketResultCodec 按该请求自身的 seq 封装。
+    var response = new LoginRes();
+    response.setRoleId(identity.roleId());
+    return response;
 }
 ```
 
@@ -203,7 +207,7 @@ mvn -pl game-demo -am clean verify
 
 ## Packet Metadata、错误与管理
 
-GamePacketHandler 通过 [GamePacketMetadata](src/main/java/cn/managame/demo/network/GamePacketMetadata.java) 传入 command/seq/code，使用应用自定义 int key 1/2/3。Handler 读取 context.metadata()，这些 key 不是 Core 保留编号。RuntimeDispatchException 接纳拒绝回复保留 command/seq、携带框架错误码和空 body 的 packet，不自动断连或重试。记录 WriteStatus，接纳不代表送达。未知协议、非法 Fory body/类型不匹配及鉴权策略缺失仍走异常路径。Handler 执行异常仍由 RuntimeErrorHandler 报告，不自动构造远程响应。这些策略不修改 packet 线格式或实现鉴权。
+GamePacketHandler 把报文头的 command 与 seq 作为请求相关性传给 dispatch，因此 Handler 读取 `context.command()` / `context.requestId()`，而不再依赖应用自定义 Metadata key；它传入的 Metadata 为空。[GamePacketResultCodec](src/main/java/cn/managame/demo/network/GamePacketResultCodec.java) 把业务响应封装为 packet：command 取自返回类型已注册的 RESPONSE 描述，seq 取自该请求，code 为 0；框架失败则使用请求的 command、其 seq、错误码与空 body。RuntimeDispatchException 接纳拒绝由接入方自己通过同一个封装辅助方法回复，保留 command/seq、携带框架错误码和空 body，不自动断连或重试。记录 WriteStatus，接纳不代表送达。未知协议、非法 Fory body/类型不匹配及鉴权策略缺失仍走异常路径。Handler 执行异常仍由 RuntimeErrorHandler 报告，并只以框架错误码应答，绝不发送异常本身。这些策略不修改 packet 线格式或实现鉴权。
 
 POST /demo/echo 直接接收 String，POST /demo/dto 和 GET /demo/query 接收 EchoRequest，无需 Context 参数。Contexts.current(HttpContext.class) 提供当前 Route；即使参数为 String，非 GET 仍需 JSON body routeKey。query 示例：/demo/query?routeKey=1&text=hello。Runtime stats、Data stats/flush 为显式管理 API，不新增未鉴权管理入口。复用集成契约见 [容器语义](../docs/ogbs/OGBS-Spring-1.0.zh-CN.md) 及 [Java 规范](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
 

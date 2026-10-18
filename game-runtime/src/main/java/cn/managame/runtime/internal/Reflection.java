@@ -24,8 +24,8 @@ final class Reflection {
     static Set<Method> methods(Object target) {
         for (Class<?> type = target.getClass(); type != Object.class; type = type.getSuperclass()) {
             for (Method m : type.getDeclaredMethods()) {
-                if (m.isAnnotationPresent(HandlerMethod.class) || m.isAnnotationPresent(EventMethod.class)
-                        || m.isAnnotationPresent(Cron.class)) requireVoidMethod(m);
+                if (m.isAnnotationPresent(HandlerMethod.class)) requireHandlerMethod(m);
+                else if (m.isAnnotationPresent(EventMethod.class) || m.isAnnotationPresent(Cron.class)) requireVoidMethod(m);
                 else if (m.isAnnotationPresent(HttpMethod.class)) requireHttpMethod(m);
             }
         }
@@ -36,6 +36,13 @@ final class Reflection {
         if (!Modifier.isPublic(m.getModifiers()) || Modifier.isStatic(m.getModifiers()) || m.getReturnType() != void.class
                 || m.isVarArgs())
             throw invalid("Expected public instance void method: " + m);
+    }
+
+    /** A Handler method returns void, or the response type its request registered; never a primitive. */
+    static void requireHandlerMethod(Method m) {
+        if (!Modifier.isPublic(m.getModifiers()) || Modifier.isStatic(m.getModifiers()) || m.isVarArgs()
+                || (m.getReturnType().isPrimitive() && m.getReturnType() != void.class))
+            throw invalid("Expected public instance Handler method returning void or a response: " + m);
     }
 
     static void requireHttpMethod(Method m) {

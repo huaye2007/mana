@@ -98,11 +98,11 @@ Contexts 使用 Java 25 ScopedValue，且只在真正执行任务时绑定。无
 | call action | DefaultRouteCallContext | 从来源 InvocationContext 继承 |
 | call callback | 原始来源 Context | 完整恢复同一对象 |
 
-ProtocolRegistry 只索引 (type,command) ↔ MessageClass 与 Req→Res。MessageClass 唯一，request/response 可同 command。Registry 不包含 Codec、Handler 或 Route。
+ProtocolRegistry 只索引 (type,command) ↔ MessageClass 与 Req→Res。MessageClass 唯一，request/response 可同 command。Registry 不包含 Codec、Handler 或 Route。Req→Res 配对正是构建期校验客户端应答 Handler 的依据：其返回类型必须恰好是该响应。
 
 RouteKeyRegistry 是单独的 exact-class 查询：没有绑定返回 0，extractor 异常按调用方异常传播，不做继承查找或命名猜测。显式上下文与外部 Key 分发保留其 Route；只有从消息提取的入口查询提取规则。
 
-Handler 方法必须为 public、非 static、返回 void，且只有一个已注册 REQUEST/NOTIFY 参数，可以另带一个 Context 及已注册的应用参数类型，顺序不限。HandlerMethod 的非零 domain 覆盖 Handler.domain。重复 message handler、非法 Context 类型、未绑定/歧义参数类型、未注册 Domain 等在 build 时失败。业务接入通过带身份的 dispatch 重载传入 Key 与 businessIdType/businessId，二者含义各自独立。业务身份通常直接从 Context 获取，无需 RoleId/GuildId/RoomId 包装类型或参数注册。HandlerArgumentBinding 保留为其他应用参数的可选扩展，在提交线程、接纳前各解析一次，解析器不得访问 Route 所有的状态；目标 Handler 仍使用既有 Route 执行器。见 [Java 参数契约](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
+Handler 方法必须为 public、非 static，且只有一个已注册 REQUEST/NOTIFY 参数，可以另带一个 Context 及已注册的应用参数类型，顺序不限。返回 void，或该消息已注册的响应类型——Runtime 通过配置的 ClientResultCodec 封装它，并按该请求自身的相关性写到其连接上；想要应答的 void Handler 自己写那个连接，框架不会把任何完成对象传给 Handler。HandlerMethod 的非零 domain 覆盖 Handler.domain。重复 message handler、非法 Context 类型、未绑定/歧义参数类型、未注册 Domain，以及无法送达的返回式响应（返回类型不是已注册响应、消息未注册响应、上下文不是客户端上下文、缺少 clientResultCodec）等在 build 时失败。业务接入通过带身份的 dispatch 重载传入 Key 与 businessIdType/businessId，二者含义各自独立。业务身份通常直接从 Context 获取，无需 RoleId/GuildId/RoomId 包装类型或参数注册。HandlerArgumentBinding 保留为其他应用参数的可选扩展，在提交线程、接纳前各解析一次，解析器不得访问 Route 所有的状态；目标 Handler 仍使用既有 Route 执行器。见 [Java 参数契约](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
 
 Event 通过自己的 routeDomain()/routeKey() 指定唯一 Route。EventMethod 按具体 Event 类 exact lookup、order 升序运行；相同 order 无相对顺序保证。单个监听方法失败上报后继续其他监听方法。
 
@@ -121,7 +121,8 @@ runtime.call 的 action 业务失败应作为正常结果返回。action 抛异�
 ## 可扩展点
 
 - 自定义 RouteExecutor 并显式绑定 Domain。
-- 客户端通过 ClientHandlerContext/DefaultClientHandlerContext 访问 Connection，RPC 通过 RpcHandlerContext/DefaultRpcHandlerContext 获取逻辑来源/关联信息；应用字段继承对应默认实现。公共 HandlerContext 包含消息和调用身份，可选 RPC 到 Runtime 接入由 game-spring 提供。
+- 用 ClientResultCodec 定义客户端响应封装，仅用于 Handler 返回的响应；Runtime 携带相关性并负责写出，不定义客户端报文格式。
+- 客户端通过 ClientHandlerContext/DefaultClientHandlerContext 访问 Connection 与请求相关性，RPC 通过 RpcHandlerContext/DefaultRpcHandlerContext 获取逻辑来源/关联信息；应用字段继承对应默认实现。公共 HandlerContext 包含消息和调用身份，可选 RPC 到 Runtime 接入由 game-spring 提供。
 - ProtocolRegistry 定义可由外部生成器生成。
 - MetadataKey 自带编码规则。
 - Netty pipeline 直接放入原生 Decoder/Encoder、IdleStateHandler、LoggingHandler、FlushConsolidationHandler。

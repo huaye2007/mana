@@ -6,6 +6,7 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.http.DefaultHttpContext;
 import cn.managame.runtime.internal.RuntimeBindings.Compiled;
+import cn.managame.runtime.internal.RuntimeBindings.HandlerBinding;
 import cn.managame.runtime.internal.RuntimeBindings.HttpBinding;
 import cn.managame.runtime.internal.RuntimeBindings.HttpEndpoint;
 import java.util.HashMap;
@@ -27,6 +28,8 @@ public final class RuntimeCompiler {
 
         HandlerCompiler handlers = new HandlerCompiler(domains, settings.protocols(), settings.routeKeys(), settings.handlerArguments());
         for (Object target : settings.handlers()) handlers.compile(target);
+        if (settings.clientResults() == null && handlers.handlers.values().stream().anyMatch(HandlerBinding::returnsResult))
+            throw invalid("Handlers that return a client response require clientResultCodec");
         var events = EventCompiler.events(settings.eventHandlers());
         var crons = EventCompiler.crons(settings.cronHandlers(), domains, settings.cronZone());
         Map<HttpEndpoint, HttpBinding> http = HttpCompiler.compile(settings.httpHandlers(), domains, settings.httpRequests());
@@ -38,8 +41,8 @@ public final class RuntimeCompiler {
                 throw invalid("Custom HTTP contexts require httpContextFactory");
         }
         return new DefaultGameRuntime(new Compiled(Map.copyOf(routes), settings.protocols(), Map.copyOf(handlers.routeKeys),
-                Map.copyOf(handlers.handlers), settings.handlerContexts(), events, crons, http, settings.httpContexts(),
-                settings.httpResults(), settings.errors(), settings.executionTiming()));
+                Map.copyOf(handlers.handlers), settings.handlerContexts(), settings.clientResults(), events, crons, http,
+                settings.httpContexts(), settings.httpResults(), settings.errors(), settings.executionTiming()));
     }
 
     /** Every registered Domain binds exactly one executor; executors may be shared. */

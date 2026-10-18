@@ -2,6 +2,7 @@ package cn.managame.runtime.internal;
 
 import cn.managame.runtime.error.RuntimeErrorHandler;
 import cn.managame.runtime.executor.RouteExecutorBinding;
+import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.http.HttpContextFactory;
@@ -17,6 +18,7 @@ import java.util.List;
  * Immutable snapshot of a GameRuntimeBuilder. Internal implementation, not an application API.
  *
  * @param handlerContexts optional client context factory, or null
+ * @param clientResults optional client response codec, or null when no Handler answers a client request
  * @param httpContexts optional HTTP context factory, or null
  * @param executionTiming whether every Route task measures its execution time for RuntimeStats
  */
@@ -28,6 +30,7 @@ public record RuntimeSettings(
         List<Object> handlers,
         List<HandlerArgumentBinding<?>> handlerArguments,
         HandlerContextFactory handlerContexts,
+        ClientResultCodec clientResults,
         List<Object> eventHandlers,
         List<Object> cronHandlers,
         List<Object> httpHandlers,

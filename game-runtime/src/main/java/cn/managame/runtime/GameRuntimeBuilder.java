@@ -1,6 +1,7 @@
 package cn.managame.runtime;
 
 import cn.managame.runtime.error.RuntimeErrorHandler;
+import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.executor.RouteExecutorBinding;
@@ -24,6 +25,7 @@ public final class GameRuntimeBuilder {
     private List<Object> handlers = List.of(), events = List.of(), crons = List.of();
     private List<HandlerArgumentBinding<?>> arguments = List.of();
     private HandlerContextFactory handlerContexts;
+    private ClientResultCodec clientResults;
     private List<Object> httpHandlers = List.of();
     private HttpContextFactory httpContexts;
     private HttpResultCodec httpResults = HttpResultCodec.json();
@@ -45,6 +47,8 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder handlers(Iterable<?> v) { handlers = copy(v); return this; }
     public GameRuntimeBuilder handlerArguments(Iterable<? extends HandlerArgumentBinding<?>> v) { arguments = copy(v); return this; }
     public GameRuntimeBuilder handlerContextFactory(HandlerContextFactory v) { handlerContexts = Objects.requireNonNull(v); return this; }
+    /** Required when any Handler returns a response; Runtime defines no client wire format. */
+    public GameRuntimeBuilder clientResultCodec(ClientResultCodec v) { clientResults = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder httpHandlers(Iterable<?> v) { httpHandlers = copy(v); return this; }
     public GameRuntimeBuilder httpContextFactory(HttpContextFactory v) { httpContexts = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder httpResultCodec(HttpResultCodec v) { httpResults = Objects.requireNonNull(v); return this; }
@@ -60,7 +64,7 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder executionTiming(boolean enabled) { executionTiming = enabled; return this; }
     public GameRuntime build() {
         return RuntimeCompiler.build(new RuntimeSettings(domains, executors, protocols, keys, handlers, arguments,
-                handlerContexts, events, crons, httpHandlers, httpContexts, httpResults, httpRequests, cronZone, errors,
-                executionTiming));
+                handlerContexts, clientResults, events, crons, httpHandlers, httpContexts, httpResults, httpRequests,
+                cronZone, errors, executionTiming));
     }
 }

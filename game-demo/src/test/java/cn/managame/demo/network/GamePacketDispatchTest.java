@@ -71,8 +71,8 @@ class GamePacketDispatchTest {
                 .routeExecutors(List.of(RouteExecutorBinding.of((d, k, t) -> {
                     tasks.add(t); return RouteExecuteStatus.ACCEPTED;
                 }, 1))).protocols(new GameProtocols().registry()).handlers(List.of(handler))
-                .handlerContextFactory((domain, connection, metadata, message) -> GameDomain.fromId(domain)
-                        .handlerContext(connection, metadata, message))
+                .handlerContextFactory((domain, command, requestId, connection, metadata, message) -> GameDomain.fromId(domain)
+                        .handlerContext(command, requestId, connection, metadata, message))
                 .build()) {
             var fory = new ForyConfig().fory(new GameProtocols());
             var packets = new GamePacketHandler(fory, runtime);
@@ -97,9 +97,9 @@ class GamePacketDispatchTest {
             assertEquals(request, received.message()); assertEquals(10001L, received.roleId());
             assertEquals(99L, received.context().routeKey()); assertSame(connection, received.context().connection());
             assertEquals(10001L, received.context().businessId());
-            assertEquals(1002, received.context().metadata().get(GamePacketMetadata.COMMAND));
-            assertEquals(8, received.context().metadata().get(GamePacketMetadata.SEQ));
-            assertEquals(0, received.context().metadata().get(GamePacketMetadata.CODE));
+            assertEquals(1002, received.context().command());
+            assertEquals(8, received.context().requestId());
+            assertTrue(received.context().metadata().isEmpty());
             var missingHandler = GamePacketCodecTest.packet(1001, 9, 0, fory.serialize(new DemoMessage(1L, "no handler")));
             packets.onMessage(connection, missingHandler);
             assertEquals(1, writes.size());

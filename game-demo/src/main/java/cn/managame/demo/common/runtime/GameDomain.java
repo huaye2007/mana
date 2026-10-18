@@ -38,17 +38,23 @@ public enum GameDomain {
 
     /** Application policy: each new domain explicitly chooses its routing and identity inputs. */
     public DefaultClientHandlerContext handlerContext(Connection connection, Object message) {
-        return handlerContext(connection, Metadata.empty(), message);
+        return handlerContext(0, 0, connection, Metadata.empty(), message);
     }
-    public DefaultClientHandlerContext handlerContext(Connection connection, Metadata metadata, Object message) {
+
+    /**
+     * The packet header's command and seq are preserved as the context's correlation, so a Handler that
+     * returns a response reaches the right request without the application carrying seq in Metadata.
+     */
+    public DefaultClientHandlerContext handlerContext(int command, int requestId, Connection connection,
+                                                      Metadata metadata, Object message) {
         return switch (this) {
             case LOGIN -> new DefaultClientHandlerContext(id, ((LoginReq) message).getUserId(), 0, 0,
-                    metadata, message, connection);
+                    metadata, message, connection, command, requestId);
             case ROLE -> {
                 GameSession session = connection.get(GameSession.KEY);
                 if (session == null) throw new IllegalArgumentException("ROLE requires an authenticated GameSession");
                 yield new DefaultClientHandlerContext(id, session.routeKey(), ROLE_BUSINESS_ID_TYPE,
-                        session.roleId(), metadata, message, connection);
+                        session.roleId(), metadata, message, connection, command, requestId);
             }
             case SYSTEM -> throw new IllegalArgumentException("SYSTEM has no packet identity policy");
         };

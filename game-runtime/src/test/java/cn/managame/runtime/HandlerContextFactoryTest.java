@@ -31,7 +31,7 @@ class HandlerContextFactoryTest {
         var errors = new ArrayList<RuntimeError>();
         try (var runtime = HandlerDispatchTest.builder(owner, (d, k, task) -> {
             task.run(); return RouteExecuteStatus.ACCEPTED;
-        }, errors).handlerContextFactory((domain, connection, supplied, message) -> {
+        }, errors).handlerContextFactory((domain, command, requestId, connection, supplied, message) -> {
             assertSame(metadata, supplied);
             return new DefaultClientHandlerContext(domain, 99, 7, 10001,
                     changed.get() ? Metadata.empty() : supplied, message, connection);
@@ -92,7 +92,7 @@ class HandlerContextFactoryTest {
             routes.add(d + "/" + k); tasks.add(t); return RouteExecuteStatus.ACCEPTED;
         }, errors).routeKeys(List.of(RouteKeyBinding.of(HandlerDispatchTest.FieldRequest.class,
                 message -> { throw new AssertionError("Factory dispatch must not extract message Key"); })))
-                .handlerContextFactory((domain, peer, metadata, message) -> {
+                .handlerContextFactory((domain, command, requestId, peer, metadata, message) -> {
                     assertNull(Contexts.currentOrNull()); domains.add(domain);
                     var identity = Objects.requireNonNull(roles.get(peer));
                     var context = switch (domain) {
@@ -128,12 +128,12 @@ class HandlerContextFactoryTest {
         var errors = new ArrayList<RuntimeError>(); var message = new HandlerDispatchTest.FieldRequest(42);
         Connection connection = connection(); Connection replacement = connection();
         List<HandlerContextFactory> invalid = List.of(
-                (d, c, metadata, m) -> null,
-                (d, c, metadata, m) -> new CustomContext(2, 99, 7, 1, m, c),
-                (d, c, metadata, m) -> new CustomContext(d, 99, 7, 1, new HandlerDispatchTest.FieldRequest(42), c),
-                (d, c, metadata, m) -> new CustomContext(d, 99, 7, 1, m, replacement),
-                (d, c, metadata, m) -> new CustomContext(d, 0, 7, 1, m, c),
-                (d, c, metadata, m) -> new DefaultClientHandlerContext(d, 99, m, c));
+                (d, command, requestId, c, metadata, m) -> null,
+                (d, command, requestId, c, metadata, m) -> new CustomContext(2, 99, 7, 1, m, c),
+                (d, command, requestId, c, metadata, m) -> new CustomContext(d, 99, 7, 1, new HandlerDispatchTest.FieldRequest(42), c),
+                (d, command, requestId, c, metadata, m) -> new CustomContext(d, 99, 7, 1, m, replacement),
+                (d, command, requestId, c, metadata, m) -> new CustomContext(d, 0, 7, 1, m, c),
+                (d, command, requestId, c, metadata, m) -> new DefaultClientHandlerContext(d, 99, m, c));
         int[] expectedErrors = {0, FrameworkErrorCodes.ROUTE_DOMAIN_MISMATCH,
                 FrameworkErrorCodes.HANDLER_CONTEXT_MISMATCH, FrameworkErrorCodes.HANDLER_CONTEXT_MISMATCH,
                 FrameworkErrorCodes.INVALID_ROUTE_KEY, FrameworkErrorCodes.HANDLER_CONTEXT_MISMATCH};
@@ -154,7 +154,7 @@ class HandlerContextFactoryTest {
         var failure = new IllegalArgumentException("No authenticated identity");
         try (var runtime = builder(new Handlers(), (d, k, t) -> {
             submissions.incrementAndGet(); return RouteExecuteStatus.ACCEPTED;
-        }, errors).handlerContextFactory((d, c, metadata, m) -> { throw failure; }).build()) {
+        }, errors).handlerContextFactory((d, command, requestId, c, metadata, m) -> { throw failure; }).build()) {
             assertSame(failure, assertThrows(IllegalArgumentException.class, () -> runtime.dispatch(connection, message)));
         }
         assertEquals(0, submissions.get()); assertEquals(0, resolutions.get()); assertTrue(errors.isEmpty());
@@ -170,7 +170,7 @@ class HandlerContextFactoryTest {
         var handler = new MessageHandler(); var errors = new ArrayList<RuntimeError>();
         try (var runtime = HandlerDispatchTest.builder(handler, (d, k, t) -> {
             t.run(); return RouteExecuteStatus.ACCEPTED;
-        }, errors).handlerContextFactory((d, c, metadata, m) -> { throw new AssertionError("Explicit dispatch must bypass factory"); }).build()) {
+        }, errors).handlerContextFactory((d, command, requestId, c, metadata, m) -> { throw new AssertionError("Explicit dispatch must bypass factory"); }).build()) {
             var request = new HandlerDispatchTest.FieldRequest(42);
             runtime.dispatch(null, 99L, 7, 10001L, request);
             runtime.dispatch(null, 98L, request);
@@ -199,7 +199,7 @@ class HandlerContextFactoryTest {
         var errors = new ArrayList<RuntimeError>();
         try (var runtime = HandlerDispatchTest.builder(handler, (d, k, t) -> {
             submissions.incrementAndGet(); t.run(); return RouteExecuteStatus.ACCEPTED;
-        }, errors).handlerContextFactory((d, c, metadata, m) -> {
+        }, errors).handlerContextFactory((d, command, requestId, c, metadata, m) -> {
             factoryScopes.add(Contexts.currentOrNull());
             return new DefaultClientHandlerContext(d, 99, 7, ((HandlerDispatchTest.FieldRequest) m).userId(), Metadata.empty(), m, c);
         }).build()) {
@@ -211,7 +211,7 @@ class HandlerContextFactoryTest {
         var runtimeRef = new GameRuntime[1];
         try (var runtime = HandlerDispatchTest.builder(handler, (d, k, t) -> {
             submissions.incrementAndGet(); return RouteExecuteStatus.ACCEPTED;
-        }, errors).handlerContextFactory((d, c, metadata, m) -> {
+        }, errors).handlerContextFactory((d, command, requestId, c, metadata, m) -> {
             runtimeRef[0].close(); return new DefaultClientHandlerContext(d, 99, m, c);
         }).build()) {
             runtimeRef[0] = runtime;

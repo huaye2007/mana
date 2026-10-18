@@ -48,7 +48,7 @@ This publication from the main thread enters Runtime's configured RouteExecutor;
 
 [GameDomain](src/main/java/cn/managame/demo/common/runtime/GameDomain.java) is the application's enum of execution domains. It defines ROLE with explicit ID 1, LOGIN with explicit ID 2, and SYSTEM with explicit ID 3; GameRuntimeConfig converts enum values to RouteDomain registrations and binds their IDs to the executor. Handler annotations use the compile-time constant `@Handler(domain = GameDomain.ROLE_ID)`, since Java annotation elements cannot accept arbitrary application enum types or calls such as ROLE.id(). IDs never come from ordinal(), so reordering the enum does not change routes. Domain groups execution; it does not determine role identity, require authentication by itself, or automatically select routeKey. Both routeKey and authenticated roleId remain explicitly supplied by business integration.
 
-GameRuntimeConfig also discovers marker-only `@Handler` Beans and registers them through `builder.handlers(...)`. [UserHandler](src/main/java/cn/managame/demo/bus/user/UserHandler.java) uses `@Handler(domain=GameDomain.ROLE_ID)` with `@HandlerMethod(domain=GameDomain.LOGIN_ID)` on `login(ClientHandlerContext context, LoginReq request)`; get its connection through `context.connection()`. Connection is not a separate method parameter. GameProtocols registers LoginReq/ LoginRes at command 1003, associates the response, and assigns Fory type IDs 3/4.
+GameRuntimeConfig also discovers marker-only `@Handler` Beans and registers them through `builder.handlers(...)`. [UserHandler](src/main/java/cn/managame/demo/bus/user/UserHandler.java) uses `@Handler(domain=GameDomain.ROLE_ID)` with `@HandlerMethod(domain=GameDomain.LOGIN_ID)` on `login(ClientHandlerContext context, LoginReq request)`, which returns LoginRes for Runtime to frame and write; get its connection through `context.connection()`. Connection is not a separate method parameter. GameProtocols registers LoginReq/ LoginRes at command 1003, associates the response, and assigns Fory type IDs 3/4.
 
 The caller normally already knows the Key, and only needs:
 
@@ -66,7 +66,7 @@ runtime.dispatch(connection, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, new 
 
 Domain 1 comes from @Handler, Key is 99, and context.businessId() is 10001; neither the Key nor protocol timestamp selects identity. Integration authenticates and supplies trusted identity. In the network entry, the ROLE policy rejects a missing session before queueing, then captures the role category and ID in Context. Explicit-Key/identity/context overloads bypass that policy, so their callers must supply the appropriate trusted identity; a Context parameter does not automatically validate a business category or authenticate the caller. Only the Handler runs on its Route. [DemoIdentityTest](src/test/java/cn/managame/demo/DemoIdentityTest.java) verifies Spring dispatch without argument bindings, distinct identity/Key/protocol values, virtual-thread execution, and missing-session rejection without database/socket access. See the [complete argument contract](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#handler-arguments).
 
-[DemoHandlerTest](src/test/java/cn/managame/demo/DemoHandlerTest.java) loads only Runtime configuration and replaces the empty login implementation with a manual test probe, verifying caller Key 99 while LoginReq.userId=10001, Domain 2, original connection/request, and a virtual thread. It also verifies unbound LOGIN dispatch using userId solely for routing, no connection attribute access, and rejection of Key 0 before admission. It needs no database or socket. The TCP entry now dispatches decoded messages to Runtime Handlers; UserHandler's login business logic remains empty and no LoginRes is generated automatically. Full demo startup still requires database configuration.
+[DemoHandlerTest](src/test/java/cn/managame/demo/DemoHandlerTest.java) loads only Runtime configuration and replaces the empty login implementation with a manual test probe, verifying caller Key 99 while LoginReq.userId=10001, Domain 2, original connection/request, and a virtual thread. It also verifies unbound LOGIN dispatch using userId solely for routing, no connection attribute access, and rejection of Key 0 before admission. It needs no database or socket. The TCP entry dispatches decoded messages to Runtime Handlers together with the packet header's command and seq, so a Handler can answer; the skeleton UserHandler still verifies no token and answers with roleId 0. Full demo startup still requires database configuration.
 
 <a id="demo-runtime-services"></a>
 
@@ -143,12 +143,16 @@ The expected type comes from the command, not a hard-coded DemoMessage class. Th
 
 ```java
 @HandlerMethod(domain = GameDomain.LOGIN_ID)
-public void login(ClientHandlerContext context, LoginReq loginReq) {
+public LoginRes login(ClientHandlerContext context, LoginReq loginReq) {
     // verify must reject invalid tokens and return server-verified identity.
     var identity = tokenVerifier.verify(loginReq.getToken());
     long selectedRouteKey = selectRoleRouteKey(identity);
     context.connection().set(GameSession.KEY,
             new GameSession(selectedRouteKey, identity.roleId()));
+    // Returned to Runtime, framed by GamePacketResultCodec under the request's own seq.
+    var response = new LoginRes();
+    response.setRoleId(identity.roleId());
+    return response;
 }
 ```
 
@@ -203,7 +207,7 @@ mvn -pl game-demo -am clean verify
 
 ## Packet Metadata, errors and management
 
-GamePacketHandler passes command/seq/code through [GamePacketMetadata](src/main/java/cn/managame/demo/network/GamePacketMetadata.java), using application-owned int keys 1/2/3. Handlers read context.metadata(); these keys are not reserved Core IDs. A RuntimeDispatchException admission rejection writes a packet with the original command/seq, framework error code, and empty body, without automatic connection closure or retries. WriteStatus is logged; acceptance does not prove delivery. Unknown commands, invalid Fory bodies/type mismatches and missing authentication policy remain exception paths. Handler execution errors remain RuntimeErrorHandler reports and do not automatically create a remote response. These policies do not alter packet bytes or implement authentication.
+GamePacketHandler passes the header's command and seq to dispatch as the request's correlation, so Handlers read `context.command()` / `context.requestId()` rather than application Metadata keys; the Metadata it passes is empty. [GamePacketResultCodec](src/main/java/cn/managame/demo/network/GamePacketResultCodec.java) frames a business response as a packet whose command comes from the returned type's registered RESPONSE descriptor, whose seq is the request's, and whose code is 0; a framework failure uses the request's command, its seq, the error code and an empty body. A RuntimeDispatchException admission rejection is answered by the integration itself, through the same framing helper, with the original command/seq, framework error code, and empty body, without automatic connection closure or retries. WriteStatus is logged; acceptance does not prove delivery. Unknown commands, invalid Fory bodies/type mismatches and missing authentication policy remain exception paths. Handler execution errors remain RuntimeErrorHandler reports and are answered with a framework error code only, never with the exception. These policies do not alter packet bytes or implement authentication.
 
 POST /demo/echo receives String directly; POST /demo/dto and GET /demo/query receive EchoRequest without a context parameter. Contexts.current(HttpContext.class) supplies the current Route; non-GET still needs JSON body routeKey even when the parameter is String. Example query: /demo/query?routeKey=1&text=hello. Runtime stats and Data stats/flush are explicit management APIs, with no new unauthenticated management endpoint. The reusable integration contracts are [container semantics](../docs/ogbs/OGBS-Spring-1.0.md) and [Java specification](../docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md).
 

@@ -1,6 +1,7 @@
 package cn.managame.demo;
 
 import cn.managame.demo.bus.user.LoginReq;
+import cn.managame.demo.bus.user.LoginRes;
 import cn.managame.demo.bus.user.UserHandler;
 import cn.managame.demo.common.runtime.GameRuntimeConfig;
 import cn.managame.demo.common.runtime.GameDomain;
@@ -26,9 +27,10 @@ class DemoHandlerTest {
     @Profile("manual-handler-probe-only")
     static class Probe extends UserHandler {
         final LinkedBlockingQueue<Received> received = new LinkedBlockingQueue<>();
-        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public void login(ClientHandlerContext handlerContext, LoginReq request) {
+        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public LoginRes login(ClientHandlerContext handlerContext, LoginReq request) {
             var context = Contexts.current();
             received.add(new Received(handlerContext.connection(), request, context.routeDomain(), context.routeKey(), Thread.currentThread().isVirtual()));
+            return null; // This probe records the dispatch and deliberately answers nothing.
         }
     }
 

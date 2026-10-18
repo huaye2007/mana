@@ -2,6 +2,7 @@ package cn.managame.runtime.internal;
 
 import cn.managame.runtime.context.HandlerContext;
 import cn.managame.runtime.executor.RouteExecutor;
+import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.http.HttpContextFactory;
@@ -22,11 +23,17 @@ final class RuntimeBindings {
     /** Everything a DefaultGameRuntime needs, frozen at build. */
     record Compiled(Map<Integer, RouteExecutor> routes, ProtocolRegistry protocols,
                     Map<Class<?>, RouteKeyBinding<?>> routeKeys, Map<Class<?>, HandlerBinding> handlers,
-                    HandlerContextFactory handlerContexts, Map<Class<?>, List<EventBinding>> events,
+                    HandlerContextFactory handlerContexts, ClientResultCodec clientResults,
+                    Map<Class<?>, List<EventBinding>> events,
                     List<CronBinding> crons, Map<HttpEndpoint, HttpBinding> http, HttpContextFactory httpContexts,
                     HttpResultCodec httpResults, RuntimeErrorHandler errors, boolean executionTiming) {}
 
-    record HandlerBinding(int domain, Class<?> contextType, List<HandlerArgumentBinding<?>> arguments, MethodHandle handle) {
+    /**
+     * @param returnsResult the method returns the request's registered response, which Runtime frames and
+     *                      writes; a void method answers nothing, or answers through the connection itself
+     */
+    record HandlerBinding(int domain, Class<?> contextType, List<HandlerArgumentBinding<?>> arguments,
+                          boolean returnsResult, MethodHandle handle) {
         private static final Object[] NO_ARGUMENTS = new Object[0];
 
         Object[] resolve(HandlerContext context) {
@@ -36,8 +43,8 @@ final class RuntimeBindings {
             return values;
         }
 
-        void invoke(Object context, Object message, Object[] arguments) throws Throwable {
-            handle.invokeExact(context, message, arguments);
+        Object invoke(Object context, Object message, Object[] arguments) throws Throwable {
+            return handle.invokeExact(context, message, arguments);
         }
     }
 

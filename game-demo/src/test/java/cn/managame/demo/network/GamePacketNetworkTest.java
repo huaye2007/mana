@@ -10,6 +10,7 @@ import cn.managame.demo.common.runtime.GameDomain;
 import cn.managame.demo.network.message.PingMessage;
 import cn.managame.demo.bus.role.RoleHandler;
 import cn.managame.demo.bus.user.LoginReq;
+import cn.managame.demo.bus.user.LoginRes;
 import cn.managame.demo.bus.user.UserHandler;
 import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.handler.HandlerMethod;
@@ -42,13 +43,18 @@ class GamePacketNetworkTest {
     @Profile("packet-probe-only")
     static class LoginProbe extends UserHandler {
         final LinkedBlockingQueue<Received> received = new LinkedBlockingQueue<>();
-        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public void login(ClientHandlerContext context, LoginReq request) {
+        @Override @HandlerMethod(domain = GameDomain.LOGIN_ID) public LoginRes login(ClientHandlerContext context, LoginReq request) {
             assertNull(context.connection().get(GameSession.KEY));
             // Test-only token verifier. Production authentication remains business-owned.
-            if ("demo-token".equals(request.getToken())) {
+            boolean authenticated = "demo-token".equals(request.getToken());
+            if (authenticated) {
                 context.connection().set(GameSession.KEY, new GameSession(99L, 20002L));
             }
             received.add(new Received(request, context.businessId(), context, Thread.currentThread().isVirtual()));
+            // Runtime encodes this through GamePacketResultCodec and writes it on the request's connection.
+            var response = new LoginRes();
+            response.setRoleId(authenticated ? 20002L : 0L);
+            return response;
         }
     }
 
@@ -112,6 +118,13 @@ class GamePacketNetworkTest {
             Received rejected = loginProbe.received.poll(5, TimeUnit.SECONDS);
             assertNotNull(rejected);
             assertNull(rejected.context().connection().get(GameSession.KEY));
+            assertEquals(1003, rejected.context().command()); assertEquals(41, rejected.context().requestId());
+            // The returned response reaches this client correlated by the request's own seq.
+            GamePacket unauthenticated = responses.poll(5, TimeUnit.SECONDS);
+            assertNotNull(unauthenticated);
+            assertEquals(1003, unauthenticated.getCommand()); assertEquals(41, unauthenticated.getSeq());
+            assertEquals(0, unauthenticated.getCode());
+            assertEquals(0L, ((LoginRes) fory.deserialize(unauthenticated.getBody())).getRoleId());
             body.setToken("demo-token");
             var request = GamePacketCodecTest.packet(1003, 42, -3, fory.serialize(body));
             assertEquals(WriteStatus.ACCEPTED, connection.write(request));
@@ -125,6 +138,11 @@ class GamePacketNetworkTest {
             assertTrue(login.virtual()); assertNotSame(connection, login.context().connection());
             Connection serverConnection = login.context().connection();
             assertEquals(new GameSession(99L, 20002L), serverConnection.get(GameSession.KEY));
+            GamePacket authenticated = responses.poll(5, TimeUnit.SECONDS);
+            assertNotNull(authenticated);
+            assertEquals(1003, authenticated.getCommand()); assertEquals(42, authenticated.getSeq());
+            assertEquals(0, authenticated.getCode());
+            assertEquals(20002L, ((LoginRes) fory.deserialize(authenticated.getBody())).getRoleId());
             var ping = new PingMessage(Long.MAX_VALUE);
             assertEquals(WriteStatus.ACCEPTED, connection.write(
                     GamePacketCodecTest.packet(1002, 43, 0, fory.serialize(ping))));
@@ -132,11 +150,13 @@ class GamePacketNetworkTest {
             assertNotNull(role); assertEquals(ping, role.message()); assertEquals(20002L, role.roleId());
             assertEquals(1, role.context().routeDomain()); assertEquals(99L, role.context().routeKey());
             assertSame(serverConnection, role.context().connection()); assertTrue(role.virtual());
+            // PingMessage registers no response, so its void Handler answers nothing even with a seq.
+            assertEquals(43, role.context().requestId());
             // A valid Fory value of the wrong protocol type closes without invoking another Handler.
             assertEquals(WriteStatus.ACCEPTED, connection.write(
                     GamePacketCodecTest.packet(1001, 44, 0, fory.serialize(ping))));
             disconnected.get(5, TimeUnit.SECONDS);
-            assertEquals(0, responseCount.get()); assertTrue(responses.isEmpty());
+            assertEquals(2, responseCount.get()); assertTrue(responses.isEmpty());
             assertTrue(loginProbe.received.isEmpty()); assertTrue(roleProbe.received.isEmpty());
         } finally {
             connections.forEach(Connection::close);

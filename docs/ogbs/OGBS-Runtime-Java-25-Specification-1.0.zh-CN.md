@@ -15,7 +15,8 @@ public interface GameRuntime extends AutoCloseable {
     default void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
     void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message);
     default void dispatch(Connection connection, Object message);
-    void dispatch(Connection connection, Metadata metadata, Object message);
+    default void dispatch(Connection connection, Metadata metadata, Object message);
+    void dispatch(Connection connection, int command, int requestId, Metadata metadata, Object message);
     void dispatch(Connection connection, int businessIdType, long businessId, Object message);
     void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
                      int businessIdType, long businessId, Metadata metadata, Object message);
@@ -38,9 +39,14 @@ public interface RouteCallback<T> {
     default void onFail(int errorCode, Throwable cause) { onFail(errorCode); }
 }
 public interface CapturedRouteCallback<T> extends RouteCallback<T> { boolean cancel(); }
+
+public interface ClientResultCodec {
+    Object encode(ClientHandlerContext context, Object result) throws Exception;
+    Object encodeError(ClientHandlerContext context, int errorCode) throws Exception;
+}
 ```
 
-构建成功即可使用；没有 start、动态注册或任意 Runnable 派发。业务常用入口是 `dispatch(connection, routeKey, businessIdType, businessId, message)`，Domain 来自 Handler 注解（§6.2）。配置 `handlerContextFactory` 后，`dispatch(connection, message)` 按 Domain 选择 Key 与身份（§6.4）。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入（§13）。
+构建成功即可使用；没有 start、动态注册或任意 Runnable 派发。业务常用入口是 `dispatch(connection, routeKey, businessIdType, businessId, message)`，Domain 来自 Handler 注解（§6.2）。配置 `handlerContextFactory` 后，`dispatch(connection, command, requestId, metadata, message)` 按 Domain 选择 Key 与身份（§6.4），并携带响应所需的相关性（§6.5）；更短的 `dispatch(connection, …)` 重载是默认方法，传入相关性 0。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入（§13）。
 
 | 包 | 内容 |
 | --- | --- |
@@ -49,7 +55,7 @@ public interface CapturedRouteCallback<T> extends RouteCallback<T> { boolean can
 | .route | RouteDomain、RouteKeyBinding/Extractor/Registry、RouteCallback |
 | .executor | RouteExecutor SPI、绑定、官方执行器 |
 | .protocol | 协议描述、注册、请求/响应配对 |
-| .handler | Handler 注解、HandlerArgumentBinding、HandlerContextFactory |
+| .handler | Handler 注解、HandlerArgumentBinding、HandlerContextFactory、ClientResultCodec |
 | .http | HTTP 注解、HttpDispatcher、HttpContext、HttpContextFactory、HttpResultCallback、codec |
 | .event / .timer / .time / .error / .diagnostic | 事件、定时器与 Cron、GameTime、错误、RuntimeStats |
 | .internal | 编译、调度、上下文绑定；不是应用 API |
@@ -65,6 +71,7 @@ GameRuntimeBuilder.builder()
     .handlers(Iterable<?>)
     .handlerArguments(Iterable<? extends HandlerArgumentBinding<?>>)
     .handlerContextFactory(HandlerContextFactory)
+    .clientResultCodec(ClientResultCodec)
     .httpHandlers(Iterable<?>)
     .httpContextFactory(HttpContextFactory)
     .httpResultCodec(HttpResultCodec)
@@ -78,13 +85,14 @@ GameRuntimeBuilder.builder()
 
 列表 setter 复制并**替换**之前的值（先 `handlers(A)` 再 `handlers(B)` 只注册 B）。默认：空列表、UTC Cron 时区、System.Logger 错误处理。`RouteDomain.of(id, name)` 要求 id > 0；每个 Domain 通过 `RouteExecutorBinding.of(executor, domains...)` 恰好绑定一个执行器。
 
-build 在返回前完成全部编译：Domain/执行器绑定、协议与响应配对、Key 提取器、Handler/Event/Cron/HTTP 方法（MethodHandle）和 Cron 表达式。不扫描 classpath，由调用方传入实例。Handler/Event/Cron 方法为 public、非 static、非可变参数且返回 void；HTTP 方法也可返回业务对象。重复或无法解析的定义抛 IllegalArgumentException（null 参数抛 NullPointerException）：
+build 在返回前完成全部编译：Domain/执行器绑定、协议与响应配对、Key 提取器、Handler/Event/Cron/HTTP 方法（MethodHandle）和 Cron 表达式。不扫描 classpath，由调用方传入实例。Event/Cron 方法为 public、非 static、非可变参数且返回 void；Handler 与 HTTP 方法也可返回业务对象。重复或无法解析的定义抛 IllegalArgumentException（null 参数抛 NullPointerException）：
 
 | 检查 | 典型错误 |
 | --- | --- |
 | Domain/执行器 | ID 重复、未知 Domain、缺少绑定 |
 | 协议 | 消息类或 type+command 重复；响应配对指向未注册或方向错误的类型 |
 | Handler | 消息未注册、一条消息两个方法、未知 Domain、上下文参数不属于 HandlerContext 层次 |
+| Handler 响应（§6.5） | 返回类型不是该消息注册的响应、消息未注册响应、上下文不是客户端上下文，或未配置 `clientResultCodec` |
 | Event | 参数不是恰好一个 Event |
 | Cron | 表达式或 Route 非法、声明类加方法名重复 |
 
@@ -136,9 +144,9 @@ interface HttpContext extends Context { FullHttpRequest request(); HttpResultCal
 
 ### 4.2 客户端与 RPC Handler 上下文
 
-ClientHandlerContext 表示经任意 game-network Connection（包括 WebSocket）进入的客户端请求，不代表已认证。所有带 Connection 的派发重载都构造 DefaultClientHandlerContext，connection 可为 null，Runtime 不检查也不关闭它。RpcHandlerContext 表示服务间 RPC 请求（Call 与 Notify；requestId 0 表示 Notify），不暴露连接。DefaultRpcHandlerContext 要求 sourceNodeId、command 非零且 sourceSlotId 为 0..254。RPC 适配层须在回调返回前解码借用的 body，并选择非零业务 Key；上下文不持有 RPC 缓冲。
+ClientHandlerContext 表示经任意 game-network Connection（包括 WebSocket）进入的客户端请求，不代表已认证。它携带入站 `command()` 与 `requestId()`，使其 Handler 能够应答（§6.5），含义与 RPC 侧一致：requestId 为 0 表示不期待响应。所有带 Connection 的派发重载都构造 DefaultClientHandlerContext，connection 可为 null，Runtime 不检查也不关闭它。RpcHandlerContext 表示服务间 RPC 请求（Call 与 Notify；requestId 0 表示 Notify），不暴露连接。DefaultRpcHandlerContext 要求 sourceNodeId、command 非零且 sourceSlotId 为 0..254。RPC 适配层须在回调返回前解码借用的 body，并选择非零业务 Key；上下文不持有 RPC 缓冲。
 
-Handler 方法可接收 HandlerContext（与传输无关）、ClientHandlerContext 或 RpcHandlerContext；实际上下文不兼容时，在参数解析与准入之前以 HANDLER_CONTEXT_MISMATCH（3003）拒绝。每个消息类仍只有一个 Handler，多种传输共用的消息应使用 HandlerContext。测试：[TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java)。
+Handler 方法可接收 HandlerContext（与传输无关）、ClientHandlerContext 或 RpcHandlerContext；实际上下文不兼容时，在参数解析与准入之前以 HANDLER_CONTEXT_MISMATCH（3003）拒绝。每个消息类仍只有一个 Handler，多种传输共用的消息应使用 HandlerContext——因此也就不能以返回值应答，因为返回响应会把所需上下文收紧为 ClientHandlerContext；它仍可以通过其他途径拿到的连接自己写出。测试：[TransportContextTest](../../game-runtime/src/test/java/cn/managame/runtime/TransportContextTest.java)。
 
 ## 5. Protocol 与 RouteKey 注册
 
@@ -165,14 +173,16 @@ long RouteKeyRegistry.getRouteKey(Object message);   // 无绑定时为 0
 
 ## 6. Handler
 
-Handler 对象标注 `@Handler(domain = …)`（可继承）。方法上非零的 `@HandlerMethod(domain = …)` 覆盖类上的 Domain。方法恰好接收一个已注册的 REQUEST/NOTIFY 消息、最多一个上下文参数（Context、InvocationContext、HandlerContext 或其子类型）以及任意已显式绑定的自定义参数（§6.3），顺序不限。消息按精确类匹配，每个消息一个 Handler。
+Handler 对象标注 `@Handler(domain = …)`（可继承）。方法上非零的 `@HandlerMethod(domain = …)` 覆盖类上的 Domain。方法恰好接收一个已注册的 REQUEST/NOTIFY 消息、最多一个上下文参数（Context、InvocationContext、HandlerContext 或其子类型）以及任意已显式绑定的自定义参数（§6.3），顺序不限。返回 void，或该消息已注册的响应类型（§6.5）。消息按精确类匹配，每个消息一个 Handler。
 
 | 形式 | 是否合法 |
 | --- | --- |
 | `void handle(M m)`、`void handle(HandlerContext c, M m)`、`void handle(M m, CustomContext c)` | 是 |
 | `void handle(Extra x, M m)` | 为 Extra 配置绑定后合法 |
 | `void handle(Connection c, M m)` | 否；从 ClientHandlerContext 读取 |
-| `M handle(M m)`、`static void handle(M m)`、`void handle(M a, M b)`、`void handle(TimerContext c, M m)`、`void handle(M... m)` | 否 |
+| `R handle(ClientHandlerContext c, M m)`，其中 M 注册了响应 R | 是（§6.5） |
+| `R handle(M m)` 且 R 不是 M 注册的响应、`R handle(RpcHandlerContext c, M m)` | 否（§6.5） |
+| `int handle(M m)`、`static void handle(M m)`、`void handle(M a, M b)`、`void handle(TimerContext c, M m)`、`void handle(M... m)` | 否 |
 
 前置条件与准入失败抛带 Core 错误码的 RuntimeDispatchException（不采集栈，过载拒绝只付出一次分配；toString 含 `FrameworkErrorCodes.describe`）；开始执行后的异常交给 RuntimeErrorHandler（内联执行也一样），不会抛给调用方。
 
@@ -207,24 +217,53 @@ runtime.dispatch(connection, loginReq);
 ```java
 @FunctionalInterface
 interface HandlerContextFactory {
-    ClientHandlerContext create(int domain, Connection connection, Metadata metadata, Object message);
+    ClientHandlerContext create(int domain, int command, int requestId, Connection connection,
+                                Metadata metadata, Object message);
 }
 ```
 
-配置后，`dispatch(connection, message)` 与 `dispatch(connection, metadata, message)` 在提交线程、准入之前调用它一次，传入 Handler 注解的有效 Domain；此时不执行任何 Key 提取器。工厂按 Domain 选择 Key 与身份（例如从 Connection 属性或线程安全的身份表），可返回应用自定义子类型。必须保持 Domain 以及 message、connection、Metadata 引用不变：Domain 改变 → ROUTE_DOMAIN_MISMATCH（3004），对象被替换或上下文不兼容 → HANDLER_CONTEXT_MISMATCH（3003），Key 为 0 → INVALID_ROUTE_KEY（3005），返回 null → NullPointerException。抛异常即拒绝派发（不重试，不进入错误处理）。显式 Key、显式上下文与显式身份的重载绕过工厂。Runtime 不关闭也不复制工厂。
+配置后，每个 `dispatch(connection, …, message)` 客户端重载都会在提交线程、准入之前调用它一次，传入 Handler 注解的有效 Domain 与调用方提供的相关性；此时不执行任何 Key 提取器。工厂按 Domain 选择 Key 与身份（例如从 Connection 属性或线程安全的身份表），可返回应用自定义子类型。必须保持 Domain、相关性以及 message、connection、Metadata 引用不变：Domain 改变 → ROUTE_DOMAIN_MISMATCH（3004），对象被替换、command 或请求 ID 改变、上下文不兼容 → HANDLER_CONTEXT_MISMATCH（3003），Key 为 0 → INVALID_ROUTE_KEY（3005），返回 null → NullPointerException。抛异常即拒绝派发（不重试，不进入错误处理）。显式 Key、显式上下文与显式身份的重载绕过工厂且相关性为 0，因此能够应答的 Handler 只能经由该工厂或显式构造的上下文到达。Runtime 不关闭也不复制工厂。
 
 ```java
-builder.handlerContextFactory((domain, connection, metadata, message) -> {
+builder.handlerContextFactory((domain, command, requestId, connection, metadata, message) -> {
     Identity id = Objects.requireNonNull(identities.get(connection), "Not authenticated");
     return switch (domain) {
-        case ROLE_ID -> new DefaultClientHandlerContext(domain, id.roleRouteKey(), ROLE_TYPE, id.roleId(), metadata, message, connection);
+        case ROLE_ID -> new DefaultClientHandlerContext(domain, id.roleRouteKey(), ROLE_TYPE, id.roleId(),
+                metadata, message, connection, command, requestId);
         default -> throw new IllegalArgumentException("Unsupported domain: " + domain);
     };
 });
-runtime.dispatch(connection, decodedMessage);
+runtime.dispatch(connection, packet.command(), packet.seq(), Metadata.empty(), decodedMessage);
 ```
 
 demo 把认证后的 [GameSession](../../game-demo/src/main/java/cn/managame/demo/network/GameSession.java) 存在 Connection 上，由 [GameDomain](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameDomain.java) 按 Domain 选择。测试：[HandlerContextFactoryTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java)。
+
+<a id="client-responses"></a>
+
+### 6.5 客户端响应
+
+`ClientHandlerContext` 在借用的 `connection()` 之外增加 `command()` 与 `requestId()`。`DefaultClientHandlerContext` 在最宽的构造器中接收它们；较短的构造器传入 0，表示“不期待响应”。直接实现 `ClientHandlerContext` 的类型现在必须提供这两个访问器。上下文仍只是对请求的描述：它不携带完成对象，也没有任何 Handler 参数提供完成对象。
+
+Handler 以两种方式之一应答：
+
+```java
+// 返回它：Runtime 通过编解码器封装，并写到该请求的连接上。
+@HandlerMethod public LoginRes login(ClientHandlerContext c, LoginReq r) { return new LoginRes(...); }
+
+// 或者自己发送，这里是在已恢复 c 的公会 Route 回调中发送。
+@HandlerMethod public void join(ClientHandlerContext c, JoinReq r) {
+    runtime.call(GUILD_ID, r.guildId(), () -> guild.join(...), new RouteCallback<GuildInfo>() {
+        public void onSuccess(GuildInfo info) { c.connection().write(packet(c.command(), c.requestId(), info)); }
+        public void onFail(int errorCode) { c.connection().write(error(c.command(), c.requestId(), errorCode)); }
+    });
+}
+```
+
+第一种形式的构建规则，均由 `build()` 抛 `IllegalArgumentException`：返回类型必须恰好是该消息注册的 `responseType`；该消息必须注册了响应；上下文必须可赋值给 `ClientHandlerContext`（声明更宽的上下文会被收紧为它，`RpcHandlerContext` 被拒绝）；并且必须已配置 `clientResultCodec`。void Handler 没有这些要求——它自己对写出的内容负责。
+
+派发时收紧后的上下文类型与其他上下文一样校验，因此非客户端上下文在准入前得到 HANDLER_CONTEXT_MISMATCH（3003）。此后每次分发 Runtime 至多发送一次，在该请求的 Route 上、方法返回或抛出之后立即发生：调用 `ClientResultCodec`，再用 `Connection.write` 写出封装后的对象，只有 `WriteStatus.ACCEPTED` 才算写出；`INACTIVE`/`NOT_WRITABLE` 不作为错误报告。返回 null 不写出任何内容，也不是错误。缺少相关性、连接为 null、编解码器抛异常以及编解码器返回 null，都作为 RUNTIME_EXECUTION_ERROR（3010）交给 RuntimeErrorHandler；业务封装失败后会尝试一次 `encodeError`，`encodeError` 再失败则仅报告。Handler 异常先报告，再以一次 `encodeError(3010)` 封装应答（RT-DISPATCH-03），因此不会编码任何异常细节；void Handler 的异常只被报告，因为 Runtime 无从知道它是否已经应答过。
+
+`builder.clientResultCodec(codec)` 在任何 Handler 以返回值应答前必须配置，否则不被使用。Runtime 不关闭也不复制它。测试：[ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java)；demo 编解码器：[GamePacketResultCodec](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketResultCodec.java)。
 
 ## 7. RouteExecutor
 
@@ -334,7 +373,7 @@ int RuntimeDispatchException.errorCode();
 
 ## 12. 源码与测试
 
-源码：[GameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntime.java)、[GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java)、[DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)、[RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java)。[RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) 中的关键测试：同 Route 内联事件与隔离、不同 Runtime 不内联、跨 Route 调用与来源恢复、目标拒绝与返回拒绝、Timer 新上下文、共享执行器只关闭一次。运行 `mvn -pl game-runtime -am test`。
+源码：[GameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntime.java)、[GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java)、[DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java)、[RuntimeCompiler](../../game-runtime/src/main/java/cn/managame/runtime/internal/RuntimeCompiler.java)。[RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) 中的关键测试：同 Route 内联事件与隔离、不同 Runtime 不内联、跨 Route 调用与来源恢复、目标拒绝与返回拒绝、Timer 新上下文、共享执行器只关闭一次。[ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) 覆盖 §6.5：返回的响应按其相关性封装、void Handler 自己通过连接应答而 Runtime 不作任何封装、null 沉默、Handler 异常只以错误码应答、缺少相关性或连接、编解码器失败及其单次回退、被拒绝的写出，以及构建规则。运行 `mvn -pl game-runtime -am test`。
 
 <a id="runtime-http-api"></a>
 
@@ -380,7 +419,7 @@ Runtime 持有 request 直到方法返回并完成自动编码（被拒绝时立
 
 ## 14. Metadata 接入、外部回调、排空与诊断
 
-`dispatch(connection, metadata, message)` 把同一 Metadata 实例交给上下文工厂（未配置时使用消息 Key 提取与身份 0/0）；六参数重载保留显式的 Key、身份与 Metadata。其他重载使用空 Metadata。
+`dispatch(connection, command, requestId, metadata, message)` 把同一 Metadata 实例与相关性交给上下文工厂（未配置时使用消息 Key 提取与身份 0/0，并把相关性保留在构造的上下文上）；六参数 Key 重载保留显式的 Key、身份与 Metadata。其他重载使用空 Metadata，所有不带相关性参数的重载都传入 0。
 
 `dispatchRpc(...)` 解析 Handler 的 Domain 并创建 DefaultRpcHandlerContext；应用已解码 body 并选好 Key 与身份。它不发送任何内容；类型化适配位于 game-spring。
 

@@ -14,6 +14,7 @@ import static cn.managame.core.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 import cn.managame.core.FrameworkErrorCodes;
 import cn.managame.core.Metadata;
 import cn.managame.network.connection.Connection;
+import cn.managame.network.connection.WriteStatus;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.context.Context;
@@ -34,6 +35,7 @@ import cn.managame.runtime.event.Event;
 import cn.managame.runtime.event.EventBus;
 import cn.managame.runtime.event.Events;
 import cn.managame.runtime.executor.RouteExecutor;
+import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.http.HttpDispatcher;
 import cn.managame.runtime.internal.RuntimeBindings.Compiled;
@@ -64,6 +66,7 @@ final class DefaultGameRuntime implements GameRuntime {
     private final Map<Class<?>, RouteKeyBinding<?>> keys;
     private final Map<Class<?>, HandlerBinding> handlers;
     private final HandlerContextFactory handlerContexts;
+    private final ClientResultCodec clientResults;
     private final Map<Class<?>, List<EventBinding>> events;
     private final RuntimeErrorHandler errors;
     private final boolean executionTiming;
@@ -82,6 +85,7 @@ final class DefaultGameRuntime implements GameRuntime {
         keys = compiled.routeKeys();
         handlers = compiled.handlers();
         handlerContexts = compiled.handlerContexts();
+        clientResults = compiled.clientResults();
         events = compiled.events();
         errors = compiled.errors();
         executionTiming = compiled.executionTiming();
@@ -183,18 +187,21 @@ final class DefaultGameRuntime implements GameRuntime {
         return binding.extractor().extract(binding.messageType().cast(message));
     }
 
-    @Override public void dispatch(Connection connection, Metadata metadata, Object message) {
+    @Override public void dispatch(Connection connection, int command, int requestId, Metadata metadata, Object message) {
         Objects.requireNonNull(metadata);
         requireAdmission();
         HandlerBinding handler = handlerFor(message);
         if (handlerContexts == null) {
-            dispatch(new DefaultClientHandlerContext(handler.domain(), extractKey(message), 0, 0, metadata, message, connection));
+            dispatch(new DefaultClientHandlerContext(handler.domain(), extractKey(message), 0, 0, metadata, message,
+                    connection, command, requestId));
             return;
         }
-        ClientHandlerContext context = Objects.requireNonNull(handlerContexts.create(handler.domain(), connection, metadata, message),
+        ClientHandlerContext context = Objects.requireNonNull(
+                handlerContexts.create(handler.domain(), command, requestId, connection, metadata, message),
                 "HandlerContextFactory returned null");
         if (context.routeDomain() != handler.domain()) throw failure(ROUTE_DOMAIN_MISMATCH);
-        if (context.message() != message || context.connection() != connection || context.metadata() != metadata)
+        if (context.message() != message || context.connection() != connection || context.metadata() != metadata
+                || context.command() != command || context.requestId() != requestId)
             throw failure(HANDLER_CONTEXT_MISMATCH);
         dispatch(context);
     }
@@ -229,11 +236,53 @@ final class DefaultGameRuntime implements GameRuntime {
         if (handler.domain() != context.routeDomain()) throw failure(ROUTE_DOMAIN_MISMATCH);
         if (handler.contextType() != null && !handler.contextType().isInstance(context)) throw failure(HANDLER_CONTEXT_MISMATCH);
         Object[] arguments = handler.resolve(context);
+        // The context type check above guarantees a client context whenever the Handler returns a response.
+        ClientHandlerContext client = handler.returnsResult() ? (ClientHandlerContext) context : null;
         int error = submit(context, () -> {
-            try { handler.invoke(context, message, arguments); }
-            catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
+            try {
+                Object result = handler.invoke(context, message, arguments);
+                if (client != null) send(client, result, 0, true);
+            } catch (Throwable e) {
+                report(RUNTIME_EXECUTION_ERROR, context, e);
+                if (client != null) send(client, null, RUNTIME_EXECUTION_ERROR, false);
+            }
         }, false);
         if (error != 0) throw failure(error);
+    }
+
+    // ---------------------------------------------------------------- client responses
+
+    /**
+     * Frames and writes the response a Handler returned. Returns false when nothing reached the transport,
+     * whether because the request carries no correlation, the connection is gone, framing failed, or the
+     * transport refused it. A Handler that answers some other way returns void and Runtime sends nothing.
+     */
+    private boolean send(ClientHandlerContext context, Object result, int errorCode, boolean failOnEncodingError) {
+        if (errorCode == 0 && result == null) return false; // A null result answers nothing; it is not a failure.
+        if (context.requestId() == 0) {
+            report(RUNTIME_EXECUTION_ERROR, context, new IllegalStateException("Client request carries no correlation to answer"));
+            return false;
+        }
+        Connection connection = context.connection();
+        if (connection == null) {
+            report(RUNTIME_EXECUTION_ERROR, context, new IllegalStateException("Client request has no connection to answer on"));
+            return false;
+        }
+        Object framed;
+        try {
+            framed = errorCode == 0 ? clientResults.encode(context, result) : clientResults.encodeError(context, errorCode);
+            if (framed == null) throw new IllegalStateException("ClientResultCodec returned null");
+        } catch (Throwable cause) {
+            report(RUNTIME_EXECUTION_ERROR, context, cause);
+            // One attempt to tell the peer that the request failed; a failing error framing is only reported.
+            return failOnEncodingError && send(context, null, RUNTIME_EXECUTION_ERROR, false);
+        }
+        try {
+            return connection.write(framed) == WriteStatus.ACCEPTED;
+        } catch (Throwable cause) {
+            report(RUNTIME_EXECUTION_ERROR, context, cause);
+            return false;
+        }
     }
 
     // ---------------------------------------------------------------- events and calls

@@ -16,7 +16,7 @@ Java 25 业务运行时。Maven 坐标为 `cn.managame:game-runtime`，按包划
 
 ## Handler 入口
 
-外部接入可配置 `builder.handlerContextFactory((domain, connection, metadata, message) -> ...)`，再调用 `runtime.dispatch(connection, message)`。Runtime 先从 @Handler/@HandlerMethod 解析 Domain；业务工厂从连接属性或外部 Map 获取已鉴权身份，按 Domain 选择 routeKey/businessIdType/businessId，不要求框架身份存储或固定角色规则。工厂在接纳前运行一次，必须保留 Domain/消息/连接/Metadata；已有显式参数绕过它。见 [策略契约与示例](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory) 和 [两个 Domain 的 Map 测试](src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java)。
+外部接入可配置 `builder.handlerContextFactory((domain, command, requestId, connection, metadata, message) -> ...)`，再调用 `runtime.dispatch(connection, command, requestId, metadata, message)`。Runtime 先从 @Handler/@HandlerMethod 解析 Domain；业务工厂从连接属性或外部 Map 获取已鉴权身份，按 Domain 选择 routeKey/businessIdType/businessId，不要求框架身份存储或固定角色规则。工厂在接纳前运行一次，必须保留 Domain/相关性/消息/连接/Metadata；已有显式参数绕过它。见 [策略契约与示例](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory) 和 [两个 Domain 的 Map 测试](src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java)。
 
 业务调用使用 `runtime.dispatch(connection, routeKey, businessIdType, businessId, message)`：调用方传入 Key 和可信身份，Runtime 按消息精确类型查找 Handler 的 Domain，构造空 Metadata 的 DefaultClientHandlerContext，并进入既有 RouteExecutor，无需另外构造 Route/Context 或从消息提取 Key。匿名调用可省略身份（默认 0/0）；Metadata/自定义字段仍使用显式上下文入口，通过 `context.connection()` 获取借用连接。
 
@@ -24,7 +24,9 @@ Java 25 业务运行时。Maven 坐标为 `cn.managame:game-runtime`，按包划
 
 少数按协议内容路由的场景，配置 `@HandlerMethod(routeKey="userId")` 或 `routeKeyMethod="getUserId"`，再调用 `runtime.dispatch(connection, businessIdType, businessId, message)`（只有未配置上下文工厂时，匿名提取入口才可省略身份）。类级 @Handler 提供默认规则，方法级非空规则覆盖；外部 Key 重载从不调用这些规则。成员访问只编译一次，缺少/非法规则和 Key 为 0 时拒绝。见 [Java 契约与边界](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#automatic-handler-dispatch)、[框架测试](src/test/java/cn/managame/runtime/HandlerDispatchTest.java) 和 [demo](../game-demo/README.zh-CN.md#handler-分发)。
 
-客户端消息使用 ClientHandlerContext（借用 Connection），RPC 消息使用 RpcHandlerContext（来源节点/Slot、command 和请求 ID）。两者继承 HandlerContext，都直接暴露 businessId；所需上下文子类型不匹配时在接纳前拒绝。HTTP 保持独立 HttpContext，不增加统一发送 API 或自动 RPC 到 Runtime 的适配器。见 [上下文契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#transport-handler-contexts) 和 [传输测试](src/test/java/cn/managame/runtime/TransportContextTest.java)。
+Handler 应答客户端请求只有两种方式：返回该消息已注册的响应，由 Runtime 通过你配置的 `clientResultCodec(...)` 封装并写到该请求的连接上；或者返回 void，自己写 `context.connection()`，用 `context.command()` 与 `context.requestId()` 关联——例如在跨 Route 回调中写出，此时原上下文已恢复。没有第三种机制，Handler 签名里也不会出现框架完成对象：上下文只描述这个请求，仅此而已。每次分发 Runtime 至多发送一次，就在方法返回或抛出之后，因此没有完成竞争。返回 null 表示不应答；以返回值应答的 Handler 抛异常时被报告并只以框架错误码应答，绝不把异常本身发出去。以返回值应答需要已注册的请求/响应配对、ClientHandlerContext 和编解码器，三者都在构建期校验。见 [响应契约](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#client-response-contract)、[Java API](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#client-responses) 和[测试](src/test/java/cn/managame/runtime/ClientResponseTest.java)。
+
+客户端消息使用 ClientHandlerContext（借用 Connection、入站 command 和请求 ID），RPC 消息使用 RpcHandlerContext（来源节点/Slot、command 和请求 ID）。两者继承 HandlerContext，都直接暴露 businessId；所需上下文子类型不匹配时在接纳前拒绝。HTTP 保持独立 HttpContext，不增加统一发送 API 或自动 RPC 到 Runtime 的适配器。见 [上下文契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#transport-handler-contexts) 和 [传输测试](src/test/java/cn/managame/runtime/TransportContextTest.java)。
 
 ## 目录与职责
 

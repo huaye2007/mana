@@ -1,5 +1,6 @@
 package cn.managame.demo.network;
 
+import cn.managame.core.Metadata;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.protocol.ProtocolDescriptor;
@@ -32,11 +33,12 @@ public class GamePacketHandler implements ConnectionHandler {
         }
         Class<?> type = protocol.messageType();
         Object decodedMessage = type.cast(fory.deserialize(packet.getBody()));
-        try { runtime.dispatch(connection, GamePacketMetadata.from(packet), decodedMessage); }
+        // The packet header is the correlation: seq rides on the context, so a Handler can answer directly.
+        try { runtime.dispatch(connection, packet.getCommand(), packet.getSeq(), Metadata.empty(), decodedMessage); }
         catch (RuntimeDispatchException rejected) {
-            var response = new GamePacket();
-            response.setCommand(packet.getCommand()); response.setSeq(packet.getSeq()); response.setCode(rejected.errorCode());
-            var status = connection.write(response);
+            // Rejected before admission: Runtime never owned this request, so the integration answers it.
+            var status = connection.write(GamePacketResultCodec.packet(
+                    packet.getCommand(), packet.getSeq(), rejected.errorCode(), new byte[0]));
             System.getLogger(GamePacketHandler.class.getName()).log(System.Logger.Level.WARNING,
                     "Packet rejected: command={0}, seq={1}, error={2}, response={3}",
                     packet.getCommand(), packet.getSeq(), rejected.errorCode(), status);
