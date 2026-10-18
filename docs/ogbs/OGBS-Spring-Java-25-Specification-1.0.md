@@ -12,9 +12,20 @@ Companion: [container integration semantics](OGBS-Spring-1.0.md). Implemented op
 
 ## 2. Data registration
 
-`cn.managame.spring.data.EnableGameData` scans Repository markers in basePackages with the same default-package behavior and imports internal configuration. An application-owned DataSource Bean is required. Data configuration defaults to GameDataBuilder.mysql(dataSource), discovers known singleton Beans directly extending SingleRepository, GroupRepository or LogRepository and registers their concrete types. A static BeanFactoryPostProcessor replaces their instance suppliers with `gameData.repository(type)` and adds a gameData dependency, retaining names/qualifiers and field/setter injection. Data creates the no-argument instance once and initializes it before Spring injection callbacks. Constructor injection is not supported. Other Repository classes outside these three bases are ordinary Spring Beans. Prototype Data repositories reject before database access.
+`cn.managame.spring.data.EnableGameData` scans Repository markers in basePackages with the same default-package behavior and imports internal configuration. State and logs are separate stores (D-LOG-04), so the integration resolves one source for each and never derives one from the other; no DataSource Bean is required at all when an EntityMapper Bean carries state. It discovers known singleton Beans directly extending SingleRepository, GroupRepository or LogRepository and registers their concrete types, state against the EntityMapper Bean when there is one. A static BeanFactoryPostProcessor replaces their instance suppliers with `gameData.repository(type)` and adds a gameData dependency, retaining names/qualifiers and field/setter injection. Data creates the no-argument instance once and initializes it before Spring injection callbacks. Constructor injection is not supported. Other Repository classes outside these three bases are ordinary Spring Beans. Prototype Data repositories reject before database access.
 
-`GameDataConfigurer.configure(GameDataBuilder)` Beans run in Spring order after DataSource/Repository configuration and before build, for JSON codecs, write-back/error policy or explicit mapper overrides. Configurer dependencies must not require the still-building Data/Repository. The singleton gameData has destroyMethod="close"; it borrows DataSource and does not close the application pool.
+| Bean | Serves |
+| --- | --- |
+| One DataSource with neither qualifier | Both stores: one database, said by having one DataSource |
+| `@GameStateSource` DataSource | `mysql(...)`, state only |
+| `@GameLogSource` DataSource | `logMysql(...)`, logs only |
+| An EntityMapper Bean, such as a MongoEntityMapper | The state backend of every discovered state Repository |
+
+As soon as either qualifier is present, each store takes only the source named for it, so silence cannot put logs in the state database: a `@GameStateSource` with log Repositories and no `@GameLogSource` fails build with IllegalArgumentException naming `logMysql(DataSource)`, before any DataSource is opened. Several candidates for one store need `@Primary` or that store's qualifier, and one DataSource carrying both qualifiers is rejected. Missing backends are not reported during resolution, because a configurer may still supply one.
+
+Validation: [StoreSourceTest](../../game-spring/src/test/java/cn/managame/spring/data/StoreSourceTest.java) covers a state EntityMapper Bean carrying state with no DataSource Bean present, and the refusal to offer a `@GameStateSource` to logs before any DataSource is opened; [DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) covers one unqualified DataSource serving both stores.
+
+`GameDataConfigurer.configure(GameDataBuilder)` Beans run in Spring order after source/Repository configuration and before build, for JSON codecs, write-back/error policy, or redirecting a discovered Repository to another backend — which holds because a registration that names a backend replaces the integration's own. Configurer dependencies must not require the still-building Data/Repository. The singleton gameData has destroyMethod="close"; it borrows every source and closes neither the application pool nor a Mapper's client.
 
 ## 3. Shutdown
 

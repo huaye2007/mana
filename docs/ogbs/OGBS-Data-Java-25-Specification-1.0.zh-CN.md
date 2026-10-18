@@ -65,7 +65,8 @@ Spring 接入属于应用代码：[game-demo 适配](../../game-demo/src/main/ja
 
 ```java
 try (GameData data = GameDataBuilder.builder()
-        .mysql(dataSource)
+        .mysql(stateDataSource)
+        .logMysql(logDataSource)
         .repositories(PlayerRepository.class, TaskRepository.class)
         .logRepositories(ActionLogRepository.class)
         .cacheExpire(Duration.ofMinutes(30))
@@ -88,12 +89,13 @@ try (GameData data = GameDataBuilder.builder()
 | retryPolicy | RetryPolicy.transientFailures() | true 保留到下一轮；false 拆分、丢弃并报告（见第 5 节） |
 | errorHandler | System.Logger | 接收被丢弃的变更，在此归档 |
 | partitionZone | UTC | DAY/MONTH/YEAR 日志分表使用的时区 |
-| mysql(DataSource) | 无 | 未显式指定后端的 Repository 借用的 DataSource |
+| mysql(DataSource) | 无 | 未指定后端的状态 Repository 借用的 DataSource；它不服务日志 |
+| logMysql(DataSource) | 无 | 未指定后端的日志 Repository 借用的 DataSource。日志是独立存储（D-LOG-04）；两者共用一个数据库时，把同一个 DataSource 分别传给两个方法 |
 | jsonCodec / binaryCodec | 默认 Jackson / 无 | 隐式 MySQL Mapper 及日志（除非 logCodecs 覆盖）使用的 codec |
 | logCodecs(json, binary) | 继承 | 仅日志使用的 codec；JSON 传 null 表示默认 |
 | logQueueCapacity | 100,000 | 每个 LogRepository 等待保存的日志上限。达到上限时 insert 返回 false，以 LOG_INSERT 失败（attempt 0）在插入线程上报告给 DataErrorHandler，并计入 DataStats.droppedLogs；被拒绝的日志不是已接纳的变更，不使 close 失败 |
 
-repositories(...)、logRepositories(...) 接受类或列表；显式传入 EntityMapper 或 MysqlAccess 的重载不使用 mysql(DataSource)。存在未指定后端的注册但没有 DataSource 时，build 抛 IllegalArgumentException。build 先校验 Repository、身份与日志映射，再执行各状态 Mapper 的 initialize（映射与 Schema；后续步骤失败时已执行的 DDL 不回滚），最后创建缓存并启动一个保存线程。
+repositories(...)、logRepositories(...) 接受类或列表；显式传入 EntityMapper 或 MysqlAccess 的重载不使用默认后端。指定了后端的注册会替换同一 Repository 类型此前未指定后端的注册并保留其位置——容器集成已经发现并注册的 Repository，应用因此仍可改接到别的后端；同一类型的其他重复注册在注册调用处抛 IllegalArgumentException。build 时仍未绑定的 Repository 抛 IllegalArgumentException 并指出能绑定它的方法：状态为 mysql(DataSource) 或 EntityMapper，日志为 logMysql(DataSource) 或 MysqlAccess；此时尚未打开任何 DataSource。build 先校验 Repository、身份与日志映射，再执行各状态 Mapper 的 initialize（映射与 Schema；后续步骤失败时已执行的 DDL 不回滚），最后创建缓存并启动一个保存线程。
 
 GameData 只关闭自己的线程，从不关闭 DataSource、MongoClient 或 Mapper。close 可能等待数据库调用；在 Mapper、RetryPolicy、DataErrorHandler 回调中调用 close 或 flush 会被拒绝，以免死锁。关闭后所有 Repository 操作抛 DataOperationException。
 
@@ -231,6 +233,9 @@ DataOperation（INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT）是实�
 | 回调中 close 被拒绝且不死锁 | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | 日志分表、排空、自动创建分表 | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization / missingPartitionTableIsCreatedFromTheBaseTable |
 | Mongo 更新不存在的文档失败 | MongoMappingTest |
+| 状态与日志是独立存储，互不推导 | StoreBindingTest.logsNeverFallBackToTheStateSource / separateSourcesKeepLogRowsOutOfTheStateDatabase |
+| 同一个 GameData 里 MongoDB 存状态、MySQL 存日志 | StoreBindingTest.mongoStateAndMysqlLogsAreIndependentStores |
+| 指定后端替换隐式注册，其他重复仍是重复 | StoreBindingTest.namingABackendReplacesAnEarlierImplicitRegistration / repeatsThatAreNotRedirectionsStayDuplicates |
 
 已用内存 Mapper、H2 的 MySQL 模式和记录型 MongoAccess 验证。[DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) 在设置 `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` 时连接真实服务，否则跳过。真实 MySQL/MongoDB 行为、生产性能与长时间故障未验证。
 

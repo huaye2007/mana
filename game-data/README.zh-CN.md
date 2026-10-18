@@ -27,7 +27,7 @@ mvn clean verify
 
 MySQL 可通过 `GameDataBuilder.builder().mysql(dataSource).repositories(PlayerRepository.class).build()` 接收应用 DataSource，内部装配 Access 和 Mapper。JDBC Driver 和连接池配置仍由应用负责。JSON 列默认按字段完整类型及非 null 状态初始化实现绑定，例如 ConcurrentHashMap<Integer,Long>，不要求手动注册类型。需要覆盖时使用 `jsonCodec(...)`，也可保留显式 Mapper 构造以接入自定义 backend。详见 [JSON 类型绑定与边界](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding) 和 [MysqlBuilderTest](src/test/java/cn/managame/data/MysqlBuilderTest.java)。
 
-MySQL 使用应用提供的 DataSource/JDBC Driver；Mongo 使用应用提供的 MongoDatabase/CodecRegistry。框架不会关闭这些外部资源。Mongo driver 在 game-data 中为 optional，消费方使用 Mongo 时需显式声明 org.mongodb:mongodb-driver-sync。
+MySQL 使用应用提供的 DataSource/JDBC Driver；Mongo 使用应用提供的 MongoDatabase/CodecRegistry。框架不会关闭这些外部资源。日志是独立存储：由 logMysql(DataSource) 指定，mysql(DataSource) 不会服务日志。Mongo driver 在 game-data 中为 optional，消费方使用 Mongo 时需显式声明 org.mongodb:mongodb-driver-sync。
 
 ## 实机测试
 

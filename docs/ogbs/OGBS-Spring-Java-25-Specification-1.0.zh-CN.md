@@ -12,9 +12,20 @@
 
 ## 2. Data 注册
 
-`cn.managame.spring.data.EnableGameData` 在 basePackages 扫描 Repository，采用相同的默认包规则并导入内部配置。应用需提供持有的 DataSource Bean。默认使用 GameDataBuilder.mysql(dataSource)，发现已知单例 Bean 中直接继承 SingleRepository、GroupRepository 或 LogRepository 的具体类型并注册。静态 BeanFactoryPostProcessor 把实例供应器替换成 `gameData.repository(type)` 并添加 gameData 依赖，保留名称/限定符及字段/setter 注入。Data 仅创建一次无参实例，初始化后才进入 Spring 注入回调；不支持构造器注入。未继承这三个基类的其他 Repository 是普通 Spring Bean。prototype Data Repository 在数据库访问前拒绝。
+`cn.managame.spring.data.EnableGameData` 在 basePackages 扫描 Repository，采用相同的默认包规则并导入内部配置。状态与日志是相互独立的存储（D-LOG-04），集成为两者各解析一个来源，绝不由一方推导另一方；当由 EntityMapper Bean 承载状态时，完全不需要 DataSource Bean。随后发现已知单例 Bean 中直接继承 SingleRepository、GroupRepository 或 LogRepository 的具体类型并注册，存在 EntityMapper Bean 时状态绑定到它。静态 BeanFactoryPostProcessor 把实例供应器替换成 `gameData.repository(type)` 并添加 gameData 依赖，保留名称/限定符及字段/setter 注入。Data 仅创建一次无参实例，初始化后才进入 Spring 注入回调；不支持构造器注入。未继承这三个基类的其他 Repository 是普通 Spring Bean。prototype Data Repository 在数据库访问前拒绝。
 
-`GameDataConfigurer.configure(GameDataBuilder)` Bean 在数据源/Repository 配置后、build 前按 Spring 顺序执行，可配置 JSON codec、回写/错误策略或显式 mapper 覆盖。configurer 依赖不能要求正在构建的 Data/Repository。gameData 单例采用 destroyMethod="close"，借用 DataSource，不关闭应用连接池。
+| Bean | 服务的存储 |
+| --- | --- |
+| 未标注任一限定注解的唯一 DataSource | 两个存储：只有一个 DataSource 即表示只有一个数据库 |
+| `@GameStateSource` DataSource | `mysql(...)`，仅状态 |
+| `@GameLogSource` DataSource | `logMysql(...)`，仅日志 |
+| EntityMapper Bean，例如 MongoEntityMapper | 所有已发现状态 Repository 的状态后端 |
+
+只要出现任一限定注解，各存储就只接受为它指定的来源，沉默不会把日志写进状态库：只有 `@GameStateSource`、存在日志 Repository 而没有 `@GameLogSource` 时，build 抛 IllegalArgumentException 并指出 `logMysql(DataSource)`，此时尚未打开任何 DataSource。同一存储有多个候选时需用 `@Primary` 或该存储的限定注解；同时标注两个限定注解的 DataSource 被拒绝。解析阶段不报告缺失的后端，因为 configurer 仍可能提供。
+
+验证：[StoreSourceTest](../../game-spring/src/test/java/cn/managame/spring/data/StoreSourceTest.java) 覆盖没有任何 DataSource Bean 时由 EntityMapper Bean 承载状态，以及在打开任何 DataSource 之前就拒绝把 `@GameStateSource` 提供给日志；[DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖未标注的唯一 DataSource 同时服务两个存储。
+
+`GameDataConfigurer.configure(GameDataBuilder)` Bean 在来源/Repository 配置后、build 前按 Spring 顺序执行，可配置 JSON codec、回写/错误策略，或把已发现的 Repository 改接到别的后端——这一点成立是因为指定了后端的注册会替换集成自己的注册。configurer 依赖不能要求正在构建的 Data/Repository。gameData 单例采用 destroyMethod="close"，借用全部来源，既不关闭应用连接池，也不关闭 Mapper 的客户端。
 
 ## 3. 停机
 

@@ -4,7 +4,7 @@
 
 Optional plain Spring integration for Runtime, MySQL Data and RPC; Java 25, Spring Context 7.0.9, without Spring Boot. Core modules stay independent of Spring.
 
-Use `@EnableGameRuntime(basePackages="my.game")` to discover Handler/EventHandler/HttpHandler and Cron owners. Provide ProtocolRegistry and GameRuntimeConfigurer Beans for protocols, Domains, executors and application identity policy. Use `@EnableGameData(basePackages="my.game")` with an application-owned DataSource to initialize `@Repository` Beans; optional GameDataConfigurer controls codecs/write-back. Repositories retain field/setter injection and require Data's no-argument/direct generic base constraints.
+Use `@EnableGameRuntime(basePackages="my.game")` to discover Handler/EventHandler/HttpHandler and Cron owners. Provide ProtocolRegistry and GameRuntimeConfigurer Beans for protocols, Domains, executors and application identity policy. Use `@EnableGameData(basePackages="my.game")` with the state and log sources the application declares to initialize `@Repository` Beans; optional GameDataConfigurer controls codecs/write-back. Repositories retain field/setter injection and require Data's no-argument/direct generic base constraints.
 
 HTTP Handler Beans also enable a managed HTTP/1.1 listener. Load these settings through an ordinary Spring property source; no builder, dispatch adapter or close listener is required:
 

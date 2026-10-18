@@ -77,7 +77,7 @@ class MysqlBuilderTest {
             public Object decode(String value,Type type) { types.add(type); return Map.of(6,7L); }
         };
         source.execute("CREATE TABLE builder_logs (roles CLOB)");
-        try(var data=GameDataBuilder.builder().mysql(source).repositories(List.of(Users.class)).logRepositories(List.of(Logs.class))
+        try(var data=GameDataBuilder.builder().mysql(source).logMysql(source).repositories(List.of(Users.class)).logRepositories(List.of(Logs.class))
                 .jsonCodec(codec).flushInterval(Duration.ofHours(1)).cacheExpire(Duration.ofHours(2)).build()) {
             source.execute("INSERT INTO builder_users VALUES (?, ?)",1L,"custom");
             var user=data.repository(Users.class).get(1L); assertEquals(Map.of(6,7L),user.roles);
@@ -100,7 +100,7 @@ class MysqlBuilderTest {
 
     @Test void defaultCodecAlsoWritesJsonLogsWithoutRegistration() {
         var source=new Source(); source.execute("CREATE TABLE builder_logs (roles CLOB)");
-        try(var data=GameDataBuilder.builder().mysql(source).logRepositories(Logs.class).build()) {
+        try(var data=GameDataBuilder.builder().logMysql(source).logRepositories(Logs.class).build()) {
             var log=new Log(); log.roles=Map.of(8,9L); data.repository(Logs.class).insert(log);
         }
         assertEquals("{\"8\":9}",new JdbcMysqlAccess(source).queryOne("SELECT roles FROM builder_logs",new Object[0],r->r.getString(1)));
@@ -112,7 +112,7 @@ class MysqlBuilderTest {
             public String encode(Object value) { return "log"; }
             public Object decode(String value,Type type) { throw new AssertionError("Logs are not loaded"); }
         };
-        try(var data=GameDataBuilder.builder().logCodecs(logCodec,null).mysql(source).repositories(Users.class).logRepositories(Logs.class).build()) {
+        try(var data=GameDataBuilder.builder().logCodecs(logCodec,null).mysql(source).logMysql(source).repositories(Users.class).logRepositories(Logs.class).build()) {
             var user=new User(); user.id=1; user.roles.put(2,3L); data.repository(Users.class).insert(user);
             var log=new Log(); log.roles=user.roles; data.repository(Logs.class).insert(log);
         }

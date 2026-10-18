@@ -239,6 +239,8 @@ MongoDB: primary key maps to _id. INSERT and DELETE_INSERT are Document replacem
 
 **D-LOG-03** Partitioning supports VALUE, DAY, MONTH, YEAR and at most one partition field. Without one, use the base table. Names are base + underscore + suffix. Time partitioning uses event time in an explicit zone; units/default zone/types are in the Java specification.
 
+**D-LOG-04** The log store and the state store are independent. An implementation must not derive one from the other: a log store that was never configured is a configuration error, never a reason to write logs into the state store, and changing the state store, including to a store of another kind, must not change where logs are written. One database for both is expressed by naming the same store for each of them.
+
 <a id="91-日志完整流程"></a>
 
 ### 9.1 Complete log flow

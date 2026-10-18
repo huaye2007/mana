@@ -71,7 +71,8 @@ Spring integration is application code: the [game-demo adapter](../../game-demo/
 
 ```java
 try (GameData data = GameDataBuilder.builder()
-        .mysql(dataSource)
+        .mysql(stateDataSource)
+        .logMysql(logDataSource)
         .repositories(PlayerRepository.class, TaskRepository.class)
         .logRepositories(ActionLogRepository.class)
         .cacheExpire(Duration.ofMinutes(30))
@@ -94,12 +95,13 @@ try (GameData data = GameDataBuilder.builder()
 | retryPolicy | RetryPolicy.transientFailures() | true keeps a failed change for the next pass; false splits, drops and reports (section 5) |
 | errorHandler | System.Logger | Receives dropped changes; archive them here |
 | partitionZone | UTC | Zone for DAY/MONTH/YEAR log partitions |
-| mysql(DataSource) | none | Borrowed DataSource for repositories registered without an explicit backend |
+| mysql(DataSource) | none | Borrowed DataSource for state repositories registered without a backend; it never serves logs |
+| logMysql(DataSource) | none | Borrowed DataSource for log repositories registered without a backend. Logs are a store of their own (D-LOG-04); one database for both is the same DataSource passed to both methods |
 | jsonCodec / binaryCodec | default Jackson / none | Codecs of the implicit MySQL mapper and of logs unless logCodecs overrides them |
 | logCodecs(json, binary) | inherited | Log-only codecs; null JSON selects the default |
 | logQueueCapacity | 100,000 | Logs one LogRepository may hold waiting for storage. At the limit insert returns false, reports the log to DataErrorHandler on the inserting thread as a LOG_INSERT failure (attempt 0) and counts it in DataStats.droppedLogs; a refused log was never accepted and does not make close fail |
 
-repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore mysql(DataSource). Registrations without a backend and no DataSource fail build with IllegalArgumentException. build validates repositories, identity and log mappings, then runs each state Mapper's initialize (mapping and schema; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
+repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore the defaults. A registration that names a backend replaces an earlier one for the same repository type that did not and keeps its position, which is how a container integration lets the application redirect a repository it had already discovered; any other repeat of a type is an IllegalArgumentException at the registration call. A repository still unbound when build runs fails with IllegalArgumentException naming what would bind it, mysql(DataSource) or an EntityMapper for state and logMysql(DataSource) or a MysqlAccess for logs, before any DataSource is opened. build validates repositories, identity and log mappings, then runs each state Mapper's initialize (mapping and schema; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
 
 GameData closes only its own thread, never the DataSource, MongoClient or Mapper. close may wait for database calls; calling close or flush from a Mapper, RetryPolicy or DataErrorHandler callback is rejected to avoid deadlock. After close every repository operation throws DataOperationException.
 
@@ -261,6 +263,9 @@ DataOperation (INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT) is the coalesc
 | Callback close rejected without deadlock | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | Log partitions, drain, partition creation | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization / missingPartitionTableIsCreatedFromTheBaseTable |
 | Mongo update of a missing document fails | MongoMappingTest |
+| State and logs are separate stores; neither is derived from the other | StoreBindingTest.logsNeverFallBackToTheStateSource / separateSourcesKeepLogRowsOutOfTheStateDatabase |
+| MongoDB state and MySQL logs in one GameData | StoreBindingTest.mongoStateAndMysqlLogsAreIndependentStores |
+| Naming a backend replaces an implicit registration; other repeats stay duplicates | StoreBindingTest.namingABackendReplacesAnEarlierImplicitRegistration / repeatsThatAreNotRedirectionsStayDuplicates |
 
 Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) runs against real servers when `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` are set and is skipped otherwise. Real MySQL/MongoDB behavior, production performance and long outages are unverified.
 

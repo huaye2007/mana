@@ -13,7 +13,7 @@ import javax.sql.DataSource;
 public final class GameDataBuilder {
     private record Binding(Object backend, Class<?> type, boolean log) {}
     private record Prepared(Binding binding, Object repository, EntityMeta meta, MysqlLogWriter logWriter) {}
-    private final List<Binding> bindings = new ArrayList<>();
+    private final Map<Class<?>, Binding> bindings = new LinkedHashMap<>();
     private Duration cacheExpire = Duration.ofMinutes(30), flushInterval = Duration.ofSeconds(1);
     /** Default bound of queued logs per LogRepository. */
     public static final int DEFAULT_LOG_QUEUE_CAPACITY = 100_000;
@@ -27,30 +27,50 @@ public final class GameDataBuilder {
     private BinaryCodec logBinaryCodec;
     private boolean logCodecsConfigured;
     private DataSource mysqlSource;
+    private DataSource logMysqlSource;
     private DataErrorHandler errorHandler = f -> System.getLogger("cn.managame.data")
             .log(System.Logger.Level.ERROR, f.operation() + " failed for " + f.entityType(), f.cause());
     private RetryPolicy retryPolicy = RetryPolicy.transientFailures();
     private GameDataBuilder() {}
     public static GameDataBuilder builder() { return new GameDataBuilder(); }
+    /** Borrowed DataSource for state repositories registered without a backend. It never serves logs. */
     public GameDataBuilder mysql(DataSource source) { mysqlSource = Objects.requireNonNull(source); return this; }
+    /**
+     * Borrowed DataSource for log repositories registered without a backend. State and logs are separate
+     * stores, usually separate databases, and neither is ever derived from the other: one database for both
+     * is said by passing the same DataSource here and to {@link #mysql(DataSource)}.
+     */
+    public GameDataBuilder logMysql(DataSource source) { logMysqlSource = Objects.requireNonNull(source); return this; }
     public GameDataBuilder repositories(List<Class<?>> types) {
-        for (Class<?> type : types) bindings.add(new Binding(null, type, false)); return this;
+        for (Class<?> type : types) register(null, type, false); return this;
     }
     public GameDataBuilder repositories(Class<?>... types) { return repositories(List.of(types)); }
     public GameDataBuilder logRepositories(List<Class<?>> types) {
-        for (Class<?> type : types) bindings.add(new Binding(null, type, true)); return this;
+        for (Class<?> type : types) register(null, type, true); return this;
     }
     public GameDataBuilder logRepositories(Class<?>... types) { return logRepositories(List.of(types)); }
     public GameDataBuilder jsonCodec(JsonCodec value) { jsonCodec = Objects.requireNonNull(value); return this; }
     public GameDataBuilder binaryCodec(BinaryCodec value) { binaryCodec = Objects.requireNonNull(value); return this; }
     public GameDataBuilder repositories(EntityMapper mapper, List<Class<?>> types) {
-        Objects.requireNonNull(mapper); for (Class<?> type : types) bindings.add(new Binding(mapper, type, false)); return this;
+        Objects.requireNonNull(mapper); for (Class<?> type : types) register(mapper, type, false); return this;
     }
     public GameDataBuilder repositories(EntityMapper mapper, Class<?>... types) { return repositories(mapper, List.of(types)); }
     public GameDataBuilder logRepositories(MysqlAccess access, List<Class<?>> types) {
-        Objects.requireNonNull(access); for (Class<?> type : types) bindings.add(new Binding(access, type, true)); return this;
+        Objects.requireNonNull(access); for (Class<?> type : types) register(access, type, true); return this;
     }
     public GameDataBuilder logRepositories(MysqlAccess access, Class<?>... types) { return logRepositories(access, List.of(types)); }
+    /**
+     * A registration that names a backend replaces an earlier one that did not, keeping its position. This is
+     * how a container integration that discovered a repository lets the application redirect it to another
+     * backend afterwards. Any other repeat of the same repository type is rejected.
+     */
+    private void register(Object backend, Class<?> type, boolean log) {
+        Binding added = new Binding(backend, Objects.requireNonNull(type, "repository type"), log);
+        Binding previous = bindings.putIfAbsent(type, added);
+        if (previous == null) return;
+        if (backend == null || previous.backend() != null) throw new IllegalArgumentException("Duplicate repository: " + type);
+        bindings.put(type, added);
+    }
     public GameDataBuilder cacheExpire(Duration value) { cacheExpire = positive(value); return this; }
     public GameDataBuilder flushInterval(Duration value) { flushInterval = positive(value); return this; }
     public GameDataBuilder batchSize(int value) { if (value < 1) throw new IllegalArgumentException("batchSize"); batchSize = value; return this; }
@@ -85,11 +105,15 @@ public final class GameDataBuilder {
         List<Prepared> prepared = new ArrayList<>();
         MysqlAccess mysqlAccess = mysqlSource == null ? null : new JdbcMysqlAccess(mysqlSource);
         EntityMapper mysqlMapper = mysqlAccess == null ? null : new MysqlEntityMapper(mysqlAccess, jsonCodec, binaryCodec);
-        for (Binding configured : bindings) {
+        MysqlAccess logAccess = logMysqlSource == null ? null : new JdbcMysqlAccess(logMysqlSource);
+        for (Binding configured : bindings.values()) {
             Binding binding = configured;
             if (binding.backend() == null) {
-                if (mysqlAccess == null) throw new IllegalArgumentException("mysql(DataSource) required for implicit repository bindings");
-                binding = new Binding(binding.log() ? mysqlAccess : mysqlMapper, binding.type(), binding.log());
+                Object backend = binding.log() ? logAccess : mysqlMapper;
+                if (backend == null) throw new IllegalArgumentException(binding.log()
+                        ? "logMysql(DataSource) or an explicit MysqlAccess required for " + binding.type()
+                        : "mysql(DataSource) or an explicit EntityMapper required for " + binding.type());
+                binding = new Binding(backend, binding.type(), binding.log());
             }
             Class<?> type = Objects.requireNonNull(binding.type());
             if (!(type.getGenericSuperclass() instanceof ParameterizedType parent))
@@ -102,7 +126,7 @@ public final class GameDataBuilder {
             if (!(args[args.length - 1] instanceof Class<?> entity))
                 throw new IllegalArgumentException("Concrete entity class required: " + type);
             Object repository = EntityMeta.construct(EntityMeta.constructorOf(type));
-            if (repositories.putIfAbsent(type, repository) != null) throw new IllegalArgumentException("Duplicate repository: " + type);
+            repositories.put(type, repository);
             if (binding.log()) {
                 prepared.add(new Prepared(binding, repository, null,
                         new MysqlLogWriter(entity, (MysqlAccess) binding.backend(),

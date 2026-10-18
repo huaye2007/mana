@@ -29,7 +29,7 @@ Business repositories directly extend SingleRepository<K,E> / GroupRepository<K,
 
 MySQL accepts an application-supplied DataSource through `GameDataBuilder.builder().mysql(dataSource).repositories(PlayerRepository.class).build()`, internally assembling Access and Mapper. JDBC Driver and pool configuration remain application responsibilities. JSON columns use default Jackson field-type binding, including a non-null state initializer's implementation (for example ConcurrentHashMap<Integer,Long>), without manual type registration. Use `jsonCodec(...)` to override or retain explicit Mapper constructors for custom backends. See [JSON binding and limits](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md#default-json-field-binding) and [MysqlBuilderTest](src/test/java/cn/managame/data/MysqlBuilderTest.java).
 
-MySQL uses application-supplied DataSource/JDBC Driver; Mongo uses application-supplied MongoDatabase/CodecRegistry. The framework does not close these external resources. The Mongo driver is optional in game-data; consumers using Mongo must explicitly declare org.mongodb:mongodb-driver-sync.
+MySQL uses application-supplied DataSource/JDBC Driver; Mongo uses application-supplied MongoDatabase/CodecRegistry. The framework does not close these external resources. Logs are a store of their own: logMysql(DataSource) names it and mysql(DataSource) never serves it. The Mongo driver is optional in game-data; consumers using Mongo must explicitly declare org.mongodb:mongodb-driver-sync.
 
 <a id="实机测试"></a>
 

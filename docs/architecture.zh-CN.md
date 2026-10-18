@@ -135,7 +135,7 @@ game-data 依赖 game-core，按 annotation/key/meta/mapper/codec/error/mysql/mo
 
 Data 不依赖 Runtime 或 RPC；应用可在已有 Route 上串行业务访问。get/getGroup 缓存未命中会同步访问存储，调用方需考虑 Route 执行线程上的数据库延迟。同 Route 的顺序不意味着后台序列化线程看到了多字段原子快照；实体并发可见性仍需应用保证。
 
-GameDataBuilder 校验 Repository/身份及映射、执行状态 Schema 初始化，再启动一条保存流水线。DataSource、MongoClient 由应用持有；GameDataBuilder.mysql(DataSource) 装配默认 JDBC Access/Mapper，默认 JSON 初始化绑定声明泛型和状态初始化实现类，可覆盖 codec，具体约定见 [Data Java §6.2](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding)；GameData.close 只停止自己的调度并同步排空写回/日志，最终保存失败抛 DataSaveException。停服先停止业务入口并等待已接纳业务，再关闭 GameData，最后关闭数据库客户端。
+GameDataBuilder 校验 Repository/身份及映射、执行状态 Schema 初始化，再启动一条保存流水线。DataSource、MongoClient 由应用持有；GameDataBuilder.mysql(DataSource) 为状态装配默认 JDBC Access/Mapper，logMysql(DataSource) 指定独立的日志存储，默认 JSON 初始化绑定声明泛型和状态初始化实现类，可覆盖 codec，具体约定见 [Data Java §6.2](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#default-json-field-binding)；GameData.close 只停止自己的调度并同步排空写回/日志，最终保存失败抛 DataSaveException。停服先停止业务入口并等待已接纳业务，再关闭 GameData，最后关闭数据库客户端。
 
 Data 的写回线程以"条件移除"认领待保存变更，没有缓冲交换或固定等待；可重试的失败保留到下一轮，不可重试的坏行拆出后单独丢弃并报告，有未保存变更的实体从不被淘汰出缓存，因此重新加载不会读到旧数据。没有 WAL 或容量背压。所有未验证的生产及实机边界见 [Data Java 开发规范](ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。通用行为见 [Data Specification](ogbs/OGBS-Data-1.0.zh-CN.md)，共享保存错误码见 [Core](ogbs/OGBS-Core-1.0.zh-CN.md)。
 

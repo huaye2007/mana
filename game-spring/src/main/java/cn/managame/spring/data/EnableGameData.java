@@ -5,7 +5,7 @@ import org.springframework.core.annotation.AliasFor;
 import org.springframework.stereotype.Repository;
 import java.lang.annotation.*;
 
-/** Registers annotated Repository Beans and initializes them with an application-owned DataSource. */
+/** Registers annotated Repository Beans and initializes them against the state and log sources the application declares. */
 @Target(ElementType.TYPE) @Retention(RetentionPolicy.RUNTIME) @Documented
 @Import(DataConfiguration.class)
 @ComponentScan(useDefaultFilters = false, includeFilters = @ComponentScan.Filter(Repository.class))
