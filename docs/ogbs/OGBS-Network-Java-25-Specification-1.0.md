@@ -177,7 +177,7 @@ public final class NetworkClient implements AutoCloseable {
 
 public interface ConnectCallback {
     void onSuccess(Connection connection);
-    void onFailure(Throwable cause);
+    void onFail(Throwable cause);
 }
 ```
 
@@ -204,7 +204,7 @@ TLS is configured only by adding a native SslHandler, which must be the single f
 Each call uses one native `Promise<Connection>` (on ImmediateEventExecutor, so it still notifies after a borrowed loop terminates). Bootstrap runs on the selected EventLoop. When the transport and all handshakes are ready, the adapter checks the client is open, claims the result with `setUncancellable()`, creates the Connection, calls onConnected, and then completes success. Failure uses tryFailure; a listener closes the channel on failure or cancellation, including a channel created after cancellation.
 
 - onConnected always runs before onSuccess / the synchronous return. Exceptions in onConnected go to onException; closing inside it still reports success.
-- ConnectCallback runs on the selected EventLoop. Rejections before an attempt starts (bad input, closed client) call onFailure on the caller thread; if a terminated borrowed loop rejects the notification, it runs on the current thread. A null callback throws NullPointerException. Callback exceptions are only logged.
+- ConnectCallback runs on the selected EventLoop. Rejections before an attempt starts (bad input, closed client) call onFail on the caller thread; if a terminated borrowed loop rejects the notification, it runs on the current thread. A null callback throws NullPointerException. Callback exceptions are only logged. The failure branch is named onFail, as every one-shot failure branch in the framework is — RouteCallback, RpcHandler and RouterHandler all use it — so one naming carries across components. ConnectionHandler.onException keeps its own name on purpose: it reports errors on an already-established connection, can run many times for one connection, and pairs with no success callback, so it is not the same role and should not claim to be.
 - Synchronous connect from one of the client's own EventLoops → IllegalStateException. An interrupted wait cancels the attempt, restores the interrupt flag and throws NetworkException; if success was already claimed, the undeliverable Connection is closed after onConnected returns.
 
 <a id="5-配置快照与握手参数"></a>
@@ -325,7 +325,7 @@ close marks the endpoint closed; it never iterates connections or attempts. Read
 
 | Scenario | Representation |
 | --- | --- |
-| Invalid argument, missing configuration, lifecycle misuse | Java argument/state exceptions; async entries call onFailure (except null callback) |
+| Invalid argument, missing configuration, lifecycle misuse | Java argument/state exceptions; async entries call onFail (except null callback) |
 | bind/connect/TLS/WS/pipeline initialization failure | NetworkException with cause |
 | Attempt observes a closed client | IllegalStateException |
 | Established decoder/I/O/handler error | Original Throwable → onException |

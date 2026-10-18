@@ -100,7 +100,7 @@ class NetworkContractTest extends NetworkTestSupport {
             Promise<Connection> result = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
             ConnectCallback callback = new ConnectCallback() {
                 public void onSuccess(Connection c) { order.add("success"); result.trySuccess(c); }
-                public void onFailure(Throwable cause) { result.tryFailure(cause); }
+                public void onFail(Throwable cause) { result.tryFailure(cause); }
             };
             if (ws) client.connectAsync(URI.create((tls ? "wss" : "ws")
                     + "://127.0.0.1:" + port.get() + "/game"), callback);
@@ -189,7 +189,7 @@ class NetworkContractTest extends NetworkTestSupport {
                     callbackThread.trySuccess(Thread.currentThread());
                     throw new IllegalStateException("callback");
                 }
-                public void onFailure(Throwable cause) { failures.incrementAndGet(); callbackThread.tryFailure(cause); }
+                public void onFail(Throwable cause) { failures.incrementAndGet(); callbackThread.tryFailure(cause); }
             });
             assertTrue(channel.get() == null || channel.get().isRegistered());
             Thread thread = get(callbackThread);
@@ -316,7 +316,7 @@ class NetworkContractTest extends NetworkTestSupport {
             Promise<Connection> result = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
             client.connectAsync(server.localAddress(), new ConnectCallback() {
                 public void onSuccess(Connection connection) { result.trySuccess(connection); }
-                public void onFailure(Throwable cause) { result.tryFailure(cause); }
+                public void onFail(Throwable cause) { result.tryFailure(cause); }
             });
             ExecutionException failure = assertThrows(ExecutionException.class, () -> get(result));
             assertInstanceOf(NetworkException.class, failure.getCause());

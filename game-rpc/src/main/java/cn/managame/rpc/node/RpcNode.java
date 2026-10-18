@@ -449,7 +449,7 @@ public final class RpcNode implements AutoCloseable {
                 }
                 writeControl(connection, guard.initiate(context, new RpcHandshake(nodeId, slot.id, peer.slots.length)));
             }
-            public void onFailure(Throwable cause) { reconnect(peer, slot); }
+            public void onFail(Throwable cause) { reconnect(peer, slot); }
         });
     }
 

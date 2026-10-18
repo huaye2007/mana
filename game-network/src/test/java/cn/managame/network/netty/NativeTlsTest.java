@@ -24,7 +24,7 @@ class NativeTlsTest extends NetworkTestSupport {
             count.incrementAndGet();
             failure.tryFailure(new AssertionError("Unexpected connection success"));
         }
-        public void onFailure(Throwable cause) { count.incrementAndGet(); failure.trySuccess(cause); }
+        public void onFail(Throwable cause) { count.incrementAndGet(); failure.trySuccess(cause); }
     }
 
     @ParameterizedTest @ValueSource(booleans = {false, true})

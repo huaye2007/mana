@@ -35,7 +35,7 @@ class ConnectRaceTest extends NetworkTestSupport {
             URI uri = URI.create("ws://127.0.0.1:" + ((InetSocketAddress) blackhole.localAddress()).getPort() + "/game");
             client.connectAsync(uri, new ConnectCallback() {
                 public void onSuccess(Connection c) { outcomes.incrementAndGet(); outcome.tryFailure(new AssertionError("unexpected success")); }
-                public void onFailure(Throwable cause) { callbackThread.set(Thread.currentThread()); outcomes.incrementAndGet(); outcome.trySuccess(cause); }
+                public void onFail(Throwable cause) { callbackThread.set(Thread.currentThread()); outcomes.incrementAndGet(); outcome.trySuccess(cause); }
             });
             assertTrue(active.await(5, TimeUnit.SECONDS));
             client.close();
@@ -88,7 +88,7 @@ class ConnectRaceTest extends NetworkTestSupport {
                 CountDownLatch complete = new CountDownLatch(12);
                 ConnectCallback callback = new ConnectCallback() {
                     public void onSuccess(Connection c) { outcomes.incrementAndGet(); c.close(); complete.countDown(); }
-                    public void onFailure(Throwable cause) { outcomes.incrementAndGet(); complete.countDown(); }
+                    public void onFail(Throwable cause) { outcomes.incrementAndGet(); complete.countDown(); }
                 };
                 Thread connections = Thread.ofPlatform().start(() -> {
                     for (int i = 0; i < 12; i++) client.connectAsync(server.localAddress(), callback);
@@ -224,7 +224,7 @@ class ConnectRaceTest extends NetworkTestSupport {
                     outcomes.incrementAndGet(); c.close();
                     failure.tryFailure(new AssertionError("Late success"));
                 }
-                public void onFailure(Throwable cause) { outcomes.incrementAndGet(); failure.trySuccess(cause); }
+                public void onFail(Throwable cause) { outcomes.incrementAndGet(); failure.trySuccess(cause); }
             });
             assertTrue(initializing.await(5, TimeUnit.SECONDS));
             client.close();
@@ -294,7 +294,7 @@ class ConnectRaceTest extends NetworkTestSupport {
             shutdown(group);
             client.connectAsync(LOCAL, new ConnectCallback() {
                 public void onSuccess(Connection connection) { outcomes.addAndGet(100); connection.close(); }
-                public void onFailure(Throwable cause) {
+                public void onFail(Throwable cause) {
                     failure.set(cause);
                     outcomes.incrementAndGet();
                     notified.set(Thread.currentThread());

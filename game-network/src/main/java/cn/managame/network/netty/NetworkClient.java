@@ -151,7 +151,7 @@ public final class NetworkClient implements AutoCloseable {
         Runnable notify = () -> {
             try {
                 if (result.isSuccess()) callback.onSuccess(result.getNow());
-                else callback.onFailure(result.cause());
+                else callback.onFail(result.cause());
             } catch (Throwable cause) { NetworkSupport.log("ConnectCallback failed", cause); }
         };
         if (loop.inEventLoop()) notify.run();
@@ -165,8 +165,8 @@ public final class NetworkClient implements AutoCloseable {
         options.forEach((key, value) -> bootstrap.option((ChannelOption) key, value));
     }
     private static void reject(ConnectCallback callback, Throwable cause) {
-        try { callback.onFailure(cause); }
-        catch (Throwable error) { NetworkSupport.log("ConnectCallback.onFailure failed", error); }
+        try { callback.onFail(cause); }
+        catch (Throwable error) { NetworkSupport.log("ConnectCallback.onFail failed", error); }
     }
     /** Approximate counts for this client since construction; {@code accepted} is always 0. See {@link NetworkStats}. */
     public NetworkStats stats() { return counters.snapshot(); }

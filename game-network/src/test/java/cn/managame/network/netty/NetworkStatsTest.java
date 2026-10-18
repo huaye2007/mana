@@ -23,7 +23,7 @@ class NetworkStatsTest extends NetworkTestSupport {
         Promise<Connection> result = new DefaultPromise<>(GlobalEventExecutor.INSTANCE);
         client.connectAsync(address, new ConnectCallback() {
             public void onSuccess(Connection connection) { result.trySuccess(connection); }
-            public void onFailure(Throwable cause) { result.tryFailure(cause); }
+            public void onFail(Throwable cause) { result.tryFailure(cause); }
         });
         return result.get(5, TimeUnit.SECONDS);
     }

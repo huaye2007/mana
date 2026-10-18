@@ -175,7 +175,7 @@ public final class NetworkClient implements AutoCloseable {
 
 public interface ConnectCallback {
     void onSuccess(Connection connection);
-    void onFailure(Throwable cause);
+    void onFail(Throwable cause);
 }
 ```
 
@@ -202,7 +202,7 @@ TLS 只能通过添加原生 SslHandler 配置，且必须是唯一的首个 han
 每次调用使用一个原生 `Promise<Connection>`（基于 ImmediateEventExecutor，借用的 loop 终止后仍能通知）。Bootstrap 在选定 EventLoop 上运行。传输与全部握手就绪后，适配器检查客户端仍开启，用 `setUncancellable()` 认领结果，创建 Connection，调用 onConnected，然后完成成功结果。失败使用 tryFailure；失败或取消时由监听器关闭 Channel，包括取消后才创建的 Channel。
 
 - onConnected 总在 onSuccess／同步返回之前执行。onConnected 中的异常进入 onException；在其中关闭连接仍报告成功。
-- ConnectCallback 在选定 EventLoop 上执行。尝试开始前的拒绝（非法输入、客户端已关闭）在调用线程调用 onFailure；若已终止的借用 loop 拒绝通知，则在当前线程执行。callback 为 null 抛 NullPointerException。回调异常只记录日志。
+- ConnectCallback 在选定 EventLoop 上执行。尝试开始前的拒绝（非法输入、客户端已关闭）在调用线程调用 onFail；若已终止的借用 loop 拒绝通知，则在当前线程执行。callback 为 null 抛 NullPointerException。回调异常只记录日志。失败分支命名为 onFail，与框架中所有一次性失败分支一致——RouteCallback、RpcHandler 与 RouterHandler 都用它——因此一套命名贯穿各组件。ConnectionHandler.onException 有意保留自己的名字：它报告的是已建立连接上的错误，对同一个连接可能多次触发，也不与任何成功回调配对，因此不是同一个角色，不应假装是。
 - 在客户端自己的 EventLoop 上同步 connect → IllegalStateException。等待被中断时取消尝试、恢复中断标志并抛 NetworkException；若成功已被认领，onConnected 返回后关闭这条无法交付的 Connection。
 
 <a id="5-配置快照与握手参数"></a>
@@ -323,7 +323,7 @@ close 只标记入口已关闭，从不遍历连接或建连尝试。就绪时�
 
 | 场景 | 表现 |
 | --- | --- |
-| 非法参数、缺少配置、生命周期误用 | Java 参数/状态异常；异步入口调用 onFailure（callback 为 null 除外） |
+| 非法参数、缺少配置、生命周期误用 | Java 参数/状态异常；异步入口调用 onFail（callback 为 null 除外） |
 | bind/connect/TLS/WS/管线初始化失败 | NetworkException，保留原因 |
 | 尝试发现客户端已关闭 | IllegalStateException |
 | 已建立连接的解码/I/O/handler 错误 | 原始 Throwable → onException |
