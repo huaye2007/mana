@@ -240,7 +240,7 @@ Event supplies target Domain/Key. Events are in-process messages without persist
 
 **RT-EVENT-01**: Match exact event type and invoke listeners in ascending order; ties are unordered.
 
-**RT-EVENT-02**: Enter the event's Route; same-Route publication may inline. Inherit identity/Metadata only from same-Runtime InvocationContext; otherwise use defaults/empty.
+**RT-EVENT-02**: Enter the event's Route; same-Route publication may inline. Inherit identity/Metadata only from same-Runtime InvocationContext; otherwise use defaults/empty. Every listener of one publication runs on that one Route, so a listener may read and mutate only the state that Route owns (RT-ROUTE-05). Reaching another Domain's state is a cross-Route call from inside the listener, never a direct access.
 
 **RT-EVENT-03**: Report a listener exception but continue later listeners in that publication.
 
@@ -249,6 +249,16 @@ Event supplies target Domain/Key. Events are in-process messages without persist
 **RT-EVENT-05**: Convenience publication without an explicit Runtime first selects the Runtime owning the current execution context. Without an owning context, it selects an explicitly configured process default. With neither, it reports a configuration error. It must never switch to the default after the selected owner rejects publication, including after owner closure. The selected Runtime performs the same Route validation, admission, identity propagation, listener ordering, and error handling as ordinary event publication; no separate event execution mechanism is introduced.
 
 Only one default binding exists per process. Rebinding the same Runtime is idempotent; binding a different Runtime while one is bound reports conflict instead of silently replacing it. Unbinding removes only the specified instance and neither closes the Runtime nor cancels accepted events. The reference implementation releases its own binding on Runtime closure; the lifecycle owner must coordinate startup binding with shutdown. A publication that already selected a Runtime may still submit there or observe its closure after the binding changes; it must not retry against a replacement. This preserves isolation when multiple Runtimes coexist. For example, execution owned by Runtime A publishes to A even when B is the default, and closing an old unbound A cannot remove B's binding. API names, process binding implementation, and validation entry points are defined in the [Java specification](OGBS-Runtime-Java-25-Specification-1.0.md#static-event-publication).
+
+<a id="event-listener-domain"></a>
+
+**RT-EVENT-06 — Declared listener Domain.** A listener may declare the Domain whose state it owns. The declaration adds no routing and no fan-out: it states what RT-EVENT-02 already requires, so that a violation is detected instead of running. A declared Domain must be a registered one.
+
+Because one event carries one Domain, listeners of the same event type that declare different Domains can never both run on a Route that owns their state; that is a build failure, not a publication-time one. When the declarations agree, an event of that type published to any other Domain is rejected before admission, with the same framework code and the same observable effect as any other Domain mismatch: no context, no Route task, no listener runs, and the publisher learns of it through explicit rejection. The check is per event type, not per listener, so it costs one comparison per publication.
+
+Declaring nothing is unchanged behaviour: such a listener accepts whichever Domain publishes. One listener that declares a Domain therefore constrains that event type for every listener of it, which is the point — they all run on the same Route.
+
+For example, a guild listener subscribing to a player event is now caught: alone, the first player-Domain publication is rejected; alongside a player listener that declares its own Domain, the build fails instead. Written correctly, the guild listener stays on the player Route and enters the guild Route through a cross-Route call whose callback restores the event's own context. Validation: [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java).
 
 Publishers must not arbitrarily mutate events while execution may still be pending.
 
@@ -381,7 +391,7 @@ Numbers: [Core](OGBS-Core-1.0.md). Runtime uses 3001–3010:
 | Name | Trigger |
 | --- | --- |
 | RUNTIME_CLOSED | Runtime closed |
-| ROUTE_DOMAIN_MISMATCH | Domain unregistered or differs from Handler Domain |
+| ROUTE_DOMAIN_MISMATCH | Domain unregistered, or differs from the Handler Domain or from the Domain an event's listeners declared |
 | INVALID_ROUTE_KEY | Zero Key |
 | ROUTE_EXECUTOR_OVERLOADED | Insufficient target capacity |
 | ROUTE_EXECUTOR_CLOSED | Target executor closed |
@@ -446,6 +456,7 @@ An admitted player Handler may submit guild work after admission stops; both and
 | Contract | Implementation/test |
 | --- | --- |
 | Build, Context, dispatch, events, callbacks, Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
+| Declared listener Domain, build conflict, publish rejection, cross-Route bridging | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
 | Client correlation, returned and hand-written responses, failure framing, build rules | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
 | Route serialization, capacity, executor closure | [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) |
 | Scheduling/lifecycle | [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java) |

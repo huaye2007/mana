@@ -39,7 +39,7 @@ import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.http.HttpDispatcher;
 import cn.managame.runtime.internal.RuntimeBindings.Compiled;
-import cn.managame.runtime.internal.RuntimeBindings.EventBinding;
+import cn.managame.runtime.internal.RuntimeBindings.EventSubscribers;
 import cn.managame.runtime.internal.RuntimeBindings.HandlerBinding;
 import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.CapturedRouteCallback;
@@ -51,7 +51,6 @@ import cn.managame.runtime.timer.RuntimeTimer;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -67,7 +66,7 @@ final class DefaultGameRuntime implements GameRuntime {
     private final Map<Class<?>, HandlerBinding> handlers;
     private final HandlerContextFactory handlerContexts;
     private final ClientResultCodec clientResults;
-    private final Map<Class<?>, List<EventBinding>> events;
+    private final Map<Class<?>, EventSubscribers> events;
     private final RuntimeErrorHandler errors;
     private final boolean executionTiming;
     private final RuntimeTimers timers;
@@ -294,12 +293,16 @@ final class DefaultGameRuntime implements GameRuntime {
     private void publish(Event event) {
         Objects.requireNonNull(event);
         validate(event.routeDomain(), event.routeKey());
-        List<EventBinding> subscribers = events.get(event.getClass());
+        EventSubscribers subscribers = events.get(event.getClass());
         if (subscribers == null) return; // nothing would run: no Route task, no allocation
+        // Listeners run on the event's Route. One that declared another Domain owns state this Route does
+        // not, so publishing here would hand it that state outside its own serialization.
+        if (subscribers.requiredDomain() != 0 && subscribers.requiredDomain() != event.routeDomain())
+            throw failure(ROUTE_DOMAIN_MISMATCH);
         InvocationContext parent = inherited(RuntimeContexts.ownedBy(this) ? Contexts.current() : null);
         var context = new DefaultEventContext(event, parent.businessIdType(), parent.businessId(), parent.metadata());
         int error = submit(context, () -> {
-            for (var handler : subscribers) {
+            for (var handler : subscribers.listeners()) {
                 try { handler.invoke(event); }
                 catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
             }

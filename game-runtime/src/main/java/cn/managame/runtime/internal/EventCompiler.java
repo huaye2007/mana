@@ -10,6 +10,7 @@ import cn.managame.runtime.event.EventMethod;
 import cn.managame.runtime.internal.RuntimeBindings.CronBinding;
 import cn.managame.runtime.internal.RuntimeBindings.CronKey;
 import cn.managame.runtime.internal.RuntimeBindings.EventBinding;
+import cn.managame.runtime.internal.RuntimeBindings.EventSubscribers;
 import cn.managame.runtime.time.GameTime;
 import cn.managame.runtime.timer.Cron;
 import java.lang.invoke.MethodType;
@@ -28,9 +29,14 @@ import java.util.Set;
 final class EventCompiler {
     private EventCompiler() {}
 
-    /** Event type → subscribers in ascending {@code order}. */
-    static Map<Class<?>, List<EventBinding>> events(List<Object> targets) {
-        Map<Class<?>, List<EventBinding>> compiled = new HashMap<>();
+    /**
+     * Event type → subscribers in ascending {@code order}, with the Domain its listeners declared. One
+     * event carries one Domain, so listeners of the same type that declare different Domains can never
+     * both run on a Route that owns their state; that is a build failure rather than a publish-time one.
+     */
+    static Map<Class<?>, EventSubscribers> events(List<Object> targets, Set<Integer> domains) {
+        Map<Class<?>, List<EventBinding>> listeners = new HashMap<>();
+        Map<Class<?>, Integer> declared = new HashMap<>();
         for (Object target : targets) {
             for (Method m : methods(target)) {
                 EventMethod event = m.getAnnotation(EventMethod.class);
@@ -38,11 +44,21 @@ final class EventCompiler {
                 requireVoidMethod(m);
                 if (m.getParameterCount() != 1 || !Event.class.isAssignableFrom(m.getParameterTypes()[0]))
                     throw invalid("Event method needs one Event: " + m);
-                compiled.computeIfAbsent(m.getParameterTypes()[0], ignored -> new ArrayList<>())
+                Class<?> type = m.getParameterTypes()[0];
+                if (event.domain() != 0) {
+                    if (!domains.contains(event.domain())) throw invalid("Unregistered event listener domain: " + m);
+                    Integer previous = declared.putIfAbsent(type, event.domain());
+                    if (previous != null && previous != event.domain())
+                        throw invalid("Listeners of " + type.getName() + " declare conflicting domains "
+                                + previous + " and " + event.domain() + ": " + m);
+                }
+                listeners.computeIfAbsent(type, ignored -> new ArrayList<>())
                         .add(new EventBinding(event.order(), bind(target, m).asType(MethodType.methodType(void.class, Object.class))));
             }
         }
-        compiled.replaceAll((type, value) -> value.stream().sorted(Comparator.comparingInt(EventBinding::order)).toList());
+        Map<Class<?>, EventSubscribers> compiled = new HashMap<>();
+        listeners.forEach((type, value) -> compiled.put(type, new EventSubscribers(declared.getOrDefault(type, 0),
+                value.stream().sorted(Comparator.comparingInt(EventBinding::order)).toList())));
         return Map.copyOf(compiled);
     }
 

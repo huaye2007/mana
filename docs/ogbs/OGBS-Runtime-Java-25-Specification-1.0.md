@@ -99,7 +99,7 @@ build compiles everything before returning: Domain/executor bindings, protocols 
 | Protocol | Duplicate message class or type+command; response pair to an unregistered or wrong-direction type |
 | Handler | Unregistered message, two methods for one message, unknown Domain, context parameter outside the HandlerContext hierarchy |
 | Handler response (§6.5) | Return type that is not the message's registered response, a message that registers none, a non-client context, or no `clientResultCodec` |
-| Event | Not exactly one Event parameter |
+| Event | Not exactly one Event parameter, an unregistered declared Domain, or listeners of one event type declaring different Domains |
 | Cron | Invalid expression or Route, duplicate declaring class + method |
 
 A failed build does not close supplied executors; a successful Runtime owns them and closes each once. Handler instances are shared across Routes: their fields are not serialized, so keep mutable state per Route.
@@ -329,9 +329,12 @@ call requires this Runtime's current context (otherwise IllegalStateException). 
 interface Event { int routeDomain(); long routeKey(); }
 interface EventBus { void publish(Event event); }
 @EventMethod(order = 10) public void onChanged(MyEvent event) { … }
+@EventMethod(domain = GUILD_ID) public void onChanged(GuildEvent event) { … }
 ```
 
 Listeners registered with eventHandlers take one Event subtype, match by exact class and run in ascending order (ties unspecified) on the event's Route in a DefaultEventContext; a listener failure is reported (3009) and the others still run. Publishing from this Runtime inherits identity and Metadata; otherwise 0/0 and empty. Route and admission are validated even without listeners; an event without listeners then returns at once, with no context, no Route task and no RuntimeStats count.
+
+All listeners of one publication share that single Route, so each may touch only the state it owns. `@EventMethod(domain = …)` declares which Domain that is and makes the rule checkable; it adds no routing and no fan-out. The declared Domain must be registered, or build fails. Listeners of one event type that declare different Domains fail at build (`conflicting domains`), since one event carries one Domain. Otherwise the agreed Domain is checked once per publication: an event of that type whose `routeDomain()` differs is rejected with ROUTE_DOMAIN_MISMATCH (3004) before admission, so no context, Route task or listener invocation occurs. A listener that declares nothing keeps today's behaviour and accepts whatever Domain publishes, but one declaring listener constrains the type for all of them. To touch another Domain's state, stay on the event's Route and use `runtime.call`; its callback restores the event context. Tests: [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java).
 
 <a id="static-event-publication"></a>
 

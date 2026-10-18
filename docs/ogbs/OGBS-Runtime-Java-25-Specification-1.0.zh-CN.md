@@ -93,7 +93,7 @@ build 在返回前完成全部编译：Domain/执行器绑定、协议与响应�
 | 协议 | 消息类或 type+command 重复；响应配对指向未注册或方向错误的类型 |
 | Handler | 消息未注册、一条消息两个方法、未知 Domain、上下文参数不属于 HandlerContext 层次 |
 | Handler 响应（§6.5） | 返回类型不是该消息注册的响应、消息未注册响应、上下文不是客户端上下文，或未配置 `clientResultCodec` |
-| Event | 参数不是恰好一个 Event |
+| Event | 参数不是恰好一个 Event、声明的 Domain 未注册，或同一事件类型的监听器声明了不同 Domain |
 | Cron | 表达式或 Route 非法、声明类加方法名重复 |
 
 构建失败不关闭传入的执行器；构建成功后由 Runtime 持有并逐个关闭一次。Handler 实例在多个 Route 间共享，其字段不会被串行化，可变状态应按 Route 组织。
@@ -304,9 +304,12 @@ call 须在本 Runtime 的当前上下文中调用（否则 IllegalStateExceptio
 interface Event { int routeDomain(); long routeKey(); }
 interface EventBus { void publish(Event event); }
 @EventMethod(order = 10) public void onChanged(MyEvent event) { … }
+@EventMethod(domain = GUILD_ID) public void onChanged(GuildEvent event) { … }
 ```
 
 通过 eventHandlers 注册的监听方法接收一个 Event 子类型，按精确类匹配、按 order 升序执行（相同 order 顺序不定），在事件所在 Route 的 DefaultEventContext 中运行；某个监听失败会被报告（3009），其余监听照常执行。从本 Runtime 内发布时继承身份与 Metadata，否则为 0/0 与空。即使没有监听也会校验 Route 与准入；没有监听的事件在校验后直接返回，不创建上下文、不提交 Route 任务，也不计入 RuntimeStats。
+
+一次发布的全部监听器共用那一个 Route，因此每个监听器只能触及自己拥有的状态。`@EventMethod(domain = …)` 声明那是哪个 Domain，使该规则可校验；它不引入路由，也不引入扇出。声明的 Domain 必须已注册，否则构建失败。同一事件类型的监听器声明了不同 Domain 时构建失败（`conflicting domains`），因为一个事件只携带一个 Domain。否则一致的那个 Domain 每次发布校验一次：该类型事件的 `routeDomain()` 不同即在准入前以 ROUTE_DOMAIN_MISMATCH（3004）拒绝，不创建上下文、不提交 Route 任务、不调用任何监听器。不声明的监听器维持既有行为，接受任何发布的 Domain，但只要有一个监听器声明，就约束了该类型的全部监听器。要触及其他 Domain 的状态，应留在事件的 Route 上并使用 `runtime.call`，其回调会恢复事件上下文。测试：[EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java)。
 
 <a id="static-event-publication"></a>
 

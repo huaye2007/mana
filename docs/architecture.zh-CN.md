@@ -104,7 +104,7 @@ RouteKeyRegistry 是单独的 exact-class 查询：没有绑定返回 0，extrac
 
 Handler 方法必须为 public、非 static，且只有一个已注册 REQUEST/NOTIFY 参数，可以另带一个 Context 及已注册的应用参数类型，顺序不限。返回 void，或该消息已注册的响应类型——Runtime 通过配置的 ClientResultCodec 封装它，并按该请求自身的相关性写到其连接上；想要应答的 void Handler 自己写那个连接，框架不会把任何完成对象传给 Handler。HandlerMethod 的非零 domain 覆盖 Handler.domain。重复 message handler、非法 Context 类型、未绑定/歧义参数类型、未注册 Domain，以及无法送达的返回式响应（返回类型不是已注册响应、消息未注册响应、上下文不是客户端上下文、缺少 clientResultCodec）等在 build 时失败。业务接入通过带身份的 dispatch 重载传入 Key 与 businessIdType/businessId，二者含义各自独立。业务身份通常直接从 Context 获取，无需 RoleId/GuildId/RoomId 包装类型或参数注册。HandlerArgumentBinding 保留为其他应用参数的可选扩展，在提交线程、接纳前各解析一次，解析器不得访问 Route 所有的状态；目标 Handler 仍使用既有 Route 执行器。见 [Java 参数契约](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
 
-Event 通过自己的 routeDomain()/routeKey() 指定唯一 Route。EventMethod 按具体 Event 类 exact lookup、order 升序运行；相同 order 无相对顺序保证。单个监听方法失败上报后继续其他监听方法。
+Event 通过自己的 routeDomain()/routeKey() 指定唯一 Route。EventMethod 按具体 Event 类 exact lookup、order 升序运行；相同 order 无相对顺序保证。单个监听方法失败上报后继续其他监听方法。一次发布的全部监听器共用该 Route，因此 @EventMethod(domain) 声明监听器在哪个 Domain 拥有状态：同一事件类型的监听器声明不一致时构建失败，事件发布到其他 Domain 则在准入前以 ROUTE_DOMAIN_MISMATCH 拒绝。不声明维持原有行为。监听器跨 Domain 必须走 runtime.call，不能直接访问。
 
 GameTime 是进程级可替换的业务墙钟，默认 Clock.systemUTC()；setClock/resetClock 不自动调整 Timer 或 Cron。RuntimeTimer 只关心单调 delay。动态业务 deadline 由应用根据 GameTime 换算并在需要时 cancel + schedule。
 

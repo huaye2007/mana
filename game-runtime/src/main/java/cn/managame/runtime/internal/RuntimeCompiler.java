@@ -30,7 +30,7 @@ public final class RuntimeCompiler {
         for (Object target : settings.handlers()) handlers.compile(target);
         if (settings.clientResults() == null && handlers.handlers.values().stream().anyMatch(HandlerBinding::returnsResult))
             throw invalid("Handlers that return a client response require clientResultCodec");
-        var events = EventCompiler.events(settings.eventHandlers());
+        var events = EventCompiler.events(settings.eventHandlers(), domains);
         var crons = EventCompiler.crons(settings.cronHandlers(), domains, settings.cronZone());
         Map<HttpEndpoint, HttpBinding> http = HttpCompiler.compile(settings.httpHandlers(), domains, settings.httpRequests());
         if (settings.httpContexts() == null) {

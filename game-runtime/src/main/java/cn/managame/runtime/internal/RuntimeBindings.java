@@ -24,7 +24,7 @@ final class RuntimeBindings {
     record Compiled(Map<Integer, RouteExecutor> routes, ProtocolRegistry protocols,
                     Map<Class<?>, RouteKeyBinding<?>> routeKeys, Map<Class<?>, HandlerBinding> handlers,
                     HandlerContextFactory handlerContexts, ClientResultCodec clientResults,
-                    Map<Class<?>, List<EventBinding>> events,
+                    Map<Class<?>, EventSubscribers> events,
                     List<CronBinding> crons, Map<HttpEndpoint, HttpBinding> http, HttpContextFactory httpContexts,
                     HttpResultCodec httpResults, RuntimeErrorHandler errors, boolean executionTiming) {}
 
@@ -54,6 +54,14 @@ final class RuntimeBindings {
                        Function<FullHttpRequest, Object> decoder) {
         Object invoke(Object context, Object request) throws Throwable { return handle.invokeExact(context, request); }
     }
+
+    /**
+     * One event type's listeners, in ascending order.
+     *
+     * @param requiredDomain the Domain its listeners declared, or 0 when none did; an event published to
+     *                       another Domain would run them on a Route that does not own their state
+     */
+    record EventSubscribers(int requiredDomain, List<EventBinding> listeners) {}
 
     record EventBinding(int order, MethodHandle handle) {
         void invoke(Object event) throws Throwable { handle.invokeExact(event); }

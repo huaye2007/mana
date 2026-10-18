@@ -75,6 +75,10 @@ runtime.cron().rescheduleAll();
 
 SystemCron 是应用定义的 Cron 类。cancel 停止后续周期；reschedule 可以恢复取消的项，rescheduleAll 包含全部注册项。已经开始的方法可以完成，旧代任务不会覆盖新调度。Cron 每轮方法结束后计算下一轮，异常或接纳失败不重试当轮，但继续未来周期。
 
+## 事件监听器的 Domain
+
+一次发布的全部监听器都在事件那一个 Route 上运行，因此监听器只能触及该 Route 所有的状态。`@EventMethod(domain = GUILD_ID)` 声明监听器在哪个 Domain 拥有状态，把这条规则从约定变成校验：同一事件类型的监听器声明了不同 Domain 时构建失败；事件的 `routeDomain()` 与所声明的不一致时，在准入前以 ROUTE_DOMAIN_MISMATCH 拒绝——不创建上下文、不提交 Route 任务、没有监听器运行。不声明维持原有行为，但只要有一个监听器声明，就约束了该事件类型的全部监听器。要触及其他 Domain 的状态，应留在事件的 Route 上并使用 `runtime.call`，其回调会恢复事件上下文。见[条款](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#event-listener-domain)与[测试](src/test/java/cn/managame/runtime/event/EventDomainTest.java)。
+
 ## 静态事件发布
 
 业务可通过 `cn.managame.runtime.event.Events` 直接调用 `Events.publish(event)`。Runtime 执行上下文内使用当前所属 Runtime；外部线程需要启动阶段先调用 `Events.bind(runtime)`，demo 的 Spring 配置自动完成此步骤。无所属/默认实例时抛 IllegalStateException。默认绑定冲突时拒绝；重复绑定同一实例幂等。`Events.unbind(runtime)` 仅移除指定实例的默认绑定，不关闭它；内置 Runtime.close 会解除自身绑定。启动绑定需与关闭协调，且只绑定仍运行的实例。既有 `runtime.eventBus().publish(event)` 保留。事件继续使用配置的 RouteExecutor，顺序、上下文继承、接纳错误及关闭行为不变。详见 [选择及生命周期边界](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#static-event-publication)、[框架测试](src/test/java/cn/managame/runtime/event/EventsTest.java) 和 [demo](../game-demo/README.zh-CN.md#发布-runtime-事件)。

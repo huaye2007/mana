@@ -223,7 +223,7 @@ Event 自身提供目标 Domain 和 Key。事件是进程内消息，没有持�
 
 **RT-EVENT-01**：事件按精确类型匹配监听器，按 order 从小到大依次调用；相同 order 不保证顺序。
 
-**RT-EVENT-02**：事件进入自己的目标 Route；同 Route 发布可以内联。当前上下文属于同一 Runtime 且为 InvocationContext 时，事件继承业务身份与 Metadata，否则使用默认身份和空 Metadata。
+**RT-EVENT-02**：事件进入自己的目标 Route；同 Route 发布可以内联。当前上下文属于同一 Runtime 且为 InvocationContext 时，事件继承业务身份与 Metadata，否则使用默认身份和空 Metadata。一次发布的全部监听器都在这一个 Route 上运行，因此监听器只能读写该 Route 所有的状态（RT-ROUTE-05）；要触及其他 Domain 的状态，必须在监听器内部发起跨 Route 调用，不能直接访问。
 
 **RT-EVENT-03**：一个监听器抛出异常必须报告，但不得阻止同次发布中的后续监听器执行。
 
@@ -232,6 +232,16 @@ Event 自身提供目标 Domain 和 Key。事件是进程内消息，没有持�
 **RT-EVENT-05**：未显式指定 Runtime 的便捷发布，首先选择当前执行上下文的所属 Runtime；不存在所属上下文时，选择显式配置的进程默认 Runtime；两者皆无则报告配置错误。选中的所属 Runtime 拒绝发布时，包括已经关闭的情况，不得转发到默认 Runtime。选中的 Runtime 执行与普通事件发布一致的 Route 校验、接纳、身份传播、监听器顺序及错误处理，不引入独立的事件执行机制。
 
 每个进程仅有一个默认绑定。重复绑定同一 Runtime 幂等；已有绑定时绑定其他 Runtime 报告冲突，不得静默替换。解绑只移除指定实例，不关闭 Runtime，也不取消已接纳事件。参考实现会在 Runtime 关闭时解除自身绑定；生命周期所有者必须协调启动绑定与关闭。发布已选定 Runtime 后，即使绑定变化，也可能仍提交给该实例或观察到其关闭，不得向新绑定实例重试。这保证多 Runtime 共存时的隔离。例如当前执行属于 Runtime A，即使 B 为默认，仍向 A 发布；旧的已解绑 A 关闭不能移除 B 的绑定。API 名称、进程绑定实现及验证入口见 [Java 规范](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#static-event-publication)。
+
+<a id="event-listener-domain"></a>
+
+**RT-EVENT-06 — 监听器声明的 Domain。** 监听器可以声明自己所拥有状态的 Domain。该声明不引入路由，也不引入扇出：它只是把 RT-EVENT-02 已经要求的事情说出来，使违规被发现而不是被执行。声明的 Domain 必须是已注册的 Domain。
+
+由于一个事件只携带一个 Domain，同一事件类型的监听器若声明了不同的 Domain，就不可能同时运行在拥有各自状态的 Route 上，这属于构建期失败，而不是发布期失败。当各声明一致时，该类型的事件发布到任何其他 Domain，都在接纳前被拒绝，框架错误码与可观察效果与其他 Domain 不匹配完全相同：不创建上下文、不创建 Route 任务、没有监听器运行，发布方通过显式拒绝得知。校验按事件类型而非按监听器进行，因此每次发布只付出一次比较。
+
+不声明即维持既有行为：这样的监听器接受任何发布的 Domain。因此只要有一个监听器声明了 Domain，就约束了该事件类型的所有监听器——这正是目的，它们都在同一个 Route 上运行。
+
+例如订阅玩家事件的公会监听器现在会被抓住：它单独存在时，第一次以玩家 Domain 发布即被拒绝；与声明了自身 Domain 的玩家监听器并存时，则直接构建失败。正确写法是公会监听器留在玩家 Route 上，通过跨 Route 调用进入公会 Route，其回调会恢复事件自身的上下文。验证见 [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java)。
 
 发布方不得在任务可能尚未执行时随意修改事件对象。
 
@@ -348,7 +358,7 @@ Timer 的触发资格与 Cron 的业务执行资格属于不同层次，因此�
 | 名称 | 触发场景 |
 | --- | --- |
 | RUNTIME_CLOSED | Runtime 已关闭 |
-| ROUTE_DOMAIN_MISMATCH | Domain 未注册或与 Handler Domain 不一致 |
+| ROUTE_DOMAIN_MISMATCH | Domain 未注册，或与 Handler Domain、事件监听器声明的 Domain 不一致 |
 | INVALID_ROUTE_KEY | Key 为零 |
 | ROUTE_EXECUTOR_OVERLOADED | 目标执行器容量不足 |
 | ROUTE_EXECUTOR_CLOSED | 目标执行器已关闭 |
@@ -407,6 +417,7 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 | 契约 | 当前实现/测试 |
 | --- | --- |
 | 构建注册、Context、分发、事件、回调、Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
+| 监听器声明的 Domain、构建期冲突、发布期拒绝、跨 Route 桥接 | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
 | 客户端相关性、返回式与自行写出的响应、失败封装、构建规则 | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
 | Route 串行、容量与执行器关闭 | [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) |
 | 调度与生命周期实现 | [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java) |

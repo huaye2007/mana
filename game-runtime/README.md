@@ -83,6 +83,10 @@ SystemCron is an application-defined class. cancel stops future cycles; reschedu
 
 <a id="文档与验证"></a>
 
+## Event listener Domain
+
+Every listener of one publication runs on the event's single Route, so a listener may only touch the state that Route owns. `@EventMethod(domain = GUILD_ID)` declares which Domain a listener owns state in, which turns that rule from a convention into a check: listeners of one event type that declare different Domains fail at build, and an event whose `routeDomain()` differs from the declared one is rejected with ROUTE_DOMAIN_MISMATCH before admission — no context, no Route task, no listener runs. Declaring nothing keeps the previous behaviour, but one declaring listener constrains that event type for all of them. To touch another Domain's state, stay on the event's Route and use `runtime.call`; its callback restores the event context. See the [clause](../docs/ogbs/OGBS-Runtime-1.0.md#event-listener-domain) and [tests](src/test/java/cn/managame/runtime/event/EventDomainTest.java).
+
 ## Static event publication
 
 Business code can call `Events.publish(event)` using `cn.managame.runtime.event.Events`. Inside Runtime execution, it uses the current owning Runtime; outside, bootstrap must have called `Events.bind(runtime)`. The demo's Spring configuration does this automatically. No owner/default throws IllegalStateException. A conflicting default binding is rejected; binding the same instance is idempotent. `Events.unbind(runtime)` removes only that instance's default without closing it, and built-in Runtime.close removes its own binding. Coordinate bootstrap with shutdown and bind only live instances. Existing `runtime.eventBus().publish(event)` remains available. Events still use the configured RouteExecutor, with unchanged ordering, context inheritance, admission errors, and closure behavior. See [selection and lifecycle details](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#static-event-publication), [framework tests](src/test/java/cn/managame/runtime/event/EventsTest.java), and the [demo](../game-demo/README.md#publishing-a-runtime-event).
