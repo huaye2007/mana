@@ -14,7 +14,7 @@ OGBS Data 的 Java 25 参考实现：Single/Group 缓存、异步批量写回、
 
 Repository 缓存是一个内部小型 Map，从不淘汰有未保存变更的实体，因此加载无需合并待保存的写入；见[写回与淘汰](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#5-写回实现与适用边界)。
 
-内存由设置决定，而不是由业务代码写得多快决定：`maxPendingChanges`（100,000）限制等待保存的实体数——会新增实体的写入先等待 `pendingChangeWait`（5 秒）等某一轮腾出空间，之后以 DataOperationException 拒绝，而对已在等待的实体的写入永远合并；`maxCacheEntries`（每个 Repository 1,000,000）通过淘汰最久未读的干净条目限制缓存。吞吐取决于 JDBC URL：`rewriteBatchedStatements=true` 对 INSERT 批次约值 3.8 倍（[§6.2](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#62-批量吞吐与-jdbc-url)）。
+内存由设置决定，而不是由业务代码写得多快决定：`maxPendingChanges`（100,000）限制等待保存的实体数——会新增实体的写入先等待 `pendingChangeWait`（5 秒）等某一轮腾出空间，之后以 DataOperationException 拒绝，而对已在等待的实体的写入永远合并；`maxCacheEntries`（每个 Repository 1,000,000）通过淘汰最久未读的干净条目限制缓存。吞吐取决于 JDBC URL：`rewriteBatchedStatements=true` 对 500 行的 INSERT 批次约值 5 倍，批次更大时还更多（[§6.2](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md#62-批量吞吐与-jdbc-url)）。
 
 - [语义规范](../docs/ogbs/OGBS-Data-1.0.zh-CN.md)
 - [Java 开发规范、默认配置与边界](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)

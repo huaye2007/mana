@@ -16,7 +16,7 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
 | [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、HTTP/RPC 托管生命周期、对象 RPC 适配、初始化 Repository 注入、Runtime 停机排空 |
 | [game-demo](game-demo/README.zh-CN.md) | Spring 应用，装配 MySQL Data Repository、GamePacket TCP 分发、Runtime HTTP、定时/cron 及独立 TCP/HTTP/RPC 入口 |
-| game-benchmark | JMH 微基准（Metadata、RPC 编解码、Route 执行器），守护热点路径；不属于任何框架 artifact |
+| [game-benchmark](game-benchmark/README.zh-CN.md) | JMH 微基准（Metadata、RPC 编解码、Route 执行器）守护热点路径，另有可选的 game-data 保存路径压测驱动；不属于任何框架 artifact，且其中任何一项都不在构建中运行 |
 
 依赖方向：
 
@@ -67,6 +67,8 @@ mvn -Pquality -DskipTests verify    # 检查主源码的 Checkstyle 规则（con
 mvn -Perrorprone -DskipTests compile  # 可选：Error Prone 静态检查
 mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/target/benchmarks.jar
 ```
+
+同一个模块还放着可选的 game-data 保存路径压测驱动：它需要真实 MySQL 与一个可丢弃的库，构建从不运行它，命令行与选项见 [game-benchmark](game-benchmark/README.zh-CN.md#data-保存路径压测)。
 
 CI（`.github/workflows/ci.yml`）在 JDK 25 上运行 `mvn clean verify` 与质量检查。
 

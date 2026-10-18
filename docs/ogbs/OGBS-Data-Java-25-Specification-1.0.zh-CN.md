@@ -200,14 +200,19 @@ MysqlAccess 提供 queryOne（无行返回 null，多行抛 MysqlException）、
 
 | 设置 | INSERT | UPDATE | 原因 |
 | --- | --- | --- | --- |
-| `rewriteBatchedStatements=true` | 约 3.8 倍 | 约 1.7 倍 | 只有 INSERT 的行能合并成一条多行 `VALUES`；`UPDATE … WHERE id=?` 无法合成单条语句，每行仍是一次往返 |
-| batchSize 用 2000 而非 500 | 约快 1.6 倍 | 约慢到 0.65 倍 | 更大的 INSERT 语句摊薄往返成本；更大的 UPDATE 批次只是让一个事务开得更久，没有合并收益 |
+| `rewriteBatchedStatements=true` | batchSize 500 下约 4.4 倍，2000 下约 7 倍 | 500 下约 1.5 倍，2000 下约 1.1 倍 | 只有 INSERT 的行能合并成一条多行 `VALUES`，且合并后的语句随批次增大；`UPDATE … WHERE id=?` 无法合成单条语句，每行仍是一次往返 |
+| batchSize 用 2000 而非 500 | 约快 1.7 倍 | 约慢到 0.67 倍 | 更大的 INSERT 语句摊薄往返成本；更大的 UPDATE 批次只是让一个事务开得更久，没有合并收益 |
 
 在构建 DataSource 的 URL 上设置该参数
 （`jdbc:mysql://host:3306/game?rewriteBatchedStatements=true`），并按写入构成选择 batchSize，而不是默认它对两边
 都最优：500 适合以 UPDATE 为主的状态，以 INSERT 为主的存储更适合 2000。远程数据库的收益高于上述比值——这些比值
-在 loopback 上测得，那是往返成本的下限。每批次新开连接而不用连接池约损失四分之一速率，所以连接池值得有，但不是
-瓶颈。测量条件与绝对数值：[保存路径压测](../reviews/2026-10-18-data-save-path-load-test.zh-CN.md)。
+在 loopback 上测得，那是往返成本的下限。每批次新开连接而不用连接池，损失从百分之几到约一半不等：握手按批次付出，
+批次自身的工作越便宜，它的占比越重——被驱动合并成一条语句的 2000 行 INSERT 和小批次一样吃亏。连接池值得有，但不是
+瓶颈，而且正是它让这个开关值得设：上面两列倍率都是带池测得的，不带池时 2000 上的 INSERT 倍率掉到约 4~5 倍，
+UPDATE 的倍率则完全消失（两轮都在 0.9~1.0 倍之间）——只设开关而不用连接池的部署，在状态写入上一无所得。
+测量条件、绝对数值、不同次运行之间的离散，以及重跑这些测量的压测：
+[保存路径压测](../reviews/2026-10-18-data-save-path-load-test.zh-CN.md)，由
+[DataSavePathLoad](../../game-benchmark/src/main/java/cn/managame/benchmark/DataSavePathLoad.java) 运行。
 
 <a id="default-json-field-binding"></a>
 

@@ -3,15 +3,24 @@
   <parent><groupId>cn.managame</groupId><artifactId>mana3</artifactId><version>1.0.0-SNAPSHOT</version></parent>
   <artifactId>game-benchmark</artifactId>
   <!--
-    JMH micro-benchmarks guarding hot paths. Not part of any framework artifact.
+    Benchmarks guarding hot paths, plus the opt-in game-data save path load driver. Not part of any framework
+    artifact, and nothing here runs in the build.
     Build: mvn -pl game-benchmark -am package -DskipTests
-    Run:   java -jar game-benchmark/target/benchmarks.jar            (all)
+    Run:   java -jar game-benchmark/target/benchmarks.jar            (all JMH benchmarks)
            java -jar game-benchmark/target/benchmarks.jar RpcWire    (by name)
+           java -Xmx2g -cp game-benchmark/target/benchmarks.jar cn.managame.benchmark.DataSavePathLoad
+    The load driver needs a real MySQL, a disposable database and its own options; see README.md.
+    (XML comments cannot carry its option syntax, which is why the command above is cut short here.)
   -->
   <dependencies>
     <dependency><groupId>cn.managame</groupId><artifactId>game-core</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>game-rpc</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>game-runtime</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>cn.managame</groupId><artifactId>game-data</artifactId><version>${project.version}</version></dependency>
+    <!-- game-data keeps the driver at test scope, so the load driver declares its own, as an application does.
+         Versions follow game-demo, the other application-side module. -->
+    <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><version>9.7.0</version></dependency>
+    <dependency><groupId>com.zaxxer</groupId><artifactId>HikariCP</artifactId><version>5.1.0</version></dependency>
     <dependency><groupId>org.openjdk.jmh</groupId><artifactId>jmh-core</artifactId><version>${jmh.version}</version></dependency>
     <dependency><groupId>org.openjdk.jmh</groupId><artifactId>jmh-generator-annprocess</artifactId><version>${jmh.version}</version><scope>provided</scope></dependency>
   </dependencies>

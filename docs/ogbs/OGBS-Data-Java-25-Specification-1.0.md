@@ -220,16 +220,23 @@ plain reaches a fraction of the rate the same code reaches with the flag on.
 
 | Setting | INSERT | UPDATE | Why |
 | --- | --- | --- | --- |
-| `rewriteBatchedStatements=true` | ≈3.8× | ≈1.7× | Only INSERT rows merge into one multi-row `VALUES`; `UPDATE … WHERE id=?` rows cannot become one statement and keep a round trip each |
-| batchSize 2000 instead of 500 | ≈1.6× faster | ≈0.65× slower | Larger INSERT statements amortise the round trip; larger UPDATE batches only hold one transaction open longer |
+| `rewriteBatchedStatements=true` | ≈4.4× at batchSize 500, ≈7× at 2000 | ≈1.5× at 500, ≈1.1× at 2000 | Only INSERT rows merge into one multi-row `VALUES`, and the merged statement grows with the batch; `UPDATE … WHERE id=?` rows cannot become one statement and keep a round trip each |
+| batchSize 2000 instead of 500 | ≈1.7× faster | ≈0.67× slower | Larger INSERT statements amortise the round trip; larger UPDATE batches only hold one transaction open longer |
 
 Set the flag on the URL the DataSource is built from
 (`jdbc:mysql://host:3306/game?rewriteBatchedStatements=true`) and pick batchSize from the write mix rather
 than assuming the default is best for both: 500 suits UPDATE-dominated state, an INSERT-dominated store
 prefers 2000. A remote database gains more than these ratios, which were measured over loopback, the
-smallest round trip there is. Opening a connection per batch instead of pooling costs about a quarter of the
-rate, so a pool is worth having but is not the limit. Conditions and absolute figures:
-[save-path load test](../reviews/2026-10-18-data-save-path-load-test.md).
+smallest round trip there is. Opening a connection per batch instead of pooling costs between a few percent
+and about half the rate: the handshake is paid per batch and weighs most when the batch's own work is cheap,
+which is as true of a 2000-row INSERT the driver merged into one statement as of a small one. A pool is
+worth having, and it is what makes the flag worth setting: both multiplier columns were measured pooled, and
+without a pool the INSERT figure at 2000 falls to about 4–5× while the UPDATE ones disappear altogether
+(×0.9 to ×1.0 in both runs), so a deployment that sets the flag without pooling gains nothing on state writes.
+Conditions, absolute figures and the spread between runs, and the harness
+that re-measures them:
+[save-path load test](../reviews/2026-10-18-data-save-path-load-test.md), run with
+[DataSavePathLoad](../../game-benchmark/src/main/java/cn/managame/benchmark/DataSavePathLoad.java).
 
 <a id="default-json-field-binding"></a>
 

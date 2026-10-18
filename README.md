@@ -16,7 +16,7 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
 | [game-spring](game-spring/README.md) | Optional plain Spring: annotation discovery, managed HTTP/RPC lifecycle, typed RPC adaptation, initialized Repository injection, Runtime shutdown drain |
 | [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories, GamePacket TCP dispatch, Runtime HTTP, timer/cron and standalone TCP/HTTP/RPC entries |
-| game-benchmark | JMH micro-benchmarks (Metadata, RPC codec, Route executors) guarding hot paths; not part of any framework artifact |
+| [game-benchmark](game-benchmark/README.md) | JMH micro-benchmarks (Metadata, RPC codec, Route executors) guarding hot paths, plus the opt-in game-data save path load driver; not part of any framework artifact, and nothing in it runs during the build |
 
 Dependency direction:
 
@@ -71,6 +71,8 @@ mvn -Pquality -DskipTests verify    # Checkstyle rules on main sources (config/c
 mvn -Perrorprone -DskipTests compile  # optional: Error Prone static analysis
 mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/target/benchmarks.jar
 ```
+
+The same module holds the opt-in game-data save path load driver, which needs a real MySQL and a disposable database and is never run by the build; its command line and options are in [game-benchmark](game-benchmark/README.md#data-保存路径压测).
 
 CI (`.github/workflows/ci.yml`) runs `mvn clean verify` and the quality checks on JDK 25.
 
