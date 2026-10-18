@@ -16,52 +16,52 @@ import java.time.Duration;
 import java.util.function.Supplier;
 
 /**
- * Route execution facade. Dispatch has three primary client entries (explicit Key, configured context
- * factory or message extraction, and extraction with explicit identity) plus the explicit-context and RPC
- * entries; the remaining overloads are shorthands with empty identity, Metadata or correlation. Only the
- * factory entry and an explicitly supplied {@link cn.managame.runtime.context.ClientHandlerContext} carry
- * the correlation a response needs; the explicit-Key and explicit-identity shorthands expect none. Every
- * rejection throws {@link cn.managame.runtime.error.RuntimeDispatchException} carrying a framework error code.
+ * Route execution facade. Work enters as an explicitly built context, through the client ingress, or
+ * through the RPC ingress. The client ingress has two forms, and they differ in who chooses the Route:
+ * the caller, by supplying the Key and identity it already holds, or a configured factory, which Runtime
+ * hands the Handler's Domain. Neither is a shorthand for the other. No entry takes a Route Key and a
+ * business identity in shapes that read alike, so no call site needs a comment to say which number is
+ * which. Every rejection throws {@link cn.managame.runtime.error.RuntimeDispatchException} carrying a
+ * framework error code.
  */
 public interface GameRuntime extends AutoCloseable {
+    /**
+     * Routing, identity and any transport capability are whatever the caller put in the context. This is
+     * the entry for a caller that decides the Route itself: {@link cn.managame.runtime.context.DefaultClientHandlerContext}
+     * names each value it takes, where an overload taking a Connection and two numbers could not.
+     */
     void dispatch(HandlerContext context);
 
-    /** Uses the caller's Key and explicit business identity; Domain comes from the Handler annotation. */
-    void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message);
+    /**
+     * The client ingress for an integration that already knows the Route and the authenticated identity
+     * but should not have to know the Domain: Runtime resolves that from the message's registered Handler,
+     * because it is business configuration and not something a packet decoder should carry. Bypasses any
+     * configured HandlerContextFactory, and expects no response — a request that can be answered arrives
+     * through the correlation entry below or as an explicitly built context.
+     */
+    void dispatch(Connection connection, long routeKey, int businessIdType, long businessId,
+                  Metadata metadata, Object message);
 
     /**
-     * The client ingress entry. Uses the configured HandlerContextFactory, or message Key extraction when no
+     * The client ingress. Uses the configured HandlerContextFactory, or message Key extraction when no
      * factory is configured. {@code requestId} is the integration's correlation: zero expects no response,
      * nonzero expects one, which the Handler either returns — Runtime frames and writes it — or sends itself
      * through the context's connection.
      */
     void dispatch(Connection connection, int command, int requestId, Metadata metadata, Object message);
 
-    /** Factory or extraction entry for a request that expects no response. */
+    /** The same ingress for a request that expects no response. */
     default void dispatch(Connection connection, Metadata metadata, Object message) {
         dispatch(connection, 0, 0, metadata, message);
     }
 
-    /** Uses explicit business identity and extracts Key from the registered message rule; bypasses the factory. */
-    void dispatch(Connection connection, int businessIdType, long businessId, Object message);
-
-    void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
-                     int businessIdType, long businessId, Metadata metadata, Object message);
-
-    /** Uses the caller's Key and resolves the Handler's Domain; default identity and empty Metadata. */
-    default void dispatch(Connection connection, long routeKey, Object message) {
-        dispatch(connection, routeKey, 0, 0L, Metadata.empty(), message);
-    }
-
-    /** Uses the caller's Key and explicit business identity with empty Metadata. */
-    default void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message) {
-        dispatch(connection, routeKey, businessIdType, businessId, Metadata.empty(), message);
-    }
-
-    /** Factory or extraction entry with empty Metadata and no response correlation. */
+    /** The same ingress with empty Metadata and no correlation. */
     default void dispatch(Connection connection, Object message) {
         dispatch(connection, 0, 0, Metadata.empty(), message);
     }
+
+    void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
+                     int businessIdType, long businessId, Metadata metadata, Object message);
 
     <T> void call(int routeDomain, long routeKey, Supplier<T> action, RouteCallback<T> callback);
 

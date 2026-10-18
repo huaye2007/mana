@@ -239,18 +239,13 @@ final class DefaultGameRuntime implements GameRuntime {
         dispatch(context);
     }
 
-    @Override public void dispatch(Connection connection, int businessIdType, long businessId, Object message) {
-        requireAdmission();
-        HandlerBinding handler = handlerFor(message);
-        dispatch(new DefaultClientHandlerContext(handler.domain(), extractKey(message), businessIdType, businessId,
-                Metadata.empty(), message, connection));
-    }
-
     @Override public void dispatch(Connection connection, long routeKey, int businessIdType, long businessId,
                                    Metadata metadata, Object message) {
+        Objects.requireNonNull(metadata);
         requireAdmission();
         HandlerBinding handler = handlerFor(message);
-        dispatch(new DefaultClientHandlerContext(handler.domain(), routeKey, businessIdType, businessId, metadata, message, connection));
+        dispatch(new DefaultClientHandlerContext(handler.domain(), routeKey, businessIdType, businessId,
+                metadata, message, connection));
     }
 
     @Override public void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,

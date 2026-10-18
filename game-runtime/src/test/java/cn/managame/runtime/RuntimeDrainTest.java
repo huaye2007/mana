@@ -1,6 +1,7 @@
 package cn.managame.runtime;
 
 import cn.managame.core.*;
+import cn.managame.network.connection.Connection;
 import cn.managame.runtime.context.*;
 import cn.managame.runtime.error.*;
 import cn.managame.runtime.executor.*;
@@ -31,6 +32,11 @@ class RuntimeDrainTest {
         }
         void next() { Objects.requireNonNull(tasks.poll()).run(); }
     }
+    /** Every Request in this class belongs to Domain 1; the Route Key is what each call varies. */
+    private static void dispatch(GameRuntime runtime, Connection connection, long routeKey, Object message) {
+        runtime.dispatch(new DefaultClientHandlerContext(1, routeKey, message, connection));
+    }
+
     GameRuntime runtime(RouteExecutor executor, List<RuntimeError> errors) {
         return GameRuntimeBuilder.builder().routeDomains(List.of(RouteDomain.of(1, "role")))
                 .routeExecutors(List.of(RouteExecutorBinding.of(executor, 1)))
@@ -41,16 +47,16 @@ class RuntimeDrainTest {
     @Test void stopsExternalAdmissionButDrainsQueuedWorkAndItsNestedDispatch() throws Exception {
         var queue = new QueueExecutor(); var observed = new ArrayList<Long>();
         try (var runtime = runtime(queue, new ArrayList<>())) {
-            runtime.dispatch(null, 7L, new Request(() -> {
+            dispatch(runtime, null, 7L, new Request(() -> {
                 assertThrows(IllegalStateException.class, () -> runtime.awaitTermination(Duration.ZERO));
                 observed.add(Contexts.current().routeKey());
-                runtime.dispatch(null, 8L, new Request(() -> observed.add(Contexts.current().routeKey())));
-                runtime.dispatch(null, 7L, new Request(() -> observed.add(Contexts.current().routeKey())));
+                dispatch(runtime, null, 8L, new Request(() -> observed.add(Contexts.current().routeKey())));
+                dispatch(runtime, null, 7L, new Request(() -> observed.add(Contexts.current().routeKey())));
             }));
             runtime.shutdown(); runtime.shutdown();
             assertFalse(runtime.awaitTermination(Duration.ZERO));
             assertEquals(RUNTIME_CLOSED, assertThrows(RuntimeDispatchException.class,
-                    () -> runtime.dispatch(null, 9L, new Request(() -> fail("rejected")))).errorCode());
+                    () -> dispatch(runtime, null, 9L, new Request(() -> fail("rejected")))).errorCode());
             queue.next(); assertFalse(runtime.awaitTermination(Duration.ZERO)); queue.next();
             assertTrue(runtime.awaitTermination(Duration.ofSeconds(1)));
             assertEquals(List.of(7L, 7L, 8L), observed);
@@ -87,9 +93,9 @@ class RuntimeDrainTest {
         try (var runtime = runtime(queue, errors)) {
             queue.status = RouteExecuteStatus.OVERLOADED;
             assertEquals(ROUTE_EXECUTOR_OVERLOADED, assertThrows(RuntimeDispatchException.class,
-                    () -> runtime.dispatch(null, 7L, new Request(() -> fail("rejected")))).errorCode());
+                    () -> dispatch(runtime, null, 7L, new Request(() -> fail("rejected")))).errorCode());
             queue.status = RouteExecuteStatus.ACCEPTED;
-            runtime.dispatch(null, 7L, new Request(() -> { throw new IllegalStateException("business"); }));
+            dispatch(runtime, null, 7L, new Request(() -> { throw new IllegalStateException("business"); }));
             runtime.shutdown(); queue.next(); assertTrue(runtime.awaitTermination(Duration.ofSeconds(1)));
             assertEquals(1, errors.size()); assertEquals(1, runtime.stats().rejected());
             assertEquals(1, runtime.stats().errors()); assertEquals(0, runtime.stats().inFlight());
@@ -100,10 +106,10 @@ class RuntimeDrainTest {
         var queue = new QueueExecutor();
         try (var runtime = runtime(queue, new ArrayList<>()); var threads = Executors.newVirtualThreadPerTaskExecutor()) {
             var start = new CountDownLatch(1); var accepted = new AtomicInteger(); var executed = new AtomicInteger();
-            runtime.dispatch(null, 7L, new Request(executed::incrementAndGet)); accepted.incrementAndGet();
+            dispatch(runtime, null, 7L, new Request(executed::incrementAndGet)); accepted.incrementAndGet();
             var futures = new ArrayList<Future<?>>();
             for (int i = 0; i < 32; i++) futures.add(threads.submit(() -> {
-                try { start.await(); runtime.dispatch(null, 7L, new Request(executed::incrementAndGet)); accepted.incrementAndGet(); }
+                try { start.await(); dispatch(runtime, null, 7L, new Request(executed::incrementAndGet)); accepted.incrementAndGet(); }
                 catch (RuntimeDispatchException rejection) { assertEquals(RUNTIME_CLOSED, rejection.errorCode()); }
                 catch (InterruptedException error) { throw new AssertionError(error); }
             }));
@@ -119,7 +125,7 @@ class RuntimeDrainTest {
         var queue = new QueueExecutor(); var bound = new AtomicReference<RouteCallback<Integer>>();
         var errors = new ArrayList<RuntimeError>();
         try (var runtime = runtime(queue, errors)) {
-            runtime.dispatch(null, 7L, new Request(() -> bound.set(runtime.callback(new RouteCallback<>() {
+            dispatch(runtime, null, 7L, new Request(() -> bound.set(runtime.callback(new RouteCallback<>() {
                 public void onSuccess(Integer value) { fail("Rejected return ran"); }
                 public void onFail(int error) { fail("Rejected return ran"); }
             }))));
@@ -136,9 +142,9 @@ class RuntimeDrainTest {
         var scheduling = new AtomicInteger();
         try (var runtime = runtime(queue, errors)) {
             TimerRef pending = runtime.timer().schedule(1, 7L, Duration.ofMillis(20), () -> fired.set(true));
-            runtime.dispatch(null, 7L, new Request(() -> {
+            dispatch(runtime, null, 7L, new Request(() -> {
                 // Work a draining task starts itself is still admitted, inline on its own Route.
-                runtime.dispatch(null, 7L, new Request(() -> nested.set(true)));
+                dispatch(runtime, null, 7L, new Request(() -> nested.set(true)));
                 // Deferred work is not: a drain has to be finite, and a timer is by definition later.
                 scheduling.set(assertThrows(RuntimeDispatchException.class,
                         () -> runtime.timer().schedule(1, 7L, Duration.ZERO, () -> fail("scheduled while draining")))
@@ -165,7 +171,7 @@ class RuntimeDrainTest {
         var queue = new QueueExecutor();
         var captured = new ArrayList<CapturedRouteCallback<String>>();
         try (var runtime = runtime(queue, new ArrayList<>())) {
-            runtime.dispatch(null, 7L, new Request(() -> {
+            dispatch(runtime, null, 7L, new Request(() -> {
                 for (int i = 0; i < 2; i++) captured.add(runtime.callback(new RouteCallback<String>() {
                     public void onSuccess(String result) {}
                     public void onFail(int errorCode) {}

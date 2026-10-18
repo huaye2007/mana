@@ -1,5 +1,6 @@
 package cn.managame.demo;
 
+import cn.managame.core.Metadata;
 import cn.managame.demo.bus.role.RoleHandler;
 import cn.managame.demo.common.runtime.GameDomain;
 import cn.managame.demo.common.runtime.GameRuntimeConfig;
@@ -36,7 +37,7 @@ class DemoIdentityTest {
             spring.register(GameRuntimeConfig.class); spring.refresh();
             var runtime = spring.getBean(GameRuntime.class);
             var request = new PingMessage(1234);
-            runtime.dispatch(null, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, request);
+            runtime.dispatch(null, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, Metadata.empty(), request);
             var received = probe.received.poll(5, TimeUnit.SECONDS);
             assertNotNull(received); assertEquals(10001L, received.roleId());
             assertSame(request, received.request()); assertEquals(1, received.context().routeDomain());

@@ -150,7 +150,7 @@ class RuntimeHttpTest {
         var executor = new QueueExecutor(); var responses = new ArrayList<Result>();
         try (var runtime = rawBuilder(executor).protocols(ProtocolRegistry.of(ProtocolDescriptor.request(1, Trigger.class)))
                 .handlers(List.of(new Owner())).httpHandlers(List.of(new BoundInputs())).build()) {
-            runtime.dispatch(null, 7L, new Trigger(() -> responses.add(dispatchBody(runtime, "POST", "/string", "{\"id\":99}"))));
+            runtime.dispatch(new DefaultHandlerContext(1, 7L, new Trigger(() -> responses.add(dispatchBody(runtime, "POST", "/string", "{\"id\":99}")))));
             runtime.shutdown();
             assertEquals(503, dispatchBody(runtime, "POST", "/string", "{\"id\":99}").status);
             executor.next(); assertFalse(runtime.awaitTermination(Duration.ZERO));

@@ -1,6 +1,7 @@
 package cn.managame.runtime;
 
 import cn.managame.core.FrameworkErrorCodes;
+import cn.managame.network.connection.Connection;
 import cn.managame.core.Metadata;
 import cn.managame.runtime.context.*;
 import cn.managame.runtime.error.RuntimeDispatchException;
@@ -17,6 +18,21 @@ import static org.junit.jupiter.api.Assertions.*;
 class HandlerArgumentTest {
     record RoleId(long value) {}
     record Identity(int type, long value) {}
+    /** The method overrides the class Domain to 2, which is what these dispatches must name. */
+    private static void dispatch(GameRuntime runtime, Connection connection, long routeKey,
+                                 int businessIdType, long businessId, Object message) {
+        runtime.dispatch(new DefaultClientHandlerContext(2, routeKey, businessIdType, businessId,
+                Metadata.empty(), message, connection));
+    }
+    private static void dispatch(GameRuntime runtime, Connection connection, long routeKey, Object message) {
+        dispatch(runtime, connection, routeKey, 0, 0L, message);
+    }
+    /** The Key the deleted extraction entry would have read off the message. */
+    private static void extracted(GameRuntime runtime, Connection connection,
+                                  int businessIdType, long businessId, Object message) {
+        dispatch(runtime, connection, runtime.routeKeys().getRouteKey(message), businessIdType, businessId, message);
+    }
+
     @Handler(domain = 1)
     static class BusinessHandler {
         final List<List<Object>> received = new ArrayList<>();
@@ -53,8 +69,8 @@ class HandlerArgumentTest {
                 }))).build()) {
             var connection = HandlerDispatchTest.connection();
             var request = new HandlerDispatchTest.FieldRequest(42);
-            runtime.dispatch(connection, 99L, 7, Long.MIN_VALUE, request);
-            runtime.dispatch(connection, 7, 10001L, request);
+            dispatch(runtime, connection, 99L, 7, Long.MIN_VALUE, request);
+            extracted(runtime, connection, 7, 10001L, request);
             var context = new DefaultClientHandlerContext(2, 88, 7, 0L, Metadata.empty(), request, connection);
             runtime.dispatch(context);
             assertEquals(List.of("2/99", "2/42", "2/88"), routes);
@@ -83,32 +99,32 @@ class HandlerArgumentTest {
         var request = new HandlerDispatchTest.FieldRequest(42);
         try (var runtime = HandlerDispatchTest.builder(new BusinessHandler(), executor, errors)
                 .handlerArguments(List.of(roles(calls), identity)).build()) {
-            assertThrows(IllegalArgumentException.class, () -> runtime.dispatch(null, 99L, request));
+            assertThrows(IllegalArgumentException.class, () -> dispatch(runtime, null, 99L, request));
             assertEquals(1, calls.get());
             assertEquals(FrameworkErrorCodes.INVALID_ROUTE_KEY,
-                    assertThrows(RuntimeDispatchException.class, () -> runtime.dispatch(null, 0L, 7, 1L, request)).errorCode());
-            assertThrows(IllegalArgumentException.class, () -> runtime.dispatch(null, 99L, 256, 1L, request));
+                    assertThrows(RuntimeDispatchException.class, () -> dispatch(runtime, null, 0L, 7, 1L, request)).errorCode());
+            assertThrows(IllegalArgumentException.class, () -> dispatch(runtime, null, 99L, 256, 1L, request));
             assertEquals(1, calls.get());
         }
         var failure = new IllegalStateException("resolver failed");
         try (var runtime = HandlerDispatchTest.builder(new BusinessHandler(), executor, errors)
                 .handlerArguments(List.of(HandlerArgumentBinding.of(RoleId.class, c -> { throw failure; }), identity)).build()) {
-            assertSame(failure, assertThrows(IllegalStateException.class, () -> runtime.dispatch(null, 99L, 7, 1L, request)));
+            assertSame(failure, assertThrows(IllegalStateException.class, () -> dispatch(runtime, null, 99L, 7, 1L, request)));
         }
         try (var runtime = HandlerDispatchTest.builder(new BusinessHandler(), executor, errors)
                 .handlerArguments(List.of(HandlerArgumentBinding.of(RoleId.class, c -> null), identity)).build()) {
-            assertThrows(NullPointerException.class, () -> runtime.dispatch(null, 99L, 7, 1L, request));
+            assertThrows(NullPointerException.class, () -> dispatch(runtime, null, 99L, 7, 1L, request));
         }
         assertEquals(0, submissions.get()); assertTrue(errors.isEmpty());
         try (var runtime = HandlerDispatchTest.builder(new BusinessHandler(), executor, errors)
                 .handlerArguments(List.of(wrongType(), identity)).build()) {
-            assertThrows(ClassCastException.class, () -> runtime.dispatch(null, 99L, 7, 1L, request));
+            assertThrows(ClassCastException.class, () -> dispatch(runtime, null, 99L, 7, 1L, request));
             assertEquals(0, submissions.get()); assertTrue(errors.isEmpty());
         }
         try (var runtime = HandlerDispatchTest.builder(new BusinessHandler(), (d, k, t) -> RouteExecuteStatus.OVERLOADED, errors)
                 .handlerArguments(List.of(roles(calls), identity)).build()) {
             assertEquals(FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED,
-                    assertThrows(RuntimeDispatchException.class, () -> runtime.dispatch(null, 99L, 7, 1L, request)).errorCode());
+                    assertThrows(RuntimeDispatchException.class, () -> dispatch(runtime, null, 99L, 7, 1L, request)).errorCode());
             assertEquals(2, calls.get());
         }
     }

@@ -11,13 +11,10 @@ Maven `cn.managame:game-runtime:1.0.0-SNAPSHOT`，Java 25。依赖 game-core、g
 ```java
 public interface GameRuntime extends AutoCloseable {
     void dispatch(HandlerContext context);
-    void dispatch(Connection connection, long routeKey, Object message);
-    default void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
     void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message);
     default void dispatch(Connection connection, Object message);
     default void dispatch(Connection connection, Metadata metadata, Object message);
     void dispatch(Connection connection, int command, int requestId, Metadata metadata, Object message);
-    void dispatch(Connection connection, int businessIdType, long businessId, Object message);
     void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
                      int businessIdType, long businessId, Metadata metadata, Object message);
     <T> void call(int routeDomain, long routeKey, Supplier<T> action, RouteCallback<T> callback);
@@ -46,7 +43,7 @@ public interface ClientResultCodec {
 }
 ```
 
-构建成功即可使用；没有 start、动态注册或任意 Runnable 派发。业务常用入口是 `dispatch(connection, routeKey, businessIdType, businessId, message)`，Domain 来自 Handler 注解（§6.2）。配置 `handlerContextFactory` 后，`dispatch(connection, command, requestId, metadata, message)` 按 Domain 选择 Key 与身份（§6.4），并携带响应所需的相关性（§6.5）；更短的 `dispatch(connection, …)` 重载是默认方法，传入相关性 0。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入（§13）。
+构建成功即可使用；没有 start、动态注册或任意 Runnable 派发。业务常用入口是 `dispatch(connection, routeKey, businessIdType, businessId, metadata, message)`，Domain 来自 Handler 注解（§6.2），因此解包层无需携带它。配置 `handlerContextFactory` 后，`dispatch(connection, command, requestId, metadata, message)` 按 Domain 选择 Key 与身份（§6.4），并携带响应所需的相关性（§6.5）；它的两个更短形式是默认方法，传入相关性 0；未配置工厂时从消息提取 Key。HTTP 通过 `asyncHandler(runtime.http()::dispatch)` 接入（§13）。
 
 | 包 | 内容 |
 | --- | --- |
@@ -191,14 +188,14 @@ Handler 对象标注 `@Handler(domain = …)`（可继承）。方法上非零�
 
 ### 6.2 指定 Key 派发与消息提取
 
-`dispatch(connection, routeKey, businessIdType, businessId, message)` 使用 Handler 注解的 Domain 和传入的非零 Key，不读取消息内容，构造带空 Metadata 的 DefaultClientHandlerContext；`dispatch(connection, routeKey, message)` 使用身份 0/0。businessIdType 超出 0..255 抛 IllegalArgumentException。
+`dispatch(connection, routeKey, businessIdType, businessId, metadata, message)` 使用 Handler 注解的 Domain 和传入的非零 Key，不读取消息内容，构造 DefaultClientHandlerContext。businessIdType 超出 0..255 抛 IllegalArgumentException。它没有三参或四参的简写形式：`dispatch(connection, 99L, message)` 与 `dispatch(connection, 1, 10001L, message)` 会让 Route Key 与业务身份长成同一个样子，读者无从分辨，因此只保留长形式，身份 0/0 也要写出来。嫌长的调用方通常更适合直接构造上下文——那里每个值都有名字。
 
-对于路由信息在消息内的少数消息，`dispatch(connection, businessIdType, businessId, message)`（未配置上下文工厂时也可用 `dispatch(connection, message)`）使用精确类的 Key 绑定：来自 `routeKeys(...)`，或来自 `@Handler`/`@HandlerMethod` 的 `routeKey = "字段"` / `routeKeyMethod = "方法"`。方法级规则整体替换类级规则；同时给出两个名称、名称为空白、或注解规则与 Builder 绑定指向同一消息时构建失败。无绑定或 Key 为 0 → INVALID_ROUTE_KEY（3005）；无 Handler → HANDLER_NOT_FOUND（3002）；已关闭 → RUNTIME_CLOSED（3001）。提取器异常在准入前于提交线程抛出。这些重载从不继承外层上下文的身份或 Metadata。
+对于路由信息在消息内的少数消息，未配置上下文工厂时的 `dispatch(connection, message)` 使用精确类的 Key 绑定：来自 `routeKeys(...)`，或来自 `@Handler`/`@HandlerMethod` 的 `routeKey = "字段"` / `routeKeyMethod = "方法"`。方法级规则整体替换类级规则；同时给出两个名称、名称为空白、或注解规则与 Builder 绑定指向同一消息时构建失败。无绑定或 Key 为 0 → INVALID_ROUTE_KEY（3005）；无 Handler → HANDLER_NOT_FOUND（3002）；已关闭 → RUNTIME_CLOSED（3001）。提取器异常在准入前于提交线程抛出。这些入口从不继承外层上下文的身份或 Metadata。
 
 `ofField`/`ofMethod` 在构建时编译一次：字段可为 private 或继承（就近优先）；方法为 public、非 static、无参数；值须为 byte/short/int/long 或其包装类型。包装值为 null 抛 NullPointerException；getter 抛出的受检异常包装为 IllegalStateException。测试：[HandlerDispatchTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerDispatchTest.java)。
 
 ```java
-runtime.dispatch(connection, 99L, loginReq);         // 调用方已选好 Key，不读取 loginReq
+runtime.dispatch(connection, 99L, ROLE_TYPE, roleId, Metadata.empty(), loginReq);   // Key 与身份都由调用方选定
 // 配置 @HandlerMethod(routeKey = "userId") 且无上下文工厂时：
 runtime.dispatch(connection, loginReq);
 ```

@@ -125,10 +125,10 @@ class TransportContextTest {
                 .eventHandlers(List.of(new Events())).build()) {
             var request = new RpcMessage(() -> {
                 var source = Contexts.current(RpcHandlerContext.class);
-                runtime.dispatch(null, 99L, new TcpMessage(() -> {
+                runtime.dispatch(new DefaultClientHandlerContext(1, 99L, new TcpMessage(() -> {
                     assertNull(Contexts.current(ClientHandlerContext.class).connection());
                     assertEquals(0, Contexts.current(ClientHandlerContext.class).businessId());
-                }));
+                }), null));
                 assertSame(source, Contexts.current());
                 runtime.eventBus().publish(new Notice(1, 99)); assertSame(source, Contexts.current());
                 runtime.call(2, 88, () -> { observed.add(Contexts.current(RouteCallContext.class)); return 42; },

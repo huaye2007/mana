@@ -13,13 +13,10 @@ Maven `cn.managame:game-runtime:1.0.0-SNAPSHOT`, Java 25. Depends on game-core, 
 ```java
 public interface GameRuntime extends AutoCloseable {
     void dispatch(HandlerContext context);
-    void dispatch(Connection connection, long routeKey, Object message);
-    default void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Object message);
     void dispatch(Connection connection, long routeKey, int businessIdType, long businessId, Metadata metadata, Object message);
     default void dispatch(Connection connection, Object message);
     default void dispatch(Connection connection, Metadata metadata, Object message);
     void dispatch(Connection connection, int command, int requestId, Metadata metadata, Object message);
-    void dispatch(Connection connection, int businessIdType, long businessId, Object message);
     void dispatchRpc(int sourceNodeId, int sourceSlotId, int command, int requestId, long routeKey,
                      int businessIdType, long businessId, Metadata metadata, Object message);
     <T> void call(int routeDomain, long routeKey, Supplier<T> action, RouteCallback<T> callback);
@@ -48,7 +45,7 @@ public interface ClientResultCodec {
 }
 ```
 
-A built Runtime is usable at once; there is no start, dynamic registration or arbitrary Runnable dispatch. The usual business entry is `dispatch(connection, routeKey, businessIdType, businessId, message)`; Domain comes from the Handler annotation (§6.2). With a `handlerContextFactory`, `dispatch(connection, command, requestId, metadata, message)` selects Key and identity per Domain (§6.4) and carries the correlation a response needs (§6.5); the shorter `dispatch(connection, …)` overloads are defaults that pass correlation 0. HTTP connects through `asyncHandler(runtime.http()::dispatch)` (§13).
+A built Runtime is usable at once; there is no start, dynamic registration or arbitrary Runnable dispatch. The usual business entry is `dispatch(connection, routeKey, businessIdType, businessId, metadata, message)`; Domain comes from the Handler annotation (§6.2), so a packet decoder never carries it. With a `handlerContextFactory`, `dispatch(connection, command, requestId, metadata, message)` selects Key and identity per Domain (§6.4) and carries the correlation a response needs (§6.5); its two shorter forms are defaults that pass correlation 0 and, with no factory, extract the Key from the message. HTTP connects through `asyncHandler(runtime.http()::dispatch)` (§13).
 
 | Package | Contents |
 | --- | --- |
@@ -208,14 +205,14 @@ Precondition and admission failures throw RuntimeDispatchException with a Core c
 
 ### 6.2 Supplied-Key dispatch and message extraction
 
-`dispatch(connection, routeKey, businessIdType, businessId, message)` uses the Handler's annotation Domain and the supplied nonzero Key without reading the message, and builds a DefaultClientHandlerContext with empty Metadata; `dispatch(connection, routeKey, message)` uses identity 0/0. businessIdType outside 0..255 throws IllegalArgumentException.
+`dispatch(connection, routeKey, businessIdType, businessId, metadata, message)` uses the Handler's annotation Domain and the supplied nonzero Key without reading the message, and builds a DefaultClientHandlerContext. businessIdType outside 0..255 throws IllegalArgumentException. There is no three- or four-argument abbreviation of it: `dispatch(connection, 99L, message)` and `dispatch(connection, 1, 10001L, message)` would be a Route Key and a business identity in the same shape, which no reader can tell apart, so the long form is the only one and identity 0/0 is written out. A caller that finds it long is usually better served by building the context, which names every value.
 
-For messages whose route lives in the message, `dispatch(connection, businessIdType, businessId, message)` (or `dispatch(connection, message)` without a context factory) uses the exact-class Key binding — from `routeKeys(...)` or from `@Handler`/`@HandlerMethod` `routeKey = "field"` / `routeKeyMethod = "method"`. A method-level rule replaces the class rule; giving both names, a blank name, or an annotation rule plus a builder binding for the same message fails build. Missing binding or Key 0 → INVALID_ROUTE_KEY (3005); no Handler → HANDLER_NOT_FOUND (3002); closed → RUNTIME_CLOSED (3001). Extractor exceptions propagate on the submitting thread before admission. These overloads never inherit identity or Metadata from an outer context.
+For messages whose route lives in the message, `dispatch(connection, message)` without a context factory uses the exact-class Key binding — from `routeKeys(...)` or from `@Handler`/`@HandlerMethod` `routeKey = "field"` / `routeKeyMethod = "method"`. A method-level rule replaces the class rule; giving both names, a blank name, or an annotation rule plus a builder binding for the same message fails build. Missing binding or Key 0 → INVALID_ROUTE_KEY (3005); no Handler → HANDLER_NOT_FOUND (3002); closed → RUNTIME_CLOSED (3001). Extractor exceptions propagate on the submitting thread before admission. These entries never inherit identity or Metadata from an outer context.
 
 `ofField`/`ofMethod` compile once at build: fields may be private or inherited (nearest wins); methods are public, non-static and argument-free; values must be byte/short/int/long or their wrappers. A null boxed value throws NullPointerException; a checked exception from the getter becomes IllegalStateException. Tests: [HandlerDispatchTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerDispatchTest.java).
 
 ```java
-runtime.dispatch(connection, 99L, loginReq);         // caller chose the Key; loginReq is not read
+runtime.dispatch(connection, 99L, ROLE_TYPE, roleId, Metadata.empty(), loginReq);   // caller chose both
 // with @HandlerMethod(routeKey = "userId") and no context factory:
 runtime.dispatch(connection, loginReq);
 ```

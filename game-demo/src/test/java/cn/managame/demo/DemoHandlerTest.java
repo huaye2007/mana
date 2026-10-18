@@ -1,5 +1,6 @@
 package cn.managame.demo;
 
+import cn.managame.core.Metadata;
 import cn.managame.demo.bus.user.LoginReq;
 import cn.managame.demo.bus.user.LoginRes;
 import cn.managame.demo.bus.user.UserHandler;
@@ -44,7 +45,7 @@ class DemoHandlerTest {
             var request = new LoginReq(); request.setUserId(10001L);
             var connection = (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[]{Connection.class},
                     (proxy, method, args) -> { throw new AssertionError("Unexpected Connection operation"); });
-            context.getBean(GameRuntime.class).dispatch(connection, 99L, request);
+            context.getBean(GameRuntime.class).dispatch(connection, 99L, 0, 0L, Metadata.empty(), request);
             Received received = probe.received.poll(5, TimeUnit.SECONDS);
             assertNotNull(received);
             assertSame(connection, received.connection()); assertSame(request, received.request());

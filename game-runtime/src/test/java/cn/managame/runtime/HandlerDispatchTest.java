@@ -44,6 +44,12 @@ class HandlerDispatchTest {
                 (proxy, method, args) -> { throw new AssertionError("Runtime must not call Connection." + method.getName()); });
     }
 
+    /** FieldRequest belongs to Domain 1; MethodRequest to Domain 2, as the Handlers declare. */
+    static void dispatch(GameRuntime runtime, Connection connection, long routeKey, Object message) {
+        int domain = message instanceof MethodRequest ? 2 : 1;
+        runtime.dispatch(new DefaultClientHandlerContext(domain, routeKey, message, connection));
+    }
+
     static GameRuntimeBuilder builder(Object handler, RouteExecutor executor, List<RuntimeError> errors) {
         return GameRuntimeBuilder.builder().routeDomains(List.of(RouteDomain.of(1, "one"), RouteDomain.of(2, "two")))
                 .routeExecutors(List.of(RouteExecutorBinding.of(executor, 1, 2)))
@@ -84,15 +90,15 @@ class HandlerDispatchTest {
         var submissions = new AtomicInteger();
         RouteExecutor executor = (domain, key, task) -> { submissions.incrementAndGet(); return RouteExecuteStatus.ACCEPTED; };
         try (var runtime = builder(new Handlers(), executor, new ArrayList<>()).build()) {
-            runtime.dispatch(null, 99, new FieldRequest(0));
-            runtime.dispatch(connection(), 7, new MethodRequest(null));
+            dispatch(runtime, null, 99, new FieldRequest(0));
+            dispatch(runtime, connection(), 7, new MethodRequest(null));
             assertEquals(FrameworkErrorCodes.INVALID_ROUTE_KEY,
                     assertThrows(RuntimeDispatchException.class, () -> runtime.dispatch(connection(), new FieldRequest(0))).errorCode());
             assertThrows(NullPointerException.class, () -> runtime.dispatch(connection(), new MethodRequest(null)));
             assertEquals(FrameworkErrorCodes.HANDLER_NOT_FOUND,
                     assertThrows(RuntimeDispatchException.class, () -> runtime.dispatch(connection(), "unknown")).errorCode());
             assertEquals(FrameworkErrorCodes.INVALID_ROUTE_KEY,
-                    assertThrows(RuntimeDispatchException.class, () -> runtime.dispatch(null, 0, new FieldRequest(1))).errorCode());
+                    assertThrows(RuntimeDispatchException.class, () -> dispatch(runtime, null, 0, new FieldRequest(1))).errorCode());
             assertEquals(2, submissions.get());
         }
         @Handler(domain = 1) class NoKey {
@@ -102,7 +108,7 @@ class HandlerDispatchTest {
             assertEquals(FrameworkErrorCodes.INVALID_ROUTE_KEY,
                     assertThrows(RuntimeDispatchException.class, () -> runtime.dispatch(null, new FieldRequest(1))).errorCode());
             runtime.dispatch(new DefaultHandlerContext(1, 99, new FieldRequest(1)));
-            runtime.dispatch(null, 88, new FieldRequest(0));
+            dispatch(runtime, null, 88, new FieldRequest(0));
             assertEquals(4, submissions.get());
         }
     }

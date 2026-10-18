@@ -172,9 +172,9 @@ class HandlerContextFactoryTest {
             t.run(); return RouteExecuteStatus.ACCEPTED;
         }, errors).handlerContextFactory((d, command, requestId, c, metadata, m) -> { throw new AssertionError("Explicit dispatch must bypass factory"); }).build()) {
             var request = new HandlerDispatchTest.FieldRequest(42);
-            runtime.dispatch(null, 99L, 7, 10001L, request);
-            runtime.dispatch(null, 98L, request);
-            runtime.dispatch(null, 7, 10002L, request);
+            runtime.dispatch(new DefaultHandlerContext(1, 99L, 7, 10001L, Metadata.empty(), request));
+            runtime.dispatch(new DefaultHandlerContext(1, 98L, 0, 0L, Metadata.empty(), request));
+            runtime.dispatch(new DefaultHandlerContext(1, runtime.routeKeys().getRouteKey(request), 7, 10002L, Metadata.empty(), request));
             var context = new DefaultHandlerContext(1, 88, 9, 10003L, Metadata.empty(), request);
             runtime.dispatch(context);
             assertEquals(List.of(99L, 98L, 42L, 88L), handler.contexts.stream().map(HandlerContext::routeKey).toList());

@@ -1,5 +1,7 @@
 package cn.managame.spring.runtime;
 
+import cn.managame.core.Metadata;
+import cn.managame.runtime.context.DefaultHandlerContext;
 import cn.managame.runtime.*;
 import cn.managame.runtime.context.Contexts;
 import cn.managame.runtime.executor.*;
@@ -18,6 +20,10 @@ import static cn.managame.core.FrameworkErrorCodes.RUNTIME_CLOSED;
 
 class RuntimeLifecycleTest {
     record Request(Runnable action) {}
+    /** Every Request here belongs to Domain 1, as the Handler declares. */
+    private static void dispatch(GameRuntime runtime, long routeKey, Object message) {
+        runtime.dispatch(new DefaultHandlerContext(1, routeKey, 0, 0, Metadata.empty(), message));
+    }
     @Handler(domain = 1) @Profile("manual-lifecycle-only") static class Owner {
         @HandlerMethod public void request(Request request) { request.action().run(); }
     }
@@ -48,7 +54,7 @@ class RuntimeLifecycleTest {
             assertTrue(done.get()); assertFalse(resource.closed.get()); listenerObserved.set(true);
         });
         try (var thread = Executors.newVirtualThreadPerTaskExecutor()) {
-            runtime.dispatch(null, 9L, new Request(() -> {
+            dispatch(runtime, 9L, new Request(() -> {
                 entered.countDown();
                 try { assertTrue(release.await(5, TimeUnit.SECONDS)); }
                 catch (InterruptedException failure) { throw new AssertionError(failure); }
@@ -60,7 +66,7 @@ class RuntimeLifecycleTest {
             while (runtime.stats().accepting() && System.nanoTime() < deadline) Thread.onSpinWait();
             assertFalse(runtime.stats().accepting());
             assertEquals(RUNTIME_CLOSED, assertThrows(RuntimeDispatchException.class,
-                    () -> runtime.dispatch(null, 9L, new Request(() -> fail("rejected")))).errorCode());
+                    () -> dispatch(runtime, 9L, new Request(() -> fail("rejected")))).errorCode());
             assertFalse(close.isDone()); assertFalse(resource.closed.get());
             release.countDown(); close.get(3, TimeUnit.SECONDS);
             assertTrue(listenerObserved.get()); assertTrue(resource.closed.get());
@@ -75,7 +81,7 @@ class RuntimeLifecycleTest {
                 "drain", Map.of("game.shutdown.budget-millis", "1200", "game.shutdown.flush-reserve-millis", "1000")));
         spring.register(Config.class); spring.refresh();
         var runtime = spring.getBean(GameRuntime.class); var captured = new CountDownLatch(1);
-        runtime.dispatch(null, 9L, new Request(() -> {
+        dispatch(runtime, 9L, new Request(() -> {
             runtime.callback(new RouteCallback<Object>() { // never completed
                 public void onSuccess(Object result) {} public void onFail(int error) {}
             });

@@ -53,7 +53,7 @@ GameRuntimeConfig also discovers marker-only `@Handler` Beans and registers them
 The caller normally already knows the Key, and only needs:
 
 ```java
-runtime.dispatch(connection, routeKey, loginReq);
+runtime.dispatch(connection, routeKey, ROLE_BUSINESS_ID_TYPE, roleId, Metadata.empty(), loginReq);
 ```
 
 Runtime selects the Handler Domain and creates the context; a protocol userId never overrides the supplied Key. No extraction configuration is required. Only exceptional protocol-based routing needs `@HandlerMethod(routeKey="userId")` or `routeKeyMethod="getUserId"`, on a builder without a configured HandlerContextFactory, followed by `runtime.dispatch(connection, loginReq)`. The demo configures a factory, which explicitly selects routing by Domain as described below. Those names refer to LoginReq's field or public no-argument getter. This anonymous login uses identity 0/0 and empty Metadata; explicit Context dispatch remains available for Metadata/custom fields.

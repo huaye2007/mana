@@ -1,6 +1,7 @@
 package cn.managame.runtime;
 
 import cn.managame.core.Metadata;
+
 import cn.managame.runtime.context.DefaultHandlerContext;
 import cn.managame.runtime.diagnostic.DomainStats;
 import cn.managame.runtime.error.RuntimeDispatchException;
@@ -64,6 +65,14 @@ class DomainStatsTest {
                 .handlers(List.of(new Handlers())).errorHandler(errors::add);
     }
 
+    /** Player work belongs to Domain 1 and guild work to Domain 2, as the Handlers declare. */
+    private static void player(GameRuntime runtime, long routeKey, Player message) {
+        runtime.dispatch(new DefaultHandlerContext(1, routeKey, 0, 0, Metadata.empty(), message));
+    }
+    private static void guild(GameRuntime runtime, long routeKey, Guild message) {
+        runtime.dispatch(new DefaultHandlerContext(2, routeKey, 0, 0, Metadata.empty(), message));
+    }
+
     private static DomainStats of(GameRuntime runtime, int domain) {
         return runtime.stats().domains().stream().filter(d -> d.routeDomain() == domain).findFirst().orElseThrow();
     }
@@ -80,9 +89,9 @@ class DomainStatsTest {
     @Test void workIsCountedAgainstItsOwnDomainAndNotTheOther() {
         var executor = new Manual();
         try (var runtime = builder(executor).build()) {
-            runtime.dispatch(null, 7L, new Player(7));
-            runtime.dispatch(null, 7L, new Player(7));
-            runtime.dispatch(null, 9L, new Guild(9));
+            player(runtime, 7L, new Player(7));
+            player(runtime, 7L, new Player(7));
+            guild(runtime, 9L, new Guild(9));
 
             assertEquals(2, of(runtime, 1).queued()); assertEquals(1, of(runtime, 2).queued());
             assertEquals(3, runtime.stats().queued());
@@ -100,7 +109,7 @@ class DomainStatsTest {
         try (var runtime = builder(executor).build()) {
             executor.status = RouteExecuteStatus.OVERLOADED;
             assertEquals(ROUTE_EXECUTOR_OVERLOADED, assertThrows(RuntimeDispatchException.class,
-                    () -> runtime.dispatch(null, 9L, new Guild(9))).errorCode());
+                    () -> guild(runtime, 9L, new Guild(9))).errorCode());
 
             assertEquals(0, of(runtime, 1).rejected());
             assertEquals(1, of(runtime, 2).rejected());
@@ -119,9 +128,10 @@ class DomainStatsTest {
         assertEquals(1, of(runtime, 2).rejected());
         assertEquals(0, of(runtime, 1).rejected());
 
-        // The convenience entry rejects before any Handler has named a Domain, so only the Runtime counts it.
+        // The client ingress rejects before resolving the Handler, so no Domain is known to count it
+        // against and only the Runtime total moves.
         assertEquals(RUNTIME_CLOSED, assertThrows(RuntimeDispatchException.class,
-                () -> runtime.dispatch(null, 7L, new Player(7))).errorCode());
+                () -> runtime.dispatch(null, 7L, 0, 0L, Metadata.empty(), new Player(7))).errorCode());
         assertEquals(0, of(runtime, 1).rejected());
         assertEquals(2, runtime.stats().rejected());
     }
@@ -129,7 +139,7 @@ class DomainStatsTest {
     @Test void eachDomainCarriesTheLimitsOfTheExecutorBoundToIt() {
         var executor = new Manual();
         try (var runtime = builder(executor).build()) {
-            runtime.dispatch(null, 7L, new Player(7));
+            player(runtime, 7L, new Player(7));
             // One executor serves both Domains, so both repeat its numbers rather than splitting them.
             for (int domain : List.of(1, 2)) {
                 assertEquals(64, of(runtime, domain).executor().capacity());

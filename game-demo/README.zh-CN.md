@@ -53,7 +53,7 @@ GameRuntimeConfig 也通过扫描发现仅标记 `@Handler` 的 Bean，再通过
 调用方通常已知 Key，只需要：
 
 ```java
-runtime.dispatch(connection, routeKey, loginReq);
+runtime.dispatch(connection, routeKey, ROLE_BUSINESS_ID_TYPE, roleId, Metadata.empty(), loginReq);
 ```
 
 Runtime 选择 Handler 的 Domain 并创建上下文；协议 userId 不覆盖外部传入的 Key，无需配置提取规则。只有少数按协议路由的场景才使用 `@HandlerMethod(routeKey="userId")` 或 `routeKeyMethod="getUserId"`，在未配置 HandlerContextFactory 的 builder 上再调用 `runtime.dispatch(connection, loginReq)`。demo 已配置工厂，由它按 Domain 明确选择路由，见下文。这些名字对应 LoginReq 的字段或 public 无参 getter。此匿名登录使用身份 0/0、空 Metadata；Metadata/自定义字段仍可通过显式 Context 分发。
