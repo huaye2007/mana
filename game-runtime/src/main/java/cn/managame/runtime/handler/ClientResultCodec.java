@@ -9,6 +9,9 @@ import cn.managame.runtime.context.ClientHandlerContext;
  *
  * <p>Both methods run on the request's Route, right after its Handler returns or throws. A Handler that
  * answers some other way writes on the connection itself and never reaches this codec.
+ *
+ * <p>Returning hands ownership of the frame to Runtime, which releases it unless the transport accepts
+ * it, so a frame carrying a reclaimable resource is safe here and must not be released by the codec.
  */
 public interface ClientResultCodec {
     /**

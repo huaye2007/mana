@@ -20,6 +20,8 @@ import cn.managame.runtime.protocol.ProtocolDescriptor;
 import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.RouteCallback;
 import cn.managame.runtime.route.RouteDomain;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
@@ -185,6 +187,32 @@ class ClientResponseTest {
             assertTrue(writes.isEmpty());
             assertEquals(2, errors.size());
             errors.forEach(error -> assertEquals(FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR, error.errorCode()));
+        }
+    }
+
+    @Test void aRefusedWriteReleasesWhatTheCodecFramedAndAnAcceptedOneDoesNot() {
+        var handler = new Handlers(); var errors = new ArrayList<RuntimeError>(); var writes = new ArrayList<>();
+        var framed = new ArrayList<ByteBuf>();
+        ClientResultCodec buffering = new ClientResultCodec() {
+            @Override public Object encode(ClientHandlerContext context, Object result) {
+                var buffer = Unpooled.buffer(4).writeInt(context.requestId());
+                framed.add(buffer); return buffer;
+            }
+            @Override public Object encodeError(ClientHandlerContext context, int errorCode) {
+                var buffer = Unpooled.buffer(4).writeInt(errorCode);
+                framed.add(buffer); return buffer;
+            }
+        };
+        try (var runtime = withoutCodec(handler).clientResultCodec(buffering).errorHandler(errors::add).build()) {
+            runtime.dispatch(request(new Ping(42L), connection(writes, WriteStatus.ACCEPTED), 1, 7));
+            assertEquals(1, framed.getFirst().refCnt(), "an accepted write hands the share to the transport");
+
+            runtime.dispatch(request(new Ping(42L), connection(writes, WriteStatus.INACTIVE), 1, 8));
+            // A refused write never consumed the message, so Runtime still owned it and released it.
+            assertEquals(0, framed.getLast().refCnt());
+            assertEquals(2, framed.size()); assertTrue(errors.isEmpty());
+        } finally {
+            framed.forEach(buffer -> { if (buffer.refCnt() > 0) buffer.release(); });
         }
     }
 

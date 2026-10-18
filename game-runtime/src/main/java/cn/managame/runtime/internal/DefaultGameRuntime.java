@@ -15,6 +15,7 @@ import cn.managame.core.FrameworkErrorCodes;
 import cn.managame.core.Metadata;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.WriteStatus;
+import io.netty.util.ReferenceCountUtil;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.context.ClientHandlerContext;
 import cn.managame.runtime.context.Context;
@@ -284,6 +285,9 @@ final class DefaultGameRuntime implements GameRuntime {
      * Frames and writes the response a Handler returned. Returns false when nothing reached the transport,
      * whether because the request carries no correlation, the connection is gone, framing failed, or the
      * transport refused it. A Handler that answers some other way returns void and Runtime sends nothing.
+     *
+     * <p>Runtime owns whatever the codec framed from the moment it returns until the transport accepts it,
+     * and releases it on every path that does not reach acceptance.
      */
     private boolean send(ClientHandlerContext context, Object result, int errorCode, boolean failOnEncodingError) {
         if (errorCode == 0 && result == null) return false; // A null result answers nothing; it is not a failure.
@@ -306,8 +310,14 @@ final class DefaultGameRuntime implements GameRuntime {
             return failOnEncodingError && send(context, null, RUNTIME_EXECUTION_ERROR, false);
         }
         try {
-            return connection.write(framed) == WriteStatus.ACCEPTED;
+            // N-WRITE-03: a refused write never consumed the message, so Runtime still owns what the codec
+            // framed and must release it. Only ACCEPTED hands that ownership share to the transport.
+            if (connection.write(framed) == WriteStatus.ACCEPTED) return true;
+            ReferenceCountUtil.release(framed);
+            return false;
         } catch (Throwable cause) {
+            // A throw is neither acceptance nor refusal, so ownership is unknown; releasing a share the
+            // transport may already hold would corrupt a pooled buffer, which is worse than leaking one.
             report(RUNTIME_EXECUTION_ERROR, context, cause);
             return false;
         }

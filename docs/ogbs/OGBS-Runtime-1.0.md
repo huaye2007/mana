@@ -220,6 +220,8 @@ A Handler that answers by hand owns its own framing, ordering and timing, includ
 
 Nothing is written, and the attempt is reported as an execution error, when a returned response has no correlation to address, when its request has no connection, or when framing fails; a failed framing of a business result attempts one framework-code framing, and a framing that fails again is only reported. A transport that refuses the write is not a framework error: a peer may have disconnected at any time, and an accepted write proves neither delivery nor business success. Admission rejected before the Handler runs produces no Runtime response at all — the integration still holds the request and answers it itself.
 
+Runtime owns what the codec framed from the moment the codec returns it until the transport accepts it, and releases it on every path short of acceptance. A refusal matters most here, because a refusal means the message was never submitted and the sender therefore still holds it; dropping it instead of releasing it leaks whatever resource it carries. Acceptance transfers that ownership share to the transport, which then owns it whether or not delivery succeeds, so Runtime must not touch it afterwards. A write that fails as neither acceptance nor refusal leaves ownership indeterminate; Runtime releases nothing then and reports the failure, because releasing a share the transport may already hold can corrupt a pooled resource, which is worse than leaking one. A codec whose frames carry no reclaimable resource is unaffected by all of this.
+
 For example, a login Handler returns the registered login response and Runtime frames it with the request's own sequence number; a guild-join Handler returns nothing, calls the guild Route, and writes its own reply from the callback using the context's command and request id. A Handler for a message that registers no response stays void and answers nothing unless it writes one itself. Validation: [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) and the [packet integration test](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java).
 
 <a id="handler-observation"></a>
@@ -477,7 +479,7 @@ An admitted player Handler may submit guild work after admission stops; both and
 | --- | --- |
 | Build, Context, dispatch, events, callbacks, Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
 | Declared listener Domain, build conflict, publish rejection, cross-Route bridging | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
-| Client correlation, returned and hand-written responses, failure framing, build rules | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
+| Client correlation, returned and hand-written responses, failure framing, frame ownership, build rules | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
 | Handler observation: phases, duration, non-intervention, scope | [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java) |
 | Route serialization, capacity, executor closure | [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) |
 | Scheduling/lifecycle | [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java) |

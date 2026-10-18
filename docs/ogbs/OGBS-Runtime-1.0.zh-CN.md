@@ -205,6 +205,8 @@ Handler 只接收已注册的 REQUEST 或 NOTIFY 消息。RESPONSE 不作为入�
 
 当返回的响应没有相关性可寻址、其请求没有连接，或封装失败时，不写出任何内容，并将该次尝试作为执行错误报告；业务结果封装失败会尝试一次框架错误码封装，再次失败则仅报告。传输层拒绝写出不是框架错误：对端随时可能断开，而写出被接受既不证明送达也不证明业务成功。在 Handler 运行前被拒绝的接纳完全不产生 Runtime 应答——请求仍在接入方手中，由它自己应答。
 
+从编解码器返回封装结果的那一刻起，直到传输层接受它为止，这个对象归 Runtime 所有；凡是没有走到"被接受"的路径，Runtime 都必须释放它。其中最关键的是被拒绝：拒绝意味着消息根本没有被提交，发送方因此仍然持有它，此时丢弃而不释放，就泄漏了它所携带的资源。被接受则把这一份所有权交给传输层，无论最终是否送达都由传输层负责，Runtime 此后不得再碰它。既非接受也非拒绝的写出失败使所有权无法确定，此时 Runtime 不释放任何东西，只报告失败，因为释放一份传输层可能已经持有的份额会破坏池化资源，这比泄漏一份更糟。封装结果不携带可回收资源的编解码器不受以上任何一条影响。
+
 例如登录 Handler 返回已注册的登录响应，Runtime 用该请求自身的序号封装它；公会加入 Handler 不返回结果，调用公会 Route，并在回调中用上下文的 command 与请求 ID 自己写出回复。消息未注册响应的 Handler 保持 void，除非自己写出响应，否则不应答。验证见 [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) 与[报文接入测试](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java)。
 
 <a id="handler-observation"></a>
@@ -438,7 +440,7 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 | --- | --- |
 | 构建注册、Context、分发、事件、回调、Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
 | 监听器声明的 Domain、构建期冲突、发布期拒绝、跨 Route 桥接 | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
-| 客户端相关性、返回式与自行写出的响应、失败封装、构建规则 | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
+| 客户端相关性、返回式与自行写出的响应、失败封装、封装结果所有权、构建规则 | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
 | Handler 观察：阶段、时长、不干预、作用范围 | [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java) |
 | Route 串行、容量与执行器关闭 | [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) |
 | 调度与生命周期实现 | [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java) |
