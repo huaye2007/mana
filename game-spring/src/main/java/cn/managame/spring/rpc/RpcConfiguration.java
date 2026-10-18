@@ -1,5 +1,8 @@
 package cn.managame.spring.rpc;
 
+import cn.managame.boot.rpc.GameRpc;
+import cn.managame.boot.rpc.GameRpcCodec;
+import cn.managame.boot.rpc.GameRpcConfigurer;
 import cn.managame.rpc.node.RpcNode;
 import cn.managame.runtime.GameRuntime;
 import org.springframework.beans.factory.ObjectProvider;
@@ -7,7 +10,6 @@ import org.springframework.context.annotation.*;
 import org.springframework.core.env.Environment;
 import java.net.InetSocketAddress;
 import java.time.Duration;
-import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
 class RpcConfiguration {
@@ -22,9 +24,8 @@ class RpcConfiguration {
         var builder = RpcNode.builder().nodeId(id).bindAddress(new InetSocketAddress(host, port));
         Long timeout = environment.getProperty("game.rpc.call-timeout-millis", Long.class);
         if (timeout != null) builder.callTimeout(Duration.ofMillis(timeout));
-        List<GameRpcConfigurer> ordered = configurers.orderedStream().toList();
-        ordered.forEach(configurer -> configurer.configure(builder));
-        return new GameRpc(runtime, codec, builder, ordered);
+        // Bean order is the only thing this configuration decides; GameRpc calls every hook itself.
+        return new GameRpc(runtime, codec, builder, configurers.orderedStream().toList());
     }
 
     @Bean(destroyMethod = "") RpcNode gameRpcNode(GameRpc rpc) { return rpc.node(); }

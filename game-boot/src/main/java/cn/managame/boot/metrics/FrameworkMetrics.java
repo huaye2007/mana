@@ -1,4 +1,4 @@
-package cn.managame.spring.metrics;
+package cn.managame.boot.metrics;
 
 import cn.managame.core.metrics.MetricsSource;
 import cn.managame.data.GameData;
@@ -8,7 +8,7 @@ import cn.managame.runtime.GameRuntime;
 
 /**
  * Adapts each component's snapshot record to a {@link MetricsSource}. The adaptation lives here, in the
- * integration module, for two reasons: a component stays free of the metrics contract, and game-network
+ * composition module, for two reasons: a component stays free of the metrics contract, and game-network
  * keeps its property of depending on no other framework module — it publishes a record, and this class,
  * which already depends on everything, maps it.
  *
@@ -16,10 +16,10 @@ import cn.managame.runtime.GameRuntime;
  * component names in dotted form, under the prefix the registry was given, so {@code runtime} plus
  * {@code route.queued} reads as {@code runtime.route.queued}.
  */
-final class FrameworkMetrics {
+public final class FrameworkMetrics {
     private FrameworkMetrics() {}
 
-    static MetricsSource of(GameRuntime runtime) {
+    public static MetricsSource of(GameRuntime runtime) {
         return sink -> {
             var s = runtime.stats();
             sink.gauge("accepting", s.accepting() ? 1 : 0);
@@ -50,7 +50,7 @@ final class FrameworkMetrics {
         };
     }
 
-    static MetricsSource of(GameData data) {
+    public static MetricsSource of(GameData data) {
         return sink -> {
             var s = data.stats();
             sink.gauge("accepting", s.accepting() ? 1 : 0);
@@ -66,7 +66,7 @@ final class FrameworkMetrics {
         };
     }
 
-    static MetricsSource of(RpcNode node) {
+    public static MetricsSource of(RpcNode node) {
         return sink -> {
             var s = node.stats();
             sink.gauge("peers", s.peers());
@@ -81,7 +81,7 @@ final class FrameworkMetrics {
         };
     }
 
-    static MetricsSource of(NetworkServer server) {
+    public static MetricsSource of(NetworkServer server) {
         return sink -> {
             var s = server.stats();
             sink.gauge("connections", s.liveConnections());

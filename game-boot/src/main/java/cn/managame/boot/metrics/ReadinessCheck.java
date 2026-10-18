@@ -1,4 +1,4 @@
-package cn.managame.spring.metrics;
+package cn.managame.boot.metrics;
 
 /**
  * One condition the readiness endpoint reports. The framework contributes a check for each managed component

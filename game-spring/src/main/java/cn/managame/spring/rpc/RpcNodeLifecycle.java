@@ -1,5 +1,6 @@
 package cn.managame.spring.rpc;
 
+import cn.managame.boot.rpc.GameRpc;
 import org.springframework.context.SmartLifecycle;
 
 final class RpcNodeLifecycle implements SmartLifecycle {

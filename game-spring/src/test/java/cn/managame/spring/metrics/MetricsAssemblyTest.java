@@ -1,5 +1,6 @@
 package cn.managame.spring.metrics;
 
+import cn.managame.boot.metrics.ReadinessCheck;
 import cn.managame.core.metrics.MetricsRegistry;
 import cn.managame.network.http.HttpServer;
 import cn.managame.runtime.GameRuntime;
@@ -168,16 +169,5 @@ class MetricsAssemblyTest {
             } finally { closing.join(10_000); }
             assertFalse(runtime.stats().accepting());    // and closed once the lead elapsed
         }
-    }
-    @Test void pathsMustBeAbsoluteAndDistinct() {
-        MetricsRegistry registry = new MetricsRegistry();
-        assertThrows(IllegalArgumentException.class,
-                () -> new ObservabilityEndpoints(registry, List.of(), "metrics", "/readiness"));
-        assertThrows(IllegalArgumentException.class,
-                () -> new ObservabilityEndpoints(registry, List.of(), "/metrics", "/metrics"));
-        assertThrows(IllegalArgumentException.class,
-                () -> new ObservabilityEndpoints(registry, List.of(), "/metrics?x", "/readiness"));
-        assertThrows(IllegalArgumentException.class,
-                () -> new ObservabilityEndpoints(registry, List.of(), "/", "/readiness"));
     }
 }

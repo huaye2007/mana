@@ -4,6 +4,7 @@
   <artifactId>game-spring</artifactId>
   <dependencies>
     <dependency><groupId>org.springframework</groupId><artifactId>spring-context</artifactId><version>7.0.9</version></dependency>
+    <dependency><groupId>cn.managame</groupId><artifactId>game-boot</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>game-runtime</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>game-data</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>game-rpc</artifactId><version>${project.version}</version><optional>true</optional></dependency>

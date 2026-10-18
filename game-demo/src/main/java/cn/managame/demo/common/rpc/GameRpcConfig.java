@@ -1,8 +1,8 @@
 package cn.managame.demo.common.rpc;
 
+import cn.managame.boot.rpc.GameRpcCodec;
 import cn.managame.demo.common.serialization.ForyConfig;
 import cn.managame.spring.rpc.EnableGameRpc;
-import cn.managame.spring.rpc.GameRpcCodec;
 import org.apache.fory.ThreadSafeFory;
 import org.springframework.context.annotation.*;
 import org.springframework.core.type.AnnotatedTypeMetadata;

@@ -1,7 +1,7 @@
 package cn.managame.spring.runtime;
 
-import cn.managame.spring.lifecycle.ShutdownBudget;
-import cn.managame.spring.lifecycle.ShutdownPhase;
+import cn.managame.boot.lifecycle.ShutdownBudget;
+import cn.managame.boot.lifecycle.ShutdownPhase;
 import cn.managame.runtime.*;
 import cn.managame.runtime.event.*;
 import cn.managame.runtime.handler.Handler;

@@ -14,7 +14,7 @@
 
 ## 可观测性
 
-包 `cn.managame.core.metrics` 是框架与"收集方"之间唯一的契约：`MetricSink`（收集方实现的东西）、`MetricsSource`（组件发布的东西）与 `MetricsRegistry`（二者相遇的地方）。收集方式是拉取，因此在有人收集之前什么都不发生，也没有任何数据路径为它付代价；Core 只定义 gauge、counter 与点分命名规则，不定义任何导出格式——这正是它依旧没有第三方依赖的原因。有哪些读数属于各组件；把它们适配到收集方属于 [game-spring](../game-spring/README.zh-CN.md)。见 [Core §5](../docs/ogbs/OGBS-Core-1.0.zh-CN.md#5-可观测性) 与 [Java §5](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md#5-可观测性绑定)。
+包 `cn.managame.core.metrics` 是框架与"收集方"之间唯一的契约：`MetricSink`（收集方实现的东西）、`MetricsSource`（组件发布的东西）与 `MetricsRegistry`（二者相遇的地方）。收集方式是拉取，因此在有人收集之前什么都不发生，也没有任何数据路径为它付代价；Core 只定义 gauge、counter 与点分命名规则，不定义任何导出格式——这正是它依旧没有第三方依赖的原因。有哪些读数属于各组件；把它们适配到收集方属于 [game-boot](../game-boot/README.zh-CN.md)。见 [Core §5](../docs/ogbs/OGBS-Core-1.0.zh-CN.md#5-可观测性) 与 [Java §5](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.zh-CN.md#5-可观测性绑定)。
 
 ## 构建与验证
 

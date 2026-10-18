@@ -1,15 +1,18 @@
-package cn.managame.spring.runtime;
+package cn.managame.boot.http;
 
 import cn.managame.network.http.HttpResponseCallback;
 import cn.managame.runtime.http.HttpDispatcher;
 import io.netty.handler.codec.http.*;
 
-/** Raw, segment-boundary prefix mapping; a retained duplicate keeps the transport request untouched. */
-final class HttpContextPath implements HttpDispatcher {
+/**
+ * Raw, segment-boundary prefix mapping; a retained duplicate keeps the transport request untouched. An
+ * empty value or {@code "/"} is the root prefix and every request passes through unchanged.
+ */
+public final class HttpContextPath implements HttpDispatcher {
     private final String prefix;
     private final HttpDispatcher delegate;
 
-    HttpContextPath(String value, HttpDispatcher delegate) {
+    public HttpContextPath(String value, HttpDispatcher delegate) {
         if (value.isEmpty() || value.equals("/")) prefix = "";
         else {
             String path = value.endsWith("/") ? value.substring(0, value.length() - 1) : value;

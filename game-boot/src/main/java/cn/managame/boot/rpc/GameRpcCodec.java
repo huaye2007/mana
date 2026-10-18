@@ -1,4 +1,4 @@
-package cn.managame.spring.rpc;
+package cn.managame.boot.rpc;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;

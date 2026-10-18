@@ -1,4 +1,4 @@
-package cn.managame.spring.metrics;
+package cn.managame.boot.metrics;
 
 import cn.managame.core.metrics.MetricSink;
 import cn.managame.core.metrics.MetricsRegistry;
@@ -25,18 +25,18 @@ public final class ObservabilityEndpoints {
     private final List<ReadinessCheck> checks;
     private final String metricsPath, readinessPath;
 
-    ObservabilityEndpoints(MetricsRegistry registry, List<ReadinessCheck> checks,
-                           String metricsPath, String readinessPath) {
+    public ObservabilityEndpoints(MetricsRegistry registry, List<ReadinessCheck> checks,
+                                  String metricsPath, String readinessPath) {
         this.registry = Objects.requireNonNull(registry);
         this.checks = List.copyOf(checks);
-        this.metricsPath = path(metricsPath, "game.metrics.path");
-        this.readinessPath = path(readinessPath, "game.metrics.readiness-path");
+        this.metricsPath = path(metricsPath, "metricsPath");
+        this.readinessPath = path(readinessPath, "readinessPath");
         if (this.metricsPath.equals(this.readinessPath))
             throw new IllegalArgumentException("Metrics and readiness paths must differ: " + this.metricsPath);
     }
-    private static String path(String value, String property) {
+    private static String path(String value, String argument) {
         if (value == null || !value.startsWith("/") || value.length() < 2 || value.contains("?") || value.contains("#"))
-            throw new IllegalArgumentException(property + " must be an absolute path: " + value);
+            throw new IllegalArgumentException(argument + " must be an absolute path: " + value);
         return value;
     }
 

@@ -1,4 +1,4 @@
-package cn.managame.spring.rpc;
+package cn.managame.boot.rpc;
 
 import cn.managame.core.Metadata;
 import cn.managame.rpc.call.*;
@@ -16,7 +16,11 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import static cn.managame.rpc.error.RpcErrorCodes.*;
 
-/** Typed RPC adapter; business methods and captured callbacks execute through Runtime Routes. */
+/**
+ * Typed RPC adapter; business methods and captured callbacks execute through Runtime Routes. Constructing
+ * one is the whole join between RPC and Runtime: nothing else has to be wired, and no container has to run.
+ * An application assembles it directly, and the Spring integration does exactly the same thing with beans.
+ */
 public final class GameRpc implements AutoCloseable {
     private final GameRuntime runtime;
     private final GameRpcCodec codec;
@@ -24,15 +28,27 @@ public final class GameRpc implements AutoCloseable {
     private final List<GameRpcConfigurer> configurers;
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    /** Applies decorate in order, builds, then attach in order; a failed attach closes the built Node. */
-    GameRpc(GameRuntime runtime, GameRpcCodec codec, RpcNodeBuilder builder, List<GameRpcConfigurer> configurers) {
+    /**
+     * Applies configure, then decorate, in list order, builds the Node, then attach in order; a failed
+     * attach detaches what already attached and closes the built Node.
+     *
+     * <p>All four hooks run here rather than some of them at the call site, so an integration only has to
+     * decide the order of the list. {@code builder} carries whatever the caller already configured —
+     * node id, bind address, call timeout — and its handler is replaced with this adapter's.
+     *
+     * @param configurers applied in list order; a Spring integration passes them in bean order
+     */
+    public GameRpc(GameRuntime runtime, GameRpcCodec codec, RpcNodeBuilder builder,
+                   List<GameRpcConfigurer> configurers) {
         this.runtime = Objects.requireNonNull(runtime);
         this.codec = Objects.requireNonNull(codec);
         this.configurers = List.copyOf(configurers);
+        Objects.requireNonNull(builder);
+        for (GameRpcConfigurer configurer : this.configurers) configurer.configure(builder);
         RpcHandler handler = new Handler();
         for (GameRpcConfigurer configurer : this.configurers)
             handler = Objects.requireNonNull(configurer.decorate(handler), "GameRpcConfigurer.decorate returned null");
-        node = Objects.requireNonNull(builder).handler(handler).build();
+        node = builder.handler(handler).build();
         int attached = 0;
         try {
             for (GameRpcConfigurer configurer : this.configurers) { configurer.attach(node); attached++; }
@@ -54,7 +70,8 @@ public final class GameRpc implements AutoCloseable {
         }
     }
 
-    RpcNode node() { return node; }
+    /** The managed Node, for topology management and start; its lifecycle belongs to this adapter. */
+    public RpcNode node() { return node; }
 
     /** Uses the registered request/response binding. Must be called on this Runtime's Route. */
     public <T> void call(int targetNodeId, long routeKey, int businessIdType, long businessId,

@@ -14,7 +14,8 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | [game-router](game-router/README.zh-CN.md) | 基于已有唯一 RpcNode 的 Router 网格：服务只附着一个 Router，按精确 Node ID 发送并按服务广播，各 Router 之间互相上报哪些 Node 附着在哪里 |
 | game-runtime | Route 执行、Context、Handler、HTTP 注解/分发、Event、GameTime、可取消 Timer / Cron、跨 Route call |
 | game-data | Single/Group 缓存、异步写回、MySQL/JDBC、MongoDB 与 MySQL 追加日志 |
-| [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、HTTP/RPC 托管生命周期、对象 RPC 适配、初始化 Repository 注入、Runtime 停机排空 |
+| [game-boot](game-boot/README.zh-CN.md) | 组合层，不依赖容器：对象 RPC 到 Runtime 适配器、就绪与读数端点、一份关闭预算、业务路径前缀 |
+| [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、属性绑定、HTTP/RPC 托管生命周期、初始化 Repository 注入、停机触发 |
 | [game-demo](game-demo/README.zh-CN.md) | Spring 应用，装配 MySQL Data Repository、GamePacket TCP 分发、Runtime HTTP、定时/cron 及独立 TCP/HTTP/RPC 入口 |
 | [game-benchmark](game-benchmark/README.zh-CN.md) | JMH 微基准（Metadata、RPC 编解码、Route 执行器）守护热点路径，另有可选的 game-data 保存路径压测驱动；不属于任何框架 artifact，且其中任何一项都不在构建中运行 |
 
@@ -26,7 +27,8 @@ game-core ──────→ game-data
     └──────────→ game-rpc     ←──── game-network
 game-rpc ───→ game-demo（独立示例）
 game-rpc ───→ game-router ───→ game-demo（路由示例）
-game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
+game-runtime / game-data ───→ game-boot ←──── game-rpc（可选）
+game-boot / spring-context ───→ game-spring ───→ game-demo
 ```
 
 game-rpc 在同一 Maven 模块中包含 RPC 核心与 cn.managame.rpc.netty 适配包，依赖 game-network；RPC 不依赖 Runtime 或协议注册表。game-core 没有第三方依赖。Runtime 为 HTTP 注解与 Route 接入依赖 game-core 和 game-network，不依赖 RPC、Spring 或业务序列化。
@@ -45,6 +47,7 @@ Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包
 | game-router | [OGBS Router Specification](docs/ogbs/OGBS-Router-1.0.zh-CN.md) | [Router Java 开发规范](docs/ogbs/OGBS-Router-Java-25-Specification-1.0.zh-CN.md) |
 | game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java 开发规范](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) |
 | game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.zh-CN.md) | [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md) |
+| game-boot | [服务器组合规范](docs/ogbs/OGBS-Boot-1.0.zh-CN.md) | [Boot Java 开发规范](docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.zh-CN.md) |
 | game-spring | [容器集成规范](docs/ogbs/OGBS-Spring-1.0.zh-CN.md) | [Spring Java 开发规范](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md) |
 
 game-data 已提供 Single/Group 缓存与异步写回、MySQL/JDBC、MongoDB 适配及 MySQL 追加日志，依赖 game-core；game-demo 已通过 Spring 应用演示 Data。详见 [模块入口](game-data/README.zh-CN.md)、[Data 语义规范](docs/ogbs/OGBS-Data-1.0.zh-CN.md) 和 [Data Java 开发规范](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.zh-CN.md)。实机数据库验证状态见模块文档。
@@ -72,7 +75,7 @@ mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/targe
 
 CI（`.github/workflows/ci.yml`）在 JDK 25 上运行 `mvn clean verify` 与质量检查。
 
-当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-spring、game-demo、game-benchmark。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。可选 RPC→Runtime 集成已由 game-spring 提供，Data 使用由 Spring 应用演示。
+当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-boot、game-spring、game-demo、game-benchmark。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。RPC→Runtime 适配器位于 game-boot，不需要容器；game-spring 负责接线。Data 使用由 Spring 应用演示。
 
 在 IDE 运行 [NetworkEchoExample](game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 
@@ -144,7 +147,7 @@ game-network 是 Netty 的薄封装：用户添加原生 pipeline handler，通�
 
 完整用法与资源所有权见 [Network 模块](game-network/README.zh-CN.md) 和 [Network Java 开发规范](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.zh-CN.md)。
 
-RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot、主动/被动 Peer 与 call/notify/reply。运行 [RpcEchoExample](game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) 可看到 hello game-rpc。RpcHandler 统一处理消息、远端错误与应用解码；可选 RPC→Runtime 自动接入已由 game-spring 提供。
+RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot、主动/被动 Peer 与 call/notify/reply。运行 [RpcEchoExample](game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) 可看到 hello game-rpc。RpcHandler 统一处理消息、远端错误与应用解码；可选 RPC→Runtime 接入由 game-boot 提供。
 ## 约定与当前边界
 
 - 没有预置业务 RouteDomain。每个已注册 Domain 必须且只能绑定一个 RouteExecutor；允许多个 Domain 共享执行器。
@@ -156,7 +159,7 @@ RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot�
 - Cron 支持六字段数字表达式（秒、分、时、日、月、周），支持 `* ? , - /`，周日为 1，默认 UTC。当前不支持 Quartz 的 `L/W/#`、名称与年份字段。
 - RPC 每 Node 一个 HashedWheelTimer，负责调用超时、握手超时和重连延迟；心跳由连接上的 IdleStateHandler 负责。调用超时从网络 ACCEPTED 后开始。
 - Network 回调与 RPC 完成回调应快速返回；耗时业务应投递到 Runtime。RPC Core 不自动解码响应，也不自动切换 Runtime Route。
-- 当前提供 Core、Network、RPC、Router、Runtime、Data 实现与测试；RPC 包含真实 TCP 与重连测试，Router 在现有 RPC Node 上实现，可选 Runtime 接入由 game-spring 提供，尚未进行生产容量基准测试。Spring 自动装配、协议代码生成、服务发现、业务 codec 均为外围集成。
+- 当前提供 Core、Network、RPC、Router、Runtime、Data 实现与测试；RPC 包含真实 TCP 与重连测试，Router 在现有 RPC Node 上实现，可选 Runtime 接入由 game-boot 提供，尚未进行生产容量基准测试。Spring 自动装配、协议代码生成、服务发现、业务 codec 均为外围集成。
 
 详见 [架构与执行契约](docs/architecture.zh-CN.md) 和 [本仓库 RPC Wire Profile](docs/rpc-wire.zh-CN.md)。
 
@@ -171,4 +174,4 @@ RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot�
 运行 [RuntimeHttpExample](game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java) 查看注解 echo 和跨 Route 延迟响应。详见 [HTTP 语义](docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 与 [Java API、失败及所有权](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 
-可选 RPC 接入：显式添加 game-rpc，使用 `@EnableGameRpc`、GameRpcCodec 和 game.rpc.node-id/game.rpc.port。协议解码、Runtime 分发、对象回复、Route 回调与 Node 生命周期由 game-spring 适配，拓扑与 codec 由应用决定。见 [Spring Java 规范](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
+可选 RPC 接入：显式添加 game-rpc，使用 `@EnableGameRpc`、GameRpcCodec Bean 和 game.rpc.node-id/game.rpc.port。协议解码、Runtime 分发、对象回复与 Route 回调由 game-boot 的 GameRpc 适配；game-spring 用这些属性构建它并持有 Node 生命周期回调，拓扑与 codec 仍由应用决定。不使用容器的应用自己构造 GameRpc。见 [Boot §2](docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#2-rpc-adapter) 与 [Spring Java 规范](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。

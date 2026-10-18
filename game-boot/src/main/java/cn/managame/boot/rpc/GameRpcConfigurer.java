@@ -1,12 +1,14 @@
-package cn.managame.spring.rpc;
+package cn.managame.boot.rpc;
 
 import cn.managame.rpc.call.RpcHandler;
 import cn.managame.rpc.node.RpcNode;
 import cn.managame.rpc.node.RpcNodeBuilder;
 
 /**
- * Customizes the managed RpcNode. Hooks run in Spring order: configure, then decorate,
- * then attach after build but before start. detach runs in reverse order before the Node closes.
+ * Customizes the managed RpcNode. All four hooks are called by {@link GameRpc} itself, in the order the
+ * list was given: configure, then decorate, then attach after build but before start. detach runs in
+ * reverse order before the Node closes. An integration decides the list order — the Spring one uses
+ * bean order — and nothing else about these hooks is the integration's to do.
  */
 @FunctionalInterface
 public interface GameRpcConfigurer {

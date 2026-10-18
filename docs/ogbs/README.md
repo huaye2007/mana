@@ -13,7 +13,8 @@ Every component requires both a **language-independent specification** and a **J
 | game-core | [Core Specification](OGBS-Core-1.0.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.md) | Implemented; shared Metadata and error codes |
 | game-runtime | [Runtime Specification](OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.md) | Implemented; Route, Context, Handler, HTTP annotations/dispatch/object results, Event, Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.md) | Implemented; real MySQL/MongoDB validation requires configured services |
-| game-spring | [Container Integration Specification](OGBS-Spring-1.0.md) | [Spring Java Development Specification](OGBS-Spring-Java-25-Specification-1.0.md) | Implemented; optional plain Spring discovery, managed HTTP/RPC configuration/lifecycle, typed RPC-to-Runtime adaptation, initialized Repository injection and shutdown drain |
+| game-boot | [Server Composition Specification](OGBS-Boot-1.0.md) | [Boot Java Development Specification](OGBS-Boot-Java-25-Specification-1.0.md) | Implemented; container-free joins: typed RPC-to-Runtime adapter, readiness and readings endpoints, one shutdown budget, business path prefix |
+| game-spring | [Container Integration Specification](OGBS-Spring-1.0.md) | [Spring Java Development Specification](OGBS-Spring-Java-25-Specification-1.0.md) | Implemented; optional plain Spring discovery and property binding, managed HTTP/RPC lifecycle, initialized Repository injection and the shutdown trigger; wires the game-boot joins |
 | game-network | [Network Specification](OGBS-Network-1.0.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.md) | Implemented; TCP/TLS/WS/WSS and independent HTTP/1.1 server with synchronous/callback responses |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.md) | Implemented; internal TCP, multiple Slots, calls, heartbeat/reconnection |
 | game-router | [Router Specification](OGBS-Router-1.0.md) | [Router Java Development Specification](OGBS-Router-Java-25-Specification-1.0.md) | Implemented; Router mesh on the existing RPC Node, one Router per service, exact Node addressing and broadcast; production capacity unverified |
@@ -68,6 +69,7 @@ The following links point into existing detailed flows, without creating extra s
 | Establishment, success/cancellation, resources | [Network §2,6](OGBS-Network-1.0.md#2-connection-establishment) | [Network §3–4,7](OGBS-Network-Java-25-Specification-1.0.md#3-server) |
 | Send acceptance, backpressure, references, errors | [Network §3–5](OGBS-Network-1.0.md#3-reads-writes-acceptance-and-backpressure) | [Network §2,6](OGBS-Network-Java-25-Specification-1.0.md#2-connection-and-handler) |
 | WebSocket, pipeline, handshake timeout | [Network §7](OGBS-Network-1.0.md#7-binary-websocket-profile) | [Network §5–6](OGBS-Network-Java-25-Specification-1.0.md#5-configuration-snapshots-and-handshake-parameters) |
+| RPC-to-Runtime join, readiness, shutdown budget | [Boot §2–5](OGBS-Boot-1.0.md#2-rpc-to-runtime-adapter) | [Boot §2–5](OGBS-Boot-Java-25-Specification-1.0.md#2-rpc-adapter) |
 
 <a id="已确认设计如何延续"></a>
 
@@ -99,9 +101,11 @@ flowchart LR
     R --> GR[game-router]
     GR --> E
     N --> RT
-    RT --> S[game-spring]
-    R -. optional .-> S
-    D --> S
+    RT --> B[game-boot]
+    D --> B
+    R -. optional .-> B
+    B --> S[game-spring]
+    B --> A
     S --> A
     S --> E[game-demo]
     R --> E
@@ -110,7 +114,7 @@ flowchart LR
     R --> A
 ```
 
-Arrows run from dependency to consumer. game-core has no third-party dependencies; each component declares the libraries it uses. The root build includes Core, Runtime, Data, Network, RPC, Router, Spring integration and [game-demo](../../game-demo/README.md). game-demo contains Network/Runtime HTTP/RPC application examples under their existing specification pairs, not a separate framework component. Optional RPC→Runtime integration is available through game-spring; MySQL Data usage is demonstrated in the main Spring application. Runtime depends on Network for HTTP entry, with explicit GET query/other-method JSON RouteKey fields or extraction methods, optional application HTTP context enrichment, and returned or callback responses. Network owns transport lifecycle/delivery; ordinary message codecs/replies and RPC integration remain application responsibilities. See [Runtime HTTP semantics](OGBS-Runtime-1.0.md#runtime-http-profile) and [Java binding](OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).
+Arrows run from dependency to consumer. game-core has no third-party dependencies; each component declares the libraries it uses. The root build includes Core, Runtime, Data, Network, RPC, Router, composition, Spring integration and [game-demo](../../game-demo/README.md). game-demo contains Network/Runtime HTTP/RPC application examples under their existing specification pairs, not a separate framework component. The RPC→Runtime adapter lives in game-boot and needs no container; game-spring wires it from beans and properties. MySQL Data usage is demonstrated in the main Spring application. Runtime depends on Network for HTTP entry, with explicit GET query/other-method JSON RouteKey fields or extraction methods, optional application HTTP context enrichment, and returned or callback responses. Network owns transport lifecycle/delivery; ordinary message codecs/replies and RPC integration remain application responsibilities. See [Runtime HTTP semantics](OGBS-Runtime-1.0.md#runtime-http-profile) and [Java binding](OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).
 
 <a id="版本与验证边界"></a>
 

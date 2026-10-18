@@ -150,17 +150,21 @@ game-runtime 依赖 game-core 与 game-network，在已有 artifact 中发布 cn
 Runtime 对已接纳请求 retain 到方法返回，不延长到延迟回复。跨 Route 回调恢复同一 HttpContext，但不延长请求生命周期。不增加监听器/执行器所有权：直接使用 Runtime 的应用单独创建、启动、关闭 HttpServer，在关闭 Runtime 前安排在途完成；可选 game-spring 托管监听生命周期和 context-path 映射。详见 [Runtime HTTP 语义](ogbs/OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile)、[Java 绑定](ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)、[RuntimeHttpExample](../game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java)。普通消息契约和独立 Network HTTP pipeline 保持原有行为，RPC 接入仍需显式实现/待完善。
 
 
+## 服务器组合
+
+[game-boot](../game-boot/README.zh-CN.md) 是把能力组件拼装成可运行服务器的那一层，也是唯一被允许同时依赖多个能力组件的模块。能力组件不应了解自己的邻居——Runtime 不该知道 RPC 线格式，RPC 不该知道 Route，Network 不该知道读数契约——因此适配放在这里：对象 RPC 到 Runtime 的适配器、各组件读数的适配与两个可观测性端点、一份关闭预算及其轮转阶段，以及业务路径前缀。这些都不需要容器，因为它们都不是容器的工作：应用自己构造、持有并关闭每一处拼装，容器集成只决定列表顺序、读取配置、持有生命周期回调。详见 [服务器组合语义](ogbs/OGBS-Boot-1.0.zh-CN.md) 与 [Java 开发规范](ogbs/OGBS-Boot-Java-25-Specification-1.0.zh-CN.md)。
+
 ## 可选 Spring 集成
 
-[game-spring](../game-spring/README.zh-CN.md) 依赖 Runtime、Data 和 spring-context，不使用 Spring Boot，核心模块不反向依赖 Spring。demo 使用 EnableGameRuntime/EnableGameData，仅保留应用 Domain、执行器、身份策略及数据源配置。ContextClosedEvent 先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime，随后普通监听器关闭 TCP、Spring 生命周期停止托管 HTTP，最后销毁 Data 和连接池。HTTP 应用配置 game.http.port 和 game.http.context-path，再声明 HttpHandler/HttpMethod 端点即可，其他网络参数使用配置或 GameHttpConfigurer。详见 [容器集成语义](ogbs/OGBS-Spring-1.0.zh-CN.md) 和 [Java 集成规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
+[game-spring](../game-spring/README.zh-CN.md) 是 game-boot 之上的 Spring 适配层，依赖 game-boot、Runtime、Data 和 spring-context，不使用 Spring Boot，核心模块不反向依赖 Spring。demo 使用 EnableGameRuntime/EnableGameData，仅保留应用 Domain、执行器、身份策略及数据源配置。ContextClosedEvent 先停止 Runtime 接纳并等待已登记工作，再关闭 Runtime，随后普通监听器关闭 TCP、Spring 生命周期停止托管 HTTP，最后销毁 Data 和连接池。HTTP 应用配置 game.http.port 和 game.http.context-path，再声明 HttpHandler/HttpMethod 端点即可，其他网络参数使用配置或 GameHttpConfigurer。详见 [容器集成语义](ogbs/OGBS-Spring-1.0.zh-CN.md) 和 [Java 集成规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)。
 
 
-可选 `@EnableGameRpc` 由 game-spring 装配 RpcNode、对象 codec 与 Runtime 适配，配置 node-id/端口；game-rpc 为 optional Maven 依赖，只有 HTTP/Data 的应用无需传递引入；game-demo 现为独立 RPC 示例显式添加 game-rpc。详见 [Spring Java 规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
+可选 `@EnableGameRpc` 由 game-spring 用 node-id/端口配置、业务 codec Bean 与有序 configurer Bean 构建 game-boot 的 `GameRpc`，并持有 Node 的 start/stop 回调；适配本身——codec 与协议查找、Runtime 分发、回复、Route 回调、钩子顺序——属于 game-boot，应用直接拼装时完全相同。game-rpc 为 optional Maven 依赖，只有 HTTP/Data 的应用无需传递引入；game-demo 为独立 RPC 示例显式添加 game-rpc。详见 [Boot §2](ogbs/OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#2-rpc-adapter) 与 [Spring Java 规范](ogbs/OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#managed-rpc)。
 
 ## 可观测性组合
 
-Core 在 `cn.managame.core.metrics` 里拥有"一条读数的形状"——gauge 还是 counter、点分名称、拉取式收集——仅此而已：没有导出格式、没有端点、没有依赖。各组件拥有"自己有哪些读数"，并以一个普通快照 record 上报：`RuntimeStats`、`DataStats`、`GameRouter.Stats`、`RpcStats` 与 `NetworkStats`。RuntimeStats 另外把工作按已注册 Domain 拆分，并为每个 Domain 带上绑定到它的执行器的上界，使队列深度有分母、拒绝有归属；Route Key 基数无界，有意不作为维度。集成层拥有收集：`@EnableGameMetrics` 把每个存在的组件的 record 适配成挂在固定前缀下的 `MetricsSource`，在业务分发之前提供 `/metrics` 与 `/readiness`，并在那里组合就绪条件。
+Core 在 `cn.managame.core.metrics` 里拥有"一条读数的形状"——gauge 还是 counter、点分名称、拉取式收集——仅此而已：没有导出格式、没有端点、没有依赖。各组件拥有"自己有哪些读数"，并以一个普通快照 record 上报：`RuntimeStats`、`DataStats`、`GameRouter.Stats`、`RpcStats` 与 `NetworkStats`。RuntimeStats 另外把工作按已注册 Domain 拆分，并为每个 Domain 带上绑定到它的执行器的上界，使队列深度有分母、拒绝有归属；Route Key 基数无界，有意不作为维度。组合层拥有收集：game-boot 的 `FrameworkMetrics` 把每个存在的组件的 record 适配成挂在固定前缀下的 `MetricsSource`，`ObservabilityEndpoints` 在业务分发之前提供 `/metrics` 与 `/readiness`；`@EnableGameMetrics` 只是决定哪些组件存在、并收集应用自己条件的那层 Spring 接线。
 
-正是这个分工让不依赖任何其他框架模块的 game-network 也能被加上仪表：它发布一个 record，而本来就依赖一切的 game-spring 去映射它。组件永远不需要知道指标契约，依赖图也不必为承载它而改变。
+正是这个分工让不依赖任何其他框架模块的 game-network 也能被加上仪表：它发布一个 record，而本来就依赖一切的 game-boot 去映射它。组件永远不需要知道指标契约，依赖图也不必为承载它而改变。
 
-就绪有意不是"读数加阈值"。它是一组具名条件，在所有 Route 执行器之外作答，于是饱和中或摘流中的实例依然答得出；框架只贡献组件对自身的陈述——准入是否开放、是否仍接受变更——而应用贡献策略，例如是否已附着 Router、世界是否已加载。契约：[Core §5](ogbs/OGBS-Core-1.0.zh-CN.md#5-可观测性)、[Network §10](ogbs/OGBS-Network-1.0.zh-CN.md#10-可观测性)、[RPC §12](ogbs/OGBS-RPC-1.0.zh-CN.md#12-可观测性)、[Spring §5](ogbs/OGBS-Spring-1.0.zh-CN.md#5-可观测性组合)。
+就绪有意不是"读数加阈值"。它是一组具名条件，在所有 Route 执行器之外作答，于是饱和中或摘流中的实例依然答得出；框架只贡献组件对自身的陈述——准入是否开放、是否仍接受变更——而应用贡献策略，例如是否已附着 Router、世界是否已加载。契约：[Core §5](ogbs/OGBS-Core-1.0.zh-CN.md#5-可观测性)、[Network §10](ogbs/OGBS-Network-1.0.zh-CN.md#10-可观测性)、[RPC §12](ogbs/OGBS-RPC-1.0.zh-CN.md#12-可观测性)、[Boot §4](ogbs/OGBS-Boot-1.0.zh-CN.md#4-observability-composition)、[Spring §5](ogbs/OGBS-Spring-1.0.zh-CN.md#5-可观测性组合)。

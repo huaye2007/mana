@@ -14,7 +14,8 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | [game-router](game-router/README.md) | A Router mesh on the existing single RpcNode: a service attaches to one Router, sends to exact Node IDs and broadcasts by service, and the Routers report to each other which Nodes are attached where |
 | game-runtime | Route execution, Context, Handler, HTTP annotations/dispatch, Event, GameTime, cancellable Timer / Cron, cross-Route calls |
 | game-data | Single/Group caches, asynchronous write-behind, MySQL/JDBC, MongoDB, append-only MySQL logs |
-| [game-spring](game-spring/README.md) | Optional plain Spring: annotation discovery, managed HTTP/RPC lifecycle, typed RPC adaptation, initialized Repository injection, Runtime shutdown drain |
+| [game-boot](game-boot/README.md) | The composition tier, with no container: typed RPC-to-Runtime adapter, readiness and readings endpoints, one shutdown budget, business path prefix |
+| [game-spring](game-spring/README.md) | Optional plain Spring: annotation discovery, property binding, managed HTTP/RPC lifecycle, initialized Repository injection, shutdown trigger |
 | [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories, GamePacket TCP dispatch, Runtime HTTP, timer/cron and standalone TCP/HTTP/RPC entries |
 | [game-benchmark](game-benchmark/README.md) | JMH micro-benchmarks (Metadata, RPC codec, Route executors) guarding hot paths, plus the opt-in game-data save path load driver; not part of any framework artifact, and nothing in it runs during the build |
 
@@ -26,7 +27,8 @@ game-core ──────→ game-data
     └──────────→ game-rpc     ←──── game-network
 game-rpc ───→ game-demo (standalone samples)
 game-rpc ───→ game-router ───→ game-demo (routing sample)
-game-runtime / game-data / spring-context ───→ game-spring ───→ game-demo
+game-runtime / game-data ───→ game-boot ←──── game-rpc (optional)
+game-boot / spring-context ───→ game-spring ───→ game-demo
 ```
 
 game-rpc contains RPC core and cn.managame.rpc.netty integration in one Maven module and depends on game-network. RPC does not depend on Runtime or a protocol registry. game-core has no third-party dependencies. Runtime depends on game-core and game-network for HTTP annotations and Route integration; it does not depend on RPC, Spring, or business serialization.
@@ -47,6 +49,7 @@ Every framework component requires a standard specification and a Java developme
 | game-router | [OGBS Router Specification](docs/ogbs/OGBS-Router-1.0.md) | [Router Java Development Specification](docs/ogbs/OGBS-Router-Java-25-Specification-1.0.md) |
 | game-runtime | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) | [Runtime Java Development Specification](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
 | game-data | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) | [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
+| game-boot | [Server Composition Specification](docs/ogbs/OGBS-Boot-1.0.md) | [Boot Java Development Specification](docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.md) |
 | game-spring | [Container Integration Specification](docs/ogbs/OGBS-Spring-1.0.md) | [Spring Java Development Specification](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md) |
 
 game-data provides Single/Group caches, asynchronous write-behind, MySQL/JDBC and MongoDB adapters, and append-only MySQL logs. It depends on game-core; game-demo already demonstrates Data through its Spring application. See the [module entry](game-data/README.md), [Data semantics](docs/ogbs/OGBS-Data-1.0.md), and [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md). Live database validation status is in the module documentation.
@@ -76,7 +79,7 @@ The same module holds the opt-in game-data save path load driver, which needs a 
 
 CI (`.github/workflows/ci.yml`) runs `mvn clean verify` and the quality checks on JDK 25.
 
-The root build includes game-core, game-network, game-rpc, game-router, game-runtime, game-data, game-spring, game-demo, and game-benchmark. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-demo, under `cn.managame.demo.examples.<component>`; framework artifacts contain no example classes. Run mvn -pl game-demo -am test to validate the examples. Optional RPC→Runtime integration is available through game-spring; Data usage is demonstrated by the Spring application.
+The root build includes game-core, game-network, game-rpc, game-router, game-runtime, game-data, game-boot, game-spring, game-demo, and game-benchmark. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-demo, under `cn.managame.demo.examples.<component>`; framework artifacts contain no example classes. Run mvn -pl game-demo -am test to validate the examples. The RPC→Runtime adapter is in game-boot and needs no container; game-spring wires it. Data usage is demonstrated by the Spring application.
 
 Run [NetworkEchoExample](game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 
@@ -155,7 +158,7 @@ game-network is a thin Netty facade: users extend the pipeline with native handl
 
 See the [Network module](game-network/README.md) and [Network Java Development Specification](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) for complete usage and ownership.
 
-RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple slots, active/passive peers, and call/notify/reply. Run [RpcEchoExample](game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) to print hello game-rpc. RpcHandler centrally handles messages, remote errors, and application decoding; optional RPC→Runtime integration is provided by game-spring.
+RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple slots, active/passive peers, and call/notify/reply. Run [RpcEchoExample](game-demo/src/main/java/cn/managame/demo/examples/rpc/RpcEchoExample.java) to print hello game-rpc. RpcHandler centrally handles messages, remote errors, and application decoding; optional RPC→Runtime integration is provided by game-boot.
 
 <a id="约定与当前边界"></a>
 
@@ -170,7 +173,7 @@ RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple s
 - Cron has six numeric fields (second, minute, hour, day, month, weekday), supports `* ? , - /`, uses Sunday=1 and UTC by default. Quartz `L/W/#`, names, and year fields are unsupported.
 - RPC uses one HashedWheelTimer per Node for call/handshake timeouts and reconnect delays; connection IdleStateHandler instances handle heartbeats. Call timeout starts after network ACCEPTED.
 - Network/RPC callbacks should return quickly; dispatch expensive work to Runtime. RPC core does not automatically decode responses or switch Runtime Routes.
-- Core, Network, RPC, Runtime, and Data implementations/tests are available. RPC has real TCP/reconnect tests; optional Runtime integration is available through game-spring, and production capacity benchmarks are not done. Spring auto-configuration, protocol generation, service discovery and business codecs are peripheral integrations. Router is implemented in game-router on the existing RPC Node.
+- Core, Network, RPC, Runtime, and Data implementations/tests are available. RPC has real TCP/reconnect tests; optional Runtime integration is available through game-boot, and production capacity benchmarks are not done. Spring auto-configuration, protocol generation, service discovery and business codecs are peripheral integrations. Router is implemented in game-router on the existing RPC Node.
 
 See [Architecture and execution contracts](docs/architecture.md) and the [repository RPC Wire Profile](docs/rpc-wire.md).
 
@@ -185,4 +188,4 @@ Register instances with `httpHandlers(...)`. HttpMethod.method uses HttpRequestM
 Run [RuntimeHttpExample](game-demo/src/main/java/cn/managame/demo/examples/runtime/RuntimeHttpExample.java) for annotated echo and a deferred cross-Route response. See [HTTP semantics](docs/ogbs/OGBS-Runtime-1.0.md#runtime-http-profile) and [Java API, failures, and ownership](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#runtime-http-api).
 
 
-Optional RPC integration: explicitly add game-rpc and use `@EnableGameRpc`, GameRpcCodec and game.rpc.node-id/game.rpc.port. game-spring adapts protocol decoding, Runtime dispatch, object replies, Route callbacks and Node lifecycle; applications retain topology and codec policy. See [Spring Java specification](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).
+Optional RPC integration: explicitly add game-rpc and use `@EnableGameRpc`, a GameRpcCodec Bean and game.rpc.node-id/game.rpc.port. game-boot's GameRpc adapts protocol decoding, Runtime dispatch, object replies and Route callbacks; game-spring builds it from the properties and owns the Node lifecycle callbacks, and applications retain topology and codec policy. An application without a container constructs GameRpc itself. See [Boot §2](docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.md#2-rpc-adapter) and [Spring Java specification](docs/ogbs/OGBS-Spring-Java-25-Specification-1.0.md#managed-rpc).

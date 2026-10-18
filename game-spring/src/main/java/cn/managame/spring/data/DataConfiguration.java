@@ -1,12 +1,12 @@
 package cn.managame.spring.data;
 
+import cn.managame.boot.lifecycle.ShutdownBudget;
 import cn.managame.data.GameData;
 import cn.managame.data.GameDataBuilder;
 import cn.managame.data.GroupRepository;
 import cn.managame.data.LogRepository;
 import cn.managame.data.SingleRepository;
 import cn.managame.data.mapper.EntityMapper;
-import cn.managame.spring.lifecycle.ShutdownBudget;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;

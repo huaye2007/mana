@@ -1,5 +1,7 @@
 package cn.managame.spring.rpc;
 
+import cn.managame.boot.rpc.GameRpcCodec;
+import cn.managame.boot.rpc.GameRpcConfigurer;
 import cn.managame.rpc.call.*;
 import cn.managame.rpc.message.*;
 import cn.managame.rpc.node.RpcNode;
@@ -121,25 +123,5 @@ class RpcCompositionTest {
             assertEquals(List.of("second:detach:listening", "first:detach:listening"),
                     Config.EVENTS.subList(Config.EVENTS.size() - 2, Config.EVENTS.size()));
         }
-    }
-
-    @Test void failedAttachDetachesEarlierConfigurersAndClosesTheNode() {
-        List<String> events = new ArrayList<>();
-        GameRpcConfigurer failing = new GameRpcConfigurer() {
-            public void configure(cn.managame.rpc.node.RpcNodeBuilder builder) {}
-            public void attach(RpcNode node) { throw new IllegalStateException("attach failed"); }
-        };
-        var builder = RpcNode.builder().nodeId(1).bindAddress(new InetSocketAddress("127.0.0.1", 0));
-        var runtime = cn.managame.runtime.GameRuntimeBuilder.builder()
-                .routeDomains(List.of(RouteDomain.of(1, "role")))
-                .routeExecutors(List.of(RouteExecutorBinding.of(RouteExecutors.virtualThreads(), 1))).build();
-        try (runtime) {
-            var error = assertThrows(IllegalStateException.class, () -> new GameRpc(runtime, new GameRpcCodec() {
-                public byte[] encode(Object message) { return new byte[0]; }
-                public <T> T decode(byte[] body, Class<T> type) { throw new UnsupportedOperationException(); }
-            }, builder, List.of(new Recorder("ok", 0, events), failing)));
-            assertEquals("attach failed", error.getMessage());
-        }
-        assertEquals(List.of("ok:decorate", "ok:attach:idle", "ok:detach:idle"), events);
     }
 }

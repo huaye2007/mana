@@ -2,13 +2,15 @@
 
 **[English](OGBS-Spring-Java-25-Specification-1.0.md)** | [简体中文](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md)
 
-对应 [容器集成语义](OGBS-Spring-1.0.zh-CN.md)。已实现可选 artifact `cn.managame:game-spring:1.0.0-SNAPSHOT`，使用 Java 25，依赖 game-runtime、game-data 及 spring-context 7.0.9，可选依赖 game-rpc，不依赖 Spring Boot，核心组件不反向依赖 Spring。
+对应 [容器集成语义](OGBS-Spring-1.0.zh-CN.md)。已实现可选 artifact `cn.managame:game-spring:1.0.0-SNAPSHOT`，使用 Java 25，依赖 game-boot、game-runtime、game-data 及 spring-context 7.0.9，可选依赖 game-rpc，不依赖 Spring Boot，核心组件不反向依赖 Spring。
+
+本模块是 [game-boot](OGBS-Boot-Java-25-Specification-1.0.zh-CN.md) 之上的 Spring 适配层：凡是拼装组件的东西都是 game-boot 类型，这里的一切都是发现、属性绑定、注入与 Spring 生命周期。`cn.managame.spring.*` 包不含任何属于自己的拼装。实现 `GameRpcCodec` 或 `ReadinessCheck` 的应用从 `cn.managame.boot.*` 导入它们。
 
 ## 1. Runtime 注册
 
 `cn.managame.spring.runtime.EnableGameRuntime` 导入内部配置，扫描 Handler/EventHandler/HttpHandler 标记及声明/继承 Cron 方法的类。`String[] basePackages() default {}` 对应 ComponentScan.basePackages，空值使用被注解配置类的包，采用标准 Spring profile/名称规则，不需额外 Component。声明类型可识别的既有 Bean 产物也参与；不为推断任务类型初始化未知 FactoryBean 产物。发现结果构建时冻结，按目标对象身份去重；prototype 对象和可识别 Spring AOP 代理以 IllegalArgumentException 拒绝。Runtime 校验注解签名，包括非法 private 方法。Runtime 注解不包含 Spring 注解。
 
-函数式 Bean 扩展 `GameRuntimeConfigurer.configure(GameRuntimeBuilder)` 在收集 Handler/任务及全部 ProtocolRegistry Bean（合并为一个注册表）后按 Spring 顺序执行。Builder 集合方法替换列表，显式 configurer 可覆盖扫描结果。应用提供 Domain/RouteExecutor 绑定及接入身份策略。执行器宜为 destroyMethod="close" 的 Bean，确保启动失败后释放调用方资源；成功构建转移生命周期至 Runtime，内置 close 幂等。配置创建名为 gameRuntime 的单例，绑定 Events 供外部静态发布；绑定冲突时关闭新实例。Handler 构造器不能依赖正在构造的 Runtime，延迟 provider 只能启动完成后使用。
+函数式 Bean 扩展 `GameRuntimeConfigurer.configure(GameRuntimeBuilder)` 在收集 Handler/任务及全部 ProtocolRegistry Bean（合并为一个注册表）后按 Spring 顺序执行。Builder 集合方法替换列表，显式 configurer 可覆盖扫描结果。应用提供 Domain/RouteExecutor 绑定及接入身份策略。执行器宜为 destroyMethod="close" 的 Bean，确保启动失败后释放调用方资源；成功构建转移生命周期至 Runtime，内置 close 幂等。配置创建名为 gameRuntime 的单例。它刻意**不**把该实例绑定为静态事件发布的进程默认值：这项绑定的有效期是整个进程（RT-EVENT-05），而 Bean 工厂每个上下文执行一次，在此绑定会使同一 JVM 中的第二个上下文与第一个冲突。改由应用在进程启动时调用 `Events.bind(runtime)`。Handler 构造器不能依赖正在构造的 Runtime，延迟 provider 只能启动完成后使用。
 
 ## 2. Data 注册
 
@@ -29,26 +31,24 @@
 
 ## 3. 停机
 
-内部 ContextClosedEvent 监听器使用 Ordered.HIGHEST_PRECEDENCE、supportsAsyncExecution=false。在 Spring 普通同步事件广播下只处理自身 Context，执行 Runtime.shutdown，最多等待 `game.runtime.drain-timeout-millis`（默认 60000，须为正数）；未排空时记录包含未完成数量的 WARNING，然后执行 Runtime.close。中断会提前结束等待、关闭 Runtime 并恢复中断状态。普通关闭监听器（例如 demo TCP 关闭）随后执行，再停止托管 HTTP 生命周期、销毁 Bean 和 Data 最终回写。不得安装更早/同优先级的资源关闭监听器、以自定义异步广播改变顺序，或在 Runtime Route 关闭 Context，否则违反 S-CLOSE-01。refresh 失败按 Spring 销毁清理。本模块持有托管 HTTP 监听器，不持有数据库池或额外业务线程。监听器可能在 refresh 最后生命周期阶段对外可达；其他生命周期若随后失败，Spring 关闭监听器及 Runtime，但此失败清理不保证优雅排空或响应投递。
+内部 ContextClosedEvent 监听器使用 Ordered.HIGHEST_PRECEDENCE 与 supportsAsyncExecution=false。在 Spring 默认同步事件广播下，它只处理自己所属的 Context，并运行 `ShutdownBudget` 的前两个阶段：标记 `ShutdownPhase`，在仍然接纳的状态下等待前导时间，调用 Runtime.shutdown，按预算推导出的排空时间等待终止，若未排空完成则记录 WARNING 并指出未完成数量与留给刷写的保留时间，然后调用 Runtime.close。前导或排空期间的中断会被记住、提前结束等待，并在 Runtime 关闭后重新置位。随后依次是普通关闭监听器（如 demo 的 TCP 停机）、托管 HTTP 生命周期 stop、Bean 销毁与 Data 最终刷写。不要安装更早或同优先级的资源关闭监听器，不要用自定义异步广播覆盖此事件顺序，也不要在 Runtime Route 上关闭 Context，这些都会违反 S-CLOSE-01。refresh 失败的资源清理遵循 Spring 销毁流程。本模块持有自己的托管 HTTP 监听器，但不持有数据库连接池或额外业务线程。监听器可能在 refresh 的最后生命周期阶段变为可达；若另一个生命周期失败，Spring 会关闭监听器与 Runtime，但这种 refresh 失败清理不保证优雅排空或响应投递。
 
-### 3.0 关停预算
+### 3.0 关闭预算
 
-实现 S-CLOSE-02 与 S-CLOSE-03。`cn.managame.spring.lifecycle.ShutdownBudget` 就是那份唯一声明的预算，由三个配置项创建并切分为顺序执行的各阶段；摘流是推导出来的，从不被直接配置。
+预算类型及其规则见 [Boot §3](OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#3-关闭预算)；本节只说明数值从哪里来。`ShutdownConfiguration` 从 Spring Environment 读取三个属性并调用 `ShutdownBudget.of`，因此超额切分在 refresh 时就失败。
 
-| 配置项 | 默认 | 阶段 |
+| 配置项 | 默认值 | 阶段 |
 | --- | --- | --- |
-| `game.shutdown.budget-millis` | 25 000 | 整份预算；请把编排器的宽限期设在它之上 |
-| `game.shutdown.lead-millis` | 0 | 就绪报失败而准入保持开放的那段 |
-| `game.shutdown.flush-reserve-millis` | 10 000 | 为 Data 最终刷盘保留 |
-| *推导* | 15 000 | `drain = budget − lead − flushReserve`，给已接纳工作 |
+| `game.shutdown.budget-millis` | 25 000 | 总预算；部署需让编排器宽限期高于它 |
+| `game.shutdown.lead-millis` | 0 | 就绪报告失败而准入仍开放 |
+| `game.shutdown.flush-reserve-millis` | 10 000 | 为 Data 最后一次持久化保留 |
+| *推导* | 15 000 | `排空 = 总预算 − 前导 − 刷写保留`，供已准入工作使用 |
 
-25 000 选在 Kubernetes 宽限期默认的 30 秒之下；`docker stop` 只给 10 秒，用它的部署据此调小预算。`ShutdownBudget.of` 拒绝非正的预算或保留额、负的提前量，以及任何让摘流分不到时间的切分，于是超额的预算在 refresh 时就失败，而不是很久以后把一次停机截断。原来的 `game.runtime.drain-timeout-millis` 已删除：单独配置摘流正是让总和漂移的原因。
+没有排空配置项：单独配置排空正是让总和漂移的原因，原先的 `game.runtime.drain-timeout-millis` 已移除。
 
-`ShutdownConfiguration` 被 Runtime 与 Data 两个配置同时 import，因此只要其中任一集成存在，预算与 `ShutdownPhase` 就存在，且两者读的是同一个实例。`DataConfiguration` 在应用的 `GameDataConfigurer` **之前**调用 `builder.shutdownTimeout(budget.flushReserve())`，于是这个保留额是一个框架默认值，更了解自己存储的应用仍可覆盖；没有 Runtime 集成时预算 Bean 可能不存在，Data 保持它自己的默认值。
+`ShutdownConfiguration` 同时被 Runtime 与 Data 配置导入，因此只要任一集成存在，`ShutdownBudget` 与 `ShutdownPhase` 就存在，且两者读到同一个实例。`DataConfiguration` 在应用的 `GameDataConfigurer` **之前**应用 `builder.shutdownTimeout(budget.flushReserve())`，于是保留时间是框架默认值，更了解自己存储的应用仍可覆盖；没有 Runtime 集成时预算 Bean 可能不存在，Data 保持自己的默认值。§5 从 `ShutdownPhase` 贡献 `shutdown.rotation` 就绪条件并置于列表首位，使退出轮转的实例报告的是这件事本身而不是它的后果。
 
-`ShutdownPhase` 是摘流与就绪之间唯一共享的那点状态：`leaveRotation()` 只置一次，`leavingRotation()` 可从任意线程读取，包括正在应答探测的 HTTP 线程。摘流监听器先置它、记一行提前量日志、在仍然接纳的状态下睡过这段，然后才调用 `runtime.shutdown()`；提前量为零时跳过睡眠。提前量或摘流期间的中断会被记住，并在 Runtime 关闭之后重新置位。§5 据它贡献 `shutdown.rotation` 就绪条件，并排在列表第一位，使正在退出轮转的实例报告的是这件事本身而不是它的后果。
-
-验证：[ShutdownBudgetTest](../../game-spring/src/test/java/cn/managame/spring/lifecycle/ShutdownBudgetTest.java) 覆盖推导、默认值落在 30 秒宽限期之下、必须失败的几种切分，以及阶段只置一次；[MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) 断言这份预算存在的理由——就绪已报 503 且点名 `shutdown.rotation`，而 `stats().accepting()` 仍为真，准入只在提前量结束之后才关闭。
+验证：[ShutdownBudgetTest](../../game-boot/src/test/java/cn/managame/boot/lifecycle/ShutdownBudgetTest.java) 覆盖推导、默认值与应当失败的切分；[MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) 验证预算存在的意义——`stats().accepting()` 仍为 true 时就绪已返回 503 并指名 `shutdown.rotation`，而准入只在前导结束后才关闭。
 
 ### 3.1 托管 HTTP
 
@@ -63,7 +63,7 @@
 | game.http.enabled | 发现 HttpHandler Bean 时为 true，否则 false | 显式 true/false 覆盖发现结果 |
 | game.http.port | 8080 | 0..65535；0 使用随机端口，通过 HttpServer.localAddress() 获取 |
 | game.http.bind-address | 127.0.0.1 | 非空白主机/地址；无法解析或占用导致绑定失败 |
-| game.http.context-path | 空（根路径） | `/` 也表示根路径；`/game/` 规范为 `/game`；原始绝对 ASCII 路径段使用字母/数字/`.`/`_`/`~`/`-`；不允许空段、`.`/`..` 段、百分号转义、query 或 fragment |
+| game.http.context-path | 空（根路径） | 传给 `HttpContextPath` 的取值，其规则见 [Boot §5](OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#5-业务路径前缀)，非法取值导致 refresh 失败 |
 | game.http.max-content-length | 1048576 | 正字节数；body 超限采用 Network 的 413 处理 |
 | game.http.max-initial-line-length | 4096 | 正字节数 |
 | game.http.max-header-size | 8192 | 正字节数 |
@@ -74,7 +74,7 @@
 
 `GameHttpConfigurer.configure(HttpServerBuilder)` Bean 在属性绑定之后、build 之前按 Spring 顺序执行，可覆盖网络参数、添加原生 TLS/CORS/鉴权 pipeline Handler 或传入调用方线程组。适配器最后安装 Runtime dispatch，因此 configurer 的 handler/asyncHandler 不替换它；扩展 Handler 仍可按 Network 原生 pipeline 契约显式消费请求。configurer 不能同步依赖正在构建的 HTTP Bean。借用线程组仍由调用方持有，必须存活到监听关闭之后。没有覆盖时由 Network 持有 NIO boss/worker 线程组。TLS 证书及任意原生选项使用此扩展，不自动推断 HTTP 安全策略。
 
-内部前缀适配按完整原始路径段匹配，不解码或重定向。`/game` 和 `/game/` 映射到端点 `/`；`/game/echo?routeKey=7` 映射到 `/echo?routeKey=7`。无前缀 `/echo`、`/games/echo` 和 `/game%2Fecho` 返回 404，无效 origin-form/fragment 目标返回 400。非根前缀使用独立 retain 的请求 duplicate 分发相对 URI，在 dispatch 返回后（包括失败）释放自身引用，不修改 Network 原请求。Runtime 独立 retain 已接纳请求到方法返回，延迟访问仍需自己的所有权。HTTP Context 工厂/codec 观察相对 URI，dispatch 前的原生 pipeline 扩展观察原始 URI。默认根路径直接分发原请求。不支持热重载属性。
+本配置安装的分发链，由外到内：存在该 Bean 时是 §5 的可观测性端点，然后是带配置前缀的 `HttpContextPath`，然后是 `runtime.http()`。HTTP Context 工厂/codec 观察相对 URI，dispatch 前的原生 pipeline 扩展观察原始 URI。不支持热重载属性。
 
 普通 `@HttpHandler(domain=3, routeKey="routeKey")` 和 `@HttpMethod("/echo")` 示例：
 
@@ -83,34 +83,39 @@ game.http.port=8080
 game.http.context-path=/game
 ```
 
-POST `/game/echo`，body 为 `{"routeKey":7,"text":"hello"}`，选择 Domain 3 / Key 7。端口/路径不提供 Domain、路由 Key 或鉴权身份。用户无需 HttpServer builder、asyncHandler 适配或关闭监听器。[HttpAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/runtime/HttpAssemblyTest.java) 验证自动扫描 Bean 启动、DTO/String/GET 分发、前缀边界、大小拒绝、禁用/无对象默认值、绑定失败清理、retain 引用所有权及停机接纳/排空/端口释放。[DemoServicesTest](../../game-demo/src/test/java/cn/managame/demo/DemoServicesTest.java) 通过相同自动监听器验证真实 Timer/Cron 业务执行。这些测试不验证 TLS/原生安全扩展、自定义广播顺序或生产负载。
-
-
+POST `/game/echo`，body 为 `{"routeKey":7,"text":"hello"}`，选择 Domain 3 / Key 7。端口/路径不提供 Domain、路由 Key 或鉴权身份。用户无需 HttpServer builder、asyncHandler 适配或关闭监听器。[HttpAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/runtime/HttpAssemblyTest.java) 验证自动扫描 Bean 启动、DTO/String/GET 分发、前缀边界、大小拒绝、禁用/无对象默认值、绑定失败清理及停机接纳/排空/端口释放。[DemoServicesTest](../../game-demo/src/test/java/cn/managame/demo/DemoServicesTest.java) 通过相同自动监听器验证真实 Timer/Cron 业务执行。这些测试不验证 TLS/原生安全扩展、自定义广播顺序或生产负载。
 
 <a id="managed-rpc"></a>
 
 ### 3.2 托管 RPC
 
-`cn.managame.spring.rpc.EnableGameRpc` 显式导入 RPC 装配。需要 GameRuntime Bean（通常由 EnableGameRuntime 提供）、线程安全的 GameRpcCodec Bean，以及 game.rpc.node-id（非零 uint32 原始位，以 int 保存）和 game.rpc.port（0..65535）配置。game.rpc.bind-address 默认 127.0.0.1；game.rpc.call-timeout-millis 可覆盖 Node 默认 5000ms。非法配置导致启动失败。应用须显式添加 game-rpc：game-spring 将其声明为 optional，只有 HTTP/Data 的应用不会传递引入。没有 Boot、发现、自动推断 Peer 列表或热更新。
+适配器本身、它的 codec 契约与组合钩子见 [Boot §2](OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#2-rpc-adapter)。本节只是围绕它的 Spring 接线，别无其他：不使用 Spring 的应用直接构造 `GameRpc`，得到完全相同的行为。
 
-GameRpcCodec 提供 `byte[] encode(Object)` 和 `<T> T decode(byte[], Class<T>)`，以及默认方法 `ByteBuf encode(Object, ByteBufAllocator)` 与 `<T> T decode(ByteBuf, Class<T>)`；适配器只调用 ByteBuf 形式，默认实现包装/复制后转给数组形式。codec 可覆盖 ByteBuf 形式，直接编码进（池化）缓冲区、从收到的帧解码，省去中间复制；ByteBuf 形式解码的 body 为借用，结果不得引用它。codec 须支持传输/Route 并发调用，返回非 null 且符合精确注册类型的对象，返回数组/对象独立于传输缓冲区生命周期。业务序列化由应用决定，例如 Fory，没有框架业务序列化格式。适配器复制借用入站字节，并在 Runtime 接纳前同步解码；大型/慢解码仍会延迟传输 EventLoop。解码对象不能保存借用 ByteBuf。出站数组返回后交给适配器，消费前 codec 不得修改/复用。
+`cn.managame.spring.rpc.EnableGameRpc` 显式导入 RPC 装配。它要求一个 GameRuntime Bean（通常来自 EnableGameRuntime）和一个线程安全的 `cn.managame.boot.rpc.GameRpcCodec` Bean，并读取以下属性：
 
-GameRpcConfigurer Bean 按 Spring 顺序执行。`configure(builder)` 在属性配置后调整 RpcNodeBuilder，此处设置的 handler 会被替换。随后 `decorate(handler)` 按同一顺序包装适配器的 Runtime RpcHandler（最后一个 configurer 位于最外层），返回值不得为 null；GameRouter 或 ServiceRouting 即通过它把托管 handler 作为 direct handler。build 之后、start 之前按顺序调用 `attach(node)`（例如 `routing.start(node)`）；attach 失败时逆序 detach 已成功的 configurer，并关闭未启动的 Node。生命周期停止时，在 Node 关闭前逆序调用 `detach(node)`（例如 `routing.close()`），失败只记录日志并继续关闭。路由请求进入 RouterHandler，而不是 runtime.dispatchRpc：其解码、Runtime 分发及精确路由回复（用保存的 RoutedRequest 调用 ServiceRouting.reply）仍由应用实现。`gameRpc` 持有 RpcNode 生命周期，`gameRpcNode` 暴露拓扑管理与 localAddress；内部 SmartLifecycle 在 singleton 初始化后以 Integer.MAX_VALUE phase 启动。Context.close 先按 S-CLOSE-01 排空 Runtime，再于生命周期停止阶段关闭 RPC，销毁幂等关闭。Context.stop 本身不是 Runtime 优雅停服，停止的 Node 不能重启。不要手动启停托管 Node，也不要通过它发送原始 call/notify/reply：内部回调关联由 GameRpc 管理，原始 API 使用独立 RpcNode。Handler 构造必须延迟获取 GameRpc（ObjectProvider 或后续 setter 使用），避免 Runtime/Handler/GameRpc 构造循环。
+| 配置项 | 默认值 | 边界 |
+| --- | --- | --- |
+| game.rpc.node-id | 必填 | int 中的非零 uint32 位模式 |
+| game.rpc.port | 必填 | 0..65535 |
+| game.rpc.bind-address | 127.0.0.1 | 非空白 |
+| game.rpc.call-timeout-millis | Node 默认 5000 | 设置时覆盖 Node 默认值 |
 
-入站 Call 和 Notify 按 ProtocolDescriptor.Type.REQUEST 查 command；Notify 的 requestId 为零，不使用独立 NOTIFY 协议注册。未知 command、codec 异常及 Runtime 同步接纳/签名/Key 失败传播到 RpcHandler：Call 尝试 HANDLER_ERROR，Notify 仅诊断。有效对象将来源 Node/Slot、command/requestId、调用方 Key/业务身份及收到的原 Metadata 传给 runtime.dispatchRpc。注解 Domain 和普通 HandlerMethod 签名保持一致，不暴露或伪造物理 Connection。
+属性非法时启动失败。需显式添加 game-rpc：game-spring 将其声明为可选依赖，因此仅使用 HTTP/Data 的应用不会继承它。不引入 Boot、服务发现、Peer 列表推断或热重载。
 
-`GameRpc.call(targetNodeId, routeKey, businessIdType, businessId, metadata, request, RouteCallback<T>)` 要求当前处于该 Runtime 的 Route，且存在 REQUEST 到响应的注册绑定；调用方 T 须符合绑定。序列化请求后登记 runtime.callback，成功/失败均回到精确来源 Context/Route，包含立即无 Peer 拒绝。远端错误码及本地 RPC 失败进入 RouteCallback.onFail；成功响应无法解码则为 PROTOCOL_ERROR。登记回调后 RpcNode 同步抛出异常时，适配器用 `CapturedRouteCallback.cancel()` 释放预留并重新抛出：调用方只从异常得知这次失败，业务回调不会再收到一次 onFail；登记前的序列化/绑定失败同样仅抛异常。同步拒绝不遗留回调预留。续接由 Runtime 执行，不创建 Spring 业务执行器。此对象便利回调不暴露响应 Metadata；需要传输级响应 envelope 时使用独立原始 RpcNode。
+| Bean | 角色 |
+| --- | --- |
+| `gameRpc` | `GameRpc` 适配器，destroyMethod="close"；由上表属性与有序 `GameRpcConfigurer` Bean 构造 |
+| `gameRpcNode` | `rpc.node()`，destroyMethod="" 使适配器保持所有者；暴露拓扑管理与 localAddress |
+| `gameRpcLifecycle` | Integer.MAX_VALUE 阶段的 SmartLifecycle；单例初始化后启动 Node，stop 时调用 `rpc.close()` |
 
-`GameRpc.notify(...)` 接受相同目标/Key/身份/Metadata/请求，返回 RpcSendStatus，无须当前 Route，也不能回复。`reply(response)` 从 Contexts.current(RpcHandlerContext.class) 获取上下文；`reply(context, response)` 允许保存不可变 envelope 做延迟回复，不保留传输 body。回复类型必须符合原请求注册的响应类，requestId 必须非零。`replyError(context, positiveCode)` 发送空错误响应。成功/失败回复的 Metadata 均为空。保留来源 Slot 优先和替换连接 fallback；ACCEPTED 仅代表传输接纳，不代表远端完成。业务 Handler 返回值不自动回复 RPC。异步 Handler 已接纳后的异常仍由普通 RuntimeErrorHandler 处理；需要错误回复时由业务显式发送，否则调用方可能超时。Runtime 外延迟应用工作不自动计入 drain。
-
-示例（ProtocolRegistry 声明 `request(cmd, QueryReq.class, QueryRes.class)` 与 `response(cmd2, QueryRes.class)`）：
+`GameRpcConfigurer` Bean 用 `ObjectProvider.orderedStream()` 收集，因此 Spring 顺序就是列表顺序，全部钩子由适配器调用——最后一个 configurer 位于最外层。顺序是本配置对它们唯一做出的决定。Context.close 先按 S-CLOSE-01 排空 Runtime，然后在生命周期 stop 与幂等销毁中关闭 RPC。Context.stop 本身不是优雅的 Runtime 停机；停止的 Node 不能重启。不要自行 start 或 close `gameRpcNode`，也不要通过它发送裸的 call/notify/reply。Handler 构造必须延迟获取 GameRpc（用 `ObjectProvider` 或之后的 setter），以避免 Runtime/Handler/GameRpc 构造环。
 
 ```java
 @Configuration
 @EnableGameRuntime(basePackages = "my.game")
 @EnableGameRpc
 class RpcConfig {
-    // 提供 GameRpcCodec、ProtocolRegistry、RouteExecutor 和 GameRuntimeConfigurer。
+    // 提供 GameRpcCodec、ProtocolRegistry、RouteExecutor 与 GameRuntimeConfigurer。
 }
 
 @Handler(domain = ROLE)
@@ -128,7 +133,7 @@ game.rpc.node-id=1
 game.rpc.port=9100
 ```
 
-在托管 Node 上组合服务角色 Router（路由请求如何进入 Runtime 由应用的 RouterHandler 决定）：
+在托管 Node 上组合服务角色 Router（被路由请求如何进入 Runtime 由应用的 RouterHandler 决定）：
 
 ```java
 @Bean GameRpcConfigurer routing(RouterHandler routed) {
@@ -144,11 +149,11 @@ game.rpc.port=9100
 }
 ```
 
-Context.refresh 后按应用拓扑策略调用 `context.getBean(RpcNode.class).addPeer(2, address, 1)`；使用路由时，以同样方式把 Node 连接到每个已声明的 Router。[RpcCompositionTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcCompositionTest.java) 验证 decorate/attach/detach 顺序、向 Runtime handler 的委托以及 attach 失败后的清理。[RpcAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java) 验证真实 TCP Call/Notify、身份/来源、对象回复、未知协议错误、立即失败及精确 Route 恢复，以及远端错误/坏响应回调、同步拒绝预留回收、超时续接排空、托管端口释放和一次性生命周期。部署安全、发现与生产容量不在验证范围。
+Context.refresh 之后，按应用拓扑策略调用 `context.getBean(RpcNode.class).addPeer(2, address, 1)`；使用路由时，以同样方式把 Node 连接到每个已声明的 Router。[RpcCompositionTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcCompositionTest.java) 验证 Spring 顺序成为钩子顺序，以及装饰链确实到达 Runtime handler；钩子契约本身（含 attach 失败后的清理）在 [BootRpcCompositionTest](../../game-boot/src/test/java/cn/managame/boot/rpc/BootRpcCompositionTest.java) 中以无容器方式验证。[RpcAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/rpc/RpcAssemblyTest.java) 通过装配好的 Bean 验证真实 TCP Call/Notify、身份/来源、对象回复、未知命令错误、立即失败与精确 Route 恢复，以及远端错误/畸形响应的路由、同步拒绝的预留清理、超时续接的排空、托管端口释放与一次性生命周期。部署安全、服务发现与生产容量仍不在此验证范围内。
 
 ## 4. 使用与验证
 
-demo 直接依赖 game-spring 和 game-rpc：game-spring 提供传递 Runtime/Data/Network/Core 与 Spring Context API，显式 game-rpc 用于归并后的独立 RPC 示例。Fory、JDBC 驱动、连接池仍为应用依赖。其他仅使用 HTTP/Data 的应用不因 game-spring 的 optional RPC 声明传递引入 game-rpc。`mvn -pl game-demo -am clean verify` 构建完整依赖 reactor 并执行应用和独立示例测试，无需预先安装框架 artifact。
+demo 直接依赖 game-spring 与 game-rpc。game-spring 传递提供 Boot/Runtime/Data/Network/Core 与 Spring Context API；显式的 game-rpc 支撑整合后的独立 RPC 示例。Fory、JDBC 驱动与连接池仍是应用依赖。其他仅使用 HTTP/Data 的应用仍不会继承 game-spring 的可选 RPC 依赖。`mvn -pl game-demo -am clean verify` 构建完整依赖反应堆，并在无需预装框架构件的情况下运行应用/独立执行测试。
 
 配置片段：
 
@@ -157,34 +162,31 @@ demo 直接依赖 game-spring 和 game-rpc：game-spring 提供传递 Runtime/Da
 @EnableGameRuntime(basePackages = "my.game")
 @EnableGameData(basePackages = "my.game")
 class GameConfig {
-    // 提供 DataSource、ProtocolRegistry、RouteExecutor 和 GameRuntimeConfigurer Bean。
+    // 提供 DataSource、ProtocolRegistry、RouteExecutor 与 GameRuntimeConfigurer Bean。
 }
 ```
 
-完整接入见 [GameRuntimeConfig](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) 及 [GameDataConfig](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java)。[CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java) 覆盖仅方法注解、继承/default 接口及工厂发现、去重、启动拒绝和真实 Route 执行。[RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java) 证明已接纳工作先于普通关闭监听器和资源销毁完成，新 Context 可重新绑定 Events。demo Repository 测试用 JDBC 桩验证初始化注入及三种基类，真实数据库和自定义广播/代理配置仍未验证。根 `mvn clean verify` 检查模块边界，RPC 及可选适配器现已纳入通过的根验证。
+完整接入见 [GameRuntimeConfig](../../game-demo/src/main/java/cn/managame/demo/common/runtime/GameRuntimeConfig.java) 及 [GameDataConfig](../../game-demo/src/main/java/cn/managame/demo/common/data/GameDataConfig.java)。[CronBeansTest](../../game-spring/src/test/java/cn/managame/spring/runtime/CronBeansTest.java) 覆盖仅方法注解、继承/default 接口及工厂发现、去重、启动拒绝和真实 Route 执行。[RuntimeLifecycleTest](../../game-spring/src/test/java/cn/managame/spring/runtime/RuntimeLifecycleTest.java) 证明已接纳工作先于普通关闭监听器和资源销毁完成，新 Context 可重新绑定 Events。demo Repository 测试用 JDBC 桩验证初始化注入及三种基类，真实数据库和自定义广播/代理配置仍未验证。根 `mvn clean verify` 检查模块边界，其中包含 game-boot、RPC 及本可选适配器。
 
+<a id="5-observability"></a>
 <a id="5-可观测性"></a>
 
 ## 5. 可观测性
 
-实现 [Spring §5](OGBS-Spring-1.0.zh-CN.md#5-可观测性组合)。包 `cn.managame.spring.metrics`，由 `@EnableGameMetrics` 显式启用。
+实现 [Spring §5](OGBS-Spring-1.0.zh-CN.md#5-可观测性组合)。包 `cn.managame.spring.metrics`，通过 `@EnableGameMetrics` 选择性启用。所发布的类型——`ReadinessCheck`、`ObservabilityEndpoints`、`FrameworkMetrics`——及它们做的一切都属于 [Boot §4](OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#4-可观测性)；贡献条件的应用实现 `cn.managame.boot.metrics.ReadinessCheck`。
 
-| 类型 | 角色 |
+| Bean | 角色 |
 | --- | --- |
-| `@EnableGameMetrics` | 导入该配置；不启用时组件依旧保留自己的计数器，应用通过各自的 `stats()` 读取 |
-| `ReadinessCheck` | public：`String name()`、`boolean ready()`。应用 Bean 按顺序收集并追加到框架自带的条件之后 |
-| `ObservabilityEndpoints` | public 的 `HttpDispatcher wrap(HttpDispatcher business)`；该 Bean 存在时由 Runtime HTTP 配置应用它 |
+| `gameMetricsRegistry` | `MetricsRegistry`，为每个存在的组件在固定前缀 `runtime`、`data`、`rpc`、`network` 下发布一个 `FrameworkMetrics` 源，各自经 `ObjectProvider` 解析，缺失的组件什么也不发布 |
+| `gameObservabilityEndpoints` | `ObservabilityEndpoints`，持有注册表、就绪条件与两个路径；该 Bean 存在时 §3.1 应用 `wrap` |
 
-Bean：`MetricsRegistry gameMetricsRegistry` 为每个存在的组件各发布一个源，挂在固定前缀 `runtime`、`data`、`rpc`、`network` 下，每个都经 `ObjectProvider` 解析，因此缺失的组件什么都不发布。`ObservabilityEndpoints gameObservabilityEndpoints` 持有注册表、就绪条件与两个路径。
+就绪条件按此顺序装配：来自 `ShutdownPhase` Bean 的 `shutdown.rotation`，然后是存在组件的 `runtime.accepting` 与 `data.accepting`，最后是应用自己按 Spring 顺序的 `ReadinessCheck` Bean。
 
-配置项：`game.metrics.path`（默认 `/metrics`）与 `game.metrics.readiness-path`（默认 `/readiness`）。两者必须是绝对路径、至少两个字符、不含 `?` 与 `#`，且互不相同；否则该 Bean 在 refresh 时以 `IllegalArgumentException` 失败。它们在应用 `game.http.context-path` 之前匹配，因此无论业务 context path 是什么都可在服务器根路径访问，context path 既不暴露也不隐藏它们。只服务 `GET`；其他方法一律落到业务分发。
+| 配置项 | 默认值 | 边界 |
+| --- | --- | --- |
+| `game.metrics.path` | `/metrics` | 绝对路径、至少两个字符、不含 `?` 与 `#`、与另一个不同；否则该 Bean 在 refresh 时抛 IllegalArgumentException |
+| `game.metrics.readiness-path` | `/readiness` | 同样规则 |
 
-就绪返回 200 与 `ready\n`，或 503 与 `not ready: ` 加上以逗号分隔的失败条件名。框架在相应 Bean 存在时贡献 `runtime.accepting` 与 `data.accepting`，取自 `stats().accepting()`；抛异常的条件计为不就绪。由于 `GameRuntime.shutdown()` 会在工作停止之前先关闭准入，正在摘流的实例在仍收尾已接纳工作期间就报 503，而读数在整个过程中持续可答。
+两者都在应用 `game.http.context-path` 之前匹配，因此无论业务前缀是什么都能在服务器根路径上够到，前缀既不暴露也不遮蔽它们。提供它们需要启用 Runtime HTTP 监听；注册表 Bean 无论如何都可用。应用自己创建而未暴露为 Bean 的 `NetworkServer` 由它自己用 `registry.publish(prefix, source)` 发布。
 
-`/metrics` 把每条读数按 `name value` 各占一行渲染，顺序与注册表一致，`Content-Type` 为 `text/plain; charset=UTF-8`。这里有意不采用某种具名导出格式：需要某种格式的应用实现 `MetricSink` 并映射名称即可——Core 的那份契约正是为此存在。
-
-两个路径都在 HTTP 线程上作答，位于 `HttpContextPath` 之前，因而在所有 Route 执行器之外——一个排在它所报告的工作后面的端点，在实例饱和时什么也说不出来。条件必须遵守同一条规则：凭已持有的状态作答，不阻塞、不分发。
-
-`FrameworkMetrics` 持有从各组件快照 record 到 `MetricsSource` 的适配。它们放在这里而不是放在组件里，是为了让组件不必知道指标契约，也让 game-network 继续不依赖任何其他框架模块。应用自己构造且未暴露为 Bean 的 `NetworkServer` 由它自己发布，用 `registry.publish(prefix, source)`。
-
-验证：[MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) 覆盖只装配 Runtime 时发布了哪些前缀、两个路径在 context path 之外被服务、应用自带的 `ReadinessCheck` 使实例不就绪并被点名、路径可配置、摘流中的 Runtime 报 503 而 `/metrics` 仍可答，以及路径校验。
+验证：[MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) 覆盖只装配 Runtime 时发布哪些前缀、经真实监听器在 context path 之外提供两个路径、应用的 `ReadinessCheck` 使实例变为不就绪并被指名、路径可配置，以及排空中的 Runtime 返回 503 而 `/metrics` 仍作答。端点行为本身（含路径校验）在 [ObservabilityEndpointsTest](../../game-boot/src/test/java/cn/managame/boot/metrics/ObservabilityEndpointsTest.java) 中以无容器方式验证。

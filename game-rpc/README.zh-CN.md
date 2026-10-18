@@ -2,7 +2,7 @@
 
 [English](README.md) | **[简体中文](README.zh-CN.md)**
 
-OGBS RPC 的 Java 25 实现，Maven cn.managame:game-rpc，依赖 game-core、game-network。提供内部 TCP、多 Slot、主动/被动 Peer、call/notify/reply、握手、心跳和带额外随机延迟的重连。一对节点只能有一方调用 addPeer；可配置共享密钥做 HMAC 握手鉴权，并通过 writeBufferWaterMark、channelOption、transport 配置写缓冲上限、socket 选项和 TLS 等传输 handler（合并 flush 已内置）。Peer 失去最后一条连接时，其未完成调用立即以 UNAVAILABLE 失败。Node 级 ID、通知隔离、恢复交接及验证边界见 [Java 规范 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。RPC 核心不依赖 Runtime/业务 codec，可选 Spring 适配由 game-spring 提供。
+OGBS RPC 的 Java 25 实现，Maven cn.managame:game-rpc，依赖 game-core、game-network。提供内部 TCP、多 Slot、主动/被动 Peer、call/notify/reply、握手、心跳和带额外随机延迟的重连。一对节点只能有一方调用 addPeer；可配置共享密钥做 HMAC 握手鉴权，并通过 writeBufferWaterMark、channelOption、transport 配置写缓冲上限、socket 选项和 TLS 等传输 handler（合并 flush 已内置）。Peer 失去最后一条连接时，其未完成调用立即以 UNAVAILABLE 失败。Node 级 ID、通知隔离、恢复交接及验证边界见 [Java 规范 9.1](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#91-审阅确认的缺陷与规模风险)。RPC 核心不依赖 Runtime/业务 codec，可选 Runtime 适配器由不需要容器的 [game-boot](../game-boot/README.zh-CN.md) 提供。
 
 ## 规范
 
@@ -47,6 +47,6 @@ mvn -pl game-rpc -am test
 mvn clean verify
 ```
 
-Wire、引用计数、完成竞争、真实 TCP、Peer 重建、恢复权竞争和超时隔离具有本地契约测试。RouterIntegrationTest 覆盖与普通 RPC 共用 Node 的路由、Router 丢失与重启。集成变更要求根 clean verify。有限调用准入暂缓，生产容量/跨语言互通未验证。可选 Runtime 接入在 game-spring；核心无发现或 RPC TLS/WS 配置。
+Wire、引用计数、完成竞争、真实 TCP、Peer 重建、恢复权竞争和超时隔离具有本地契约测试。RouterIntegrationTest 覆盖与普通 RPC 共用 Node 的路由、Router 丢失与重启。集成变更要求根 clean verify。有限调用准入暂缓，生产容量/跨语言互通未验证。可选 Runtime 接入在 game-boot；核心无发现或 RPC TLS/WS 配置。
 
 `RpcNode.stats()` 返回一份 `RpcStats` 快照。四个 gauge 由 Peer 表遍历得出——Peer 数、已连接 Peer 数、连接数、待完成调用数——另有五个累计 counter：因 Peer 级上限被拒的调用数、超时调用数、被拒发送数、已接纳握手数，以及重连次数。它们回答的是任何错误码都不回答的问题：待完成调用数对照 `maxPendingCalls` 说明 Node 距离拒绝还有多远，`sends.refused` 解释 Notify 为何消失，而已连接 Peer 数低于 Peer 数说明某个邻居不在了——这一点 RPC 从不宣告。发送、调用与投递的成功路径上不计任何东西——调用方知道自己发起了调用，也会收到交给它 handler 的每个请求——因此行为正常的 Node 完全不会移动任何计数器。吞吐、按 Peer 的细分与延迟都不上报。见 [RPC §12](../docs/ogbs/OGBS-RPC-1.0.zh-CN.md#12-可观测性) 与 [Java §10](../docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.zh-CN.md#10-stats)。

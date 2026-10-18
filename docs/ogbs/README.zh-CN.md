@@ -11,7 +11,8 @@
 | game-core | [Core Specification](OGBS-Core-1.0.zh-CN.md) | [Core Java Development Specification](OGBS-Core-Java-25-Specification-1.0.zh-CN.md) | 已实现；共享 Metadata 与错误码 |
 | game-runtime | [Runtime Specification](OGBS-Runtime-1.0.zh-CN.md) | [Runtime Java Development Specification](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md) | 已实现；Route、Context、Handler、HTTP 注解/分发/对象结果、Event、Timer/Cron |
 | game-data | [Data Specification](OGBS-Data-1.0.zh-CN.md) | [Data Java Development Specification](OGBS-Data-Java-25-Specification-1.0.zh-CN.md) | 已实现；真实 MySQL/MongoDB 验证需配置环境 |
-| game-spring | [容器集成规范](OGBS-Spring-1.0.zh-CN.md) | [Spring Java 开发规范](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md) | 已实现；可选普通 Spring 扫描、HTTP/RPC 配置与托管生命周期、对象 RPC 到 Runtime 适配、初始化 Repository 注入与停机排空 |
+| game-boot | [服务器组合规范](OGBS-Boot-1.0.zh-CN.md) | [Boot Java 开发规范](OGBS-Boot-Java-25-Specification-1.0.zh-CN.md) | 已实现；无容器的拼装：对象 RPC 到 Runtime 适配器、就绪与读数端点、一份关闭预算、业务路径前缀 |
+| game-spring | [容器集成规范](OGBS-Spring-1.0.zh-CN.md) | [Spring Java 开发规范](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md) | 已实现；可选普通 Spring 扫描与属性绑定、HTTP/RPC 托管生命周期、初始化 Repository 注入与停机触发；负责接线 game-boot 的拼装 |
 | game-network | [Network Specification](OGBS-Network-1.0.zh-CN.md) | [Network Java Development Specification](OGBS-Network-Java-25-Specification-1.0.zh-CN.md) | 已实现；TCP/TLS/WS/WSS 与独立 HTTP/1.1 服务端（同步/回调响应） |
 | game-rpc | [RPC Specification](OGBS-RPC-1.0.zh-CN.md) | [RPC Java Development Specification](OGBS-RPC-Java-25-Specification-1.0.zh-CN.md) | 已实现；内部 TCP、多 Slot、调用、心跳/重连 |
 | game-router | [Router Specification](OGBS-Router-1.0.zh-CN.md) | [Router Java Development Specification](OGBS-Router-Java-25-Specification-1.0.zh-CN.md) | 已实现；现有 RPC Node 上的 Router 网格，每个服务一个 Router，Node 精确寻址及广播；生产容量未验证 |
@@ -88,9 +89,11 @@ flowchart LR
     R --> GR[game-router]
     GR --> E
     N --> RT
-    RT --> S[game-spring]
-    R -. optional .-> S
-    D --> S
+    RT --> B[game-boot]
+    D --> B
+    R -. optional .-> B
+    B --> S[game-spring]
+    B --> A
     S --> A
     S --> E[game-demo]
     R --> E
@@ -99,7 +102,7 @@ flowchart LR
     R --> A
 ```
 
-箭头由被依赖组件指向使用方。game-core 没有第三方依赖，各组件自行声明所用的库。当前根构建包含 Core、Runtime、Data、Network、RPC、Router、Spring 集成和 [game-demo](../../game-demo/README.zh-CN.md)。game-demo 中的 Network/Runtime HTTP/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。可选 RPC→Runtime 接入由 game-spring 提供，MySQL Data 使用由主 Spring 应用演示。Runtime 为 HTTP 入口依赖 Network，支持显式 GET query/其他方法 JSON RouteKey 字段或提取方法，可选应用 HTTP Context 补充，以及返回响应或回调响应。Network 负责传输生命周期及发送，普通消息编解码/回复与 RPC 接入仍由应用负责。详见 [Runtime HTTP 语义](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 和 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
+箭头由被依赖组件指向使用方。game-core 没有第三方依赖，各组件自行声明所用的库。当前根构建包含 Core、Runtime、Data、Network、RPC、Router、组合层、Spring 集成和 [game-demo](../../game-demo/README.zh-CN.md)。game-demo 中的 Network/Runtime HTTP/RPC 应用示例遵循各自已有的两层规范，不是独立框架组件。RPC→Runtime 适配器位于 game-boot，不需要容器；game-spring 用 Bean 与属性接线它。MySQL Data 使用由主 Spring 应用演示。Runtime 为 HTTP 入口依赖 Network，支持显式 GET query/其他方法 JSON RouteKey 字段或提取方法，可选应用 HTTP Context 补充，以及返回响应或回调响应。Network 负责传输生命周期及发送，普通消息编解码/回复与 RPC 接入仍由应用负责。详见 [Runtime HTTP 语义](OGBS-Runtime-1.0.zh-CN.md#runtime-http-profile) 和 [Java 绑定](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#runtime-http-api)。
 
 ## 版本与验证边界
 

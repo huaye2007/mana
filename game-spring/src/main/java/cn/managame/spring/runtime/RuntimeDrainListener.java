@@ -1,8 +1,8 @@
 package cn.managame.spring.runtime;
 
 import cn.managame.runtime.GameRuntime;
-import cn.managame.spring.lifecycle.ShutdownBudget;
-import cn.managame.spring.lifecycle.ShutdownPhase;
+import cn.managame.boot.lifecycle.ShutdownBudget;
+import cn.managame.boot.lifecycle.ShutdownPhase;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import org.springframework.context.*;

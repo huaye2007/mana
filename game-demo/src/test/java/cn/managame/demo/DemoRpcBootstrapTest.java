@@ -1,13 +1,13 @@
 package cn.managame.demo;
 
+import cn.managame.boot.rpc.GameRpc;
+import cn.managame.boot.rpc.GameRpcCodec;
 import cn.managame.demo.bus.user.LoginReq;
 import cn.managame.demo.common.rpc.GameRpcConfig;
 import cn.managame.demo.common.runtime.GameRuntimeConfig;
 import cn.managame.demo.examples.ExampleTestSupport;
 import cn.managame.demo.network.message.PingMessage;
 import cn.managame.rpc.node.RpcNode;
-import cn.managame.spring.rpc.GameRpc;
-import cn.managame.spring.rpc.GameRpcCodec;
 import org.apache.fory.ThreadSafeFory;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;

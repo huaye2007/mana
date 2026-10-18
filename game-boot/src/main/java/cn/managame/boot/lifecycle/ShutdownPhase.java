@@ -1,4 +1,4 @@
-package cn.managame.spring.lifecycle;
+package cn.managame.boot.lifecycle;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 

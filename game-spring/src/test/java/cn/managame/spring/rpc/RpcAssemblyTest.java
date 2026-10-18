@@ -1,5 +1,7 @@
 package cn.managame.spring.rpc;
 
+import cn.managame.boot.rpc.GameRpc;
+import cn.managame.boot.rpc.GameRpcCodec;
 import cn.managame.core.*;
 import cn.managame.rpc.call.*;
 import cn.managame.rpc.message.*;

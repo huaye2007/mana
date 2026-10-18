@@ -1,4 +1,4 @@
-package cn.managame.spring.lifecycle;
+package cn.managame.boot.lifecycle;
 
 import java.time.Duration;
 import org.junit.jupiter.api.Test;

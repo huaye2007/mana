@@ -18,7 +18,7 @@ The standard defines shared encoding, ownership, and error-code meanings. The Ja
 
 ## Observability
 
-Package `cn.managame.core.metrics` is the one contract between the framework and whatever collects readings: `MetricSink` (what a collector implements), `MetricsSource` (what a component publishes) and `MetricsRegistry` (where they meet). Collection is pull, so nothing happens until something collects and no data path pays for it; Core defines gauges, counters and the dotted naming rule and no exposition format, which is why it still has no third-party dependency. Which readings exist belongs to each component; adapting them to a collector belongs to [game-spring](../game-spring/README.md). See [Core §5](../docs/ogbs/OGBS-Core-1.0.md#5-observability) and [Java §5](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md#5-observability-binding).
+Package `cn.managame.core.metrics` is the one contract between the framework and whatever collects readings: `MetricSink` (what a collector implements), `MetricsSource` (what a component publishes) and `MetricsRegistry` (where they meet). Collection is pull, so nothing happens until something collects and no data path pays for it; Core defines gauges, counters and the dotted naming rule and no exposition format, which is why it still has no third-party dependency. Which readings exist belongs to each component; adapting them to a collector belongs to [game-boot](../game-boot/README.md). See [Core §5](../docs/ogbs/OGBS-Core-1.0.md#5-observability) and [Java §5](../docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md#5-observability-binding).
 
 ## Build and validation
 

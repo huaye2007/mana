@@ -1,5 +1,7 @@
 package cn.managame.spring.lifecycle;
 
+import cn.managame.boot.lifecycle.ShutdownBudget;
+import cn.managame.boot.lifecycle.ShutdownPhase;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;

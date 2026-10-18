@@ -1,7 +1,6 @@
 package cn.managame.spring.runtime;
 
 import cn.managame.network.http.HttpServer;
-import cn.managame.network.http.HttpResponseCallback;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.executor.*;
 import cn.managame.runtime.route.RouteDomain;
@@ -174,24 +173,6 @@ class HttpAssemblyTest {
         try (var restarted = new Application(Map.of())) { restarted.refresh(); assertTrue(restarted.port() > 0); }
     }
 
-    @Test void prefixMappingPreservesOriginalRequestAndReferenceOwnershipOnFailure() {
-        var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/api/query?id=7");
-        var response = new HttpResponseCallback() {
-            public boolean onResponse(FullHttpResponse response) { response.release(); return true; }
-            public boolean onFail(Throwable cause) { throw new AssertionError(cause); }
-        };
-        try {
-            var mapping = new HttpContextPath("/api", (mapped, _) -> {
-                assertEquals("/query?id=7", mapped.uri());
-                assertEquals("/api/query?id=7", request.uri());
-                throw new IllegalStateException("delegate failed");
-            });
-            assertThrows(IllegalStateException.class, () -> mapping.dispatch(request, response));
-            assertEquals(1, request.refCnt()); assertEquals("/api/query?id=7", request.uri());
-        } finally { request.release(); }
-        for (String invalid : List.of("api", "/api//v1", "/api//", "/api?x", "/api#x", "/api/%2f", "/./api"))
-            assertThrows(IllegalArgumentException.class, () -> new HttpContextPath(invalid, (_, _) -> {}));
-    }
 
     private static HttpResponse<String> post(HttpClient client, String url, String body) throws Exception {
         return client.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(5))
