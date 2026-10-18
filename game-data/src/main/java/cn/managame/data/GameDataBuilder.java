@@ -17,8 +17,15 @@ public final class GameDataBuilder {
     private Duration cacheExpire = Duration.ofMinutes(30), flushInterval = Duration.ofSeconds(1);
     /** Default bound of queued logs per LogRepository. */
     public static final int DEFAULT_LOG_QUEUE_CAPACITY = 100_000;
+    /** Default bound of distinct entities waiting to be saved, across all state repositories. */
+    public static final int DEFAULT_MAX_PENDING_CHANGES = 100_000;
+    /** Default bound of cached entries per state repository. */
+    public static final int DEFAULT_MAX_CACHE_ENTRIES = 1_000_000;
     private int batchSize = 500;
     private int logQueueCapacity = DEFAULT_LOG_QUEUE_CAPACITY;
+    private int maxPendingChanges = DEFAULT_MAX_PENDING_CHANGES;
+    private int maxCacheEntries = DEFAULT_MAX_CACHE_ENTRIES;
+    private Duration pendingChangeWait = Duration.ofSeconds(5);
     private Duration shutdownTimeout = Duration.ofSeconds(30);
     private ZoneId partitionZone = ZoneOffset.UTC;
     private JsonCodec jsonCodec;
@@ -82,6 +89,31 @@ public final class GameDataBuilder {
         if (value < 1) throw new IllegalArgumentException("logQueueCapacity");
         logQueueCapacity = value; return this;
     }
+    /**
+     * Distinct entities that may wait to be saved, across all state repositories
+     * (default {@value #DEFAULT_MAX_PENDING_CHANGES}). A change to an entity that is already waiting always
+     * merges and is always accepted; one that would add another entity waits up to
+     * {@link #pendingChangeWait(Duration)} for a save pass to make room and is then refused with
+     * DataOperationException, so memory is a setting rather than an outcome of how fast business code writes.
+     */
+    public GameDataBuilder maxPendingChanges(int value) {
+        if (value < 1) throw new IllegalArgumentException("maxPendingChanges");
+        maxPendingChanges = value; return this;
+    }
+    /** How long a write waits for room in a full dirty set before it is refused (default 5 s; 0 refuses at once). */
+    public GameDataBuilder pendingChangeWait(Duration value) {
+        Objects.requireNonNull(value); if (value.isNegative()) throw new IllegalArgumentException("pendingChangeWait");
+        value.toNanos(); pendingChangeWait = value; return this;
+    }
+    /**
+     * Entries one state repository may cache (default {@value #DEFAULT_MAX_CACHE_ENTRIES}). Over it, the
+     * clean entries that went longest unread are evicted on the persistence thread; entries with unsaved
+     * changes are never evicted, so keep this above maxPendingChanges for the bound to be reachable.
+     */
+    public GameDataBuilder maxCacheEntries(int value) {
+        if (value < 1) throw new IllegalArgumentException("maxCacheEntries");
+        maxCacheEntries = value; return this;
+    }
     /** How long close keeps retrying retryable failures before dropping and reporting the rest. */
     public GameDataBuilder shutdownTimeout(Duration value) {
         Objects.requireNonNull(value); if (value.isNegative()) throw new IllegalArgumentException("shutdownTimeout");
@@ -142,12 +174,13 @@ public final class GameDataBuilder {
         }
         // No background resources exist until all mappings and schemas initialize successfully.
         for (var entry : mappers.entrySet()) entry.getValue().initialize(entry.getKey());
-        WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, shutdownTimeout, cacheExpire, errorHandler, retryPolicy);
+        WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, shutdownTimeout,
+                cacheExpire, errorHandler, retryPolicy, maxPendingChanges, pendingChangeWait);
         for (Prepared p : prepared) {
             if (p.repository() instanceof SingleRepository<?,?> repository)
-                repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire);
+                repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire, maxCacheEntries);
             else if (p.repository() instanceof GroupRepository<?,?> repository)
-                repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire);
+                repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire, maxCacheEntries);
             else if (p.repository() instanceof LogRepository<?> repository) {
                 repository.initialize(p.logWriter(), writer, logQueueCapacity); writer.addLog(repository);
             }

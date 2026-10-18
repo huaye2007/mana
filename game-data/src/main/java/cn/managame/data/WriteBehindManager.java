@@ -23,13 +23,18 @@ import java.util.function.Consumer;
  */
 final class WriteBehindManager {
     private enum State { RUNNING, CLOSING, CLOSED }
+    /** A cache sweep. {@code idleDue} is false on the ticks between idle sweeps, when only a cache over its
+     *  entry bound has anything to do. */
+    @FunctionalInterface interface Sweeper { void sweep(boolean idleDue); }
     private static final System.Logger LOG = System.getLogger(WriteBehindManager.class.getName());
+    /** How often a writer blocked on a full dirty set re-checks; a pass frees room in bursts, not per row. */
+    private static final long PENDING_POLL_NANOS = 1_000_000;
     private static final List<DataOperation> ORDER =
             List.of(DataOperation.DELETE, DataOperation.DELETE_INSERT, DataOperation.INSERT, DataOperation.UPDATE);
     private final PendingBuffer buffer;
     private final Map<EntityMeta, EntityMapper> mappers;
     private final List<LogRepository<?>> logs = new ArrayList<>();
-    private final List<Runnable> sweepers = new ArrayList<>();
+    private final List<Sweeper> sweepers = new ArrayList<>();
     private final long sweepNanos;
     private long lastSweep = System.nanoTime();
     private final ScheduledExecutorService scheduler;
@@ -40,7 +45,8 @@ final class WriteBehindManager {
     private volatile Thread pipelineThread;
     private volatile State state = State.RUNNING;
     private final int batchSize;
-    private final long intervalNanos, shutdownNanos;
+    private final long maxPending;
+    private final long intervalNanos, shutdownNanos, pendingWaitNanos;
     private final DataErrorHandler handler;
     private final RetryPolicy retry;
     /** First drop in this GameData's lifetime; close reports it. */
@@ -48,15 +54,18 @@ final class WriteBehindManager {
     /** First drop during the current explicit flush; guarded by {@code pipeline}. */
     private DataSaveException callFailure;
     private volatile int deferred; // retryable failures left pending by the latest flush
+    private int claimedCount;      // changes the latest pass claimed; guarded by pipeline
     private final LongAdder failedBatches = new LongAdder(), flushes = new LongAdder(), saveNanos = new LongAdder(),
-            droppedLogs = new LongAdder();
+            droppedLogs = new LongAdder(), rejectedChanges = new LongAdder();
     private volatile DataSaveException closeFailure;
 
     WriteBehindManager(Map<EntityMeta,EntityMapper> mappers, Duration interval, int batchSize, Duration shutdownTimeout,
-                       Duration cacheExpire, DataErrorHandler handler, RetryPolicy retry) {
+                       Duration cacheExpire, DataErrorHandler handler, RetryPolicy retry,
+                       int maxPendingChanges, Duration pendingChangeWait) {
         this.mappers = Collections.unmodifiableMap(new LinkedHashMap<>(mappers));
         buffer = new PendingBuffer(mappers.keySet());
         this.batchSize = batchSize; this.handler = handler; this.retry = retry;
+        maxPending = maxPendingChanges; pendingWaitNanos = pendingChangeWait.toNanos();
         intervalNanos = interval.toNanos(); shutdownNanos = shutdownTimeout.toNanos();
         sweepNanos = Math.max(intervalNanos, cacheExpire.toNanos() / 4);
         var executor = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().daemon().name("game-data-flush").factory());
@@ -86,13 +95,46 @@ final class WriteBehindManager {
         admission.getAndUpdate(value -> value | Long.MIN_VALUE);
         while ((admission.get() & Long.MAX_VALUE) != 0) LockSupport.parkNanos(10_000);
     }
+    /**
+     * Admits a change that may add a new key to the dirty set (D-WRITE-04). A key that is already pending
+     * only merges and is always admitted; otherwise a full set is waited out for pendingChangeWait and then
+     * refused, so an application writing through an outage sees errors instead of growing memory. The wait
+     * happens here, before the shutdown barrier is entered, so a waiting writer can never hold up close.
+     *
+     * @param id the pending key the change would use, or null when the call records several (deleteGroup)
+     */
+    void admit(EntityMeta meta, Object id) {
+        if (buffer.size() < maxPending) return;
+        if (id != null && buffer.pending(meta, id)) return;
+        // A change recorded from a Mapper or Handler callback would be waiting for the pass it is running
+        // inside, so it is refused at once instead of stalling that pass for pendingChangeWait.
+        if (Thread.currentThread() == pipelineThread) {
+            rejectedChanges.increment();
+            throw new DataOperationException("Cannot wait for room in the dirty set from a persistence callback");
+        }
+        long deadline = System.nanoTime() + pendingWaitNanos;
+        for (;;) {
+            ensureRunning();                       // closing refuses waiters rather than holding them
+            if (System.nanoTime() - deadline >= 0) {
+                rejectedChanges.increment();
+                throw new DataOperationException(maxPending + " changes are already waiting to be saved");
+            }
+            LockSupport.parkNanos(Math.min(PENDING_POLL_NANOS, Math.max(0, deadline - System.nanoTime())));
+            if (Thread.interrupted()) {
+                Thread.currentThread().interrupt();
+                throw new DataOperationException("Interrupted while waiting for room in the dirty set");
+            }
+            if (buffer.size() < maxPending) return;
+            if (id != null && buffer.pending(meta, id)) return;
+        }
+    }
     void record(EntityMeta meta, Object id, DataOperation operation, Object entity) {
         buffer.record(meta, id, operation, entity);
     }
     boolean pending(EntityMeta meta, Object id) { return buffer.pending(meta, id); }
     Collection<Change> pending(EntityMeta meta) { return buffer.pending(meta); }
     /** Cache eviction runs here between flushes, never while a claimed change is being saved. */
-    void addSweeper(Runnable sweeper) { sweepers.add(sweeper); }
+    void addSweeper(Sweeper sweeper) { sweepers.add(sweeper); }
 
     private void tick() {
         long start = System.nanoTime();
@@ -105,24 +147,33 @@ final class WriteBehindManager {
             }
         }
     }
+    /**
+     * Idle eviction keeps its own interval; the entry bound is checked every tick, because a cache that is
+     * over it should come back down within passes rather than within the idle sweep interval.
+     */
     private void sweep() {
-        if (System.nanoTime() - lastSweep < sweepNanos) return;
+        boolean idleDue = System.nanoTime() - lastSweep >= sweepNanos;
         synchronized (pipeline) {
             if (state != State.RUNNING) return;
-            lastSweep = System.nanoTime();
-            for (Runnable sweeper : sweepers) {
-                try { sweeper.run(); }
+            if (idleDue) lastSweep = System.nanoTime();
+            for (Sweeper sweeper : sweepers) {
+                try { sweeper.sweep(idleDue); }
                 catch (RuntimeException e) { LOG.log(System.Logger.Level.ERROR, "Cache sweep failed", e); }
             }
         }
     }
-    /** One pass over everything pending when it starts; returns the number of retryable leftovers. */
+    /**
+     * One bounded pass: each entity type contributes at most what was pending for it when the pass reached
+     * it, so a pass always ends and {@code flushes} advances even while producers keep writing. Returns the
+     * number of retryable leftovers; {@link #claimedCount} tells whether the pass had anything to claim at all.
+     */
     int flush() {
         synchronized (pipeline) {
             if (state == State.CLOSED) return 0;
             pipelineThread = Thread.currentThread();
             long started = System.nanoTime();
             int left = 0;
+            claimedCount = 0;
             try {
                 for (EntityMeta meta : buffer.metas()) left += flushEntity(meta);
                 for (LogRepository<?> log : logs) left += log.drain(this, batchSize);
@@ -135,8 +186,10 @@ final class WriteBehindManager {
     private int flushEntity(EntityMeta meta) {
         EntityMapper mapper = mappers.get(meta);
         var byOperation = new EnumMap<DataOperation, List<Claimed>>(DataOperation.class);
-        for (Claimed claimed : buffer.claim(meta))
-            byOperation.computeIfAbsent(claimed.change().operation(), ignored -> new ArrayList<>()).add(claimed);
+        for (Claimed claim : buffer.claim(meta)) {
+            claimedCount++;
+            byOperation.computeIfAbsent(claim.change().operation(), ignored -> new ArrayList<>()).add(claim);
+        }
         int left = 0;
         for (DataOperation op : ORDER) {
             List<Claimed> claimed = byOperation.getOrDefault(op, List.of());
@@ -219,12 +272,16 @@ final class WriteBehindManager {
         long queued = 0;
         for (var log : logs) queued += log.queuedLogs();
         return new DataStats(state == State.RUNNING, buffer.size(), queued, failedBatches.sum(), flushes.sum(),
-                saveNanos.sum(), singles, groups, droppedLogs.sum());
+                saveNanos.sum(), singles, groups, droppedLogs.sum(), rejectedChanges.sum());
     }
     /**
      * Persists everything accepted before the call, or throws: DataSaveException when this flush dropped a
      * change (already reported to DataErrorHandler) or left retryable changes pending. Earlier drops do not
      * make later flushes fail; close reports them once more.
+     *
+     * <p>A pass is bounded, so one may not cover a dirty set that grew while it ran: passes repeat until they
+     * have claimed as much as was pending when the call started. Changes recorded after that still wait for
+     * the next pass, so quiesce the writers first for a stable barrier.
      */
     void flushNow() {
         if (Thread.currentThread() == pipelineThread) throw new DataOperationException("Cannot flush from a persistence callback");
@@ -233,7 +290,9 @@ final class WriteBehindManager {
         DataSaveException dropped;
         synchronized (pipeline) {
             callFailure = null;
-            left = flush();
+            long budget = buffer.size();
+            do { left = flush(); budget -= claimedCount; }
+            while (left == 0 && claimedCount > 0 && budget > 0 && buffer.size() > 0);
             dropped = callFailure;
         }
         if (dropped != null) throw dropped;
@@ -254,7 +313,14 @@ final class WriteBehindManager {
             scheduler.shutdown();
             long deadline = System.nanoTime() + shutdownNanos;
             boolean interrupted = false;
-            while (flush() > 0 && System.nanoTime() - deadline < 0) {
+            for (;;) {
+                long before = buffer.size();
+                int left = flush();
+                long remaining = buffer.size();
+                if (remaining == 0) break;
+                // A pass is bounded, so what it did not claim drains at once; only retryable failures wait.
+                if (left == 0 && remaining < before) continue;
+                if (System.nanoTime() - deadline >= 0) break;
                 try { TimeUnit.NANOSECONDS.sleep(Math.min(intervalNanos, Math.max(0, deadline - System.nanoTime()))); }
                 catch (InterruptedException e) { interrupted = true; break; }
             }
@@ -270,9 +336,19 @@ final class WriteBehindManager {
             if (closeFailure != null) throw closeFailure;
         }
     }
-    /** Final pass after CLOSED: one more attempt, then anything still failing is dropped and reported. */
+    /**
+     * Final passes after CLOSED: one more attempt per change, then anything still failing is dropped and
+     * reported. Admission is closed and CLOSED drops instead of requeueing, so every pass frees what it
+     * claims and the repeat ends with nothing accepted left behind.
+     */
     private void flush0() {
-        for (EntityMeta meta : buffer.metas()) flushEntity(meta);
-        for (LogRepository<?> log : logs) log.drain(this, batchSize);
+        long before = Long.MAX_VALUE;
+        while (before > 0) {
+            for (EntityMeta meta : buffer.metas()) flushEntity(meta);
+            for (LogRepository<?> log : logs) log.drain(this, batchSize);
+            long remaining = buffer.size();
+            if (remaining >= before) return;   // no progress: stop rather than spin during shutdown
+            before = remaining;
+        }
     }
 }

@@ -44,6 +44,7 @@ final class FrameworkMetrics {
             sink.counter("flushes", s.flushes());
             sink.counter("failed.batches", s.failedBatches());
             sink.counter("dropped.logs", s.droppedLogs());
+            sink.counter("changes.rejected", s.rejectedChanges());
             sink.counter("save.nanos", s.saveNanos());
         };
     }

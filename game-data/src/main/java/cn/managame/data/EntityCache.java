@@ -1,5 +1,8 @@
 package cn.managame.data;
 
+import java.util.Comparator;
+import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -39,9 +42,11 @@ final class EntityCache<K, V> {
     // Access time is refreshed at most once per touchNanos, so threads reading the same hot entity
     // do not keep writing (and invalidating) its cache line; eviction waits touchNanos longer to compensate.
     private final long touchNanos;
+    private final long maxEntries;
 
-    EntityCache(long idleNanos) {
+    EntityCache(long idleNanos, long maxEntries) {
         this.idleNanos = idleNanos;
+        this.maxEntries = maxEntries;
         touchNanos = Math.min(idleNanos / 16, TimeUnit.SECONDS.toNanos(1));
     }
 
@@ -134,22 +139,56 @@ final class EntityCache<K, V> {
     }
 
     /**
-     * Evicts entries idle for the configured time unless they still have unsaved changes. The clock is read
+     * Evicts entries idle for the configured time unless they still have unsaved changes, and, when the cache
+     * is over {@code maxEntries}, the least recently used clean entries on top of that. The clock is read
      * before {@code dirtyKeys} builds its view, so a change that view misses was recorded later and has
      * already refreshed its entry's access time, which keeps the entry.
+     *
+     * @param idleDue false on the ticks between idle sweeps: only the entry bound is enforced then
      */
-    void sweep(Supplier<Predicate<K>> dirtyKeys) {
+    void sweep(Supplier<Predicate<K>> dirtyKeys, boolean idleDue) {
+        if (!idleDue && entries.size() <= maxEntries) return;
         long now = System.nanoTime(), limit = idleNanos + touchNanos;
         Predicate<K> dirty = dirtyKeys.get();
-        for (var e : entries.entrySet()) {
+        if (idleDue) for (var e : entries.entrySet()) {
             if (now - e.getValue().lastAccess < limit) continue;
-            entries.computeIfPresent(e.getKey(), (key, current) -> {
-                if (now - current.lastAccess < limit || dirty.test(key)) return current;
-                Loading<V> inFlight = loading.get(key);
-                if (inFlight != null) inFlight.evicted = true;
-                return null;
-            });
+            entries.computeIfPresent(e.getKey(), (key, current) ->
+                    now - current.lastAccess < limit || dirty.test(key) ? current : evicted(key));
         }
+        trim(dirty);
+    }
+
+    /**
+     * Brings the cache back to {@code maxEntries} by dropping the clean entries that went longest unread.
+     * Dirty entries are not evictable (D-CACHE-01), so a cache whose dirty entries alone exceed the bound
+     * stays above it. One sweep never selects more than the bound itself: a large overshoot comes down over
+     * the passes that follow rather than allocating a selection as large as the overshoot, and a cache that
+     * fills faster than sweeps run settles somewhat above its bound instead of at it.
+     */
+    private void trim(Predicate<K> dirty) {
+        long excess = entries.size() - maxEntries;
+        if (excess <= 0) return;
+        int budget = (int) Math.min(excess, maxEntries);
+        var oldest = new PriorityQueue<Map.Entry<K, Entry<V>>>(budget,
+                Comparator.comparingLong((Map.Entry<K, Entry<V>> e) -> e.getValue().lastAccess).reversed());
+        for (var e : entries.entrySet()) {
+            if (dirty.test(e.getKey())) continue;
+            if (oldest.size() < budget) oldest.add(e);
+            else if (e.getValue().lastAccess < oldest.peek().getValue().lastAccess) { oldest.poll(); oldest.add(e); }
+        }
+        for (var selected : oldest) {
+            long seen = selected.getValue().lastAccess;
+            // Read or changed since it was selected, or dirty after all: the entry stays and the next sweep decides.
+            entries.computeIfPresent(selected.getKey(), (key, current) ->
+                    current.lastAccess != seen || dirty.test(key) ? current : evicted(key));
+        }
+    }
+
+    /** Tells an in-flight load that its value may be stale, then removes the entry by returning null. */
+    private Entry<V> evicted(K key) {
+        Loading<V> inFlight = loading.get(key);
+        if (inFlight != null) inFlight.evicted = true;
+        return null;
     }
 
     long size() { return entries.size(); }

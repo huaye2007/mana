@@ -90,7 +90,7 @@ try (GameData data = GameDataBuilder.builder()
 | --- | --- | --- |
 | cacheExpire | 30 min | Idle time before a clean entry is evicted; must exceed flushInterval |
 | flushInterval | 1 s | Target interval between persistence passes |
-| batchSize | 500 | Rows per batch |
+| batchSize | 500 | Rows per batch. INSERT-heavy and UPDATE-heavy stores want different values ([§6.2](#62-batch-throughput-and-the-jdbc-url)) |
 | shutdownTimeout | 30 s | How long close keeps retrying retryable failures before dropping and reporting them. Under container integration it is set from the shutdown budget's reserved flush slice before the application's configurers run, so it defaults to that instead ([Spring §3.0](OGBS-Spring-Java-25-Specification-1.0.md#30-shutdown-budget)) |
 | retryPolicy | RetryPolicy.transientFailures() | true keeps a failed change for the next pass; false splits, drops and reports (section 5) |
 | errorHandler | System.Logger | Receives dropped changes; archive them here |
@@ -99,6 +99,9 @@ try (GameData data = GameDataBuilder.builder()
 | logMysql(DataSource) | none | Borrowed DataSource for log repositories registered without a backend. Logs are a store of their own (D-LOG-04); one database for both is the same DataSource passed to both methods |
 | jsonCodec / binaryCodec | default Jackson / none | Codecs of the implicit MySQL mapper and of logs unless logCodecs overrides them |
 | logCodecs(json, binary) | inherited | Log-only codecs; null JSON selects the default |
+| maxPendingChanges | 100,000 | Distinct entities that may wait to be saved, across all state repositories (D-WRITE-04). A change to an entity already waiting merges and is always accepted; one that adds another entity waits pendingChangeWait and is then refused with DataOperationException, counted in DataStats.rejectedChanges. A refused change is not recorded, leaves the cache as it was, reaches no DataErrorHandler and does not make flush or close fail |
+| pendingChangeWait | 5 s | How long such a write waits for a pass to free room before being refused; 0 refuses at once. Closing refuses waiters rather than holding them, so they cannot delay close |
+| maxCacheEntries | 1,000,000 | Entries one state repository may cache (D-CACHE-03). Above it the clean entries longest unread are evicted on the persistence thread, every tick rather than only on the idle sweep; entries with unsaved changes are never evicted, so keep this above maxPendingChanges |
 | logQueueCapacity | 100,000 | Logs one LogRepository may hold waiting for storage. At the limit insert returns false, reports the log to DataErrorHandler on the inserting thread as a LOG_INSERT failure (attempt 0) and counts it in DataStats.droppedLogs; a refused log was never accepted and does not make close fail |
 
 repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore the defaults. A registration that names a backend replaces an earlier one for the same repository type that did not and keeps its position, which is how a container integration lets the application redirect a repository it had already discovered; any other repeat of a type is an IllegalArgumentException at the registration call. A repository still unbound when build runs fails with IllegalArgumentException naming what would bind it, mysql(DataSource) or an EntityMapper for state and logMysql(DataSource) or a MysqlAccess for logs, before any DataSource is opened. build validates repositories, identity and log mappings, then runs each state Mapper's initialize (mapping and schema; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
@@ -133,7 +136,9 @@ EntityMeta holds identity and field access only; storage rules belong to each Ma
 
 ## 5. Write-back implementation and limits
 
-PendingBuffer keeps one `ConcurrentHashMap<id, Change>` per EntityMeta; a Change holds the operation and latest entity reference and compares by identity. `record` merges with one `compute` using the merge matrix of the standard. Each pass claims an entry by conditional removal `pending.remove(id, change)`: a change recorded after the claim creates a new entry for the next pass, so nothing is lost between traversal and removal, and a single persistence thread keeps older changes of an id ahead of newer ones.
+PendingBuffer keeps one `ConcurrentHashMap<id, Change>` per EntityMeta; a Change holds the operation and latest entity reference and compares by identity. `record` merges with one `compute` using the merge matrix of the standard, and keeps the count of distinct pending keys inside that per-key atomic operation, so `DataStats.pendingChanges` is exact and O(1) rather than a walk.
+
+Admission (D-WRITE-04). A repository calls the manager before its mutation, outside the shutdown barrier and outside any cache lock, so a waiting writer holds nothing: it returns at once when the dirty set is below maxPendingChanges or when that key is already pending (`containsKey`, a merge that adds no entry), otherwise it parks in 1 ms steps until a pass frees room, the component stops accepting (DataOperationException, so close is never delayed by a waiter), the thread is interrupted (DataOperationException, interrupt flag restored) or pendingChangeWait elapses (DataOperationException, counted in rejectedChanges). A caller that is the persistence thread itself — a Mapper or DataErrorHandler callback — never parks and is refused at once. `deleteGroup` records one change per member and is admitted as one call, so it may overshoot the bound by the size of the group, as concurrent writers may overshoot it by their number. Each pass claims an entry by conditional removal `pending.remove(id, change)`: a change recorded after the claim creates a new entry for the next pass, so nothing is lost between traversal and removal, and a single persistence thread keeps older changes of an id ahead of newer ones.
 
 Failure handling. Mappers apply each batch atomically (MySQL in one transaction, Mongo by `_id` replacement), so a failed batch leaves no partial rows:
 
@@ -148,17 +153,20 @@ The saving thread reads entities without snapshots. Collections inside entities 
 
 ### 5.1 Cache eviction
 
-An entry is evicted only when it has been idle for cacheExpire and has nothing pending. Eviction runs on the persistence thread after a pass and at most every max(flushInterval, cacheExpire/4), so no claimed change is in flight. Single checks `pending.containsKey(id)`; Group collects the GroupKeys of pending changes once per sweep (group deletes keep their entity for this). The sweep reads the clock before building that view and rechecks the idle time inside the per-key atomic operation, so a mutation the view misses happened later, refreshed its entry and keeps it. Reads refresh the access time at most once per min(cacheExpire/16, 1 s), so threads reading the same hot entity do not keep writing its cache line; eviction therefore waits cacheExpire plus that interval. Consequently a load never consults the buffer: a missing key has nothing pending and storage is current. During a storage outage dirty entities stay cached until saved or dropped.
+An entry is evicted when it has been idle for cacheExpire, or when the cache is over maxCacheEntries, and in both cases only when it has nothing pending. Idle eviction runs on the persistence thread after a pass and at most every max(flushInterval, cacheExpire/4); the entry bound is checked after every pass instead, because a cache over its budget should come down within passes. Over the bound, one sweep selects the clean entries with the oldest access time through a bounded heap — never more than maxCacheEntries of them — and removes each one with a per-key atomic operation that keeps it if it was read, changed or became dirty since it was selected. Access time is refreshed at most once per min(cacheExpire/16, 1 s) (below), so entries read within one such window are not ordered against each other, and a cache filling faster than sweeps run settles somewhat above its bound rather than at it. No claimed change is in flight during either kind of eviction. Single checks `pending.containsKey(id)`; Group collects the GroupKeys of pending changes once per sweep (group deletes keep their entity for this). The sweep reads the clock before building that view and rechecks the idle time inside the per-key atomic operation, so a mutation the view misses happened later, refreshed its entry and keeps it. Reads refresh the access time at most once per min(cacheExpire/16, 1 s), so threads reading the same hot entity do not keep writing its cache line; eviction therefore waits cacheExpire plus that interval. Consequently a load never consults the buffer: a missing key has nothing pending and storage is current. During a storage outage dirty entities stay cached until saved or dropped.
 
 ### 5.2 One pass
 
 ```text
 for each EntityMeta:
-  claim every pending entry (conditional remove)
+  claim up to the number pending for it right now (conditional remove), never more
   group as DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize; save or classify failures
 logs: finite drain, batched per partition table, failures classified the same way
-then evict idle clean cache entries (when due); next pass after max(0, interval − pass duration)
+then evict cache entries over the bound, and idle clean ones when due
+next pass after max(0, interval − pass duration)
 ```
+
+The claim boundary is a count read once per entity type, as `LogRepository.drain` already did for logs: what is recorded while the pass runs waits for the next pass. A pass therefore costs at most what maxPendingChanges allows, which is what keeps its duration bounded and `flushes` moving while producers write. `GameData.flush()` repeats passes until it has claimed as much as was pending when it was called, and close repeats them until nothing accepted is left to claim, then does the same after switching to CLOSED, where retryable failures drop instead of returning to the buffer.
 
 Periodic passes, explicit flush and close never run Mapper batches concurrently.
 
@@ -200,6 +208,29 @@ Initialization compiles column order, accessors, codecs and SQL. INSERT writes a
 
 MysqlAccess offers queryOne (null for no row, MysqlException for several), query, update, batchUpdate and transaction (one connection, commit on success, rollback on exception, valid only on the callback thread). JdbcMysqlAccess takes a connection per operation; MysqlException keeps the SQL, cause, `sqlState()` and `vendorCode()`. No automatic retries at this level.
 
+<a id="62-batch-throughput-and-the-jdbc-url"></a>
+<a id="62-批量吞吐与-jdbc-url"></a>
+
+### 6.2 Batch throughput and the JDBC URL
+
+The save rate is decided by the application's JDBC URL, not by this component. Connector/J merges a batch
+into one statement only with `rewriteBatchedStatements=true`; on the driver default each row of a
+`batchUpdate` is its own round trip, so a deployment that copies the configuration above and leaves the URL
+plain reaches a fraction of the rate the same code reaches with the flag on.
+
+| Setting | INSERT | UPDATE | Why |
+| --- | --- | --- | --- |
+| `rewriteBatchedStatements=true` | ≈3.8× | ≈1.7× | Only INSERT rows merge into one multi-row `VALUES`; `UPDATE … WHERE id=?` rows cannot become one statement and keep a round trip each |
+| batchSize 2000 instead of 500 | ≈1.6× faster | ≈0.65× slower | Larger INSERT statements amortise the round trip; larger UPDATE batches only hold one transaction open longer |
+
+Set the flag on the URL the DataSource is built from
+(`jdbc:mysql://host:3306/game?rewriteBatchedStatements=true`) and pick batchSize from the write mix rather
+than assuming the default is best for both: 500 suits UPDATE-dominated state, an INSERT-dominated store
+prefers 2000. A remote database gains more than these ratios, which were measured over loopback, the
+smallest round trip there is. Opening a connection per batch instead of pooling costs about a quarter of the
+rate, so a pool is worth having but is not the limit. Conditions and absolute figures:
+[save-path load test](../reviews/2026-10-18-data-save-path-load-test.md).
+
 <a id="default-json-field-binding"></a>
 
 ### 6.1 Default JSON field binding
@@ -238,7 +269,7 @@ insert validates type and partition and enqueues without copying; do not change 
 
 ## 9. Exceptions and validation
 
-DataLoadException: storage load failure or invalid loaded data. DataOperationException: not initialized, closed, group not loaded, illegal change sequence, Mongo update of a missing document. DataSaveException: a change was dropped (reported by flush/close). Configuration and metadata errors throw IllegalArgumentException; schema and database errors keep their exceptions. Error numbers: [Core](OGBS-Core-1.0.md#data-constants).
+DataLoadException: storage load failure or invalid loaded data. DataOperationException: not initialized, closed, group not loaded, illegal change sequence, a dirty set that stayed full for pendingChangeWait, Mongo update of a missing document. DataSaveException: a change was dropped (reported by flush/close). Configuration and metadata errors throw IllegalArgumentException; schema and database errors keep their exceptions. Error numbers: [Core](OGBS-Core-1.0.md#data-constants).
 
 ```java
 public record DataFailure(int errorCode, Class<?> entityType, DataOperation operation,
@@ -260,6 +291,10 @@ DataOperation (INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT) is the coalesc
 | Retryable kept, bad row isolated | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / nonRetryableBadRowIsIsolatedFromItsBatch |
 | Dirty entries never evicted; clean ones evicted and reloaded | DataContractTest.entitiesWithUnsavedChangesAreNeverEvicted / cleanIdleEntriesAreEvictedAndReloaded |
 | close retries, then drops and reports | DataContractTest.closeRetriesThenDropsAndReportsLeftovers |
+| A pass claims the set it started with; passes keep ending; close drains the backlog | SavePassBoundaryTest |
+| A full dirty set waits, then refuses without recording; changes to waiting entities still merge; a callback never waits for its own pass | DirtySetBoundTest |
+| The entry bound evicts the least recently used clean entries and never unsaved work | EntityCacheTest.theEntryBoundEvictsTheLeastRecentlyUsedCleanEntriesOnly / theEntryBoundNeverEvictsUnsavedWorkEvenWhenThatLeavesItOver |
+| Unthrottled producers against a real MySQL stay bounded and lose nothing | DatabaseIntegrationTest.unthrottledProducersAreBoundedAndEveryAcceptedChangeIsStored |
 | Callback close rejected without deadlock | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | Log partitions, drain, partition creation | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization / missingPartitionTableIsCreatedFromTheBaseTable |
 | Mongo update of a missing document fails | MongoMappingTest |
@@ -267,7 +302,7 @@ DataOperation (INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT) is the coalesc
 | MongoDB state and MySQL logs in one GameData | StoreBindingTest.mongoStateAndMysqlLogsAreIndependentStores |
 | Naming a backend replaces an implicit registration; other repeats stay duplicates | StoreBindingTest.namingABackendReplacesAnEarlierImplicitRegistration / repeatsThatAreNotRedirectionsStayDuplicates |
 
-Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) runs against real servers when `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` are set and is skipped otherwise. Real MySQL/MongoDB behavior, production performance and long outages are unverified.
+Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) runs against real servers when `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` are set and is skipped otherwise. Live MySQL is verified for schema round trips and for the bounds under a flood of unthrottled producers ([load test](../reviews/2026-10-18-data-save-path-load-test.md)); MongoDB behaviour, production performance and long outages are unverified.
 
 <a id="11-explicit-flush-and-datastats"></a>
 <a id="11-显式-flush-与-datastats"></a>
@@ -276,4 +311,4 @@ Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [
 
 `GameData.flush()` runs one pass synchronously: every change accepted before the call is saved, while changes written concurrently may wait for the next pass. It throws DataOperationException when closed or called from a persistence callback, and DataSaveException when this pass dropped a change (already reported to DataErrorHandler) or retryable failures remain kept (those stay pending). A drop in an earlier pass does not fail a later clean flush; close still throws DataSaveException for any drop during the GameData's lifetime. Avoid a service-wide flush on a busy game Route.
 
-`GameData.stats()` returns DataStats: accepting, pendingChanges (pending entries, including kept failures; changes claimed by a running pass are not counted), queuedLogs, failedBatches (dropped changes), flushes (passes, excluding close's final one), saveNanos, singleCacheEntries (including cached absence) and groupCacheEntries (groups, not entities) and droppedLogs (logs refused because their queue was full). Values are approximate snapshots; queuedLogs is kept by a counter and is O(1).
+`GameData.stats()` returns DataStats: accepting, pendingChanges (pending entries, including kept failures; changes claimed by a running pass are not counted), queuedLogs, failedBatches (dropped changes), flushes (passes, excluding close's final one), saveNanos, singleCacheEntries (including cached absence) and groupCacheEntries (groups, not entities) droppedLogs (logs refused because their queue was full) and rejectedChanges (state changes refused because the dirty set stayed full; never accepted, so not drops). Values are snapshots; pendingChanges and queuedLogs are kept by counters and are O(1).

@@ -30,14 +30,14 @@ public abstract class GroupRepository<K, E> {
     private EntityCache<GroupKeys, Group<K, E>> cache;
     protected GroupRepository() {}
     final long cachedEntries() { return cache.size(); }
-    final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
+    final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry, int maxEntries) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;
-        cache = new EntityCache<>(expiry.toNanos());
-        writer.addSweeper(() -> cache.sweep(() -> {
+        cache = new EntityCache<>(expiry.toNanos(), maxEntries);
+        writer.addSweeper(idleDue -> cache.sweep(() -> {
             Set<GroupKeys> dirty = new HashSet<>();
             for (PendingBuffer.Change change : writer.pending(meta)) dirty.add(meta.getGroupKey(change.entity()));
             return dirty::contains;
-        }));
+        }, idleDue));
     }
     @SuppressWarnings("unchecked")
     private Group<K, E> load(GroupKeys key) {
@@ -83,6 +83,7 @@ public abstract class GroupRepository<K, E> {
         GroupKeys groupKey = meta.getGroupKey(entity);
         K mapKey = (K) meta.getMapKey(entity);
         group(groupKey);
+        writer.admit(meta, meta.getId(entity));
         writer.mutate(() -> cache.update(groupKey, (cached, current) -> {
             var group = loaded(current, groupKey).entries;
             E existing = group.get(mapKey);
@@ -113,6 +114,7 @@ public abstract class GroupRepository<K, E> {
     public final void deleteGroup(GroupKeys key) {
         ready(); meta.validateGroupKey(key);
         group(key);
+        writer.admit(meta, null);   // several keys at once: admitted as one, so it may overshoot the bound
         writer.mutate(() -> cache.update(key, (cached, current) -> {
             var group = loaded(current, key).entries;
             for (E entity : group.values())

@@ -84,7 +84,7 @@ try (GameData data = GameDataBuilder.builder()
 | --- | --- | --- |
 | cacheExpire | 30 分钟 | 干净条目空闲多久后淘汰；须大于 flushInterval |
 | flushInterval | 1 秒 | 两轮保存之间的目标间隔 |
-| batchSize | 500 | 每批行数 |
+| batchSize | 500 | 每批行数。以 INSERT 为主与以 UPDATE 为主的存储取值相反（[§6.2](#62-批量吞吐与-jdbc-url)） |
 | shutdownTimeout | 30 秒 | close 持续重试可重试失败多久，之后丢弃并报告。在容器集成下，它会在应用的 configurer 之前由关停预算为刷盘保留的那块份额设定，因此默认值改为那个值（[Spring §3.0](OGBS-Spring-Java-25-Specification-1.0.zh-CN.md#30-关停预算)） |
 | retryPolicy | RetryPolicy.transientFailures() | true 保留到下一轮；false 拆分、丢弃并报告（见第 5 节） |
 | errorHandler | System.Logger | 接收被丢弃的变更，在此归档 |
@@ -93,6 +93,9 @@ try (GameData data = GameDataBuilder.builder()
 | logMysql(DataSource) | 无 | 未指定后端的日志 Repository 借用的 DataSource。日志是独立存储（D-LOG-04）；两者共用一个数据库时，把同一个 DataSource 分别传给两个方法 |
 | jsonCodec / binaryCodec | 默认 Jackson / 无 | 隐式 MySQL Mapper 及日志（除非 logCodecs 覆盖）使用的 codec |
 | logCodecs(json, binary) | 继承 | 仅日志使用的 codec；JSON 传 null 表示默认 |
+| maxPendingChanges | 100,000 | 所有状态 Repository 合计可以等待保存的不同实体数（D-WRITE-04）。对已在等待的实体的修改会合并，永远被接纳；会新增实体的修改先等待 pendingChangeWait，之后以 DataOperationException 拒绝，并计入 DataStats.rejectedChanges。被拒绝的修改不登记、缓存保持原样、不到达 DataErrorHandler，也不会使 flush 或 close 失败 |
+| pendingChangeWait | 5 秒 | 这类写入在被拒绝前等待某一轮腾出空间的时长；0 表示立即拒绝。关闭时拒绝等待者而不是挂住它们，因此它们不会拖慢 close |
+| maxCacheEntries | 1,000,000 | 单个状态 Repository 的缓存条目上限（D-CACHE-03）。超过时在保存线程上淘汰最久未读的干净条目，每轮之后都检查，而不是只在空闲清理时；有待保存变更的条目永不淘汰，因此该值应高于 maxPendingChanges |
 | logQueueCapacity | 100,000 | 每个 LogRepository 等待保存的日志上限。达到上限时 insert 返回 false，以 LOG_INSERT 失败（attempt 0）在插入线程上报告给 DataErrorHandler，并计入 DataStats.droppedLogs；被拒绝的日志不是已接纳的变更，不使 close 失败 |
 
 repositories(...)、logRepositories(...) 接受类或列表；显式传入 EntityMapper 或 MysqlAccess 的重载不使用默认后端。指定了后端的注册会替换同一 Repository 类型此前未指定后端的注册并保留其位置——容器集成已经发现并注册的 Repository，应用因此仍可改接到别的后端；同一类型的其他重复注册在注册调用处抛 IllegalArgumentException。build 时仍未绑定的 Repository 抛 IllegalArgumentException 并指出能绑定它的方法：状态为 mysql(DataSource) 或 EntityMapper，日志为 logMysql(DataSource) 或 MysqlAccess；此时尚未打开任何 DataSource。build 先校验 Repository、身份与日志映射，再执行各状态 Mapper 的 initialize（映射与 Schema；后续步骤失败时已执行的 DDL 不回滚），最后创建缓存并启动一个保存线程。
@@ -119,7 +122,9 @@ EntityMeta 只包含身份与字段访问；存储规则归各 Mapper（只有 @
 
 ## 5. 写回实现与适用边界
 
-PendingBuffer 为每个 EntityMeta 保存一个 `ConcurrentHashMap<id, Change>`；Change 持有操作与最新实体引用，按对象身份比较。`record` 用一次 `compute` 按标准中的合并矩阵合并。每轮保存以条件删除 `pending.remove(id, change)` 认领条目：认领之后的登记会新建条目留给下一轮，因此遍历与删除之间不会丢失变更；单一保存线程保证同一 id 的旧变更先于新变更执行。
+PendingBuffer 为每个 EntityMeta 保存一个 `ConcurrentHashMap<id, Change>`；Change 持有操作与最新实体引用，按对象身份比较。`record` 用一次 `compute` 按标准中的合并矩阵合并，并在同一次单 Key 原子操作内维护不同待保存主键的计数，因此 `DataStats.pendingChanges` 精确且为 O(1)，不需要遍历。
+
+接纳控制（D-WRITE-04）。Repository 在自己的修改之前调用管理器，位置在关停屏障之外、任何缓存锁之外，因此等待中的写入方不持有任何东西：脏集合低于 maxPendingChanges，或该主键已在待保存中（`containsKey`，合并不新增条目）时立即返回；否则以 1 毫秒为步长挂起，直到某一轮腾出空间、组件停止接纳（DataOperationException，因此 close 永远不会被等待者拖住）、线程被中断（DataOperationException，并恢复中断标志），或 pendingChangeWait 耗尽（DataOperationException，计入 rejectedChanges）。调用方本身就是保存线程时——Mapper 或 DataErrorHandler 回调——从不挂起，立即被拒绝。`deleteGroup` 一次登记组内每个成员，按一次调用接纳，因此可能超出上限一个组的大小，正如并发写入方可能超出它们的个数。每轮保存以条件删除 `pending.remove(id, change)` 认领条目：认领之后的登记会新建条目留给下一轮，因此遍历与删除之间不会丢失变更；单一保存线程保证同一 id 的旧变更先于新变更执行。
 
 失败处理。Mapper 每批原子执行（MySQL 一个事务，Mongo 按 `_id` 替换），失败的批次不留部分行：
 
@@ -134,17 +139,20 @@ MySQL UPDATE 未匹配任何行时按不可重试单行失败（保持 Connector
 
 ### 5.1 缓存淘汰
 
-只有空闲超过 cacheExpire 且没有待保存变更的条目才会被淘汰。淘汰在保存线程上、一轮保存之后进行，最多每 max(flushInterval, cacheExpire/4) 一次，此时没有已认领但未完成的变更。Single 检查 `pending.containsKey(id)`；Group 每次清理时收集待保存变更所属的 GroupKeys（分组删除因此保留实体）。清理先读取时钟再构建该集合，并在单 Key 原子操作内重新检查空闲时间：集合漏掉的修改一定发生在读取时钟之后，已刷新其条目访问时间，条目会被保留。读取最多每 min(cacheExpire/16, 1 秒) 刷新一次访问时间，避免多线程读同一热点实体时反复写同一缓存行；因此淘汰等待 cacheExpire 再加上该间隔。因此加载从不查询缓冲：缺失的 Key 没有待保存变更，存储就是最新的。存储故障期间脏实体一直留在缓存中，直到保存成功或被丢弃。
+条目在空闲超过 cacheExpire 时，或缓存超过 maxCacheEntries 时被淘汰，两种情况都只淘汰没有待保存变更的条目。空闲淘汰在保存线程上、一轮保存之后进行，最多每 max(flushInterval, cacheExpire/4) 一次；条目上限改为每轮之后都检查，因为超出预算的缓存应当在若干轮之内回落。超过上限时，一次清理用一个有界的堆挑出访问时间最早的干净条目——一次挑选不超过 maxCacheEntries 个——再对每个条目做单 Key 原子删除，若它在被挑中之后被读取、被修改或变脏则保留。访问时间最多每 min(cacheExpire/16, 1 秒) 刷新一次（见下），因此同一个刷新窗口内被读取的条目之间没有先后之分；填充速度快于清理频率的缓存会稳定在略高于上限处，而不是正好在上限。两种淘汰进行时都没有已认领但未完成的变更。Single 检查 `pending.containsKey(id)`；Group 每次清理时收集待保存变更所属的 GroupKeys（分组删除因此保留实体）。清理先读取时钟再构建该集合，并在单 Key 原子操作内重新检查空闲时间：集合漏掉的修改一定发生在读取时钟之后，已刷新其条目访问时间，条目会被保留。读取最多每 min(cacheExpire/16, 1 秒) 刷新一次访问时间，避免多线程读同一热点实体时反复写同一缓存行；因此淘汰等待 cacheExpire 再加上该间隔。因此加载从不查询缓冲：缺失的 Key 没有待保存变更，存储就是最新的。存储故障期间脏实体一直留在缓存中，直到保存成功或被丢弃。
 
 ### 5.2 一轮保存
 
 ```text
 对每个 EntityMeta：
-  认领全部待保存条目（条件删除）
+  最多认领此刻待保存的条数（条件删除），不再多认领
   按 DELETE → DELETE_INSERT → INSERT → UPDATE 分组，按 batchSize 拆批；保存或按失败分类处理
 日志：有限排空，按分表批量插入，失败按同样规则分类
-随后（到期时）淘汰空闲的干净缓存条目；下一轮在 max(0, interval − 本轮耗时) 后开始
+随后淘汰超出上限的缓存条目，并在到期时淘汰空闲的干净条目
+下一轮在 max(0, interval − 本轮耗时) 后开始
 ```
+
+认领边界是每个实体类型读取一次的计数，与 `LogRepository.drain` 对日志的既有做法一致：本轮运行期间登记的内容留给下一轮。因此一轮的开销至多是 maxPendingChanges 允许的量，这正是让它耗时有界、让 `flushes` 在生产者持续写入时仍然前进的原因。`GameData.flush()` 反复执行轮次，直到认领的数量不少于调用时待保存的数量；close 反复执行直到没有已接纳的变更可认领，切换到 CLOSED 之后再做同样的事，此时可重试失败直接丢弃而不是放回缓冲。
 
 周期保存、显式 flush 与 close 从不并发执行 Mapper 批次。
 
@@ -181,6 +189,26 @@ public class Task {
 
 MysqlAccess 提供 queryOne（无行返回 null，多行抛 MysqlException）、query、update、batchUpdate 与 transaction（单连接，成功提交，异常回滚，只在回调线程内有效）。JdbcMysqlAccess 每次操作获取一个连接；MysqlException 保留 SQL、原因、`sqlState()` 与 `vendorCode()`。此层不自动重试。
 
+<a id="62-batch-throughput-and-the-jdbc-url"></a>
+<a id="62-批量吞吐与-jdbc-url"></a>
+
+### 6.2 批量吞吐与 JDBC URL
+
+保存速率由应用的 JDBC URL 决定，不由本组件决定。Connector/J 只有在 `rewriteBatchedStatements=true` 时才把一个
+批次合并成一条语句；驱动默认下 `batchUpdate` 的每一行都是一次独立往返，照抄上面的配置、URL 留空的部署，只能拿到
+同一份代码在开启该参数时的一小部分速率。
+
+| 设置 | INSERT | UPDATE | 原因 |
+| --- | --- | --- | --- |
+| `rewriteBatchedStatements=true` | 约 3.8 倍 | 约 1.7 倍 | 只有 INSERT 的行能合并成一条多行 `VALUES`；`UPDATE … WHERE id=?` 无法合成单条语句，每行仍是一次往返 |
+| batchSize 用 2000 而非 500 | 约快 1.6 倍 | 约慢到 0.65 倍 | 更大的 INSERT 语句摊薄往返成本；更大的 UPDATE 批次只是让一个事务开得更久，没有合并收益 |
+
+在构建 DataSource 的 URL 上设置该参数
+（`jdbc:mysql://host:3306/game?rewriteBatchedStatements=true`），并按写入构成选择 batchSize，而不是默认它对两边
+都最优：500 适合以 UPDATE 为主的状态，以 INSERT 为主的存储更适合 2000。远程数据库的收益高于上述比值——这些比值
+在 loopback 上测得，那是往返成本的下限。每批次新开连接而不用连接池约损失四分之一速率，所以连接池值得有，但不是
+瓶颈。测量条件与绝对数值：[保存路径压测](../reviews/2026-10-18-data-save-path-load-test.zh-CN.md)。
+
 <a id="default-json-field-binding"></a>
 
 ### 6.1 默认 JSON 字段绑定
@@ -208,7 +236,7 @@ insert 校验类型与分表后直接入队，不复制；插入后不要再修�
 
 ## 9. 异常与验证
 
-DataLoadException：存储加载失败或加载数据非法。DataOperationException：未初始化、已关闭、分组未加载、非法变更序列、Mongo 更新不存在的文档。DataSaveException：有变更被丢弃（由 flush/close 报告）。配置与元数据错误抛 IllegalArgumentException；Schema 与数据库错误保留原异常。错误码见 [Core](OGBS-Core-1.0.zh-CN.md#data-常量)。
+DataLoadException：存储加载失败或加载数据非法。DataOperationException：未初始化、已关闭、分组未加载、非法变更序列、脏集合在 pendingChangeWait 内一直满、Mongo 更新不存在的文档。DataSaveException：有变更被丢弃（由 flush/close 报告）。配置与元数据错误抛 IllegalArgumentException；Schema 与数据库错误保留原异常。错误码见 [Core](OGBS-Core-1.0.zh-CN.md#data-常量)。
 
 ```java
 public record DataFailure(int errorCode, Class<?> entityType, DataOperation operation,
@@ -230,6 +258,10 @@ DataOperation（INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT）是实�
 | 可重试保留、坏行隔离 | DataContractTest.retryableFailureKeepsChangesUntilStorageRecovers / nonRetryableBadRowIsIsolatedFromItsBatch |
 | 脏条目永不淘汰；干净条目淘汰后重新加载 | DataContractTest.entitiesWithUnsavedChangesAreNeverEvicted / cleanIdleEntriesAreEvictedAndReloaded |
 | close 先重试再丢弃并报告 | DataContractTest.closeRetriesThenDropsAndReportsLeftovers |
+| 一轮只认领开始时的集合；轮次持续结束；close 排空积压 | SavePassBoundaryTest |
+| 脏集合满时先等待再拒绝且不登记；对等待中实体的修改仍然合并；回调不会等待它自己所在的那一轮 | DirtySetBoundTest |
+| 条目上限淘汰最久未读的干净条目，绝不淘汰未保存的工作 | EntityCacheTest.theEntryBoundEvictsTheLeastRecentlyUsedCleanEntriesOnly / theEntryBoundNeverEvictsUnsavedWorkEvenWhenThatLeavesItOver |
+| 真实 MySQL 上不限速的生产者受上限约束且不丢数据 | DatabaseIntegrationTest.unthrottledProducersAreBoundedAndEveryAcceptedChangeIsStored |
 | 回调中 close 被拒绝且不死锁 | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | 日志分表、排空、自动创建分表 | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization / missingPartitionTableIsCreatedFromTheBaseTable |
 | Mongo 更新不存在的文档失败 | MongoMappingTest |
@@ -237,7 +269,7 @@ DataOperation（INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT）是实�
 | 同一个 GameData 里 MongoDB 存状态、MySQL 存日志 | StoreBindingTest.mongoStateAndMysqlLogsAreIndependentStores |
 | 指定后端替换隐式注册，其他重复仍是重复 | StoreBindingTest.namingABackendReplacesAnEarlierImplicitRegistration / repeatsThatAreNotRedirectionsStayDuplicates |
 
-已用内存 Mapper、H2 的 MySQL 模式和记录型 MongoAccess 验证。[DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) 在设置 `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` 时连接真实服务，否则跳过。真实 MySQL/MongoDB 行为、生产性能与长时间故障未验证。
+已用内存 Mapper、H2 的 MySQL 模式和记录型 MongoAccess 验证。[DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) 在设置 `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` 时连接真实服务，否则跳过。真实 MySQL 上的表结构往返、以及不限速生产者洪水下的各项上限已验证（[压测记录](../reviews/2026-10-18-data-save-path-load-test.zh-CN.md)）；MongoDB 行为、生产性能与长时间故障未验证。
 
 <a id="11-显式-flush-与-datastats"></a>
 
@@ -245,4 +277,4 @@ DataOperation（INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT）是实�
 
 `GameData.flush()` 同步执行一轮：调用前接纳的变更全部保存，并发写入的变更可能留到下一轮。已关闭或在保存回调中调用时抛 DataOperationException；本轮有变更被丢弃（已报告给 DataErrorHandler），或仍有被保留的可重试失败时抛 DataSaveException（后者仍待保存）。更早轮次的丢弃不会让之后干净的 flush 失败；close 仍会对 GameData 生命周期内的任何丢弃抛 DataSaveException。不要在繁忙的游戏 Route 上执行全服 flush。
 
-`GameData.stats()` 返回 DataStats：accepting、pendingChanges（待保存条目，含被保留的失败；正在执行的一轮已认领的变更不计入）、queuedLogs、failedBatches（被丢弃的变更）、flushes（轮次，不含 close 的最后一轮）、saveNanos、singleCacheEntries（含已缓存的不存在）、groupCacheEntries（分组数，而非实体数）、droppedLogs（因日志队列已满被拒绝的日志）。数值是近似快照；queuedLogs 由计数器维护，为 O(1)。
+`GameData.stats()` 返回 DataStats：accepting、pendingChanges（待保存条目，含被保留的失败；正在执行的一轮已认领的变更不计入）、queuedLogs、failedBatches（被丢弃的变更）、flushes（轮次，不含 close 的最后一轮）、saveNanos、singleCacheEntries（含已缓存的不存在）、groupCacheEntries（分组数，而非实体数）、droppedLogs（因日志队列已满被拒绝的日志）与 rejectedChanges（因脏集合持续满而被拒绝的状态修改；从未被接纳，因此不是丢弃）。数值是快照；pendingChanges 与 queuedLogs 由计数器维护，为 O(1)。

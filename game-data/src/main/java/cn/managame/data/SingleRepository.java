@@ -22,10 +22,10 @@ public abstract class SingleRepository<K, E> {
     private EntityCache<K, E> cache; // null values cache confirmed absence
     protected SingleRepository() {}
     final long cachedEntries() { return cache.size(); }
-    final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry) {
+    final void initialize(EntityMeta meta, EntityMapper mapper, WriteBehindManager writer, Duration expiry, int maxEntries) {
         this.meta = meta; this.mapper = mapper; this.writer = writer;
-        cache = new EntityCache<>(expiry.toNanos());
-        writer.addSweeper(() -> cache.sweep(() -> id -> writer.pending(meta, id)));
+        cache = new EntityCache<>(expiry.toNanos(), maxEntries);
+        writer.addSweeper(idleDue -> cache.sweep(() -> id -> writer.pending(meta, id), idleDue));
     }
     @SuppressWarnings("unchecked")
     private E load(K key) {
@@ -56,6 +56,7 @@ public abstract class SingleRepository<K, E> {
         if (existing != null) return existing;
         E created = Objects.requireNonNull(factory.apply(key), "factory returned null");
         if (!key.equals(meta.getId(created))) throw new DataOperationException("Created entity has a different @Id: " + key);
+        writer.admit(meta, key);
         Object[] result = {null};
         writer.mutate(() -> cache.update(key, (cached, current) -> {
             if (current != null) { result[0] = current; return current; }
@@ -70,6 +71,7 @@ public abstract class SingleRepository<K, E> {
     @SuppressWarnings("unchecked")
     private void change(E entity, DataOperation operation) {
         ready(); Objects.requireNonNull(entity); K id = (K) meta.getId(entity);
+        writer.admit(meta, id);
         writer.mutate(() -> cache.update(id, (cached, current) -> {
             if (cached && operation == DataOperation.INSERT && current != null)
                 throw new DataOperationException("Entity already exists: " + meta.entityType().getSimpleName() + "#" + id);
@@ -81,6 +83,7 @@ public abstract class SingleRepository<K, E> {
     }
     public final void delete(K key) {
         ready(); key(key);
+        writer.admit(meta, key);
         writer.mutate(() -> cache.update(key, (cached, current) -> {
             if (cached && current == null) return null; // already absent
             writer.record(meta, key, DataOperation.DELETE, null);

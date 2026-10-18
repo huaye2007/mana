@@ -97,6 +97,8 @@ deleteGroup clears the group, so holders of its view observe it empty. It covers
 
 **D-CACHE-01** An entity or group with unsaved changes (including retryably failed changes kept for the next pass) MUST NOT be evicted; only clean entries expire after their idle time. Eviction never forces or owns persistence. Repository access renews the idle time; direct access through previously returned Map/entity references does not. Fetch the current cached object through Repository for each business access.
 
+**D-CACHE-03** Cached entries are bounded by a configured maximum per repository. Only clean entries may be evicted to respect it — D-CACHE-01 still holds — least recently used first, so a bound never forces unsaved work out of memory and the count stays above the bound while that many entries are dirty. Capacity eviction is otherwise idle eviction: it runs on the persistence pipeline between passes, atomically with mutations of the same key, and an evicted clean entry is simply reloaded on the next access. It is a budget approached over the passes that follow a burst, not a limit enforced the moment an entry is added. Sizing the dirty-set bound (D-WRITE-04) below the cache bound keeps the cache bound reachable: a cache cannot bound memory that unsaved changes pin.
+
 **D-CACHE-02** Because dirty entries stay cached, a cache miss only ever concerns a key with nothing pending, so loading from storage returns current data and never rolls back unsaved modifications. Loads do not consult the pending changes. Eviction checks for pending changes atomically with mutations of the same key and runs only while no claimed change is being saved. A storage outage therefore keeps every dirty entity in memory until it is saved or dropped; cache lifetime should still greatly exceed normal write delay to avoid repeated loads.
 
 <a id="51-读取修改与保存是三个时点"></a>
@@ -139,9 +141,13 @@ A change that is finally dropped (section 7) leaves storage in its previous stat
 
 Other combinations reject synchronously without replacing cache with the new object. INSERT→DELETE cancellation trusts the declaration that the entity is new; it does not inspect existing storage.
 
-**D-WRITE-02** Only one persistence pipeline runs at a time. Each pass claims every change pending when it starts and finishes before the next pass; an older change for a primary key always executes before a newer one. Within each entity type execute DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize, each batch taking effect atomically in storage. No business transaction or atomicity spans entity types.
+**D-WRITE-02** Only one persistence pipeline runs at a time. Each pass claims a finite boundary — the changes pending for an entity type when the pass reaches it — and finishes before the next pass; an older change for a primary key always executes before a newer one. Changes recorded while a pass runs, and anything beyond its boundary, wait for the next pass, so a pass is never extended by production that continues during it. Combined with the bound of D-WRITE-04 this makes the work of one pass bounded, so passes keep completing and progress stays observable while producers write. Within each entity type execute DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize, each batch taking effect atomically in storage. No business transaction or atomicity spans entity types.
 
 **D-WRITE-03** Interval is a target start interval. If a pass exceeds it, the next may start immediately without another full wait. Claiming must be an atomic conditional removal: a change recorded after its claim stays for the next pass and is never lost to a race between claiming and clearing. Implementations must not rely on a fixed wait to ensure this.
+
+**D-WRITE-04** The dirty set is bounded by a configured maximum number of distinct pending primary keys, counted across all state repositories. A change to a key that already has a pending change is always accepted: it merges into that change (D-WRITE-01) and adds nothing to the set, so a bound never refuses writes to entities the pipeline already owes. A change that would add a new key while the set is full waits for a pass to free room, up to a configured bounded wait, and is rejected synchronously if room does not appear: nothing is recorded, the cache keeps whatever it held, and the caller is told. A rejected change was never accepted, so it is not reported to the error Handler, does not make flush or close fail, and is counted apart from dropped changes. Implementations MUST NOT discard an accepted change to respect the bound, and MUST NOT hold a waiting writer once the component stops accepting: closure rejects waiters instead. A change recorded from inside the persistence pipeline, by a storage adapter or error Handler callback, would be waiting for the pass it runs inside and is refused at once rather than stalling that pass. The bound is approximate — concurrent writers, and one call that records several changes such as a group delete, may push the count past it — and the wait is bounded, so an application that keeps writing through a storage outage eventually sees rejections rather than growing memory.
+
+Rejection is not a drop: nothing left memory, and the cache still holds exactly what it held before the call. What it cannot undo is fields the caller changed on the entity before calling, which is the same limit a rejected illegal sequence has (§6.1): memory is then ahead of storage with nothing pending, and the entry becomes evictable, so a later reload returns the stored state. An application that must not lose such an edit retries the write or stops its producers; a bound sized for the write rate makes this a storage-outage path rather than a normal one.
 
 <a id="61-合并示例与拒绝理由"></a>
 
@@ -178,7 +184,7 @@ Phase order inside an entity is not a transaction across entities. Player gold U
 
 **D-ERROR-03** No failure snapshot is made on the normal path. The Handler borrows dropped entity references synchronously; asynchronous archiving must serialize/copy before the callback returns. The default Handler only records diagnostics and does not replace business failure-data archiving.
 
-**D-CLOSE-01** close is a synchronous final barrier: reject new state/log changes, stop periodic scheduling, await ongoing persistence, then keep retrying kept changes within a bounded shutdown timeout. After the timeout one final pass treats retryable failures as non-retryable (split, drop, report), and close then releases its scheduling resources. Stop business ingress before close.
+**D-CLOSE-01** close is a synchronous final barrier: reject new state/log changes (including writers waiting for room under D-WRITE-04), stop periodic scheduling, await ongoing persistence, then repeat passes within a bounded shutdown timeout until nothing accepted is left to claim, retrying kept changes. After the timeout one final pass treats retryable failures as non-retryable (split, drop, report), and close then releases its scheduling resources. Stop business ingress before close.
 
 **D-CLOSE-02** Any drop during the lifecycle makes close report save failure; an empty queue does not mean persistence succeeded. close is idempotent and repeated failed closes still report failure. Database driver timeouts are application configuration.
 
@@ -209,11 +215,11 @@ close does not stop upstream Runtime or network ingress and does not close exter
 
 ### 7.4 Explicit flush and diagnostics
 
-**D-FLUSH-01**: Explicit flush synchronously runs one pass that claims every change accepted before the call, keeping Data open. Concurrent writes are not guaranteed to be included. A historical drop, or retryable changes still kept after the pass, makes flush report failure (kept changes wait for the next pass). Recursive flush from persistence/error callbacks is rejected to avoid deadlock. Driver timeouts remain application configuration.
+**D-FLUSH-01**: Explicit flush synchronously saves every change accepted before the call, keeping Data open. A pass is bounded (D-WRITE-02), so flush repeats passes until it has claimed at least as much as was pending when it started. Concurrent writes are not guaranteed to be included, and a caller that keeps writing can leave its own later changes behind, which is why a stable barrier needs quiesced writers. A historical drop, or retryable changes still kept after the pass, makes flush report failure (kept changes wait for the next pass). Recursive flush from persistence/error callbacks is rejected to avoid deadlock. Driver timeouts remain application configuration.
 
-**D-DIAG-01**: Pending-change, queued-log, terminal-failed-batch and cache counts are approximate observations, not durable acknowledgements or memory limits. Group cache counts identify cached groups, not entities. Flush success confirms only the covered mapper operations, not a distributed transaction or protection against process loss before earlier write-back.
+**D-DIAG-01**: Pending-change, queued-log, rejected-change, terminal-failed-batch and cache counts are approximate observations, not durable acknowledgements. Pending changes and cache entries are bounded (D-WRITE-04, D-CACHE-03), so counts sitting at their bound, and any movement at all in the rejected-change count, are the signals that production is ahead of storage. Group cache counts identify cached groups, not entities. Flush success confirms only the covered mapper operations, not a distributed transaction or protection against process loss before earlier write-back.
 
-Changing an entity still requires update; the returned Group view is read-only. Automatic dirty tracking, immutable save snapshots and cache-capacity eviction are not added. A business-critical operation can quiesce its writers and flush from a management context, while ordinary gameplay stays asynchronous. See [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
+Changing an entity still requires update; the returned Group view is read-only. Automatic dirty tracking and immutable save snapshots are not added. A business-critical operation can quiesce its writers and flush from a management context, while ordinary gameplay stays asynchronous. See [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java).
 
 <a id="8-存储适配语义"></a>
 
@@ -270,10 +276,12 @@ After insert returns, no log field may change, including nonpersistent partition
 | Coalesce by EntityMeta and primary key | Shared Mappers without cross-type confusion | Identity model/dynamic mapping changes |
 | Dirty entries are never evicted; loads read storage only for clean keys | Eviction does not own saving and never rolls back; no overlay of pending changes | Multi-process strong consistency needed |
 | Keep transient failures, split and drop bad rows | Storage outages lose no data; one bad row neither drops others nor blocks forever | Durable failure queues or backoff needed |
+| Bounded dirty set, writers wait then are refused | Memory is a setting, not an outcome; an accepted change is never discarded to make room | A durable overflow store, or per-repository budgets, is needed |
+| Bounded cache, clean entries only | A wide scan cannot inflate the heap for a whole idle window | Dirty entries alone exceed the budget |
 | Separate append logs, shared errors | Preserve events without state coalescing | Log queries/other backends needed |
 | Base log table managed externally; partitions created LIKE it | Daily partitions need no external job; schema stays externally owned | Unified schema management needed |
 
-No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, or multi-process consistency is promised. Such extensions need explicit behavior, capacity and recovery semantics, not just replacement containers.
+No WAL, crash recovery, cross-table transactions, or multi-process consistency is promised. Backlog protection is bounded memory and rejection (D-WRITE-04, D-CACHE-03), not a durable overflow store. Such extensions need explicit behavior, capacity and recovery semantics, not just replacement containers.
 
 <a id="10-验证与已知范围"></a>
 
@@ -281,4 +289,4 @@ No WAL, crash recovery, unbounded-backlog protection, cross-table transactions, 
 
 Contract tests: [DataContractTest](../../game-data/src/test/java/cn/managame/data/DataContractTest.java), [LogContractTest](../../game-data/src/test/java/cn/managame/data/LogContractTest.java). Database mapping, JDBC transaction, and real-service test entries: [module README](../../game-data/README.md).
 
-Implementation is not production certification. Deployments evaluate cross-thread mutable reads, log queue capacity (the binding bounds it and refuses and reports when full) and driver timeouts; live database validation status is maintained in the Java implementation specification.
+Implementation is not production certification. Deployments evaluate cross-thread mutable reads, the three capacity settings (log queue, dirty set and cache, each of which refuses or evicts rather than growing) and driver timeouts; live database validation status is maintained in the Java implementation specification.
