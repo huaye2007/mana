@@ -73,7 +73,7 @@ final class DefaultGameRuntime implements GameRuntime {
     private final DefaultCronScheduler crons;
     private final HttpDispatcher http;
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final RuntimeActivity activity = new RuntimeActivity();
+    private final AdmissionGate admission = new AdmissionGate();
     // Striped counters: every Route task updates them, so a single atomic word would be contended by all workers.
     private final LongAdder queued = new LongAdder(), running = new LongAdder(), completed = new LongAdder(),
             rejected = new LongAdder(), errorCount = new LongAdder(), executionNanos = new LongAdder();
@@ -89,7 +89,7 @@ final class DefaultGameRuntime implements GameRuntime {
         errors = compiled.errors();
         executionTiming = compiled.executionTiming();
         http = new RuntimeHttp(compiled.http(), compiled.httpContexts(), compiled.httpResults(),
-                () -> closed.get() || (!activity.accepting() && !RuntimeContexts.ownedBy(this)),
+                () -> closed.get() || (!admission.accepting() && !RuntimeContexts.ownedBy(this)),
                 (context, action) -> submit(context, action, false),
                 (context, cause) -> report(RUNTIME_EXECUTION_ERROR, context, cause));
         timers = new RuntimeTimers(this::validate, (context, action) -> submit(context, action, false),
@@ -120,7 +120,7 @@ final class DefaultGameRuntime implements GameRuntime {
     }
 
     private void requireAdmission() {
-        if (closed.get() || (!activity.accepting() && !RuntimeContexts.ownedBy(this))) {
+        if (closed.get() || (!admission.accepting() && !RuntimeContexts.ownedBy(this))) {
             rejected.increment();
             throw failure(RUNTIME_CLOSED);
         }
@@ -133,7 +133,7 @@ final class DefaultGameRuntime implements GameRuntime {
         if (executor == null) return ROUTE_DOMAIN_MISMATCH;
         if (context.routeKey() == 0) return INVALID_ROUTE_KEY;
         boolean owned = RuntimeContexts.ownedBy(this);
-        if (!activity.acquire(allowClosed || owned)) { rejected.increment(); return RUNTIME_CLOSED; }
+        if (!admission.acquire(allowClosed || owned)) { rejected.increment(); return RUNTIME_CLOSED; }
         queued.increment();
         Runnable bound = () -> {
             queued.decrement();
@@ -144,7 +144,7 @@ final class DefaultGameRuntime implements GameRuntime {
                 if (executionTiming) executionNanos.add(System.nanoTime() - started);
                 running.decrement();
                 completed.increment();
-                activity.release();
+                admission.release();
             }
         };
         if (owned) {
@@ -160,10 +160,10 @@ final class DefaultGameRuntime implements GameRuntime {
                 case OVERLOADED -> ROUTE_EXECUTOR_OVERLOADED;
                 case CLOSED -> ROUTE_EXECUTOR_CLOSED;
             };
-            if (result != 0) { queued.decrement(); activity.release(); rejected.increment(); }
+            if (result != 0) { queued.decrement(); admission.release(); rejected.increment(); }
             return result;
         } catch (Throwable e) {
-            queued.decrement(); activity.release(); rejected.increment();
+            queued.decrement(); admission.release(); rejected.increment();
             report(RUNTIME_EXECUTION_ERROR, context, e);
             return RUNTIME_EXECUTION_ERROR;
         }
@@ -343,7 +343,7 @@ final class DefaultGameRuntime implements GameRuntime {
     public <T> CapturedRouteCallback<T> callback(RouteCallback<T> callback) {
         Objects.requireNonNull(callback);
         if (!RuntimeContexts.ownedBy(this)) throw new IllegalStateException("callback requires this Runtime's current Route");
-        if (closed.get() || !activity.acquire(true)) throw failure(RUNTIME_CLOSED);
+        if (closed.get() || !admission.acquire(true)) throw failure(RUNTIME_CLOSED);
         return new Captured<>(Contexts.current(), callback);
     }
 
@@ -360,7 +360,7 @@ final class DefaultGameRuntime implements GameRuntime {
         private void finish(T value, int error, Throwable cause) {
             if (!compareAndSet(false, true)) return;
             try { complete(source, callback, value, error, cause); }
-            finally { activity.release(); }
+            finally { admission.release(); }
         }
 
         public void onSuccess(T value) { finish(value, 0, null); }
@@ -374,7 +374,7 @@ final class DefaultGameRuntime implements GameRuntime {
 
         @Override public boolean cancel() {
             if (!compareAndSet(false, true)) return false;
-            activity.release();
+            admission.release();
             return true;
         }
     }
@@ -388,20 +388,20 @@ final class DefaultGameRuntime implements GameRuntime {
     }
 
     public void shutdown() {
-        activity.stop();
+        admission.stop();
         crons.close();
         timers.close();
     }
 
     public boolean awaitTermination(Duration timeout) throws InterruptedException {
         Objects.requireNonNull(timeout);
-        if (activity.accepting()) throw new IllegalStateException("Call shutdown before awaiting termination");
+        if (admission.accepting()) throw new IllegalStateException("Call shutdown before awaiting termination");
         if (RuntimeContexts.ownedBy(this)) throw new IllegalStateException("Cannot await termination on a Runtime Route");
-        return activity.await(timeout);
+        return admission.await(timeout);
     }
 
     public RuntimeStats stats() {
-        return new RuntimeStats(activity.accepting() && !closed.get(), activity.count(), queued.sum(), running.sum(),
+        return new RuntimeStats(admission.accepting() && !closed.get(), admission.count(), queued.sum(), running.sum(),
                 completed.sum(), rejected.sum(), errorCount.sum(), executionNanos.sum());
     }
 

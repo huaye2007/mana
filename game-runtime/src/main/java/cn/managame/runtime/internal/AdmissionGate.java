@@ -5,8 +5,16 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Admission and drain use the same CAS word, avoiding an uncounted shutdown race. */
-final class RuntimeActivity {
+/**
+ * The gate every unit of Route work passes through, and the counter shutdown drains.
+ *
+ * <p>One CAS word holds both: the sign bit says admission has stopped, the low 63 bits count work that
+ * was admitted and has not finished. They are fused deliberately. With a separate flag and counter, a
+ * submitter could read "still accepting"; shutdown could then stop admission, see a count of zero and
+ * release the drain; and the submitter could increment afterwards — leaving a task about to run after
+ * {@code awaitTermination} already reported success.
+ */
+final class AdmissionGate {
     private static final long STOPPED = Long.MIN_VALUE;
     private final AtomicLong state = new AtomicLong();
     private final CountDownLatch drained = new CountDownLatch(1);
