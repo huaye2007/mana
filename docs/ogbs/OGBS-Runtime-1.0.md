@@ -222,6 +222,16 @@ Nothing is written, and the attempt is reported as an execution error, when a re
 
 For example, a login Handler returns the registered login response and Runtime frames it with the request's own sequence number; a guild-join Handler returns nothing, calls the guild Route, and writes its own reply from the callback using the context's command and request id. A Handler for a message that registers no response stays void and answers nothing unless it writes one itself. Validation: [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) and the [packet integration test](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java).
 
+<a id="handler-observation"></a>
+
+**RT-DISPATCH-08 — Observing Handler methods.** Integration may configure one observer that watches Handler methods execute and cannot change what they do. It exists because nothing else can answer "which Handler is slow, and how often does it run": aggregate counters have no per-Handler dimension, and error reporting sees only failures.
+
+The observer is notified on the request's Route, inside its Route task, with the context the Handler received: once before the method, and exactly once after it, as either completion or failure. The duration reported is the method's own, measured monotonically; it excludes admission, argument resolution, and any response that follows, because those are not the business. A failure notification does not replace error reporting — the same failure reaches both.
+
+Observation never intervenes. It cannot skip the method, alter its result, change its context, or convert its own failure into the method's: a notification that throws is reported as an execution error and otherwise ignored, and the method proceeds as if it had returned normally. Because it runs where the business runs, an observer that blocks blocks that Route, and it may touch no state another Route owns.
+
+Scope is the Handler method. Event listeners, timer and Cron actions, cross-Route computations and HTTP methods are Route work but are not observed, because their identity is not a Handler and would not aggregate with one; extending it to them needs their own identity defined first. Work rejected before admission is never observed, because its method never ran, and nested same-Route dispatch nests observations, so those durations overlap exactly as RT-DIAG-01 describes. Validation: [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java).
+
 The role identity may reside in connection attributes or an application-managed connection-to-identity map; neither storage is required by Runtime. An application can use the Handler Domain to choose player routing/identity in one branch and guild routing/identity in another. It owns authentication, policy interpretation and storage lifecycle. Identity is supplied after authentication; Domain never authenticates the connection. Inputs selected before admission remain valid for that task even if storage later changes or is removed. A mutable custom context is not deep-copied, so applications must capture stable values. See [Java ingress policy](OGBS-Runtime-Java-25-Specification-1.0.md#handler-context-factory) and [HandlerContextFactoryTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java).
 
 For example, a role Handler reads businessId directly from its supplied context. Key 99 and business identity role/10001 remain distinct even if a request contains userId=42; no role/guild/room identity wrapper is required. Integration selects and validates the trusted identity before admission where its policy requires authentication. Anonymous login may use identity 0/0. Reading a context value does not authenticate the request or make a connection trusted; supplied-Key and explicit-context entries bypass a configured ingress policy, so their callers own this validation. See the [Java argument contract](OGBS-Runtime-Java-25-Specification-1.0.md#handler-arguments), [HandlerArgumentTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerArgumentTest.java), and [demo identity test](../../game-demo/src/test/java/cn/managame/demo/DemoIdentityTest.java).
@@ -325,7 +335,11 @@ The [demo service example](../../game-demo/README.md#demo-runtime-services) comb
 
 ### 9.1 Business time
 
-**RT-TIME-01**: GameTime provides shared business wall time: epoch milliseconds, local time with explicit zone, source replacement/restoration. Current Java binding is process-wide with system UTC Clock by default.
+**RT-TIME-01**: GameTime provides shared business wall time: epoch milliseconds, local time with explicit zone, source replacement/restoration. The clock is process-wide, not per Runtime, and the Java binding defaults to the system UTC Clock.
+
+Process-wide is a decision, not an accident, and it is the one place where Runtime instances deliberately are not isolated. Business wall time belongs to the game world, not to an execution instance: two Runtimes in one process serve one world, and giving them different business clocks would produce a settlement that disagrees with itself rather than isolation worth having. Reading the time also has to be available to plain business objects, and putting the clock on the Runtime would push a Runtime reference into every model that asks what time it is.
+
+The cost is that replacement is global and unscoped: it cannot be confined to one thread, one Runtime or one request, so a caller that replaces the clock changes it for everything running in that process, including other Runtimes and concurrently executing tests. Replacement is therefore a startup or test-harness operation, never a per-request one; a test that replaces it must restore it and must not run beside a test that depends on it. Reconsider only if business wall time ever has to differ between Runtimes in one process — for example several independent worlds sharing a JVM — which also changes who may call the replacement.
 
 **RT-TIME-02**: Clock changes never automatically notify, reschedule, or replay Timer/Cron. Business code explicitly cancels dynamic timers, recomputes delay from GameTime, and registers again; static Cron uses explicit CronScheduler rescheduling.
 
@@ -340,6 +354,10 @@ The [demo service example](../../game-demo/README.md#demo-runtime-services) comb
 **RT-TIMER-02**: Successful cancellation means cancellation won before trigger eligibility. Once triggering wins, cancellation cannot claim to retract queued work.
 
 **RT-TIMER-03**: Timer/Cron create fresh TimerContext without creator InvocationContext inheritance.
+
+**RT-TIMER-04 — Cancelling a Route's timers.** A Runtime can cancel every timer it still holds for one complete Route, so business that is ending — a player logging out, a room closing — releases its timers in one operation instead of requiring the application to track each handle. Each cancellation follows RT-TIMER-02 exactly: a timer whose trigger already won is not retracted, and the reported count is how many this call moved from pending to cancelled, never how many actions will not happen. The Key alone selects nothing; the complete Route does, as everywhere else.
+
+Timers scheduled concurrently with the cancellation may miss it, which is the only honest guarantee for an operation with no ordering against its own callers. Cron schedules are not included: a Cron registers its next cycle only after the current one executes, so cancelling its pending timer would stop the schedule permanently rather than for this Route's current business. Cron is cancelled through its own scheduler (RT-CRON-04). Cancellation neither rejects after closure nor requires a registered Domain: releasing timers is exactly what shutdown and cleanup paths need to stay available. Validation: [RuntimeTimerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/RuntimeTimerTest.java).
 
 ### 9.3 Cron
 
@@ -458,9 +476,11 @@ An admitted player Handler may submit guild work after admission stops; both and
 | Build, Context, dispatch, events, callbacks, Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
 | Declared listener Domain, build conflict, publish rejection, cross-Route bridging | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
 | Client correlation, returned and hand-written responses, failure framing, build rules | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
+| Handler observation: phases, duration, non-intervention, scope | [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java) |
 | Route serialization, capacity, executor closure | [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) |
 | Scheduling/lifecycle | [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java) |
 | GameTime replacement, zones, restoration | [GameTimeTest](../../game-runtime/src/test/java/cn/managame/runtime/time/GameTimeTest.java) |
+| Per-Route timer cancellation, fired timers, Cron left alone | [RuntimeTimerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/RuntimeTimerTest.java) |
 | Cron cancellation, generations, overload, closure | [CronSchedulerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/CronSchedulerTest.java) |
 | Build validation | [GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java) |
 

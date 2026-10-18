@@ -5,6 +5,7 @@ import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
+import cn.managame.runtime.handler.HandlerObserver;
 import cn.managame.runtime.http.HttpContextFactory;
 import cn.managame.runtime.http.HttpRequestCodec;
 import cn.managame.runtime.http.HttpResultCodec;
@@ -19,6 +20,7 @@ import java.util.List;
  *
  * @param handlerContexts optional client context factory, or null
  * @param clientResults optional client response codec, or null when no Handler answers a client request
+ * @param handlerObserver optional per-Handler observation, or null
  * @param httpContexts optional HTTP context factory, or null
  * @param executionTiming whether every Route task measures its execution time for RuntimeStats
  */
@@ -31,6 +33,7 @@ public record RuntimeSettings(
         List<HandlerArgumentBinding<?>> handlerArguments,
         HandlerContextFactory handlerContexts,
         ClientResultCodec clientResults,
+        HandlerObserver handlerObserver,
         List<Object> eventHandlers,
         List<Object> cronHandlers,
         List<Object> httpHandlers,

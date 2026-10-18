@@ -207,6 +207,16 @@ Handler 只接收已注册的 REQUEST 或 NOTIFY 消息。RESPONSE 不作为入�
 
 例如登录 Handler 返回已注册的登录响应，Runtime 用该请求自身的序号封装它；公会加入 Handler 不返回结果，调用公会 Route，并在回调中用上下文的 command 与请求 ID 自己写出回复。消息未注册响应的 Handler 保持 void，除非自己写出响应，否则不应答。验证见 [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) 与[报文接入测试](../../game-demo/src/test/java/cn/managame/demo/network/GamePacketNetworkTest.java)。
 
+<a id="handler-observation"></a>
+
+**RT-DISPATCH-08 — 观察 Handler 方法。** 接入方可以配置一个观察者，看着 Handler 方法执行，而不能改变它做什么。它存在的理由是别的东西都回答不了"哪个 Handler 慢、跑了多少次"：汇总计数没有按 Handler 的维度，错误报告只看得到失败。
+
+观察者在该请求的 Route 上、在其 Route 任务内被通知，拿到的是 Handler 收到的那个上下文：方法之前一次，方法之后恰好一次，或完成或失败。报告的时长是方法自身的，用单调时钟测量；它不含准入、参数解析，也不含其后可能发生的应答，因为那些不是业务。失败通知不替代错误报告——同一个失败两边都会收到。
+
+观察永不干预。它不能跳过方法、不能改变结果、不能更换上下文，也不能把自身的失败变成方法的失败：抛出异常的通知作为执行错误被报告，此外一概忽略，方法照常继续。由于它运行在业务运行的地方，阻塞的观察者就是阻塞该 Route，而且它不得触及任何其他 Route 所有的状态。
+
+作用范围是 Handler 方法。事件监听器、定时器与 Cron 动作、跨 Route 计算以及 HTTP 方法都属于 Route 工作，但不被观察，因为它们的标识不是 Handler、也无法与 Handler 汇总在一起；要扩展到它们，得先定义它们各自的标识。在准入前被拒绝的工作永不被观察，因为它的方法从未运行；同 Route 的嵌套分发会嵌套观察，这些时长彼此重叠，与 RT-DIAG-01 描述的情形完全一致。验证见 [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java)。
+
 角色身份可以存储在连接属性，也可以存储在应用管理的连接到身份 Map；Runtime 不要求具体存储。应用可根据 Handler Domain 在玩家分支选择玩家路由/身份，在公会分支选择公会路由/身份，并负责鉴权、策略含义及存储生命周期。身份由鉴权后明确提供，Domain 不为连接鉴权。接纳前选择的输入继续用于该任务，即使之后存储改变或删除。可变自定义上下文不深复制，应用需捕获稳定值。见 [Java 接入策略](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-context-factory) 和 [HandlerContextFactoryTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerContextFactoryTest.java)。
 
 例如角色 Handler 直接读取传入上下文的 businessId。Key 99 与身份 role/10001 各自独立，即使请求 userId=42 也不互相替换，无需角色/公会/房间身份包装类型。要求鉴权的接入策略在接纳前选择并校验可信身份；匿名登录可以使用身份 0/0。读取上下文值不表示请求已鉴权或连接可信；显式 Key 和显式上下文入口绕过配置的接入策略，因此由其调用方负责校验。见 [Java 参数契约](OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)、[HandlerArgumentTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerArgumentTest.java) 和 [demo 身份测试](../../game-demo/src/test/java/cn/managame/demo/DemoIdentityTest.java)。
@@ -299,7 +309,11 @@ Event 自身提供目标 Domain 和 Key。事件是进程内消息，没有持�
 
 ### 9.1 业务时间
 
-**RT-TIME-01**：GameTime 提供统一业务墙钟，支持读取 epoch 毫秒、按显式时区取得本地时间、替换和恢复时间源。当前 Java 绑定作用域为整个进程，默认 UTC 系统 Clock。
+**RT-TIME-01**：GameTime 提供统一业务墙钟，支持读取 epoch 毫秒、按显式时区取得本地时间、替换和恢复时间源。时钟作用于整个进程而非每个 Runtime，Java 绑定默认 UTC 系统 Clock。
+
+进程级是一个决定，不是疏忽，而且这是 Runtime 实例唯一有意不做隔离的地方。业务墙钟属于游戏世界，不属于某个执行实例：同一进程中的两个 Runtime 服务于同一个世界，给它们不同的业务时钟，得到的是自相矛盾的结算，而不是有价值的隔离。读取时间还必须对普通业务对象可用，把时钟挂到 Runtime 上，就会把 Runtime 引用推进每一个需要知道"现在几点"的模型里。
+
+代价是替换是全局且无作用域的：它无法限定在一个线程、一个 Runtime 或一次请求内，因此替换时钟的调用方改变了该进程内运行的一切，包括其他 Runtime 和并发执行的测试。所以替换是启动期或测试夹具的操作，绝不是按请求的操作；替换时钟的测试必须恢复它，且不得与依赖时钟的测试并行运行。只有当同一进程内的业务墙钟确实需要因 Runtime 而异时才重新评估——例如多个独立世界共用一个 JVM——那同时也会改变谁有权调用替换。
 
 **RT-TIME-02**：修改业务时间不得自动通知、重排或补跑 Timer/Cron。动态 Timer 由业务明确取消，按新的 GameTime 计算 delay 后重新注册；静态 Cron 由 CronScheduler 显式重排。
 
@@ -312,6 +326,10 @@ Event 自身提供目标 Domain 和 Key。事件是进程内消息，没有持�
 **RT-TIMER-02**：取消成功表示取消先于触发取得执行资格。一旦触发取得资格，取消不得声称撤回了已经排队的任务。
 
 **RT-TIMER-03**：Timer 和 Cron 使用新的 TimerContext，不继承创建者的 InvocationContext。
+
+**RT-TIMER-04 — 取消一个 Route 的全部定时器。** Runtime 可以取消它为某个完整 Route 仍持有的全部定时器，使正在结束的业务——玩家下线、房间关闭——一次性释放其定时器，而不要求应用逐个跟踪句柄。每次取消严格遵循 RT-TIMER-02：触发已经取胜的定时器不被撤回，返回的计数是本次调用从待触发转为已取消的数量，而不是有多少动作不会发生。Key 单独不选中任何东西，完整 Route 才可以，与别处一致。
+
+与取消并发调度的定时器可能错过本次取消，这是一个与自身调用方没有顺序关系的操作所能给出的唯一诚实保证。Cron 的调度不在其中：Cron 只在当前周期执行之后才注册下一周期，因此取消它待触发的定时器会永久停止该调度，而不是只结束本 Route 当前的业务。Cron 通过自己的调度器取消（RT-CRON-04）。取消在关闭之后不拒绝，也不要求 Domain 已注册：释放定时器正是停机与清理路径需要始终可用的能力。验证见 [RuntimeTimerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/RuntimeTimerTest.java)。
 
 ### 9.3 Cron
 
@@ -419,9 +437,11 @@ V1 未定义跨进程 Route 迁移、持久化任务、自动重试、回调必�
 | 构建注册、Context、分发、事件、回调、Timer/Cron | [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) |
 | 监听器声明的 Domain、构建期冲突、发布期拒绝、跨 Route 桥接 | [EventDomainTest](../../game-runtime/src/test/java/cn/managame/runtime/event/EventDomainTest.java) |
 | 客户端相关性、返回式与自行写出的响应、失败封装、构建规则 | [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java) |
+| Handler 观察：阶段、时长、不干预、作用范围 | [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java) |
 | Route 串行、容量与执行器关闭 | [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) |
 | 调度与生命周期实现 | [DefaultGameRuntime](../../game-runtime/src/main/java/cn/managame/runtime/internal/DefaultGameRuntime.java) |
 | GameTime 替换、时区与恢复 | [GameTimeTest](../../game-runtime/src/test/java/cn/managame/runtime/time/GameTimeTest.java) |
+| 按 Route 取消定时器、已触发定时器、Cron 不受影响 | [RuntimeTimerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/RuntimeTimerTest.java) |
 | Cron 取消、重排代次、过载与关闭 | [CronSchedulerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/CronSchedulerTest.java) |
 | 构建校验 | [GameRuntimeBuilder](../../game-runtime/src/main/java/cn/managame/runtime/GameRuntimeBuilder.java) |
 

@@ -108,7 +108,7 @@ Event 通过自己的 routeDomain()/routeKey() 指定唯一 Route。EventMethod 
 
 GameTime 是进程级可替换的业务墙钟，默认 Clock.systemUTC()；setClock/resetClock 不自动调整 Timer 或 Cron。RuntimeTimer 只关心单调 delay。动态业务 deadline 由应用根据 GameTime 换算并在需要时 cancel + schedule。
 
-TimerRef.cancel 只在到期任务尚未被调度线程认领时返回 true；认领后不会从 Route 队列删除任务。Timer 和 Cron 的业务动作始终进入 Route 执行，异常不重试。Cron 在本轮方法结束后重新读取 GameTime、计算下一次触发，并注册新的普通 Timer；Route 接纳失败时报告错误后也继续下一周期。
+TimerRef.cancel 只在到期任务尚未被调度线程认领时返回 true；认领后不会从 Route 队列删除任务。runtime.timer().cancelAll(domain, key) 把同一规则作用于某个完整 Route 上仍待触发的全部定时器，供本来需要逐个跟踪句柄的清理路径使用；它不碰 Cron 的调度，因为 Cron 只在当前周期执行后才注册下一周期。Timer 和 Cron 的业务动作始终进入 Route 执行，异常不重试。Cron 在本轮方法结束后重新读取 GameTime、计算下一次触发，并注册新的普通 Timer；Route 接纳失败时报告错误后也继续下一周期。
 
 Cron 是六字段数字子集，支持 wildcard、问号（仅日/周字段）、列表、区间、步长。日和周同时限定时按 AND 匹配。默认 UTC，可通过 cronZone 配置 ZoneId；表达式必须在未来八年内存在一次匹配。错过的历史触发不补跑，按当前 GameTime 计算下次执行。
 
@@ -122,6 +122,7 @@ runtime.call 的 action 业务失败应作为正常结果返回。action 抛异�
 
 - 自定义 RouteExecutor 并显式绑定 Domain。
 - 用 ClientResultCodec 定义客户端响应封装，仅用于 Handler 返回的响应；Runtime 携带相关性并负责写出，不定义客户端报文格式。
+- 用 HandlerObserver 获取按 Handler 的时长与次数；它在 Route 上观察方法且永不干预，这是 RuntimeStats 与 RuntimeErrorHandler 都给不了的。
 - 客户端通过 ClientHandlerContext/DefaultClientHandlerContext 访问 Connection 与请求相关性，RPC 通过 RpcHandlerContext/DefaultRpcHandlerContext 获取逻辑来源/关联信息；应用字段继承对应默认实现。公共 HandlerContext 包含消息和调用身份，可选 RPC 到 Runtime 接入由 game-spring 提供。
 - ProtocolRegistry 定义可由外部生成器生成。
 - MetadataKey 自带编码规则。

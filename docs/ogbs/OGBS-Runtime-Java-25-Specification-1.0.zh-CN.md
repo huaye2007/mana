@@ -55,7 +55,7 @@ public interface ClientResultCodec {
 | .route | RouteDomain、RouteKeyBinding/Extractor/Registry、RouteCallback |
 | .executor | RouteExecutor SPI、绑定、官方执行器 |
 | .protocol | 协议描述、注册、请求/响应配对 |
-| .handler | Handler 注解、HandlerArgumentBinding、HandlerContextFactory、ClientResultCodec |
+| .handler | Handler 注解、HandlerArgumentBinding、HandlerContextFactory、ClientResultCodec、HandlerObserver |
 | .http | HTTP 注解、HttpDispatcher、HttpContext、HttpContextFactory、HttpResultCallback、codec |
 | .event / .timer / .time / .error / .diagnostic | 事件、定时器与 Cron、GameTime、错误、RuntimeStats |
 | .internal | 编译、调度、上下文绑定；不是应用 API |
@@ -72,6 +72,7 @@ GameRuntimeBuilder.builder()
     .handlerArguments(Iterable<? extends HandlerArgumentBinding<?>>)
     .handlerContextFactory(HandlerContextFactory)
     .clientResultCodec(ClientResultCodec)
+    .handlerObserver(HandlerObserver)
     .httpHandlers(Iterable<?>)
     .httpContextFactory(HttpContextFactory)
     .httpResultCodec(HttpResultCodec)
@@ -265,6 +266,24 @@ Handler 以两种方式之一应答：
 
 `builder.clientResultCodec(codec)` 在任何 Handler 以返回值应答前必须配置，否则不被使用。Runtime 不关闭也不复制它。测试：[ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java)；demo 编解码器：[GamePacketResultCodec](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketResultCodec.java)。
 
+<a id="handler-observation"></a>
+
+### 6.6 Handler 观察
+
+```java
+public interface HandlerObserver {
+    default void onStart(HandlerContext context) {}
+    void onFinish(HandlerContext context, long elapsedNanos);
+    void onError(HandlerContext context, long elapsedNanos, Throwable cause);
+}
+```
+
+`builder.handlerObserver(observer)` 注册唯一一个；默认不注册，此时什么也不测量。`context.message().getClass()` 就是该 Handler 的标识——每条消息一个 Handler——因此它是按 Handler 统计时长与次数的天然键，其基数就是已注册的协议表。
+
+三个回调都在该请求的 Route 上、在其 Route 任务内运行，拿到 Handler 收到的那个上下文。`onStart` 之后恰好跟随 `onFinish` 或 `onError` 之一。`elapsedNanos` 取自仅包围方法句柄调用的 `System.nanoTime()`：不含准入、不含参数解析，也不含返回值型 Handler 之后产生的应答。抛出异常的回调作为 RUNTIME_EXECUTION_ERROR（3010）报告，此外一概忽略——Handler 自身的结果以及错误处理器看到的内容都不变（RT-DISPATCH-08）。`onError` 不替代 `RuntimeErrorHandler`，两者收到同一个 Throwable。
+
+只有 `@HandlerMethod` 分发被观察。事件监听器、定时器与 Cron 动作、跨 Route 计算以及 HTTP 方法都不在内。准入失败不被观察；同 Route 的嵌套分发产生嵌套且重叠的观察。Runtime 不关闭也不复制观察者；由于多个 Route 并发运行，它必须线程安全。测试：[HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java)。
+
 ## 7. RouteExecutor
 
 ```java
@@ -325,11 +344,13 @@ interface EventBus { void publish(Event event); }
 
 ### 10.1 GameTime
 
-`GameTime.currentTimeMillis()`、`GameTime.now(ZoneId)`、`setClock(Clock)`、`resetClock()`。进程内唯一时钟（默认 `Clock.systemUTC()`）。修改时钟不会重排定时器或 Cron；时长与超时仍用单调时钟。测试结束须重置。
+`GameTime.currentTimeMillis()`、`GameTime.now(ZoneId)`、`setClock(Clock)`、`resetClock()`。进程内唯一时钟，保存在 `static volatile Clock` 中（默认 `Clock.systemUTC()`），有意不做成每 Runtime 一份（RT-TIME-01）。修改时钟不会重排定时器或 Cron；时长与超时仍用单调时钟。`setClock` 没有作用域：它一次性作用于 JVM 内所有线程和所有 Runtime，因此属于启动期或测试夹具，绝不属于某次请求。替换时钟的测试必须在清理阶段恢复它，并且必须带 `@ResourceLock("GameTime")`，以免与读取时钟的测试并行——见 [CronSchedulerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/CronSchedulerTest.java) 与 [RuntimeTimerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/RuntimeTimerTest.java)。
 
 ### 10.2 一次性 Timer
 
 `TimerRef RuntimeTimer.schedule(domain, key, Duration delay, Runnable task)` 立即校验 Route（拒绝负延迟），到期后在新的 DefaultTimerContext 中把任务提交到该 Route。每个 Runtime 一个时间轮线程（Netty HashedWheelTimer，tick 10 ms、1024 槽）：调度与取消为 O(1)，适合大量 buff、冷却、过期计时器；精度为一个 tick——到期不早于延迟，通常在其后一个 tick 内触发。时间轮线程只把任务提交到 Route，业务代码不在其上运行。`TimerRef.cancel()` 只在触发前成功，不能撤回已提交的任务。
+
+`int cancelAll(domain, key)` 取消该完整 Route 上仍待触发的全部定时器并返回认领数量，用于本来需要逐个跟踪 TimerRef 的清理路径——下线、房间关闭。它接受未注册的 Domain 和已关闭的 Runtime，因为清理正是在那种时刻运行；它有意跳过 Cron 的定时器：Cron 只在当前周期执行后才注册下一周期，取消其待触发定时器会永久停止该调度（RT-TIMER-04）。跟踪的代价是每个持有定时器的 Route 一个 map 条目、每个定时器一个 set 条目，两者都在定时器触发或取消时移除，因此空闲 Route 不占用任何东西。
 
 ### 10.3 Cron 表达式
 

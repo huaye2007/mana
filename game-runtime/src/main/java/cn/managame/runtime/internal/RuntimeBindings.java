@@ -5,6 +5,7 @@ import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
+import cn.managame.runtime.handler.HandlerObserver;
 import cn.managame.runtime.http.HttpContextFactory;
 import cn.managame.runtime.http.HttpResultCodec;
 import cn.managame.runtime.protocol.ProtocolRegistry;
@@ -23,7 +24,7 @@ final class RuntimeBindings {
     /** Everything a DefaultGameRuntime needs, frozen at build. */
     record Compiled(Map<Integer, RouteExecutor> routes, ProtocolRegistry protocols,
                     Map<Class<?>, RouteKeyBinding<?>> routeKeys, Map<Class<?>, HandlerBinding> handlers,
-                    HandlerContextFactory handlerContexts, ClientResultCodec clientResults,
+                    HandlerContextFactory handlerContexts, ClientResultCodec clientResults, HandlerObserver handlerObserver,
                     Map<Class<?>, EventSubscribers> events,
                     List<CronBinding> crons, Map<HttpEndpoint, HttpBinding> http, HttpContextFactory httpContexts,
                     HttpResultCodec httpResults, RuntimeErrorHandler errors, boolean executionTiming) {}

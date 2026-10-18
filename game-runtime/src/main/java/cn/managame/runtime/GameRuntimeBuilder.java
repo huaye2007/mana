@@ -4,6 +4,7 @@ import cn.managame.runtime.error.RuntimeErrorHandler;
 import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerArgumentBinding;
 import cn.managame.runtime.handler.HandlerContextFactory;
+import cn.managame.runtime.handler.HandlerObserver;
 import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.protocol.ProtocolRegistry;
 import cn.managame.runtime.route.RouteDomain;
@@ -26,6 +27,7 @@ public final class GameRuntimeBuilder {
     private List<HandlerArgumentBinding<?>> arguments = List.of();
     private HandlerContextFactory handlerContexts;
     private ClientResultCodec clientResults;
+    private HandlerObserver handlerObserver;
     private List<Object> httpHandlers = List.of();
     private HttpContextFactory httpContexts;
     private HttpResultCodec httpResults = HttpResultCodec.json();
@@ -47,6 +49,8 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder handlers(Iterable<?> v) { handlers = copy(v); return this; }
     public GameRuntimeBuilder handlerArguments(Iterable<? extends HandlerArgumentBinding<?>> v) { arguments = copy(v); return this; }
     public GameRuntimeBuilder handlerContextFactory(HandlerContextFactory v) { handlerContexts = Objects.requireNonNull(v); return this; }
+    /** Optional per-Handler observation; it cannot intervene, and costs nothing when unset. */
+    public GameRuntimeBuilder handlerObserver(HandlerObserver v) { handlerObserver = Objects.requireNonNull(v); return this; }
     /** Required when any Handler returns a response; Runtime defines no client wire format. */
     public GameRuntimeBuilder clientResultCodec(ClientResultCodec v) { clientResults = Objects.requireNonNull(v); return this; }
     public GameRuntimeBuilder httpHandlers(Iterable<?> v) { httpHandlers = copy(v); return this; }
@@ -64,7 +68,7 @@ public final class GameRuntimeBuilder {
     public GameRuntimeBuilder executionTiming(boolean enabled) { executionTiming = enabled; return this; }
     public GameRuntime build() {
         return RuntimeCompiler.build(new RuntimeSettings(domains, executors, protocols, keys, handlers, arguments,
-                handlerContexts, clientResults, events, crons, httpHandlers, httpContexts, httpResults, httpRequests,
+                handlerContexts, clientResults, handlerObserver, events, crons, httpHandlers, httpContexts, httpResults, httpRequests,
                 cronZone, errors, executionTiming));
     }
 }

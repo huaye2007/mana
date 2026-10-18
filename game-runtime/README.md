@@ -69,7 +69,7 @@ runtime.cron().rescheduleAll();
 GameTime.resetClock();
 ```
 
-GameTime is the process-wide business wall clock. setClock/resetClock do not automatically change existing schedules. Tests should restore the clock in finally or AfterEach. RuntimeTimer still fires after real elapsed delay. Applications convert absolute business deadlines into Duration and use cancel + schedule when recalculation is needed.
+GameTime is the process-wide business wall clock, deliberately shared by every Runtime in the JVM: business wall time belongs to the game world, not to an execution instance, and a clock on the Runtime would push a Runtime reference into every model that reads the time. The price is that setClock has no scope — it changes the time for every thread and every Runtime at once, so it belongs to startup or a test harness, never to a request; tests must restore it and guard it with @ResourceLock("GameTime"). setClock/resetClock do not automatically change existing schedules. RuntimeTimer still fires after real elapsed delay. Applications convert absolute business deadlines into Duration and use cancel + schedule when recalculation is needed. A Route whose business is ending drops its timers with `runtime.timer().cancelAll(domain, key)` instead of tracking each TimerRef; it returns how many were still pending, and leaves Cron schedules alone.
 
 Cron computes its next time using current GameTime, then uses RuntimeTimer. Manage entries by declaring class and method name:
 
@@ -86,6 +86,10 @@ SystemCron is an application-defined class. cancel stops future cycles; reschedu
 ## Event listener Domain
 
 Every listener of one publication runs on the event's single Route, so a listener may only touch the state that Route owns. `@EventMethod(domain = GUILD_ID)` declares which Domain a listener owns state in, which turns that rule from a convention into a check: listeners of one event type that declare different Domains fail at build, and an event whose `routeDomain()` differs from the declared one is rejected with ROUTE_DOMAIN_MISMATCH before admission — no context, no Route task, no listener runs. Declaring nothing keeps the previous behaviour, but one declaring listener constrains that event type for all of them. To touch another Domain's state, stay on the event's Route and use `runtime.call`; its callback restores the event context. See the [clause](../docs/ogbs/OGBS-Runtime-1.0.md#event-listener-domain) and [tests](src/test/java/cn/managame/runtime/event/EventDomainTest.java).
+
+## Observing Handlers
+
+`builder.handlerObserver(...)` registers one observer that is notified on the request's Route before a Handler method and exactly once after it, as completion or failure, with the method's own monotonic duration. It is where per-Handler latency and counts come from: `RuntimeStats` has no per-Handler dimension and `RuntimeErrorHandler` sees only failures. It cannot intervene — it cannot skip the method, change its result, or turn its own exception into the method's, and a callback that throws is reported and ignored. It runs where the business runs, so it must be thread-safe and must not block. Only `@HandlerMethod` dispatch is observed; events, timers, Cron, cross-Route computations and HTTP methods are not. See the [clause](../docs/ogbs/OGBS-Runtime-1.0.md#handler-observation), the [Java API](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md#handler-observation) and [tests](src/test/java/cn/managame/runtime/HandlerObserverTest.java).
 
 ## Static event publication
 

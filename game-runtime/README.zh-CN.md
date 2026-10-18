@@ -63,7 +63,7 @@ runtime.cron().rescheduleAll();
 GameTime.resetClock();
 ```
 
-GameTime 是进程级业务墙钟；setClock/resetClock 不自动改变任何现存调度。测试应在 finally 或 AfterEach 恢复时钟。RuntimeTimer 仍按真实经过的 delay 触发。绝对业务 deadline 由应用自行换算成 Duration，需要重算时由业务 cancel + schedule。
+GameTime 是进程级业务墙钟，有意被 JVM 内所有 Runtime 共享：业务墙钟属于游戏世界而非某个执行实例，把时钟挂到 Runtime 上会把 Runtime 引用推进每一个读取时间的模型。代价是 setClock 没有作用域——它一次改变所有线程和所有 Runtime 的时间，因此属于启动期或测试夹具，绝不属于某次请求；测试必须恢复它并用 @ResourceLock("GameTime") 保护。setClock/resetClock 不自动改变任何现存调度。RuntimeTimer 仍按真实经过的 delay 触发。绝对业务 deadline 由应用自行换算成 Duration，需要重算时由业务 cancel + schedule。业务即将结束的 Route 用 `runtime.timer().cancelAll(domain, key)` 一次性释放其定时器，而不必逐个跟踪 TimerRef；它返回仍待触发的数量，且不影响 Cron 调度。
 
 Cron 基于当前 GameTime 计算下一次时间，再使用 RuntimeTimer。按声明类与方法名管理：
 
@@ -78,6 +78,10 @@ SystemCron 是应用定义的 Cron 类。cancel 停止后续周期；reschedule 
 ## 事件监听器的 Domain
 
 一次发布的全部监听器都在事件那一个 Route 上运行，因此监听器只能触及该 Route 所有的状态。`@EventMethod(domain = GUILD_ID)` 声明监听器在哪个 Domain 拥有状态，把这条规则从约定变成校验：同一事件类型的监听器声明了不同 Domain 时构建失败；事件的 `routeDomain()` 与所声明的不一致时，在准入前以 ROUTE_DOMAIN_MISMATCH 拒绝——不创建上下文、不提交 Route 任务、没有监听器运行。不声明维持原有行为，但只要有一个监听器声明，就约束了该事件类型的全部监听器。要触及其他 Domain 的状态，应留在事件的 Route 上并使用 `runtime.call`，其回调会恢复事件上下文。见[条款](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#event-listener-domain)与[测试](src/test/java/cn/managame/runtime/event/EventDomainTest.java)。
+
+## 观察 Handler
+
+`builder.handlerObserver(...)` 注册唯一一个观察者，它在该请求的 Route 上于 Handler 方法之前被通知，并在之后恰好一次，或完成或失败，并带上该方法自身的单调时长。按 Handler 的时长与次数就来自这里：`RuntimeStats` 没有按 Handler 的维度，`RuntimeErrorHandler` 只看得到失败。它不能干预——不能跳过方法、不能改变结果、不能把自身异常变成方法的异常，抛出异常的回调被报告后忽略。它运行在业务运行的地方，因此必须线程安全且不得阻塞。只有 `@HandlerMethod` 分发被观察；事件、定时器、Cron、跨 Route 计算与 HTTP 方法都不在内。见[条款](../docs/ogbs/OGBS-Runtime-1.0.zh-CN.md#handler-observation)、[Java API](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-observation) 与[测试](src/test/java/cn/managame/runtime/HandlerObserverTest.java)。
 
 ## 静态事件发布
 

@@ -57,7 +57,7 @@ A built Runtime is usable at once; there is no start, dynamic registration or ar
 | .route | RouteDomain, RouteKeyBinding/Extractor/Registry, RouteCallback |
 | .executor | RouteExecutor SPI, bindings, official executors |
 | .protocol | Protocol descriptors, registration, request/response pairs |
-| .handler | Handler annotations, HandlerArgumentBinding, HandlerContextFactory, ClientResultCodec |
+| .handler | Handler annotations, HandlerArgumentBinding, HandlerContextFactory, ClientResultCodec, HandlerObserver |
 | .http | HTTP annotations, HttpDispatcher, HttpContext, HttpContextFactory, HttpResultCallback, codecs |
 | .event / .timer / .time / .error / .diagnostic | Events, timers and Cron, GameTime, errors, RuntimeStats |
 | .internal | Compilation, scheduling, context binding; not application API |
@@ -78,6 +78,7 @@ GameRuntimeBuilder.builder()
     .handlerArguments(Iterable<? extends HandlerArgumentBinding<?>>)
     .handlerContextFactory(HandlerContextFactory)
     .clientResultCodec(ClientResultCodec)
+    .handlerObserver(HandlerObserver)
     .httpHandlers(Iterable<?>)
     .httpContextFactory(HttpContextFactory)
     .httpResultCodec(HttpResultCodec)
@@ -282,6 +283,24 @@ At dispatch the tightened context type is checked like any other, so a non-clien
 
 `builder.clientResultCodec(codec)` is required before any Handler returns a response and is otherwise unused. Runtime neither closes nor copies it. Tests: [ClientResponseTest](../../game-runtime/src/test/java/cn/managame/runtime/ClientResponseTest.java); demo codec: [GamePacketResultCodec](../../game-demo/src/main/java/cn/managame/demo/network/GamePacketResultCodec.java).
 
+<a id="handler-observation"></a>
+
+### 6.6 Handler observation
+
+```java
+public interface HandlerObserver {
+    default void onStart(HandlerContext context) {}
+    void onFinish(HandlerContext context, long elapsedNanos);
+    void onError(HandlerContext context, long elapsedNanos, Throwable cause);
+}
+```
+
+`builder.handlerObserver(observer)` registers one; none is registered by default and nothing is measured then. `context.message().getClass()` is the Handler's identity — one Handler per message type — so it is the natural key for per-Handler latency and counts, and its cardinality is the registered protocol table.
+
+All three run on the request's Route inside its Route task, with the exact context the Handler received. `onStart` is followed by exactly one of `onFinish` or `onError`. `elapsedNanos` comes from `System.nanoTime()` around the method handle invocation alone: not admission, not argument resolution, and not the response that a returning Handler produces afterwards. A callback that throws is reported as RUNTIME_EXECUTION_ERROR (3010) and otherwise ignored — the Handler's own result and the error handler's view of it are unchanged (RT-DISPATCH-08). `onError` does not replace `RuntimeErrorHandler`; both receive the same Throwable.
+
+Only `@HandlerMethod` dispatch is observed. Event listeners, timer and Cron actions, cross-Route computations and HTTP methods are not. Admission failures are not observed, and nested same-Route dispatch produces nested, overlapping observations. Runtime neither closes nor copies the observer; it must be thread-safe, since Routes run concurrently. Tests: [HandlerObserverTest](../../game-runtime/src/test/java/cn/managame/runtime/HandlerObserverTest.java).
+
 <a id="7-routeexecutor"></a>
 <a id="71-两种容量的计算示例"></a>
 <a id="72-自定义-executor-的验收边界"></a>
@@ -352,13 +371,15 @@ The [demo](../../game-demo/README.md#demo-runtime-services) collects @Cron beans
 
 ### 10.1 GameTime
 
-`GameTime.currentTimeMillis()`, `GameTime.now(ZoneId)`, `setClock(Clock)`, `resetClock()`. One process-wide clock (default `Clock.systemUTC()`). Changing it never reschedules timers or Cron; durations and timeouts stay monotonic. Tests must reset it.
+`GameTime.currentTimeMillis()`, `GameTime.now(ZoneId)`, `setClock(Clock)`, `resetClock()`. One process-wide clock in a `static volatile Clock` (default `Clock.systemUTC()`), deliberately not per Runtime (RT-TIME-01). Changing it never reschedules timers or Cron; durations and timeouts stay monotonic. `setClock` has no scope: it applies to every thread and every Runtime in the JVM at once, so it belongs to startup or a test harness, never to a request. A test that replaces the clock must restore it in teardown and must carry `@ResourceLock("GameTime")` so it cannot run beside a test that reads it — see [CronSchedulerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/CronSchedulerTest.java) and [RuntimeTimerTest](../../game-runtime/src/test/java/cn/managame/runtime/timer/RuntimeTimerTest.java).
 
 <a id="102-一次性-timer"></a>
 
 ### 10.2 One-shot Timer
 
 `TimerRef RuntimeTimer.schedule(domain, key, Duration delay, Runnable task)` validates the Route at once (negative delay rejected) and, when due, submits the task to the Route in a fresh DefaultTimerContext. One timing-wheel thread per Runtime (Netty HashedWheelTimer, 10 ms tick, 1024 slots): O(1) schedule and cancel, suited to very many buff, cooldown and expiry timers; resolution is one tick — a timer fires no earlier than its delay and normally within one tick after it. The wheel thread only submits to the Route; business code never runs on it. `TimerRef.cancel()` succeeds only before the timer fires; it cannot retract submitted work.
+
+`int cancelAll(domain, key)` cancels every timer still pending for that complete Route and returns how many it claimed, for cleanup paths that would otherwise track each TimerRef — a logout, a room closing. It accepts an unregistered Domain and a closed Runtime, because that is when cleanup runs, and it skips Cron timers deliberately: a Cron registers its next cycle only after the current one runs, so cancelling its pending timer would stop the schedule for good (RT-TIMER-04). Tracking costs one map entry per Route holding timers and one set entry per timer, both dropped as each timer fires or is cancelled, so quiet Routes hold nothing.
 
 <a id="103-cron-表达式"></a>
 

@@ -37,6 +37,7 @@ import cn.managame.runtime.event.Events;
 import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerContextFactory;
+import cn.managame.runtime.handler.HandlerObserver;
 import cn.managame.runtime.http.HttpDispatcher;
 import cn.managame.runtime.internal.RuntimeBindings.Compiled;
 import cn.managame.runtime.internal.RuntimeBindings.EventSubscribers;
@@ -66,6 +67,7 @@ final class DefaultGameRuntime implements GameRuntime {
     private final Map<Class<?>, HandlerBinding> handlers;
     private final HandlerContextFactory handlerContexts;
     private final ClientResultCodec clientResults;
+    private final HandlerObserver observer;
     private final Map<Class<?>, EventSubscribers> events;
     private final RuntimeErrorHandler errors;
     private final boolean executionTiming;
@@ -85,6 +87,7 @@ final class DefaultGameRuntime implements GameRuntime {
         handlers = compiled.handlers();
         handlerContexts = compiled.handlerContexts();
         clientResults = compiled.clientResults();
+        observer = compiled.handlerObserver();
         events = compiled.events();
         errors = compiled.errors();
         executionTiming = compiled.executionTiming();
@@ -238,15 +241,39 @@ final class DefaultGameRuntime implements GameRuntime {
         // The context type check above guarantees a client context whenever the Handler returns a response.
         ClientHandlerContext client = handler.returnsResult() ? (ClientHandlerContext) context : null;
         int error = submit(context, () -> {
+            // The method alone is timed; the response that may follow it is delivery, not business.
+            long started = observer == null ? 0L : started(context);
+            Object result;
             try {
-                Object result = handler.invoke(context, message, arguments);
-                if (client != null) send(client, result, 0, true);
+                result = handler.invoke(context, message, arguments);
             } catch (Throwable e) {
+                if (observer != null) failed(context, started, e);
                 report(RUNTIME_EXECUTION_ERROR, context, e);
                 if (client != null) send(client, null, RUNTIME_EXECUTION_ERROR, false);
+                return;
             }
+            if (observer != null) finished(context, started);
+            if (client != null) send(client, result, 0, true);
         }, false);
         if (error != 0) throw failure(error);
+    }
+
+    // ------------------------------------------------------- Handler observation (never intervenes)
+
+    private long started(HandlerContext context) {
+        try { observer.onStart(context); }
+        catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
+        return System.nanoTime();
+    }
+
+    private void finished(HandlerContext context, long startedAt) {
+        try { observer.onFinish(context, System.nanoTime() - startedAt); }
+        catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
+    }
+
+    private void failed(HandlerContext context, long startedAt, Throwable cause) {
+        try { observer.onError(context, System.nanoTime() - startedAt, cause); }
+        catch (Throwable e) { report(RUNTIME_EXECUTION_ERROR, context, e); }
     }
 
     // ---------------------------------------------------------------- client responses

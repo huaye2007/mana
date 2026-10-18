@@ -41,7 +41,7 @@ public final class RuntimeCompiler {
                 throw invalid("Custom HTTP contexts require httpContextFactory");
         }
         return new DefaultGameRuntime(new Compiled(Map.copyOf(routes), settings.protocols(), Map.copyOf(handlers.routeKeys),
-                Map.copyOf(handlers.handlers), settings.handlerContexts(), settings.clientResults(), events, crons, http,
+                Map.copyOf(handlers.handlers), settings.handlerContexts(), settings.clientResults(), settings.handlerObserver(), events, crons, http,
                 settings.httpContexts(), settings.httpResults(), settings.errors(), settings.executionTiming()));
     }
 

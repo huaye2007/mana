@@ -117,7 +117,7 @@ Event selects its unique Route through routeDomain()/routeKey(). EventMethod use
 
 GameTime is a replaceable process-wide business wall clock, defaulting to Clock.systemUTC(). setClock/resetClock do not automatically alter Timer/Cron. RuntimeTimer uses monotonic delay only. Applications convert dynamic business deadlines using GameTime and cancel + schedule when needed.
 
-TimerRef.cancel returns true only before the scheduling thread claims the due task; afterward it does not remove the task from the Route queue. Timer/Cron business actions always enter Route execution and do not retry on exceptions. After a Cron method ends, Cron rereads GameTime, computes the next trigger, and registers another ordinary Timer. Route admission failure is reported and future cycles continue.
+TimerRef.cancel returns true only before the scheduling thread claims the due task; afterward it does not remove the task from the Route queue. runtime.timer().cancelAll(domain, key) applies the same rule to every timer still pending on one complete Route, for cleanup paths that would otherwise track each handle; it leaves Cron schedules alone, since those register their next cycle only after the current one runs. Timer/Cron business actions always enter Route execution and do not retry on exceptions. After a Cron method ends, Cron rereads GameTime, computes the next trigger, and registers another ordinary Timer. Route admission failure is reported and future cycles continue.
 
 Cron supports six numeric fields with wildcards, question marks (day/weekday only), lists, ranges, and steps. Constrained day and weekday fields use AND. UTC is default, with ZoneId configurable through cronZone; an expression must match within the next eight years. Missed historical triggers are not replayed; the next execution is computed from current GameTime.
 
@@ -133,6 +133,7 @@ Synchronous dispatch integration errors throw RuntimeDispatchException. Errors a
 
 - Custom RouteExecutor with explicit Domain bindings.
 - ClientResultCodec for the client response envelope, used only for responses a Handler returns; Runtime carries the correlation and writes, and defines no client wire format.
+- HandlerObserver for per-Handler latency and counts; it watches the method on its Route and can never intervene, which is the one thing RuntimeStats and RuntimeErrorHandler cannot supply.
 - Use ClientHandlerContext/DefaultClientHandlerContext for client Connection access and request correlation, and RpcHandlerContext/DefaultRpcHandlerContext for logical RPC origin/correlation; extend the appropriate default only for application-specific fields. Common HandlerContext contains message and invocation identity. Optional RPC-to-Runtime adaptation is available through game-spring.
 - Externally generated ProtocolRegistry definitions.
 - MetadataKey carrying its encoding rules.
