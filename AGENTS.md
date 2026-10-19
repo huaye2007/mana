@@ -120,6 +120,7 @@ Maintain one primary definition per rule and reference it elsewhere. Core's stan
 - For package moves, module merges, Maven dependencies, or cross-component integration, run `mvn clean verify` from the root to prevent stale class files from hiding issues.
 - For local implementation changes, test the module and dependencies first, then integration appropriate to the impact.
 - For documentation-only changes, check naming, consistency, and local links. If complete runnable examples change, verify compilation and execution without repeatedly running unrelated tests.
+- The mechanical half of the rules in this file is checked by [game-docs](game-docs/README.md), which runs on every `mvn verify`: local links and heading anchors resolve, both languages of every document exist, both halves of a specification carry the same clause IDs, every OGBS specification is reachable from the index, and no line has been encoded twice. Fix what it reports rather than working around it; it does not replace reading the prose, and it deliberately only reports, never fails, on identifiers a specification names that the source does not declare.
 
 <a id="双语文档"></a>
 
@@ -129,4 +130,4 @@ Maintain one primary definition per rule and reference it elsewhere. Core's stan
 - Put an English / Simplified Chinese language switch near the top. Link to matching-language documents within each language. Keep source-code and external links unchanged.
 - Both languages express the same contract, not separate designs. Update both in the same task, preserving clause IDs, API names, defaults, constraints, examples, failure paths, and implementation/validation status.
 - English-first display does not permit semantic changes or removal of Chinese detail. Resolve translation discrepancies against confirmed design and code, then fix both texts.
-- When adding or renaming documents/headings, check pairs, switches, local files, and section anchors. Preserve compatibility anchors for existing inbound links when needed.
+- When adding or renaming documents/headings, check pairs, switches, local files, and section anchors. Preserve compatibility anchors for existing inbound links when needed. `mvn -pl game-docs test` answers all of this in about a second, and is cheaper than finding out from a reader.

@@ -1,7 +1,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>cn.managame</groupId><artifactId>mana3</artifactId><version>1.0.0-SNAPSHOT</version><packaging>pom</packaging>
-  <modules><module>game-core</module><module>game-network</module><module>game-rpc</module><module>game-router</module><module>game-runtime</module><module>game-data</module><module>game-boot</module><module>game-spring</module><module>game-demo</module><module>game-benchmark</module></modules>
+  <modules><module>game-core</module><module>game-network</module><module>game-rpc</module><module>game-router</module><module>game-runtime</module><module>game-data</module><module>game-boot</module><module>game-spring</module><module>game-demo</module><module>game-benchmark</module><module>game-docs</module></modules>
   <properties>
     <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -22,7 +22,9 @@
   </plugins></build>
   <profiles>
     <!--
-      Style gate: `mvn -Pquality verify` runs the Checkstyle rules in config/checkstyle.xml. No automatic
+      Style gate: `mvn -Pquality verify` runs the Checkstyle rules in config/checkstyle.xml. The checks on
+      the repository's own documentation live in game-docs and are ordinary tests, so an ordinary
+      `mvn verify` runs them too and `-DskipTests` skips them. No automatic
       formatter: layout is the house style (members and related statements packed onto one line), which no
       formatter we tried reproduces, so wrapping and line length stay a review matter.
     -->
