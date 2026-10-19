@@ -29,6 +29,7 @@ import cn.managame.runtime.context.DefaultTimerContext;
 import cn.managame.runtime.context.HandlerContext;
 import cn.managame.runtime.context.InvocationContext;
 import cn.managame.runtime.diagnostic.DomainStats;
+import cn.managame.runtime.diagnostic.RunningTask;
 import cn.managame.runtime.diagnostic.RuntimeStats;
 import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.error.RuntimeError;
@@ -41,6 +42,7 @@ import cn.managame.runtime.handler.ClientResultCodec;
 import cn.managame.runtime.handler.HandlerContextFactory;
 import cn.managame.runtime.handler.HandlerObserver;
 import cn.managame.runtime.http.HttpDispatcher;
+import cn.managame.runtime.internal.RunningTasks.Running;
 import cn.managame.runtime.internal.RuntimeBindings.Compiled;
 import cn.managame.runtime.internal.RuntimeBindings.EventSubscribers;
 import cn.managame.runtime.internal.RuntimeBindings.HandlerBinding;
@@ -87,6 +89,8 @@ final class DefaultGameRuntime implements GameRuntime {
     private final Set<Captured<?>> outstanding = ConcurrentHashMap.newKeySet();
     /** One counter set per registered Domain; the map is built at construction and never mutated. */
     private final Map<Integer, DomainCounters> perDomain;
+    /** Which Route each running task belongs to, so a reading can name one that is stuck. */
+    private final RunningTasks runningTasks = new RunningTasks();
     // Striped counters: every Route task updates them, so a single atomic word would be contended by all workers.
     private final LongAdder queued = new LongAdder(), running = new LongAdder(), completed = new LongAdder(),
             rejected = new LongAdder(), errorCount = new LongAdder(), executionNanos = new LongAdder();
@@ -161,9 +165,13 @@ final class DefaultGameRuntime implements GameRuntime {
         Runnable bound = () -> {
             queued.decrement(); domain.queued().decrement();
             running.increment(); domain.running().increment();
-            long started = executionTiming ? System.nanoTime() : 0;
+            // Read unconditionally: executionTiming only decides whether the second read happens, because
+            // naming a stuck Route is exactly what an instance with timing turned off still needs.
+            long started = System.nanoTime();
+            int slot = runningTasks.claim(context.routeDomain(), context.routeKey(), started);
             try { RuntimeContexts.run(this, context, action); }
             finally {
+                runningTasks.release(slot);
                 if (executionTiming) executionNanos.add(System.nanoTime() - started);
                 running.decrement(); domain.running().decrement();
                 completed.increment(); domain.completed().increment();
@@ -469,18 +477,32 @@ final class DefaultGameRuntime implements GameRuntime {
     }
 
     public RuntimeStats stats() {
+        // One clock read for every age in this snapshot, so the Domain figures and the Runtime figure
+        // cannot disagree about how long the same task has been running.
+        long now = System.nanoTime();
+        Map<Integer, Running> oldest = runningTasks.oldestByDomain();
+        Running overall = null;
+        for (Running running : oldest.values())
+            if (overall == null || running.startedAt() < overall.startedAt()) overall = running;
         return new RuntimeStats(admission.accepting() && !closed.get(), admission.count(), queued.sum(), running.sum(),
                 completed.sum(), rejected.sum(), errorCount.sum(), executionNanos.sum(),
-                outstanding.size(), oldestReservation(), domainStats());
+                outstanding.size(), oldestReservation(), runningTask(overall, now), domainStats(oldest, now));
+    }
+
+    /** An internal slot reading as the public record, with its age taken against one clock read. */
+    private static RunningTask runningTask(Running running, long now) {
+        return running == null ? RunningTask.none()
+                : new RunningTask(running.routeDomain(), running.routeKey(), now - running.startedAt());
     }
 
     /** One entry per registered Domain, in ascending Domain order so successive readings line up. */
-    private List<DomainStats> domainStats() {
+    private List<DomainStats> domainStats(Map<Integer, Running> oldest, long now) {
         var byDomain = new ArrayList<DomainStats>(perDomain.size());
         for (var entry : new TreeMap<>(perDomain).entrySet()) {
             DomainCounters counters = entry.getValue();
             byDomain.add(new DomainStats(entry.getKey(), counters.queued().sum(), counters.running().sum(),
-                    counters.completed().sum(), counters.rejected().sum(), executorStats(entry.getKey())));
+                    counters.completed().sum(), counters.rejected().sum(), executorStats(entry.getKey()),
+                    runningTask(oldest.get(entry.getKey()), now)));
         }
         return List.copyOf(byDomain);
     }

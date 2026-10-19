@@ -119,6 +119,12 @@ class ObservabilityEndpointsTest {
             // The one registered Domain carries its executor's bound, so queued has a denominator.
             assertEquals(0L, readings.get("runtime.domain1.queued"));
             assertEquals(65536L, readings.get("runtime.domain1.executor.capacity"));
+            // Nothing is running, so the stuck-Route readings are all zero rather than absent: a dashboard
+            // that plots them sees a flat line instead of a gap it has to interpret.
+            assertEquals(0L, readings.get("runtime.running.oldest.nanos"));
+            assertEquals(0L, readings.get("runtime.running.oldest.domain"));
+            assertEquals(0L, readings.get("runtime.running.oldest.key"));
+            assertEquals(0L, readings.get("runtime.domain1.running.oldest.key"));
 
             // Closing admission is what a drain does; readiness must report it while readings keep answering.
             runtime.shutdown();

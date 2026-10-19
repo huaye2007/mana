@@ -29,6 +29,11 @@ public final class FrameworkMetrics {
             // What a drain that will not finish is waiting for, and how long it has waited.
             sink.gauge("continuations", s.continuations());
             sink.gauge("continuations.oldest.nanos", s.oldestContinuationNanos());
+            // Which Route a stuck instance is stuck on. The Key is a value here rather than a dimension,
+            // so watching it costs one series however many Routes exist.
+            sink.gauge("running.oldest.nanos", s.oldestRunning().runningNanos());
+            sink.gauge("running.oldest.domain", s.oldestRunning().routeDomain());
+            sink.gauge("running.oldest.key", s.oldestRunning().routeKey());
             // Per Domain, so "the instance is shedding" becomes "this Domain is". The sink carries no
             // dimensions, so the Domain is part of the name; its cardinality is fixed at build.
             for (var domain : s.domains()) {
@@ -42,6 +47,9 @@ public final class FrameworkMetrics {
                 sink.gauge(prefix + "executor.capacity", domain.executor().capacity());
                 sink.gauge(prefix + "executor.route.capacity", domain.executor().routeCapacity());
                 sink.gauge(prefix + "executor.active.routes", domain.executor().activeRoutes());
+                // The Domain is already in the prefix, so only the Key and the age are worth repeating.
+                sink.gauge(prefix + "running.oldest.nanos", domain.oldestRunning().runningNanos());
+                sink.gauge(prefix + "running.oldest.key", domain.oldestRunning().routeKey());
             }
             sink.counter("route.completed", s.completed());
             sink.counter("route.rejected", s.rejected());

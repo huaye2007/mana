@@ -10,6 +10,8 @@ import cn.managame.runtime.executor.RouteExecutorStats;
  *                 known still counts in the Runtime total, so these need not sum to it
  * @param executor the limits of the executor bound to this Domain, which is the denominator for
  *                 {@code queued}; Domains sharing one executor repeat its numbers, so do not sum them
+ * @param oldestRunning the Route of this Domain whose task has been running longest, or
+ *                      {@link RunningTask#none()} when nothing of this Domain is running
  */
 public record DomainStats(int routeDomain, long queued, long running, long completed, long rejected,
-                          RouteExecutorStats executor) {}
+                          RouteExecutorStats executor, RunningTask oldestRunning) {}

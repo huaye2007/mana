@@ -76,7 +76,7 @@ try (runtime; var rpc = new GameRpc(runtime, codec, builder, List.of(routingConf
 | `ReadinessCheck` | `String name()`、`boolean ready()`。必须用已持有的状态作答；不得阻塞或分发 |
 | `ObservabilityEndpoints` | `public HttpDispatcher wrap(HttpDispatcher business)`，安装在业务分发之前 |
 
-适配代码放在 `FrameworkMetrics` 而不是各组件中，于是组件永不了解读数契约，game-network 也保持不依赖任何其他框架模块。名字是记录自身字段名的点分形式，置于注册表给定的前缀之下，所以 `runtime` 加 `route.queued` 读作 `runtime.route.queued`。按 Domain 的读数把 Domain 并入名字，因为 Core 的 sink 不携带维度：`domain1.queued`、`domain1.executor.capacity` 等。名字分段必须以字母开头，这正是 Domain id 跟在 `domain` 之后而不单独成段的原因，其基数在 build 时固定。用 `registry.publish(prefix, source)` 把每个存在的组件发布在固定前缀 `runtime`、`data`、`rpc`、`network` 之下；应用自建的组件由它自己以同样方式发布。
+适配代码放在 `FrameworkMetrics` 而不是各组件中，于是组件永不了解读数契约，game-network 也保持不依赖任何其他框架模块。名字是记录自身字段名的点分形式，置于注册表给定的前缀之下，所以 `runtime` 加 `route.queued` 读作 `runtime.route.queued`。按 Domain 的读数把 Domain 并入名字，因为 Core 的 sink 不携带维度：`domain1.queued`、`domain1.executor.capacity` 等。Route Key 以 gauge 的**取值**发布，绝不进入名字——`running.oldest.domain`、`running.oldest.key` 与 `domain1.running.oldest.key`——因此无论存在多少条 Route，"观察哪条 Route 卡住"都只占一条序列；这正是 Key 在这里安全、而作为维度则不安全的原因。名字分段必须以字母开头，这正是 Domain id 跟在 `domain` 之后而不单独成段的原因，其基数在 build 时固定。用 `registry.publish(prefix, source)` 把每个存在的组件发布在固定前缀 `runtime`、`data`、`rpc`、`network` 之下；应用自建的组件由它自己以同样方式发布。
 
 `new ObservabilityEndpoints(MetricsRegistry, List<ReadinessCheck>, metricsPath, readinessPath)` 校验两个路径：绝对、至少两个字符、不含 `?` 与 `#`、彼此不同，否则抛出指名该参数的 `IllegalArgumentException`。`wrap` 返回的 dispatcher 对这两个路径回答 `GET`，其余一切（包括这两个路径上的其他方法）都传给被包裹的 dispatcher。匹配时忽略查询串。两个回答都在调用它的 HTTP 线程上产生，不进入任何 Route 执行器。
 
