@@ -61,7 +61,7 @@ Runtime 选择 Handler 的 Domain 并创建上下文；协议 userId 不覆盖�
 业务 Handler 直接从 Context 获取身份。[RoleHandler](src/main/java/cn/managame/demo/bus/role/RoleHandler.java) 声明 `ping(ClientHandlerContext context, PingMessage request)`，通过 `long roleId = context.businessId()` 获取角色 ID。无需定义 RoleId/GuildId/RoomId 包装类型，也无需注册 handlerArguments。GameDomain.ROLE_BUSINESS_ID_TYPE=1 表示应用的角色身份类别，与执行 Domain 独立；可信接入层也可以明确传入身份：
 
 ```java
-runtime.dispatch(connection, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, new PingMessage(1234));
+runtime.dispatch(connection, 99L, GameDomain.ROLE_BUSINESS_ID_TYPE, 10001L, Metadata.empty(), new PingMessage(1234));
 ```
 
 Domain 1 来自 @Handler，Key 为 99，context.businessId() 为 10001；Key 和协议 timestamp 均不选择身份。接入层鉴权并提供可信身份。网络入口的 ROLE 策略在入队前拒绝缺少会话的请求，再将角色类别和 ID 捕获到 Context。显式 Key/身份/上下文重载绕过该策略，调用方必须传入正确的可信身份；Context 参数本身不会自动校验业务类别或完成鉴权。只有 Handler 在自己的 Route 执行。[DemoIdentityTest](src/test/java/cn/managame/demo/DemoIdentityTest.java) 无需数据库/socket，验证无需参数绑定的 Spring 分发、身份/Key/协议值独立、虚拟线程执行及缺少会话时拒绝。见 [完整参数契约](../docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.zh-CN.md#handler-arguments)。
@@ -202,7 +202,7 @@ if (connection.write(packet) != WriteStatus.ACCEPTED) connection.close();
 mvn -pl game-demo -am clean verify
 ```
 
-[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 注入、Data 关闭及 URL 缺失时拒绝启动。生命周期测试按当前非阻塞入口验证：初始化返回后 main 可以继续启动 TCP；HTTP 由 game-spring 管理，独立业务测试禁用监听。Context 关闭释放 Spring 资源。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 的 `clean verify` 中 28 项测试全部通过，包括真实 TCP/HTTP/Timer/Cron 集成和五个独立入口；Spring 扫描回归确认独立 HTTP 对象不被注册。桩测试不验证原生 MySQL；此前使用旧入口验证过本地 MySQL 启动和关闭，本次未对当前完整的 Spring/Data/TCP/HTTP 入口执行真实 MySQL 验证。这些检查不代表所有数据库操作、故障场景或生产定时精度/容量均已验证。根 clean verify 已通过全部七个组件/应用模块。demo 完整依赖模块通过 `mvn -pl game-demo -am clean verify`，不需要预先安装框架 artifact，RPC 与 demo 测试均参与验证。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件入口详见[独立入口清单](#standalone-samples)。
+[DataSpringWiringTest](src/test/java/cn/managame/demo/DataSpringWiringTest.java) 使用内存 JDBC 桩验证无需显式占位符配置器的属性注入、组件扫描、已初始化 Data Repository 注入、Data 关闭及 URL 缺失时拒绝启动。生命周期测试按当前非阻塞入口验证：初始化返回后 main 可以继续启动 TCP；HTTP 由 game-spring 管理，独立业务测试禁用监听。Context 关闭释放 Spring 资源。[DataRepositoryRegistrationTest](src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖三种 Repository、只构造一次、注入回调中使用已初始化 Repository，以及拒绝 prototype 作用域。当前 demo 的 `clean verify` 全部通过，包括真实 TCP/HTTP/Timer/Cron 集成和全部独立入口；Spring 扫描回归确认独立 HTTP 对象不被注册。桩测试不验证原生 MySQL；此前使用旧入口验证过本地 MySQL 启动和关闭，本次未对当前完整的 Spring/Data/TCP/HTTP 入口执行真实 MySQL 验证。这些检查不代表所有数据库操作、故障场景或生产定时精度/容量均已验证。根 clean verify 已通过反应堆中的全部模块。demo 完整依赖模块通过 `mvn -pl game-demo -am clean verify`，不需要预先安装框架 artifact，RPC 与 demo 测试均参与验证。模块使用既有 [OGBS 规范](../docs/ogbs/README.zh-CN.md)，不新增框架契约；组件入口详见[独立入口清单](#standalone-samples)。
 
 
 ## Packet Metadata、错误与管理

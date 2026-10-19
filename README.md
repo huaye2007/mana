@@ -39,7 +39,7 @@ Network and RPC each publish one Maven artifact, with responsibility-based subpa
 
 ## OGBS specifications
 
-Every framework component requires a standard specification and a Java development specification. All seven pairs are listed in the [OGBS 1.0 documentation index](docs/ogbs/README.md).
+Every framework component requires a standard specification and a Java development specification. All eight pairs are listed in the [OGBS 1.0 documentation index](docs/ogbs/README.md).
 
 | Component | Specification (language-independent) | Java Development Specification |
 | --- | --- | --- |

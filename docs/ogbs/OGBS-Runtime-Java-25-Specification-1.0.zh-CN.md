@@ -114,7 +114,7 @@ try (GameRuntime runtime = GameRuntimeBuilder.builder()
         .protocols(ProtocolRegistry.of(ProtocolDescriptor.notify(1001, Ping.class)))
         .handlers(List.of(new PingHandler()))
         .build()) {
-    runtime.dispatch(connection, 42L, new Ping(42));
+    runtime.dispatch(connection, 42L, 0, 0L, Metadata.empty(), new Ping(42));
 }
 ```
 

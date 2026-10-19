@@ -37,7 +37,7 @@ Network 和 RPC 均以一个 Maven artifact 发布，内部按职责划分子包
 
 ## OGBS 规范文档
 
-每个框架组件必须配套标准规范和 Java 开发规范；当前七个组件的成对文档统一入口见 [OGBS 1.0 文档索引](docs/ogbs/README.zh-CN.md)。
+每个框架组件必须配套标准规范和 Java 开发规范；当前八个组件的成对文档统一入口见 [OGBS 1.0 文档索引](docs/ogbs/README.zh-CN.md)。
 
 | 组件 | 标准规范（语言无关） | Java 开发规范 |
 | --- | --- | --- |
