@@ -32,12 +32,17 @@ class ShutdownBudgetTest {
         // One millisecond of drain is enough to be a valid split.
         assertEquals(Duration.ofMillis(1), ShutdownBudget.of(10_000, 4_999, 5_000).drain());
     }
-    @Test void thePhaseIsSetOnceAndReadableFromAnywhere() {
-        ShutdownPhase phase = new ShutdownPhase();
-        assertFalse(phase.leavingRotation());
-        assertTrue(phase.leaveRotation());
-        assertTrue(phase.leavingRotation());
-        assertFalse(phase.leaveRotation());          // idempotent
-        assertTrue(phase.leavingRotation());
+    @Test void theCanonicalConstructorEnforcesTheSameSplitAsTheMillisecondForm() {
+        // drain() is computed, so there is no fourth component to pass and nothing to contradict. The record
+        // constructor is public whether we like it or not, so it validates rather than trusting its caller.
+        ShutdownBudget budget = new ShutdownBudget(Duration.ofSeconds(20), Duration.ofSeconds(2),
+                Duration.ofSeconds(8));
+        assertEquals(Duration.ofSeconds(10), budget.drain());
+        assertThrows(IllegalArgumentException.class, () -> new ShutdownBudget(Duration.ofSeconds(10),
+                Duration.ofSeconds(4), Duration.ofSeconds(6)));
+        assertThrows(IllegalArgumentException.class, () -> new ShutdownBudget(null, Duration.ZERO,
+                Duration.ofSeconds(1)));
+        assertThrows(IllegalArgumentException.class, () -> new ShutdownBudget(Duration.ofSeconds(10),
+                Duration.ofSeconds(-1), Duration.ofSeconds(1)));
     }
 }

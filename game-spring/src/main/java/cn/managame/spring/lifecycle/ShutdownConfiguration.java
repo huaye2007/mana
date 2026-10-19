@@ -1,15 +1,14 @@
 package cn.managame.spring.lifecycle;
 
 import cn.managame.boot.lifecycle.ShutdownBudget;
-import cn.managame.boot.lifecycle.ShutdownPhase;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
 /**
- * The shutdown budget and phase, shared by whichever integrations are enabled. Imported by both the Runtime
- * and the Data configuration, so the budget exists whenever either of them does and both read the same one;
- * Spring collapses the repeated import to a single bean definition.
+ * The shutdown budget, shared by whichever integrations are enabled. Imported by both the Runtime and the
+ * Data configuration, so it exists whenever either of them does and both read the same one; Spring
+ * collapses the repeated import to a single bean definition.
  */
 @Configuration(proxyBeanMethods = false)
 public class ShutdownConfiguration {
@@ -21,7 +20,4 @@ public class ShutdownConfiguration {
                 environment.getProperty("game.shutdown.flush-reserve-millis", Long.class,
                         ShutdownBudget.DEFAULT_FLUSH_RESERVE_MILLIS));
     }
-
-    @Bean
-    ShutdownPhase gameShutdownPhase() { return new ShutdownPhase(); }
 }

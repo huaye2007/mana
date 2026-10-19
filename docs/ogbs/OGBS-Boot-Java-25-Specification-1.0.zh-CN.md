@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `cn.managame.boot.rpc` | `GameRpc`、`GameRpcCodec`、`GameRpcConfigurer` | game-rpc（可选依赖；使用本包需显式声明） |
 | `cn.managame.boot.metrics` | `ObservabilityEndpoints`、`ReadinessCheck`、`FrameworkMetrics` | game-core 读数、game-runtime HTTP，以及各自适配所需的 game-data 与 game-rpc |
-| `cn.managame.boot.lifecycle` | `ShutdownBudget`、`ShutdownPhase` | 除 JDK 外无其他 |
+| `cn.managame.boot.lifecycle` | `ShutdownBudget` | 除 JDK 外无其他 |
 | `cn.managame.boot.http` | `HttpContextPath` | game-runtime HTTP、game-network |
 
 应用可直接依赖 game-boot，也可从容器集成（如 game-spring）继承而来。上表中每个类型都是 public 且可构造的；它们都不读取配置，因此属性名归提供取值的那个集成所有。
@@ -53,7 +53,7 @@ try (runtime; var rpc = new GameRpc(runtime, codec, builder, List.of(routingConf
 
 ## 3. 关闭预算
 
-实现 [B-CLOSE-01 与 B-CLOSE-02](OGBS-Boot-1.0.zh-CN.md#3-关闭预算)。`ShutdownBudget` 是记录 `(Duration total, lead, flushReserve, drain)`，只能通过 `ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)` 构建；排空时间由推导得出，绝不作为参数传入。
+实现 [B-CLOSE-01 与 B-CLOSE-02](OGBS-Boot-1.0.zh-CN.md#3-关闭预算)。`ShutdownBudget` 是由三个被配置阶段组成的记录 `(Duration total, Duration lead, Duration flushReserve)`，`drain()` 是由它们算出的访问器，不是第四个分量：记录的规范构造器无论作者是否愿意都是 public 的，若把排空时间存成分量，调用方就能传入与总和矛盾的值，而这个类型存在的唯一保证也就没了；改为计算使这种状态无法构造。`ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)` 是读取三个配置值的集成所用的毫秒形式。
 
 | 阶段 | 常量 | 默认值 | 含义 |
 | --- | --- | --- | --- |
@@ -62,9 +62,9 @@ try (runtime; var rpc = new GameRpc(runtime, codec, builder, List.of(routingConf
 | 刷写保留 | `DEFAULT_FLUSH_RESERVE_MILLIS` | 10 000 | 为 Data 最后一次持久化保留 |
 | 排空 | *推导* | 15 000 | `总预算 − 前导 − 刷写保留`，供已准入工作使用 |
 
-25 000 取在 Kubernetes 宽限期默认的 30 秒之下；`docker stop` 只给 10 秒，使用它的部署应相应调低总预算。`of` 在总预算或保留非正、前导为负，以及任何使排空小于等于零的切分时抛出 `IllegalArgumentException`——于是超额的预算在配置处就失败，而不是很久以后截短一次关闭。排空为 1 毫秒是合法切分。
+25 000 取在 Kubernetes 宽限期默认的 30 秒之下；`docker stop` 只给 10 秒，使用它的部署应相应调低总预算。规范构造器与 `of` 都会在总预算或保留为 null、非正、前导为负，以及任何使排空小于等于零的切分时抛出 `IllegalArgumentException`——于是超额的预算在配置处就失败，而不是很久以后截短一次关闭。排空为 1 毫秒是合法切分。消息指名记录分量；读取这些取值的集成自己说明它们来自哪个配置项。
 
-`ShutdownPhase` 是排空与就绪之间共享的唯一一点状态。`leaveRotation()` 只置位一次，首次返回 true，之后返回 false；`leavingRotation()` 可从任意线程读取，包括正在回答探针的 HTTP 线程。运行该序列的一方先置位它，在仍然准入的状态下等待前导时间，然后才调用 `runtime.shutdown()`。§4 把它变成 `shutdown.rotation` 就绪条件。
+运行该序列的一方拥有它需要的唯一一点可变状态：一个表示"本实例已开始退出轮转"的标志，在准入关闭之前置位，并可从回答就绪探针的线程读取。该标志留在运行方那里，不在本模块里另立类型，因为本模块没有别的东西读它，另设一个持有者只会给同一个布尔值再起一个名字。§4 是它变成 `shutdown.rotation` 条件的地方。
 
 ## 4. 可观测性
 
@@ -80,7 +80,7 @@ try (runtime; var rpc = new GameRpc(runtime, codec, builder, List.of(routingConf
 
 `new ObservabilityEndpoints(MetricsRegistry, List<ReadinessCheck>, metricsPath, readinessPath)` 校验两个路径：绝对、至少两个字符、不含 `?` 与 `#`、彼此不同，否则抛出指名该参数的 `IllegalArgumentException`。`wrap` 返回的 dispatcher 对这两个路径回答 `GET`，其余一切（包括这两个路径上的其他方法）都传给被包裹的 dispatcher。匹配时忽略查询串。两个回答都在调用它的 HTTP 线程上产生，不进入任何 Route 执行器。
 
-就绪返回 200 与 `ready\n`，或 503 与 `not ready: ` 加上按列表顺序逗号分隔的未成立条件名。抛出 `RuntimeException` 的条件计为不就绪。先从 `ShutdownPhase` 贡献 `shutdown.rotation`，使退出轮转的实例报告的是这件事本身而不是它的后果，然后是来自 `stats().accepting()` 的 `runtime.accepting` 与 `data.accepting`，最后是应用自己的条件。
+就绪返回 200 与 `ready\n`，或 503 与 `not ready: ` 加上按列表顺序逗号分隔的未成立条件名。抛出 `RuntimeException` 的条件计为不就绪。先用 §3 的轮转标志贡献 `shutdown.rotation`，使退出轮转的实例报告的是这件事本身而不是它的后果，然后是来自 `stats().accepting()` 的 `runtime.accepting` 与 `data.accepting`，最后是应用自己的条件。
 
 `/metrics` 把每条读数按注册顺序渲染为单独一行 `name value`，内容类型 `text/plain; charset=UTF-8`。这刻意不是某种具名暴露格式：需要特定格式的应用实现 `MetricSink` 并映射名字，这正是 Core 契约存在的意义。
 

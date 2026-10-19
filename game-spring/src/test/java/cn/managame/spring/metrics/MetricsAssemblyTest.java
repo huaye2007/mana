@@ -163,7 +163,9 @@ class MetricsAssemblyTest {
                 }
                 assertNotNull(response);
                 assertEquals(503, response.statusCode(), "readiness never reported failure during the lead");
-                assertTrue(response.body().contains("shutdown.rotation"), response.body());
+                // Only the rotation condition is failing yet, and it is the framework's own contributed
+                // ReadinessCheck bean, so the body names it alone.
+                assertEquals("not ready: shutdown.rotation\n", response.body());
                 // This is the assertion the finding was about: unready, yet still accepting work.
                 assertTrue(runtime.stats().accepting(), "admission closed before the lead elapsed");
             } finally { closing.join(10_000); }

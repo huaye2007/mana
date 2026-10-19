@@ -31,7 +31,7 @@
 
 ## 3. 停机
 
-内部 ContextClosedEvent 监听器使用 Ordered.HIGHEST_PRECEDENCE 与 supportsAsyncExecution=false。在 Spring 默认同步事件广播下，它只处理自己所属的 Context，并运行 `ShutdownBudget` 的前两个阶段：标记 `ShutdownPhase`，在仍然接纳的状态下等待前导时间，调用 Runtime.shutdown，按预算推导出的排空时间等待终止，若未排空完成则记录 WARNING 并指出未完成数量与留给刷写的保留时间，然后调用 Runtime.close。前导或排空期间的中断会被记住、提前结束等待，并在 Runtime 关闭后重新置位。随后依次是普通关闭监听器（如 demo 的 TCP 停机）、托管 HTTP 生命周期 stop、Bean 销毁与 Data 最终刷写。不要安装更早或同优先级的资源关闭监听器，不要用自定义异步广播覆盖此事件顺序，也不要在 Runtime Route 上关闭 Context，这些都会违反 S-CLOSE-01。refresh 失败的资源清理遵循 Spring 销毁流程。本模块持有自己的托管 HTTP 监听器，但不持有数据库连接池或额外业务线程。监听器可能在 refresh 的最后生命周期阶段变为可达；若另一个生命周期失败，Spring 会关闭监听器与 Runtime，但这种 refresh 失败清理不保证优雅排空或响应投递。
+内部 ContextClosedEvent 监听器使用 Ordered.HIGHEST_PRECEDENCE 与 supportsAsyncExecution=false。在 Spring 默认同步事件广播下，它只处理自己所属的 Context，并运行 `ShutdownBudget` 的前两个阶段：置位自己的轮转标志，在仍然接纳的状态下等待前导时间，调用 Runtime.shutdown，按预算推导出的排空时间等待终止，若未排空完成则记录 WARNING 并指出未完成数量与留给刷写的保留时间，然后调用 Runtime.close。前导或排空期间的中断会被记住、提前结束等待，并在 Runtime 关闭后重新置位。随后依次是普通关闭监听器（如 demo 的 TCP 停机）、托管 HTTP 生命周期 stop、Bean 销毁与 Data 最终刷写。不要安装更早或同优先级的资源关闭监听器，不要用自定义异步广播覆盖此事件顺序，也不要在 Runtime Route 上关闭 Context，这些都会违反 S-CLOSE-01。refresh 失败的资源清理遵循 Spring 销毁流程。本模块持有自己的托管 HTTP 监听器，但不持有数据库连接池或额外业务线程。监听器可能在 refresh 的最后生命周期阶段变为可达；若另一个生命周期失败，Spring 会关闭监听器与 Runtime，但这种 refresh 失败清理不保证优雅排空或响应投递。
 
 ### 3.0 关闭预算
 
@@ -46,7 +46,9 @@
 
 没有排空配置项：单独配置排空正是让总和漂移的原因，原先的 `game.runtime.drain-timeout-millis` 已移除。
 
-`ShutdownConfiguration` 同时被 Runtime 与 Data 配置导入，因此只要任一集成存在，`ShutdownBudget` 与 `ShutdownPhase` 就存在，且两者读到同一个实例。`DataConfiguration` 在应用的 `GameDataConfigurer` **之前**应用 `builder.shutdownTimeout(budget.flushReserve())`，于是保留时间是框架默认值，更了解自己存储的应用仍可覆盖；没有 Runtime 集成时预算 Bean 可能不存在，Data 保持自己的默认值。§5 从 `ShutdownPhase` 贡献 `shutdown.rotation` 就绪条件并置于列表首位，使退出轮转的实例报告的是这件事本身而不是它的后果。
+`ShutdownConfiguration` 同时被 Runtime 与 Data 配置导入，因此只要任一集成存在，唯一的 `gameShutdownBudget` Bean 就存在，且两者读到同一个实例。校验失败的属性会使 refresh 以指名记录分量的 `IllegalArgumentException` 失败，对应关系是：`budget-millis` 是总预算、`lead-millis` 是前导、`flush-reserve-millis` 是保留。`DataConfiguration` 在应用的 `GameDataConfigurer` **之前**应用 `builder.shutdownTimeout(budget.flushReserve())`，于是保留时间是框架默认值，更了解自己存储的应用仍可覆盖；没有 Runtime 集成时预算 Bean 可能不存在，Data 保持自己的默认值。
+
+轮转标志就在排空监听器自身上，而不是另设一个 Bean；Runtime 配置以 `gameRotationReadiness` 的名字、在 `Ordered.HIGHEST_PRECEDENCE` 上把它作为普通 `ReadinessCheck` Bean 贡献出来。两个配置之间不再有共享状态类型：§5 像收集其他条件一样收集它，而该顺序使 `shutdown.rotation` 排在由组件快照推导出的条件之前。
 
 验证：[ShutdownBudgetTest](../../game-boot/src/test/java/cn/managame/boot/lifecycle/ShutdownBudgetTest.java) 覆盖推导、默认值与应当失败的切分；[MetricsAssemblyTest](../../game-spring/src/test/java/cn/managame/spring/metrics/MetricsAssemblyTest.java) 验证预算存在的意义——`stats().accepting()` 仍为 true 时就绪已返回 503 并指名 `shutdown.rotation`，而准入只在前导结束后才关闭。
 
@@ -179,8 +181,9 @@ class GameConfig {
 | --- | --- |
 | `gameMetricsRegistry` | `MetricsRegistry`，为每个存在的组件在固定前缀 `runtime`、`data`、`rpc`、`network` 下发布一个 `FrameworkMetrics` 源，各自经 `ObjectProvider` 解析，缺失的组件什么也不发布 |
 | `gameObservabilityEndpoints` | `ObservabilityEndpoints`，持有注册表、就绪条件与两个路径；该 Bean 存在时 §3.1 应用 `wrap` |
+| `gameRotationReadiness` | `shutdown.rotation` 条件，取自排空监听器的轮转标志，位于 `Ordered.HIGHEST_PRECEDENCE`；由 Runtime 配置发布，不是本配置 |
 
-就绪条件按此顺序装配：来自 `ShutdownPhase` Bean 的 `shutdown.rotation`，然后是存在组件的 `runtime.accepting` 与 `data.accepting`，最后是应用自己按 Spring 顺序的 `ReadinessCheck` Bean。
+就绪条件按此顺序装配：先是全部被贡献的 `ReadinessCheck` Bean，按 Spring 顺序——框架自己的 `gameRotationReadiness` 声明了 `Ordered.HIGHEST_PRECEDENCE`，因此位于首位，应用的 Bean 排在它之后——然后才是在这里由存在组件推导出的 `runtime.accepting` 与 `data.accepting`。于是未成立的应用条件会排在 `runtime.accepting` 之前，这通常正是读者想要的：具体原因在前，后果在后。
 
 | 配置项 | 默认值 | 边界 |
 | --- | --- | --- |

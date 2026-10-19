@@ -1,7 +1,7 @@
 package cn.managame.spring.runtime;
 
 import cn.managame.boot.lifecycle.ShutdownBudget;
-import cn.managame.boot.lifecycle.ShutdownPhase;
+import cn.managame.boot.metrics.ReadinessCheck;
 import cn.managame.runtime.*;
 import cn.managame.runtime.event.*;
 import cn.managame.runtime.handler.Handler;
@@ -12,6 +12,8 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.*;
 import org.springframework.aop.support.AopUtils;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import java.lang.annotation.Annotation;
 import java.util.*;
 
@@ -36,8 +38,22 @@ class RuntimeConfiguration {
     }
 
     @Bean RuntimeDrainListener runtimeDrainListener(GameRuntime runtime, ApplicationContext context,
-                                                   ShutdownBudget budget, ShutdownPhase phase) {
-        return new RuntimeDrainListener(runtime, context, budget, phase);
+                                                   ShutdownBudget budget) {
+        return new RuntimeDrainListener(runtime, context, budget);
+    }
+
+    /**
+     * The one readiness condition this integration owns, contributed as an ordinary Bean so the metrics
+     * configuration needs no shared state type to read it. Ordered first: an instance leaving rotation
+     * should report that rather than a consequence of it, and this is the only condition that turns false
+     * while the instance is still admitting work.
+     */
+    @Bean @Order(Ordered.HIGHEST_PRECEDENCE)
+    ReadinessCheck gameRotationReadiness(RuntimeDrainListener runtimeDrainListener) {
+        return new ReadinessCheck() {
+            @Override public String name() { return "shutdown.rotation"; }
+            @Override public boolean ready() { return !runtimeDrainListener.leavingRotation(); }
+        };
     }
 
     private static List<Object> handlers(ApplicationContext context, ConfigurableListableBeanFactory beans,

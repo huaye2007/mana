@@ -2,7 +2,6 @@ package cn.managame.spring.runtime;
 
 import cn.managame.runtime.GameRuntime;
 import cn.managame.boot.lifecycle.ShutdownBudget;
-import cn.managame.boot.lifecycle.ShutdownPhase;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import org.springframework.context.*;
@@ -33,17 +32,26 @@ final class RuntimeDrainListener implements ApplicationListener<ContextClosedEve
     private final GameRuntime runtime;
     private final ApplicationContext owner;
     private final ShutdownBudget budget;
-    private final ShutdownPhase phase;
+    /** Set once at the very start of shutdown, before admission closes; read from any thread. */
+    private volatile boolean leaving;
 
-    RuntimeDrainListener(GameRuntime runtime, ApplicationContext owner, ShutdownBudget budget, ShutdownPhase phase) {
-        this.runtime = runtime; this.owner = owner; this.budget = budget; this.phase = phase;
+    RuntimeDrainListener(GameRuntime runtime, ApplicationContext owner, ShutdownBudget budget) {
+        this.runtime = runtime; this.owner = owner; this.budget = budget;
     }
+
+    /**
+     * Whether this instance has begun leaving rotation. This is the piece that makes a readiness endpoint
+     * useful for taking an instance out of rotation rather than only for noticing a sick one: without it,
+     * admission and readiness change in the same instant and everything a load balancer sends between
+     * that instant and its next probe is refused. Readable from an HTTP thread answering a probe.
+     */
+    boolean leavingRotation() { return leaving; }
     @Override public int getOrder() { return Ordered.HIGHEST_PRECEDENCE; }
     @Override public boolean supportsAsyncExecution() { return false; }
 
     @Override public void onApplicationEvent(ContextClosedEvent event) {
         if (event.getApplicationContext() != owner) return;
-        boolean interrupted = leaveRotation();
+        boolean interrupted = beginLeavingRotation();
         runtime.shutdown();
         boolean drained = false;
         try { drained = runtime.awaitTermination(budget.drain()); }
@@ -58,8 +66,8 @@ final class RuntimeDrainListener implements ApplicationListener<ContextClosedEve
     }
 
     /** Reports unreadiness, then waits the lead while still admitting. Returns whether it was interrupted. */
-    private boolean leaveRotation() {
-        phase.leaveRotation();
+    private boolean beginLeavingRotation() {
+        leaving = true;
         Duration lead = budget.lead();
         if (lead.isZero()) return false;
         LOG.log(System.Logger.Level.INFO, "Leaving rotation; readiness reports failure for {0} before admission closes", lead);

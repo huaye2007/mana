@@ -34,7 +34,7 @@ httpBuilder.asyncHandler(endpoints.wrap(new HttpContextPath("/game", runtime.htt
 
 ## 关闭预算
 
-`ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)` 是一份声明好的预算，切分为关闭按顺序运行的各阶段——退出轮转、排空已准入工作、刷写最后的变更。总预算被配置、排空时间由推导得出，总和因此不会漂移；使排空无剩余时间的切分在配置处就失败。默认总预算 25 000 毫秒落在 Kubernetes 宽限期默认的 30 秒之下。`ShutdownPhase` 是排空与就绪之间共享的唯一一点状态，使实例可以在仍然准入时就报告不就绪。无论由谁运行这个序列——容器的关闭事件、信号处理器，还是你自己的 `main`——观察到的阶段都相同。完整契约见 [Boot §3](../docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#3-关闭预算)。
+`ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)` 是一份声明好的预算，切分为关闭按顺序运行的各阶段——退出轮转、排空已准入工作、刷写最后的变更。总预算被配置、排空时间由推导得出，总和因此不会漂移；使排空无剩余时间的切分在配置处就失败。默认总预算 25 000 毫秒落在 Kubernetes 宽限期默认的 30 秒之下。`drain()` 是算出来的而不是存起来的，因此没有调用方能构造出各部分与总和矛盾的预算。无论由谁运行这个序列——容器的关闭事件、信号处理器，还是你自己的 `main`——观察到的阶段都相同。完整契约见 [Boot §3](../docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.zh-CN.md#3-关闭预算)。
 
 ## 业务路径前缀
 

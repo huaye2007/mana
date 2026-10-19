@@ -34,7 +34,7 @@ httpBuilder.asyncHandler(endpoints.wrap(new HttpContextPath("/game", runtime.htt
 
 ## Shutdown budget
 
-`ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)` is one declared budget split into the phases shutdown runs in sequence — leave rotation, drain admitted work, flush the last changes. The total is configured and the drain is derived, so the sum cannot drift, and a split that leaves the drain nothing fails where it is configured. The default total of 25 000 ms sits under the 30 seconds a Kubernetes grace period defaults to. `ShutdownPhase` is the one bit of state the drain shares with readiness, so an instance can report unready while still admitting. Whoever runs the sequence — a container's close event, a signal handler, your own `main` — observes the same phases. Full contract: [Boot §3](../docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.md#3-shutdown-budget).
+`ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)` is one declared budget split into the phases shutdown runs in sequence — leave rotation, drain admitted work, flush the last changes. The total is configured and the drain is derived, so the sum cannot drift, and a split that leaves the drain nothing fails where it is configured. The default total of 25 000 ms sits under the 30 seconds a Kubernetes grace period defaults to. `drain()` is computed rather than stored, so no caller can build a budget whose parts disagree with its total. Whoever runs the sequence — a container's close event, a signal handler, your own `main` — observes the same phases. Full contract: [Boot §3](../docs/ogbs/OGBS-Boot-Java-25-Specification-1.0.md#3-shutdown-budget).
 
 ## Business path prefix
 

@@ -10,7 +10,7 @@ Companion: [server composition semantics](OGBS-Boot-1.0.md). Implemented artifac
 | --- | --- | --- |
 | `cn.managame.boot.rpc` | `GameRpc`, `GameRpcCodec`, `GameRpcConfigurer` | game-rpc (optional dependency; declare it explicitly to use this package) |
 | `cn.managame.boot.metrics` | `ObservabilityEndpoints`, `ReadinessCheck`, `FrameworkMetrics` | game-core readings, game-runtime HTTP, game-data and game-rpc for their adapters |
-| `cn.managame.boot.lifecycle` | `ShutdownBudget`, `ShutdownPhase` | nothing beyond the JDK |
+| `cn.managame.boot.lifecycle` | `ShutdownBudget` | nothing beyond the JDK |
 | `cn.managame.boot.http` | `HttpContextPath` | game-runtime HTTP, game-network |
 
 An application depends on game-boot directly, or inherits it from a container integration such as game-spring. Every type listed above is public and constructible; none reads configuration, so property names belong to whichever integration supplies the values.
@@ -53,7 +53,7 @@ try (runtime; var rpc = new GameRpc(runtime, codec, builder, List.of(routingConf
 
 ## 3. Shutdown budget
 
-Implements [B-CLOSE-01 and B-CLOSE-02](OGBS-Boot-1.0.md#3-shutdown-budget). `ShutdownBudget` is a record `(Duration total, lead, flushReserve, drain)` built only through `ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)`; the drain is derived, never passed.
+Implements [B-CLOSE-01 and B-CLOSE-02](OGBS-Boot-1.0.md#3-shutdown-budget). `ShutdownBudget` is a record of the three configured phases, `(Duration total, Duration lead, Duration flushReserve)`, and `drain()` is an accessor computed from them. It is not a fourth component: a record's canonical constructor is public whether or not the author wants it to be, so a stored drain could be passed inconsistently and the one guarantee this type exists for would be gone. Computing it makes that unconstructible. `ShutdownBudget.of(totalMillis, leadMillis, flushReserveMillis)` is the millisecond form an integration reading three configuration values uses.
 
 | Phase | Constant | Default | Meaning |
 | --- | --- | --- | --- |
@@ -62,9 +62,9 @@ Implements [B-CLOSE-01 and B-CLOSE-02](OGBS-Boot-1.0.md#3-shutdown-budget). `Shu
 | flush reserve | `DEFAULT_FLUSH_RESERVE_MILLIS` | 10 000 | reserved for Data's final persistence pass |
 | drain | *derived* | 15 000 | `total − lead − flushReserve`, for admitted work |
 
-25 000 is chosen below the 30 seconds a Kubernetes grace period defaults to; `docker stop` allows 10, so a deployment using it sets the total accordingly. `of` throws `IllegalArgumentException` for a non-positive total or reserve, a negative lead, and any split leaving the drain at or below zero — so an over-committed budget fails where it is configured rather than truncating a shutdown much later. One millisecond of drain is a valid split.
+25 000 is chosen below the 30 seconds a Kubernetes grace period defaults to; `docker stop` allows 10, so a deployment using it sets the total accordingly. Both the canonical constructor and `of` throw `IllegalArgumentException` for a null or non-positive total or reserve, a negative lead, and any split leaving the drain at or below zero — so an over-committed budget fails where it is configured rather than truncating a shutdown much later. One millisecond of drain is a valid split. The messages name the record components; whichever integration read the values says which of its own settings they came from.
 
-`ShutdownPhase` is the one bit of state a drain shares with readiness. `leaveRotation()` sets it once and returns true the first time, false afterwards; `leavingRotation()` is readable from any thread, including an HTTP thread answering a probe. Whoever runs the sequence sets it first, waits the lead while still admitting, then calls `runtime.shutdown()`. §4 turns it into the `shutdown.rotation` readiness condition.
+Whoever runs the sequence owns the one piece of mutable state it needs: a flag saying this instance has begun leaving rotation, set before admission closes and readable from the thread answering a readiness probe. That flag stays with the runner rather than becoming a type here, because nothing else in this module reads it and a shared holder would only be a second name for one boolean. §4 is where it becomes the `shutdown.rotation` condition.
 
 ## 4. Observability
 
@@ -80,7 +80,7 @@ Implements [B-OBS-01 to B-OBS-05](OGBS-Boot-1.0.md#4-observability-composition).
 
 `new ObservabilityEndpoints(MetricsRegistry, List<ReadinessCheck>, metricsPath, readinessPath)` validates both paths: absolute, at least two characters, free of `?` and `#`, and different from each other, otherwise `IllegalArgumentException` naming the argument. `wrap` returns a dispatcher that answers `GET` on those two paths and passes everything else, including any other method on them, to the wrapped dispatcher. A query string is ignored when matching. Both answers are produced on the calling HTTP thread and enter no Route executor.
 
-Readiness returns 200 with `ready\n`, or 503 with `not ready: ` followed by the comma-separated names of the failing checks in list order. A check that throws a `RuntimeException` counts as not ready. Contribute `shutdown.rotation` from `ShutdownPhase` first, so an instance leaving rotation reports that rather than a consequence of it, then `runtime.accepting` and `data.accepting` from `stats().accepting()`, then the application's own checks.
+Readiness returns 200 with `ready\n`, or 503 with `not ready: ` followed by the comma-separated names of the failing checks in list order. A check that throws a `RuntimeException` counts as not ready. Contribute `shutdown.rotation` first, from the rotation flag of §3, so an instance leaving rotation reports that rather than a consequence of it, then `runtime.accepting` and `data.accepting` from `stats().accepting()`, then the application's own checks.
 
 `/metrics` renders every reading as `name value` on its own line, in registry order, as `text/plain; charset=UTF-8`. This is deliberately not a named exposition format: an application that needs one implements `MetricSink` and maps the names, which is what the Core contract exists for.
 
