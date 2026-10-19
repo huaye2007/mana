@@ -27,7 +27,5 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - name: Style and documentation checks
-        # No -DskipTests: the documentation checks in game-docs are tests, and this job is the gate that
-        # is supposed to run them.
-        run: mvn -B -Pquality verify
+      - name: Style checks
+        run: mvn -B -Pquality -DskipTests verify

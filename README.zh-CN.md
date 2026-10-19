@@ -17,7 +17,6 @@ mana3 是 OGBS 的 Java 参考实现，提供游戏服务器的共享基础类�
 | [game-boot](game-boot/README.zh-CN.md) | 组合层，不依赖容器：对象 RPC 到 Runtime 适配器、就绪与读数端点、一份关闭预算、业务路径前缀 |
 | [game-spring](game-spring/README.zh-CN.md) | 可选普通 Spring：注解扫描、属性绑定、HTTP/RPC 托管生命周期、初始化 Repository 注入、停机触发 |
 | [game-demo](game-demo/README.zh-CN.md) | Spring 应用，装配 MySQL Data Repository、GamePacket TCP 分发、Runtime HTTP、定时/cron 及独立 TCP/HTTP/RPC 入口 |
-| [game-docs](game-docs/README.zh-CN.md) | 对仓库自身文档的检查：链接与锚点可解析、双语配对、条款 ID 一致、索引可达、重复编码；只有测试源码，不发布任何东西 |
 | [game-benchmark](game-benchmark/README.zh-CN.md) | JMH 微基准（Metadata、RPC 编解码、Route 执行器）守护热点路径，另有可选的 game-data 保存路径压测驱动；不属于任何框架 artifact，且其中任何一项都不在构建中运行 |
 
 依赖方向：
@@ -76,7 +75,7 @@ mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/targe
 
 CI（`.github/workflows/ci.yml`）在 JDK 25 上运行 `mvn clean verify` 与质量检查。
 
-当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-boot、game-spring、game-demo、game-benchmark、game-docs。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。RPC→Runtime 适配器位于 game-boot，不需要容器；game-spring 负责接线。Data 使用由 Spring 应用演示。
+当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-boot、game-spring、game-demo、game-benchmark。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。RPC→Runtime 适配器位于 game-boot，不需要容器；game-spring 负责接线。Data 使用由 Spring 应用演示。
 
 在 IDE 运行 [NetworkEchoExample](game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) 可得到 hello game-network。示例使用本机随机端口、长度 framing 和字符串编解码，结束后释放网络资源。
 

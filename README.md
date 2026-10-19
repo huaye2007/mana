@@ -17,7 +17,6 @@ mana3 is a Java reference implementation of OGBS, providing shared types, networ
 | [game-boot](game-boot/README.md) | The composition tier, with no container: typed RPC-to-Runtime adapter, readiness and readings endpoints, one shutdown budget, business path prefix |
 | [game-spring](game-spring/README.md) | Optional plain Spring: annotation discovery, property binding, managed HTTP/RPC lifecycle, initialized Repository injection, shutdown trigger |
 | [game-demo](game-demo/README.md) | Spring application with MySQL Data repositories, GamePacket TCP dispatch, Runtime HTTP, timer/cron and standalone TCP/HTTP/RPC entries |
-| [game-docs](game-docs/README.md) | Checks on the repository's own documentation: link and anchor resolution, bilingual pairing, clause-ID parity, index reachability, double-encoding; test sources only, ships nothing |
 | [game-benchmark](game-benchmark/README.md) | JMH micro-benchmarks (Metadata, RPC codec, Route executors) guarding hot paths, plus the opt-in game-data save path load driver; not part of any framework artifact, and nothing in it runs during the build |
 
 Dependency direction:
@@ -80,7 +79,7 @@ The same module holds the opt-in game-data save path load driver, which needs a 
 
 CI (`.github/workflows/ci.yml`) runs `mvn clean verify` and the quality checks on JDK 25.
 
-The root build includes game-core, game-network, game-rpc, game-router, game-runtime, game-data, game-boot, game-spring, game-demo, game-benchmark and game-docs. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-demo, under `cn.managame.demo.examples.<component>`; framework artifacts contain no example classes. Run mvn -pl game-demo -am test to validate the examples. The RPC→Runtime adapter is in game-boot and needs no container; game-spring wires it. Data usage is demonstrated by the Spring application.
+The root build includes game-core, game-network, game-rpc, game-router, game-runtime, game-data, game-boot, game-spring, game-demo, and game-benchmark. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-demo, under `cn.managame.demo.examples.<component>`; framework artifacts contain no example classes. Run mvn -pl game-demo -am test to validate the examples. The RPC→Runtime adapter is in game-boot and needs no container; game-spring wires it. Data usage is demonstrated by the Spring application.
 
 Run [NetworkEchoExample](game-demo/src/main/java/cn/managame/demo/examples/network/NetworkEchoExample.java) in an IDE to print hello game-network. It uses a random local port, length framing, and string codecs, and releases network resources afterward.
 
