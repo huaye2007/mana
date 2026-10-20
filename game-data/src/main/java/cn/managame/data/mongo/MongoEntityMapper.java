@@ -3,6 +3,7 @@ package cn.managame.data.mongo;
 import cn.managame.data.error.DataOperationException;
 import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import com.mongodb.client.MongoDatabase;
 import java.util.*;
@@ -14,10 +15,13 @@ public final class MongoEntityMapper implements EntityMapper {
     private final Map<EntityMeta,MongoEntityMeta> metas = new ConcurrentHashMap<>();
     public MongoEntityMapper(MongoDatabase database) { this(new DriverMongoAccess(database)); }
     public MongoEntityMapper(MongoAccess access) { this.access = Objects.requireNonNull(access); }
-    @Override public void initialize(EntityMeta key) {
+    @Override public void initialize(EntityMeta key, SchemaMode schema) {
+        Objects.requireNonNull(schema, "schema");
         metas.computeIfAbsent(key, entity -> {
             var result = new MongoEntityMeta(entity, access.codecRegistry());
-            access.initialize(result.collection, result.indexes); return result;
+            // NONE touches no catalog at all, so the Access is never asked about structure.
+            if (schema != SchemaMode.NONE) access.initialize(result.collection, result.indexes, schema);
+            return result;
         });
     }
     private MongoEntityMeta meta(EntityMeta key) {

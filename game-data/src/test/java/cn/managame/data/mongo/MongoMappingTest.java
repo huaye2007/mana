@@ -1,6 +1,7 @@
 package cn.managame.data.mongo;
 
 import cn.managame.data.annotation.*;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import cn.managame.data.key.GroupKeys;
 import com.mongodb.MongoClientSettings;
@@ -40,7 +41,7 @@ class MongoMappingTest {
             };
             return CodecRegistries.fromRegistries(CodecRegistries.fromCodecs(codec),MongoClientSettings.getDefaultCodecRegistry());
         }
-        public void initialize(String name,List<IndexDefinition> indexes) { assertEquals("tasks",name); this.indexes=indexes; }
+        public void initialize(String name,List<IndexDefinition> indexes,SchemaMode schema) { assertEquals("tasks",name); this.indexes=indexes; }
         public BsonDocument findOne(String name,BsonDocument filter) { this.filter=filter; return documents.isEmpty()?null:documents.getFirst(); }
         public List<BsonDocument> find(String name,BsonDocument filter) { this.filter=filter; return documents; }
         public void insertMany(String name,List<BsonDocument> docs) { documents=docs; operation="insert"; }
@@ -50,7 +51,7 @@ class MongoMappingTest {
     }
     @Test void bsonRoundTripKeepsGenericFieldsAndPrimaryIdentity() {
         var access=new Access(); var mapper=new MongoEntityMapper(access);
-        var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta);
+        var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta,SchemaMode.CREATE);
         var task=new Task(); task.id=1; task.roleId=2; task.taskId=3; task.progress=4; task.shortValue=12;
         task.details=List.of(new Detail("hello")); task.rewards=Map.of(7,99L); task.bytes=new byte[]{1,2};
         mapper.insertBatch(meta,List.of(task));
@@ -66,7 +67,7 @@ class MongoMappingTest {
     }
     @Test void updateDoesNotUpsertButDeleteInsertDoes() {
         var access=new Access(); var mapper=new MongoEntityMapper(access);
-        var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta);
+        var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta,SchemaMode.CREATE);
         var task=new Task(); task.id=7;
         mapper.updateBatch(meta,List.of(task)); assertFalse(access.upsert);
         access.matched=0; // the document is missing: the update must fail instead of disappearing

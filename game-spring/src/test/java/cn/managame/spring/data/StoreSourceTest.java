@@ -6,6 +6,7 @@ import cn.managame.data.SingleRepository;
 import cn.managame.data.annotation.Id;
 import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import cn.managame.data.mysql.Column;
 import cn.managame.data.mysql.Table;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.stereotype.Repository;
 
 import javax.sql.DataSource;
@@ -20,6 +22,7 @@ import java.lang.reflect.Proxy;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -42,7 +45,9 @@ class StoreSourceTest {
 
     static class Recording implements EntityMapper {
         final List<String> calls = new ArrayList<>();
-        public void initialize(EntityMeta meta) { calls.add("initialize"); }
+        /** The mode build handed this Mapper, which is where game.data.schema has to arrive. */
+        SchemaMode schema;
+        public void initialize(EntityMeta meta,SchemaMode schema) { calls.add("initialize"); this.schema = schema; }
         public Object load(EntityMeta meta, Object id) { calls.add("load"); return null; }
         public List<?> loadGroup(EntityMeta meta, GroupKeys groupKey) { calls.add("loadGroup"); return List.of(); }
         public void insertBatch(EntityMeta meta, List<?> entities) { calls.add("insertBatch"); }
@@ -89,7 +94,35 @@ class StoreSourceTest {
             assertSame(players, context.getBean(GameData.class).repository(Players.class));
             assertNull(players.get(1L));
             assertEquals(List.of("initialize", "load"), context.getBean(Recording.class).calls);
+            assertEquals(SchemaMode.CREATE, context.getBean(Recording.class).schema, "the default creates what is missing");
         }
+    }
+
+    @Test void theSchemaPropertyReachesEveryMapperAndAnUnknownValueNamesTheValidOnes() {
+        try (var context = new AnnotationConfigApplicationContext()) {
+            property(context, "none");
+            context.register(MapperOnly.class, Players.class);
+            context.refresh();
+            // A deployment whose schema is managed elsewhere turns startup DDL off without touching code.
+            assertEquals(SchemaMode.NONE, context.getBean(Recording.class).schema);
+        }
+        Throwable failure = assertThrows(Throwable.class, () -> {
+            try (var context = new AnnotationConfigApplicationContext()) {
+                property(context, "sometimes");
+                context.register(MapperOnly.class, Players.class);
+                context.refresh();
+            }
+        });
+        // The chain ends in the enum's own "No enum constant" message; the readable one is above it.
+        boolean named = false;
+        for (Throwable cause = failure; cause != null && !named; cause = cause.getCause())
+            named = cause.getMessage() != null && cause.getMessage().contains("game.data.schema must be one of [CREATE, VALIDATE, NONE]");
+        assertTrue(named, failure.toString());
+    }
+
+    private static void property(AnnotationConfigApplicationContext context, String schema) {
+        context.getEnvironment().getPropertySources()
+                .addFirst(new MapPropertySource("test", Map.of("game.data.schema", schema)));
     }
 
     @Test void aQualifiedStateSourceIsNeverOfferedToLogs() {

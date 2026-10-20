@@ -16,7 +16,7 @@ One artifact contains repositories, caching, write-back, MySQL/JDBC, MongoDB and
 | --- | --- |
 | cn.managame.data | GameData, GameDataBuilder, the three repository bases; package-private EntityCache, PendingBuffer, WriteBehindManager |
 | annotation / key | Identity annotations, GroupKeys, MapKeys |
-| meta / mapper | EntityMeta (identity metadata for storage SPIs), EntityMapper |
+| meta / mapper | EntityMeta (identity metadata for storage SPIs), EntityMapper, SchemaMode |
 | codec / error | JSON/BINARY codecs, exceptions, DataFailure, RetryPolicy, DataErrorHandler |
 | mysql | SQL annotations, MysqlAccess, JdbcMysqlAccess, MysqlEntityMapper, log mapping |
 | mongo | BSON annotations, MongoAccess, DriverMongoAccess, MongoEntityMapper |
@@ -103,8 +103,9 @@ try (GameData data = GameDataBuilder.builder()
 | pendingChangeWait | 5 s | How long such a write waits for a pass to free room before being refused; 0 refuses at once. Closing refuses waiters rather than holding them, so they cannot delay close |
 | maxCacheEntries | 1,000,000 | Entries one state repository may cache (D-CACHE-03). Above it the clean entries longest unread are evicted on the persistence thread, every tick rather than only on the idle sweep; entries with unsaved changes are never evicted, so keep this above maxPendingChanges |
 | logQueueCapacity | 100,000 | Logs one LogRepository may hold waiting for storage. At the limit insert returns false, reports the log to DataErrorHandler on the inserting thread as a LOG_INSERT failure (attempt 0) and counts it in DataStats.droppedLogs; a refused log was never accepted and does not make close fail |
+| schema | SchemaMode.CREATE | What build may do to storage structure (D-STORE-02): CREATE creates what is missing and validates what exists, VALIDATE issues no DDL and fails on anything missing or too narrow, NONE reads no catalog. It reaches every Mapper through `EntityMapper.initialize`, including one the application supplied, so this is the single place a deployment turns startup DDL off |
 
-repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore the defaults. A registration that names a backend replaces an earlier one for the same repository type that did not and keeps its position, which is how a container integration lets the application redirect a repository it had already discovered; any other repeat of a type is an IllegalArgumentException at the registration call. A repository still unbound when build runs fails with IllegalArgumentException naming what would bind it, mysql(DataSource) or an EntityMapper for state and logMysql(DataSource) or a MysqlAccess for logs, before any DataSource is opened. build validates repositories, identity and log mappings, then runs each state Mapper's initialize (mapping and schema; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
+repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore the defaults. A registration that names a backend replaces an earlier one for the same repository type that did not and keeps its position, which is how a container integration lets the application redirect a repository it had already discovered; any other repeat of a type is an IllegalArgumentException at the registration call. A repository still unbound when build runs fails with IllegalArgumentException naming what would bind it, mysql(DataSource) or an EntityMapper for state and logMysql(DataSource) or a MysqlAccess for logs, before any DataSource is opened. build validates repositories, identity and log mappings, then runs each state Mapper's `initialize(EntityMeta, SchemaMode)` with the configured mode (mapping and structure; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
 
 GameData closes only its own thread, never the DataSource, MongoClient or Mapper. close may wait for database calls; calling close or flush from a Mapper, RetryPolicy or DataErrorHandler callback is rejected to avoid deadlock. After close every repository operation throws DataOperationException.
 
@@ -117,7 +118,7 @@ Inherited fields are supported; annotations are on nonstatic, nonfinal fields. S
 
 ```java
 public interface EntityMapper {
-    void initialize(EntityMeta meta);
+    void initialize(EntityMeta meta, SchemaMode schema);
     Object load(EntityMeta meta, Object id);
     List<?> loadGroup(EntityMeta meta, GroupKeys key);      // nonnull, empty for no rows
     void insertBatch(EntityMeta meta, List<?> entities);
@@ -204,7 +205,7 @@ Primitives and identity columns are NOT NULL. TEXT accepts String only. JSON sto
 
 <a id="61-预编译和运行期工作"></a>
 
-Initialization compiles column order, accessors, codecs and SQL. INSERT writes all columns without a preflight SELECT; UPDATE writes non-identity columns by primary key (identity-only entities skip it); DELETE uses the primary key; DELETE_INSERT encodes first and then deletes and inserts in one transaction. Schema initialization reads information_schema and only adds missing tables, columns and explicit indexes; it checks basic types, the single-column primary key and explicit index shape, but not VARCHAR length, defaults or nullability. GroupKey implies no index.
+Initialization compiles column order, accessors, codecs and SQL. INSERT writes all columns without a preflight SELECT; UPDATE writes non-identity columns by primary key (identity-only entities skip it); DELETE uses the primary key; DELETE_INSERT encodes first and then deletes and inserts in one transaction. Schema initialization follows the configured SchemaMode. It reads `information_schema.tables`, then `information_schema.columns` (`column_type`, the only catalog column carrying the declared size) and `information_schema.statistics`, and checks the base type with every declared size, the single-column primary key and the shape of each explicit index; defaults, nullability, charset and collation are not checked. CREATE adds missing tables, columns and explicit indexes and nothing else — no DROP, MODIFY or CHANGE — and skips the column read for a table it created itself, since that table is the mapping. VALIDATE issues no statement: a missing table, column or explicit index throws. Both throw IllegalArgumentException with `Schema conflict on <table>: …`, and a mapping that disagrees with an existing table issues no DDL at all, because every existing column is checked before any column is added. CREATE also runs `CREATE TABLE` (not `IF NOT EXISTS`, which would report success without saying what is now there), `ALTER TABLE … ADD COLUMN` and `CREATE INDEX` as statements that may lose a race with another instance: MySQL 1050/SQLState 42S01, 1060/42S21 and 1061 mean the winner applied it, and the loser then reads the catalog again and validates what it created, so a conflicting winner still fails the startup while an identical one does not. Any other error, 1142 for a missing privilege for example, propagates as MysqlException. GroupKey implies no index.
 
 MysqlAccess offers queryOne (null for no row, MysqlException for several), query, update, batchUpdate and transaction (one connection, commit on success, rollback on exception, valid only on the callback thread). JdbcMysqlAccess takes a connection per operation; MysqlException keeps the SQL, cause, `sqlState()` and `vendorCode()`. No automatic retries at this level.
 
@@ -249,14 +250,15 @@ that re-measures them:
 
 ## 7. MongoDB mapping
 
-Collection.name is required; only @Field fields persist; the id is always `_id`. MongoIndex lists database field names, all ascending. MongoEntityMapper takes a MongoDatabase or a MongoAccess; DriverMongoAccess uses the database's CodecRegistry (scalars, byte[], collections and Map with String/Integer/Long keys; register codecs for other classes). Loading uses the no-argument constructor; missing fields keep constructor defaults.
+Collection.name is required; only @Field fields persist; the id is always `_id`. MongoIndex lists database field names, all ascending. `MongoAccess.initialize(String collection, List<IndexDefinition> indexes, SchemaMode schema)` is reached only with CREATE or VALIDATE — under NONE the Mapper compiles the mapping and asks the Access nothing — and `DriverMongoAccess` tolerates MongoCommandException 48 (NamespaceExists) from a concurrent `createCollection`, while an identical `createIndex` is accepted again and needs no such case. MongoEntityMapper takes a MongoDatabase or a MongoAccess; DriverMongoAccess uses the database's CodecRegistry (scalars, byte[], collections and Map with String/Integer/Long keys; register codecs for other classes). Loading uses the no-argument constructor; missing fields keep constructor defaults.
 
 | Intent | MySQL | MongoDB |
 | --- | --- | --- |
 | INSERT / DELETE_INSERT | INSERT / delete+insert transaction | ordered bulk replacement, upsert |
 | UPDATE | non-identity columns; 0 rows fails | ordered bulk replacement without upsert; a missing document fails |
 | DELETE | by primary key | `_id $in` |
-| Schema | tables, columns, explicit indexes | collections, explicit ascending indexes |
+| Schema (CREATE) | tables, columns, explicit indexes | collections, explicit ascending indexes |
+| Schema (VALIDATE) | a missing table, column or index throws | a missing collection or index throws |
 
 `MongoAccess.replaceMany` returns the matched (already existing) count; MongoEntityMapper fails an update when it is smaller than the batch. Replacement is not `$set`: fields added outside the mapping are not preserved. An ordered bulk write is not a transaction; earlier documents of a failed batch may already be replaced, which a retry overwrites again.
 
@@ -304,6 +306,7 @@ DataOperation (INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT) is the coalesc
 | Unthrottled producers against a real MySQL stay bounded and lose nothing | DatabaseIntegrationTest.unthrottledProducersAreBoundedAndEveryAcceptedChangeIsStored |
 | Callback close rejected without deadlock | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | Log partitions, drain, partition creation | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization / missingPartitionTableIsCreatedFromTheBaseTable |
+| Each SchemaMode's permitted statements, the length check, and a startup that loses the CREATE, ADD COLUMN or CREATE INDEX race | MysqlSchemaModeTest |
 | Mongo update of a missing document fails | MongoMappingTest |
 | State and logs are separate stores; neither is derived from the other | StoreBindingTest.logsNeverFallBackToTheStateSource / separateSourcesKeepLogRowsOutOfTheStateDatabase |
 | MongoDB state and MySQL logs in one GameData | StoreBindingTest.mongoStateAndMysqlLogsAreIndependentStores |

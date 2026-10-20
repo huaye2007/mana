@@ -1,6 +1,7 @@
 package cn.managame.data;
 
 import cn.managame.data.annotation.Id;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import cn.managame.data.mysql.*;
 import cn.managame.data.mongo.*;
@@ -37,8 +38,8 @@ class DatabaseIntegrationTest {
         assertEquals(0,present,"Use a dedicated database without ogbs_data_probe");
         try {
             var meta=new EntityMeta(MysqlPlayer.class,EntityMeta.Kind.SINGLE);
-            var mapper=new MysqlEntityMapper(access); mapper.initialize(meta);
-            new MysqlEntityMapper(access).initialize(meta); // Existing schema/index compatibility.
+            var mapper=new MysqlEntityMapper(access); mapper.initialize(meta,SchemaMode.CREATE);
+            new MysqlEntityMapper(access).initialize(meta,SchemaMode.CREATE); // Existing schema/index compatibility.
             var player=new MysqlPlayer(); player.id=1; player.score=42; mapper.insertBatch(meta,List.of(player));
             assertEquals(42,((MysqlPlayer)mapper.load(meta,1L)).score);
             player.score=99;
@@ -125,8 +126,8 @@ class DatabaseIntegrationTest {
             var database=client.getDatabase("ogbs_data_test_"+UUID.randomUUID().toString().replace("-",""));
             try {
                 var mapper=new MongoEntityMapper(database);
-                var meta=new EntityMeta(MongoPlayer.class,EntityMeta.Kind.SINGLE); mapper.initialize(meta);
-                new MongoEntityMapper(database).initialize(meta);
+                var meta=new EntityMeta(MongoPlayer.class,EntityMeta.Kind.SINGLE); mapper.initialize(meta,SchemaMode.CREATE);
+                new MongoEntityMapper(database).initialize(meta,SchemaMode.CREATE);
                 var player=new MongoPlayer(); player.id=1; player.score=42;
                 mapper.updateBatch(meta,List.of(player)); assertNull(mapper.load(meta,1L));
                 mapper.deleteInsertBatch(meta,List.of(player));

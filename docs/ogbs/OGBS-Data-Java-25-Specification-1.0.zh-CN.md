@@ -14,7 +14,7 @@
 | --- | --- |
 | cn.managame.data | GameData、GameDataBuilder、三种 Repository 基类；包级 EntityCache、PendingBuffer、WriteBehindManager |
 | annotation / key | 身份注解、GroupKeys、MapKeys |
-| meta / mapper | EntityMeta（供存储 SPI 使用的身份元数据）、EntityMapper |
+| meta / mapper | EntityMeta（供存储 SPI 使用的身份元数据）、EntityMapper、SchemaMode |
 | codec / error | JSON/BINARY codec、异常、DataFailure、RetryPolicy、DataErrorHandler |
 | mysql | SQL 注解、MysqlAccess、JdbcMysqlAccess、MysqlEntityMapper、日志映射 |
 | mongo | BSON 注解、MongoAccess、DriverMongoAccess、MongoEntityMapper |
@@ -97,8 +97,9 @@ try (GameData data = GameDataBuilder.builder()
 | pendingChangeWait | 5 秒 | 这类写入在被拒绝前等待某一轮腾出空间的时长；0 表示立即拒绝。关闭时拒绝等待者而不是挂住它们，因此它们不会拖慢 close |
 | maxCacheEntries | 1,000,000 | 单个状态 Repository 的缓存条目上限（D-CACHE-03）。超过时在保存线程上淘汰最久未读的干净条目，每轮之后都检查，而不是只在空闲清理时；有待保存变更的条目永不淘汰，因此该值应高于 maxPendingChanges |
 | logQueueCapacity | 100,000 | 每个 LogRepository 等待保存的日志上限。达到上限时 insert 返回 false，以 LOG_INSERT 失败（attempt 0）在插入线程上报告给 DataErrorHandler，并计入 DataStats.droppedLogs；被拒绝的日志不是已接纳的变更，不使 close 失败 |
+| schema | SchemaMode.CREATE | build 允许对存储结构做什么（D-STORE-02）：CREATE 创建缺失结构并校验已有结构，VALIDATE 不发 DDL，缺失或过窄即失败，NONE 不读目录。它通过 `EntityMapper.initialize` 到达每个 Mapper，包含应用自己提供的 Mapper，因此这里是部署关掉启动期 DDL 的唯一位置 |
 
-repositories(...)、logRepositories(...) 接受类或列表；显式传入 EntityMapper 或 MysqlAccess 的重载不使用默认后端。指定了后端的注册会替换同一 Repository 类型此前未指定后端的注册并保留其位置——容器集成已经发现并注册的 Repository，应用因此仍可改接到别的后端；同一类型的其他重复注册在注册调用处抛 IllegalArgumentException。build 时仍未绑定的 Repository 抛 IllegalArgumentException 并指出能绑定它的方法：状态为 mysql(DataSource) 或 EntityMapper，日志为 logMysql(DataSource) 或 MysqlAccess；此时尚未打开任何 DataSource。build 先校验 Repository、身份与日志映射，再执行各状态 Mapper 的 initialize（映射与 Schema；后续步骤失败时已执行的 DDL 不回滚），最后创建缓存并启动一个保存线程。
+repositories(...)、logRepositories(...) 接受类或列表；显式传入 EntityMapper 或 MysqlAccess 的重载不使用默认后端。指定了后端的注册会替换同一 Repository 类型此前未指定后端的注册并保留其位置——容器集成已经发现并注册的 Repository，应用因此仍可改接到别的后端；同一类型的其他重复注册在注册调用处抛 IllegalArgumentException。build 时仍未绑定的 Repository 抛 IllegalArgumentException 并指出能绑定它的方法：状态为 mysql(DataSource) 或 EntityMapper，日志为 logMysql(DataSource) 或 MysqlAccess；此时尚未打开任何 DataSource。build 先校验 Repository、身份与日志映射，再以配置的模式执行各状态 Mapper 的 `initialize(EntityMeta, SchemaMode)`（映射与结构；后续步骤失败时已执行的 DDL 不回滚），最后创建缓存并启动一个保存线程。
 
 GameData 只关闭自己的线程，从不关闭 DataSource、MongoClient 或 Mapper。close 可能等待数据库调用；在 Mapper、RetryPolicy、DataErrorHandler 回调中调用 close 或 flush 会被拒绝，以免死锁。关闭后所有 Repository 操作抛 DataOperationException。
 
@@ -108,7 +109,7 @@ GameData 只关闭自己的线程，从不关闭 DataSource、MongoClient 或 Ma
 
 ```java
 public interface EntityMapper {
-    void initialize(EntityMeta meta);
+    void initialize(EntityMeta meta, SchemaMode schema);
     Object load(EntityMeta meta, Object id);
     List<?> loadGroup(EntityMeta meta, GroupKeys key);      // 非 null，无数据时为空列表
     void insertBatch(EntityMeta meta, List<?> entities);
@@ -185,7 +186,7 @@ public class Task {
 
 基本类型与身份列为 NOT NULL。TEXT 只接受 String。JSON 对 String 按原始 JSON 保存，其他类型经 JSON codec；BINARY 直接保存 byte[]，其他类型需要 BinaryCodec；DEFAULT 拒绝复杂对象。`Column.defaultValue` 为受信任的原始 DDL。
 
-初始化时编译列顺序、访问器、codec 与 SQL。INSERT 写全部列，不预先 SELECT；UPDATE 按主键写非身份列（只有身份列的实体跳过）；DELETE 按主键；DELETE_INSERT 先编码，再在一个事务中删除并插入。Schema 初始化读取 information_schema，只补充缺失的表、列与显式索引；检查基本类型、单列主键与显式索引形状，不检查 VARCHAR 长度、默认值与可空性。GroupKey 不隐含索引。
+初始化时编译列顺序、访问器、codec 与 SQL。INSERT 写全部列，不预先 SELECT；UPDATE 按主键写非身份列（只有身份列的实体跳过）；DELETE 按主键；DELETE_INSERT 先编码，再在一个事务中删除并插入。Schema 初始化按配置的 SchemaMode 执行。它读取 `information_schema.tables`，再读 `information_schema.columns`（取 `column_type`，它是目录里唯一带声明尺寸的列）与 `information_schema.statistics`，检查基础类型连同类型声明的每一个尺寸、单列主键与各显式索引的形状；不检查默认值、可空性、字符集与排序规则。CREATE 只补充缺失的表、列与显式索引，别的都不做——没有 DROP、MODIFY、CHANGE——并跳过自己刚建出来的表的列读取，因为那张表就是映射本身。VALIDATE 不发任何语句：缺表、缺列、缺显式索引都抛异常。两者都抛 IllegalArgumentException，消息形如 `Schema conflict on <table>: …`；与已有表不一致的映射完全不发 DDL，因为所有已有列都在任何加列之前检查完毕。CREATE 还把 `CREATE TABLE`（不是 `IF NOT EXISTS`，那样只会报告成功而不说明现在那里是什么结构）、`ALTER TABLE … ADD COLUMN` 与 `CREATE INDEX` 当成可能输掉竞争的语句：MySQL 1050/SQLState 42S01、1060/42S21 与 1061 表示赢的那个实例已经应用过，输的那个随后重新读目录并校验它创建出来的结构，于是冲突的赢家仍让启动失败，一致的赢家不会。其他错误（例如权限不足的 1142）按 MysqlException 向外抛。GroupKey 不隐含索引。
 
 MysqlAccess 提供 queryOne（无行返回 null，多行抛 MysqlException）、query、update、batchUpdate 与 transaction（单连接，成功提交，异常回滚，只在回调线程内有效）。JdbcMysqlAccess 每次操作获取一个连接；MysqlException 保留 SQL、原因、`sqlState()` 与 `vendorCode()`。此层不自动重试。
 
@@ -222,14 +223,15 @@ UPDATE 的倍率则完全消失（两轮都在 0.9~1.0 倍之间）——只设�
 
 ## 7. MongoDB 映射
 
-Collection.name 必填；只有 @Field 字段持久化；id 固定为 `_id`。MongoIndex 使用数据库字段名，全部升序。MongoEntityMapper 接受 MongoDatabase 或 MongoAccess；DriverMongoAccess 使用数据库的 CodecRegistry（标量、byte[]、集合、以 String/Integer/Long 为键的 Map；其他类需注册 codec）。加载使用无参构造器；缺失字段保留构造器默认值。
+Collection.name 必填；只有 @Field 字段持久化；id 固定为 `_id`。MongoIndex 使用数据库字段名，全部升序。`MongoAccess.initialize(String collection, List<IndexDefinition> indexes, SchemaMode schema)` 只会以 CREATE 或 VALIDATE 被调用——NONE 下 Mapper 只编译映射，不向 Access 询问任何结构——`DriverMongoAccess` 容忍并发 `createCollection` 返回的 MongoCommandException 48（NamespaceExists），而完全相同的 `createIndex` 会被再次接受，不需要额外分支。MongoEntityMapper 接受 MongoDatabase 或 MongoAccess；DriverMongoAccess 使用数据库的 CodecRegistry（标量、byte[]、集合、以 String/Integer/Long 为键的 Map；其他类需注册 codec）。加载使用无参构造器；缺失字段保留构造器默认值。
 
 | 意图 | MySQL | MongoDB |
 | --- | --- | --- |
 | INSERT / DELETE_INSERT | INSERT / 删除加插入事务 | 有序批量替换，upsert |
 | UPDATE | 非身份列；0 行时失败 | 有序批量替换，不 upsert；文档不存在时失败 |
 | DELETE | 按主键 | `_id $in` |
-| Schema | 表、列、显式索引 | collection、显式升序索引 |
+| Schema（CREATE） | 表、列、显式索引 | collection、显式升序索引 |
+| Schema（VALIDATE） | 缺表、缺列、缺索引即抛异常 | 缺 collection 或缺索引即抛异常 |
 
 `MongoAccess.replaceMany` 返回匹配到的（已存在的）文档数；少于批次大小时 MongoEntityMapper 让更新失败。替换不是 `$set`：映射之外新增的字段不会保留。有序批量写不是事务；失败批次中靠前的文档可能已被替换，重试时会再次覆盖。
 
@@ -269,6 +271,7 @@ DataOperation（INSERT、UPDATE、DELETE、DELETE_INSERT、LOG_INSERT）是实�
 | 真实 MySQL 上不限速的生产者受上限约束且不丢数据 | DatabaseIntegrationTest.unthrottledProducersAreBoundedAndEveryAcceptedChangeIsStored |
 | 回调中 close 被拒绝且不死锁 | DataContractTest.closeFromCallbackIsRejectedWithoutDeadlock |
 | 日志分表、排空、自动创建分表 | LogContractTest.closeDrainsPartitionsAndBatchesWithoutSchemaInitialization / missingPartitionTableIsCreatedFromTheBaseTable |
+| 每种 SchemaMode 允许发出的语句、长度校验，以及输掉 CREATE / ADD COLUMN / CREATE INDEX 竞争的启动 | MysqlSchemaModeTest |
 | Mongo 更新不存在的文档失败 | MongoMappingTest |
 | 状态与日志是独立存储，互不推导 | StoreBindingTest.logsNeverFallBackToTheStateSource / separateSourcesKeepLogRowsOutOfTheStateDatabase |
 | 同一个 GameData 里 MongoDB 存状态、MySQL 存日志 | StoreBindingTest.mongoStateAndMysqlLogsAreIndependentStores |

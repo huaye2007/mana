@@ -3,6 +3,7 @@ package cn.managame.data;
 import cn.managame.data.annotation.Id;
 import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import cn.managame.data.mongo.Collection;
 import cn.managame.data.mongo.Field;
@@ -36,7 +37,7 @@ class StoreBindingTest {
         final Map<BsonValue,BsonDocument> documents=new LinkedHashMap<>();
         List<IndexDefinition> indexes;
         public CodecRegistry codecRegistry() { return MongoClientSettings.getDefaultCodecRegistry(); }
-        public void initialize(String collection,List<IndexDefinition> declared) { indexes=declared; }
+        public void initialize(String collection,List<IndexDefinition> declared,SchemaMode schema) { indexes=declared; }
         public BsonDocument findOne(String collection,BsonDocument filter) { return documents.get(filter.get("_id")); }
         public List<BsonDocument> find(String collection,BsonDocument filter) { return List.copyOf(documents.values()); }
         public void insertMany(String collection,List<BsonDocument> added) {
@@ -58,7 +59,7 @@ class StoreBindingTest {
 
     static class Recording implements EntityMapper {
         final List<String> calls=new ArrayList<>();
-        public void initialize(EntityMeta meta) { calls.add("initialize"); }
+        public void initialize(EntityMeta meta,SchemaMode schema) { calls.add("initialize"); }
         public Object load(EntityMeta meta,Object id) { calls.add("load"); return null; }
         public List<?> loadGroup(EntityMeta meta,GroupKeys groupKey) { calls.add("loadGroup"); return List.of(); }
         public void insertBatch(EntityMeta meta,List<?> entities) { calls.add("insertBatch"); }

@@ -4,6 +4,7 @@ import cn.managame.data.annotation.Id;
 import cn.managame.data.error.DataOperationException;
 import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -21,7 +22,7 @@ class DirtySetBoundTest {
     static final class CountingMapper implements EntityMapper {
         final List<Object> saved = new CopyOnWriteArrayList<>();
         volatile Runnable duringSave = () -> {};
-        public void initialize(EntityMeta meta) {}
+        public void initialize(EntityMeta meta,SchemaMode schema) {}
         public Object load(EntityMeta meta, Object id) { return null; }
         public List<?> loadGroup(EntityMeta meta, GroupKeys key) { return List.of(); }
         public void insertBatch(EntityMeta m, List<?> e) { duringSave.run(); saved.addAll(e); }

@@ -5,6 +5,7 @@ import cn.managame.data.error.*;
 import cn.managame.data.key.GroupKeys;
 import cn.managame.data.key.MapKeys;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -43,7 +44,7 @@ class DataContractTest {
         volatile boolean loadFailure, saveFailure;
         volatile Runnable beforeSave = () -> {};
         List<?> group = List.of();
-        public void initialize(EntityMeta meta) {}
+        public void initialize(EntityMeta meta,SchemaMode schema) {}
         public Object load(EntityMeta meta,Object id) {
             loads.incrementAndGet(); if (loadFailure) throw new IllegalStateException("load"); return null;
         }
@@ -253,7 +254,7 @@ class DataContractTest {
         var bad = new Player(2);
         mapper.beforeSave = () -> {};
         EntityMapper failing = new EntityMapper() {
-            public void initialize(EntityMeta m) {}
+            public void initialize(EntityMeta m,SchemaMode schema) {}
             public Object load(EntityMeta m, Object id) { return mapper.load(m, id); }
             public List<?> loadGroup(EntityMeta m, GroupKeys k) { return mapper.loadGroup(m, k); }
             public void insertBatch(EntityMeta m, List<?> e) {
@@ -383,7 +384,7 @@ class DataContractTest {
     static final class BlockingLoads implements EntityMapper {
         final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         final ConcurrentHashMap<Object, AtomicInteger> loads = new ConcurrentHashMap<>();
-        public void initialize(EntityMeta meta) {}
+        public void initialize(EntityMeta meta,SchemaMode schema) {}
         public Object load(EntityMeta meta, Object id) {
             loads.computeIfAbsent(id, k -> new AtomicInteger()).incrementAndGet();
             if (Long.valueOf(1).equals(id)) { entered.countDown(); await(release); return new Player(1); }

@@ -16,6 +16,8 @@ Java 25 reference implementation of OGBS Data: Single/Group caches, asynchronous
 
 Repository caches are a small internal map that never evicts an entity with unsaved changes, so loads never need to merge pending writes; see [write-back and eviction](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md#5-write-back-implementation-and-limits).
 
+What startup does to the database is a setting too: `schema` is `CREATE` by default, which creates a missing table, adds missing columns and declared indexes and validates what is already there; `VALIDATE` issues no DDL and fails on anything missing or too narrow, and `NONE` reads no catalog at all. `CREATE` tolerates another instance of the same service applying the same structure at the same moment ([D-STORE-02](../docs/ogbs/OGBS-Data-1.0.md#8-storage-adapter-semantics)).
+
 Memory is a setting rather than an outcome of how fast business code writes: `maxPendingChanges` (100,000) bounds the entities waiting to be saved — a write that would add another one waits `pendingChangeWait` (5 s) for a save pass and is then refused with DataOperationException, while a write to an entity already waiting always merges — and `maxCacheEntries` (1,000,000 per repository) bounds the cache by evicting the clean entries longest unread. Throughput depends on the JDBC URL: `rewriteBatchedStatements=true` is worth about 5x on INSERT batches of 500 and more on larger ones ([§6.2](../docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md#62-batch-throughput-and-the-jdbc-url)).
 
 - [Semantic specification](../docs/ogbs/OGBS-Data-1.0.md)

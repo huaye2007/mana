@@ -1,5 +1,6 @@
 package cn.managame.data.mongo;
 
+import cn.managame.data.mapper.SchemaMode;
 import com.mongodb.MongoCommandException;
 import com.mongodb.client.*;
 import com.mongodb.client.model.*;
@@ -13,8 +14,13 @@ public final class DriverMongoAccess implements MongoAccess {
     public DriverMongoAccess(MongoDatabase database) { this.database = Objects.requireNonNull(database); }
     @Override public CodecRegistry codecRegistry() { return database.getCodecRegistry(); }
     private MongoCollection<BsonDocument> collection(String name) { return database.getCollection(name, BsonDocument.class); }
-    @Override public void initialize(String name, List<IndexDefinition> indexes) {
+    /** CREATE creates a missing collection or index, tolerating another instance that got there first. */
+    @Override public void initialize(String name, List<IndexDefinition> indexes, SchemaMode schema) {
+        boolean create = schema == SchemaMode.CREATE;
         if (!database.listCollectionNames().into(new ArrayList<>()).contains(name)) {
+            if (!create) throw new IllegalArgumentException("Schema conflict on " + name
+                    + ": collection does not exist and schema is " + schema);
+            // 48 NamespaceExists: another instance created it between the check and this command.
             try { database.createCollection(name); }
             catch (MongoCommandException e) { if (e.getErrorCode() != 48) throw e; }
         }
@@ -24,8 +30,12 @@ public final class DriverMongoAccess implements MongoAccess {
             BsonDocument keys = new BsonDocument();
             index.fields().forEach(f -> keys.append(f, new BsonInt32(1)));
             BsonDocument existing = actual.stream().filter(d -> d.getString("name").getValue().equals(index.name())).findFirst().orElse(null);
-            if (existing == null) collection.createIndex(keys, new IndexOptions().name(index.name()).unique(index.unique()));
-            else {
+            if (existing == null) {
+                if (!create) throw new IllegalArgumentException("Schema conflict on " + name
+                        + ": index " + index.name() + " is missing and schema is " + schema);
+                // An identical createIndex is accepted again, so a concurrent one needs no special case.
+                collection.createIndex(keys, new IndexOptions().name(index.name()).unique(index.unique()));
+            } else {
                 BsonDocument present = existing.getDocument("key");
                 if (!new ArrayList<>(present.entrySet()).equals(new ArrayList<>(keys.entrySet()))
                         || existing.getBoolean("unique", BsonBoolean.FALSE).getValue() != index.unique())

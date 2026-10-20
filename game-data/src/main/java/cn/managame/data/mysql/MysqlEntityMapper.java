@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import cn.managame.data.codec.*;
 import cn.managame.data.key.GroupKeys;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,10 +18,10 @@ public final class MysqlEntityMapper implements EntityMapper {
     public MysqlEntityMapper(MysqlAccess access, JsonCodec json, BinaryCodec binary) {
         this.access = Objects.requireNonNull(access); this.json = json; this.binary = binary;
     }
-    @Override public void initialize(EntityMeta meta) {
+    @Override public void initialize(EntityMeta meta, SchemaMode schema) {
         metas.computeIfAbsent(meta, key -> {
             MysqlEntityMeta result = new MysqlEntityMeta(key, json, binary);
-            MysqlSchema.initialize(access, result); return result;
+            MysqlSchema.initialize(access, result, schema); return result;
         });
     }
     private MysqlEntityMeta meta(EntityMeta key) {

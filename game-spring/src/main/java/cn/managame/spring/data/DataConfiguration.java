@@ -7,12 +7,14 @@ import cn.managame.data.GroupRepository;
 import cn.managame.data.LogRepository;
 import cn.managame.data.SingleRepository;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Repository;
 
 import javax.sql.DataSource;
@@ -20,6 +22,7 @@ import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 @Configuration(proxyBeanMethods = false)
@@ -47,6 +50,7 @@ class DataConfiguration {
 
     @Bean(destroyMethod = "close")
     public GameData gameData(ConfigurableListableBeanFactory beans,
+                             Environment environment,
                              ObjectProvider<EntityMapper> stateMapper,
                              ObjectProvider<GameDataConfigurer> configurers,
                              ObjectProvider<ShutdownBudget> budget) {
@@ -67,8 +71,21 @@ class DataConfiguration {
         // application's configurers, so one that knows its storage better can still override it.
         ShutdownBudget declared = budget.getIfAvailable();
         if (declared != null) builder.shutdownTimeout(declared.flushReserve());
+        // Whether startup may issue DDL is a deployment decision, so it is a property rather than code.
+        String mode = environment.getProperty("game.data.schema");
+        if (mode != null && !mode.isBlank()) builder.schema(schema(mode));
         configurers.orderedStream().forEach(configurer -> configurer.configure(builder));
         return builder.build();
+    }
+
+    /** Accepts a SchemaMode name in any case, and names the valid ones when the value is not one. */
+    private static SchemaMode schema(String value) {
+        try {
+            return SchemaMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException unknown) {
+            throw new IllegalArgumentException("game.data.schema must be one of "
+                    + Arrays.toString(SchemaMode.values()) + ": " + value, unknown);
+        }
     }
 
     private record Sources(DataSource state, DataSource logs) {}

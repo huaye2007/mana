@@ -3,6 +3,7 @@ package cn.managame.data;
 import cn.managame.data.codec.*;
 import cn.managame.data.error.*;
 import cn.managame.data.mapper.EntityMapper;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.EntityMeta;
 import cn.managame.data.mysql.*;
 import java.lang.reflect.*;
@@ -27,6 +28,7 @@ public final class GameDataBuilder {
     private int maxCacheEntries = DEFAULT_MAX_CACHE_ENTRIES;
     private Duration pendingChangeWait = Duration.ofSeconds(5);
     private Duration shutdownTimeout = Duration.ofSeconds(30);
+    private SchemaMode schema = SchemaMode.CREATE;
     private ZoneId partitionZone = ZoneOffset.UTC;
     private JsonCodec jsonCodec;
     private BinaryCodec binaryCodec;
@@ -114,6 +116,12 @@ public final class GameDataBuilder {
         if (value < 1) throw new IllegalArgumentException("maxCacheEntries");
         maxCacheEntries = value; return this;
     }
+    /**
+     * What build may do to storage structure (default {@link SchemaMode#CREATE}). One setting for every
+     * backend: it reaches each Mapper through {@link EntityMapper#initialize}, including a Mapper the
+     * application supplied, so a deployment that manages its schema elsewhere turns DDL off in one place.
+     */
+    public GameDataBuilder schema(SchemaMode value) { schema = Objects.requireNonNull(value); return this; }
     /** How long close keeps retrying retryable failures before dropping and reporting the rest. */
     public GameDataBuilder shutdownTimeout(Duration value) {
         Objects.requireNonNull(value); if (value.isNegative()) throw new IllegalArgumentException("shutdownTimeout");
@@ -173,7 +181,7 @@ public final class GameDataBuilder {
             }
         }
         // No background resources exist until all mappings and schemas initialize successfully.
-        for (var entry : mappers.entrySet()) entry.getValue().initialize(entry.getKey());
+        for (var entry : mappers.entrySet()) entry.getValue().initialize(entry.getKey(), schema);
         WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, shutdownTimeout,
                 cacheExpire, errorHandler, retryPolicy, maxPendingChanges, pendingChangeWait);
         for (Prepared p : prepared) {

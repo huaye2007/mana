@@ -2,6 +2,7 @@ package cn.managame.data.mysql;
 
 import cn.managame.data.annotation.*;
 import cn.managame.data.codec.*;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.*;
 import cn.managame.data.key.GroupKeys;
 import org.h2.jdbcx.JdbcDataSource;
@@ -65,7 +66,7 @@ class MysqlMappingTest {
     }
     @Test void mapperRoundTripFullStateUpdateAndTransactionalReplacement() {
         var access = new Access(); var mapper = new MysqlEntityMapper(access);
-        var meta = new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta);
+        var meta = new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta,SchemaMode.CREATE);
         var t = new Task(); t.id=1; t.roleId=4; t.taskId=7; t.progress=10; t.description="old";
         mapper.insertBatch(meta,List.of(t));
         var loaded = (Task)mapper.load(meta,1L); assertEquals(10,loaded.progress); assertEquals("old",loaded.description);
@@ -83,12 +84,12 @@ class MysqlMappingTest {
     @Test void schemaAddsOnlyMissingColumnsAndExplicitIndexes() {
         var access = new Access();
         access.jdbc.update("CREATE TABLE tasks (id BIGINT PRIMARY KEY)",new Object[0]); access.exists=true;
-        new MysqlEntityMapper(access).initialize(new EntityMeta(Task.class,EntityMeta.Kind.GROUP));
+        new MysqlEntityMapper(access).initialize(new EntityMeta(Task.class,EntityMeta.Kind.GROUP),SchemaMode.CREATE);
         assertEquals(4,access.ddl.stream().filter(s -> s.contains("ADD COLUMN")).count());
         assertEquals(1,access.ddl.stream().filter(s -> s.startsWith("CREATE INDEX")).count());
         assertTrue(access.ddl.stream().noneMatch(s -> s.contains("DROP") || s.contains("CHANGE")));
         access.idType="varchar";
-        assertThrows(IllegalArgumentException.class, () -> new MysqlEntityMapper(access).initialize(new EntityMeta(Task.class,EntityMeta.Kind.GROUP)));
+        assertThrows(IllegalArgumentException.class, () -> new MysqlEntityMapper(access).initialize(new EntityMeta(Task.class,EntityMeta.Kind.GROUP),SchemaMode.CREATE));
     }
     @Test void codecReceivesGenericTypeAndRawFieldsBypassSerialization() throws Exception {
         var encoded = new ArrayList<Object>(); var types = new ArrayList<Type>();
