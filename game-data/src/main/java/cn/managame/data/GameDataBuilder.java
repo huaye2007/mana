@@ -22,7 +22,10 @@ public final class GameDataBuilder {
     public static final int DEFAULT_MAX_PENDING_CHANGES = 100_000;
     /** Default bound of cached entries per state repository. */
     public static final int DEFAULT_MAX_CACHE_ENTRIES = 1_000_000;
+    /** Default number of tables saved at once. */
+    public static final int DEFAULT_SAVE_PARALLELISM = 4;
     private int batchSize = 500;
+    private int saveParallelism = DEFAULT_SAVE_PARALLELISM;
     private int logQueueCapacity = DEFAULT_LOG_QUEUE_CAPACITY;
     private int maxPendingChanges = DEFAULT_MAX_PENDING_CHANGES;
     private int maxCacheEntries = DEFAULT_MAX_CACHE_ENTRIES;
@@ -83,6 +86,16 @@ public final class GameDataBuilder {
     public GameDataBuilder cacheExpire(Duration value) { cacheExpire = positive(value); return this; }
     public GameDataBuilder flushInterval(Duration value) { flushInterval = positive(value); return this; }
     public GameDataBuilder batchSize(int value) { if (value < 1) throw new IllegalArgumentException("batchSize"); batchSize = value; return this; }
+    /**
+     * Tables saved at once (default {@value #DEFAULT_SAVE_PARALLELISM}). Each entity type and each log repository
+     * is saved by one thread at a time, so changes of one key keep their order; different tables are saved in
+     * parallel, each holding one connection while it saves. Keep the DataSource pool above this plus the loads
+     * Routes run at once; 1 saves every table on the flush thread, one after another.
+     */
+    public GameDataBuilder saveParallelism(int value) {
+        if (value < 1) throw new IllegalArgumentException("saveParallelism");
+        saveParallelism = value; return this;
+    }
     /**
      * Logs one LogRepository may hold waiting for storage (default {@value #DEFAULT_LOG_QUEUE_CAPACITY}).
      * Beyond it {@code insert} returns false and reports the log to the DataErrorHandler instead of growing memory.
@@ -183,7 +196,7 @@ public final class GameDataBuilder {
         // No background resources exist until all mappings and schemas initialize successfully.
         for (var entry : mappers.entrySet()) entry.getValue().initialize(entry.getKey(), schema);
         WriteBehindManager writer = new WriteBehindManager(mappers, flushInterval, batchSize, shutdownTimeout,
-                cacheExpire, errorHandler, retryPolicy, maxPendingChanges, pendingChangeWait);
+                cacheExpire, errorHandler, retryPolicy, maxPendingChanges, pendingChangeWait, saveParallelism);
         for (Prepared p : prepared) {
             if (p.repository() instanceof SingleRepository<?,?> repository)
                 repository.initialize(p.meta(), (EntityMapper) p.binding().backend(), writer, cacheExpire, maxCacheEntries);

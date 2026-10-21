@@ -20,12 +20,13 @@ final class MongoEntityMeta {
         List<Property> properties = new ArrayList<>();
         Set<String> names = new HashSet<>();
         for (var field : entity.fields()) {
+            if (!EntityMeta.persistent(field)) continue;   // every other field is saved; @Field only renames (D-MAP-01)
             Field mapping = field.getAnnotation(Field.class);
-            if (mapping == null) continue;
+            String declared = mapping == null ? "" : mapping.name();
             boolean isId = field.equals(entity.idField().field());
-            if (isId && !mapping.name().isEmpty() && !mapping.name().equals("_id"))
+            if (isId && !declared.isEmpty() && !declared.equals("_id"))
                 throw new IllegalArgumentException("@Id must map to _id");
-            String column = isId ? "_id" : mapping.name().isEmpty() ? snake(field.getName()) : mapping.name();
+            String column = isId ? "_id" : declared.isEmpty() ? snake(field.getName()) : declared;
             name(column);
             if (!isId && column.equals("_id") || !names.add(column))
                 throw new IllegalArgumentException("Duplicate/reserved Mongo field: " + column);
@@ -35,7 +36,7 @@ final class MongoEntityMeta {
         Map<java.lang.reflect.Field,Property> byField = new HashMap<>();
         fields.forEach(f -> byField.put(f.accessor().field(), f));
         for (var identity : entity.identityFields()) if (!byField.containsKey(identity.field()))
-            throw new IllegalArgumentException("Identity requires @Field: " + identity.field());
+            throw new IllegalArgumentException("Identity field must be saved, not transient: " + identity.field());
         id = byField.get(entity.idField().field());
         groups = entity.groupFields().stream().map(f -> byField.get(f.field())).toList();
         Set<String> indexNames = new HashSet<>();

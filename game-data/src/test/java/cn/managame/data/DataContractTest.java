@@ -148,6 +148,20 @@ class DataContractTest {
             assertEquals(List.of("INSERT"), mapper.events); assertEquals(List.of(first), mapper.batches.getFirst());
         }
     }
+    @Test void updateWithAChangeLoadsChangesAndRecordsInOneCall() {
+        var mapper = new RecordingMapper(); mapper.group = List.of(new Task(20,1,5));
+        try (var data = builder(mapper).build()) {
+            var players = data.repository(Players.class); var tasks = data.repository(Tasks.class);
+            var p = new Player(1); players.insert(p); data.writer.flush(); mapper.events.clear(); mapper.batches.clear();
+            assertTrue(players.update(1L, player -> player.score = 9));
+            assertFalse(players.update(2L, player -> fail("absent entity changed")));   // load found nothing
+            assertTrue(tasks.update(GroupKeys.of(1L), 5L, task -> task.score = 3));
+            assertFalse(tasks.update(GroupKeys.of(1L), 6L, task -> fail("absent MapKey changed")));
+            data.writer.flush();
+            assertEquals(List.of("UPDATE","UPDATE"), mapper.events.stream().sorted().toList());
+            assertEquals(9, p.score); assertEquals(3, tasks.get(GroupKeys.of(1L), 5L).score);
+        }
+    }
     @Test void loadedGroupDeletesByDatabaseId() {
         var mapper = new RecordingMapper(); mapper.group = List.of(new Task(20,1,5),new Task(21,1,6));
         try (var data = builder(mapper).build()) {
@@ -264,6 +278,16 @@ class DataContractTest {
         assertFalse(RetryPolicy.isTransient(new java.sql.SQLIntegrityConstraintViolationException("dup", "23000", 1062)));
         assertFalse(RetryPolicy.isTransient(new java.sql.SQLException("too long", "22001", 1406)));
         assertFalse(RetryPolicy.isTransient(new IllegalStateException("codec")));
+        // A value the JSON codec cannot encode is the data, although Jackson reports it as an IOException:
+        // retried, it would stay pending forever and count toward stopping its storage's lanes.
+        var unencodable = assertThrows(IllegalArgumentException.class,
+                () -> cn.managame.data.codec.JsonCodec.defaultCodec().encode(java.time.Instant.EPOCH));
+        assertFalse(RetryPolicy.isTransient(unencodable));
+        // A collection changed by a Route while the save thread encoded it is read again next pass.
+        assertTrue(RetryPolicy.isTransient(new java.util.ConcurrentModificationException()));
+        assertTrue(RetryPolicy.isTransient(new IllegalArgumentException("Cannot encode JSON value",
+                new com.fasterxml.jackson.databind.JsonMappingException(null, "wrapped", new java.util.ConcurrentModificationException()))));
+        assertTrue(RetryPolicy.isTransient(new java.io.UncheckedIOException(new java.net.SocketException("reset"))));
     }
     @Test void nonRetryableBadRowIsIsolatedFromItsBatch() {
         var mapper = new RecordingMapper(); var errors = new ArrayList<DataFailure>();

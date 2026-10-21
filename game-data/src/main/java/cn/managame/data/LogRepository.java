@@ -44,15 +44,17 @@ public abstract class LogRepository<E> {
             if (queued.compareAndSet(current, current + 1)) return true;
         }
     }
+    /** The storage this repository writes to, whose failures its lane counts (D-WRITE-05). */
+    final Object storage() { return logWriter; }
     /**
      * Returns how many logs were kept for the next flush after retryable failures. Takes no further batch once
-     * the pass is stopping, so logs it never attempted stay where they were, in order.
+     * the lane is stopping, so logs it never attempted stay where they were, in order.
      */
-    final int drain(WriteBehindManager manager, int batchSize) {
+    final int drain(WriteBehindManager.Lane lane, int batchSize) {
         // Capture a finite boundary: continuous producers cannot starve state persistence.
         int remaining = queued.get(), kept = 0;
         List<E> retry = new ArrayList<>();
-        while (remaining > 0 && !manager.stopping()) {
+        while (remaining > 0 && !lane.stopping()) {
             List<E> batch = new ArrayList<>(Math.min(batchSize, remaining));
             while (batch.size() < batchSize && remaining-- > 0) {
                 E log = queue.poll(); if (log == null) break;
@@ -63,11 +65,11 @@ public abstract class LogRepository<E> {
             for (E log : batch) {
                 try { partitions.computeIfAbsent(logWriter.table(log), ignored -> new ArrayList<>()).add(log); }
                 catch (Throwable cause) {
-                    manager.drop(logWriter.logType(), DataOperation.LOG_INSERT, log, new DataOperationException("Invalid log partition", cause), 1);
+                    lane.drop(logWriter.logType(), DataOperation.LOG_INSERT, log, new DataOperationException("Invalid log partition", cause), 1);
                 }
             }
             for (var partition : partitions.entrySet())
-                kept += manager.save(logWriter.logType(), DataOperation.LOG_INSERT, partition.getValue(),
+                kept += lane.save(logWriter.logType(), DataOperation.LOG_INSERT, partition.getValue(),
                         values -> logWriter.insert(partition.getKey(), values), retry::add, log -> log);
         }
         // Retried on the next flush, after logs accepted meanwhile. They were accepted already, so they may

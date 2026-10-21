@@ -19,6 +19,7 @@ import org.springframework.stereotype.Repository;
 
 import javax.sql.DataSource;
 import java.lang.annotation.Annotation;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -74,8 +75,26 @@ class DataConfiguration {
         // Whether startup may issue DDL is a deployment decision, so it is a property rather than code.
         String mode = environment.getProperty("game.data.schema");
         if (mode != null && !mode.isBlank()) builder.schema(schema(mode));
+        // The usual tuning, as properties; an absent one keeps the builder's default, and a configurer still wins.
+        number(environment, "game.data.flush-interval-millis", v -> builder.flushInterval(Duration.ofMillis(v)));
+        number(environment, "game.data.batch-size", v -> builder.batchSize(Math.toIntExact(v)));
+        number(environment, "game.data.save-parallelism", v -> builder.saveParallelism(Math.toIntExact(v)));
+        number(environment, "game.data.cache-expire-millis", v -> builder.cacheExpire(Duration.ofMillis(v)));
+        number(environment, "game.data.max-cache-entries", v -> builder.maxCacheEntries(Math.toIntExact(v)));
+        number(environment, "game.data.max-pending-changes", v -> builder.maxPendingChanges(Math.toIntExact(v)));
+        number(environment, "game.data.pending-change-wait-millis", v -> builder.pendingChangeWait(Duration.ofMillis(v)));
+        number(environment, "game.data.log-queue-capacity", v -> builder.logQueueCapacity(Math.toIntExact(v)));
         configurers.orderedStream().forEach(configurer -> configurer.configure(builder));
         return builder.build();
+    }
+
+    private static void number(Environment environment, String name, java.util.function.LongConsumer apply) {
+        Long value = environment.getProperty(name, Long.class);
+        if (value == null) return;
+        try { apply.accept(value); }
+        catch (IllegalArgumentException | ArithmeticException invalid) {
+            throw new IllegalArgumentException(name + " is invalid: " + value, invalid);
+        }
     }
 
     /** Accepts a SchemaMode name in any case, and names the valid ones when the value is not one. */

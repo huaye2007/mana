@@ -20,11 +20,17 @@ final class MysqlFieldMeta {
     }
     MysqlFieldMeta(Field field, boolean identity, JsonCodec json, BinaryCodec binary, Object prototype) {
         accessor = new FieldAccessor(field); this.identity = identity;
-        Column column = field.getAnnotation(Column.class);
-        name = SqlNames.identifier(column.name().isEmpty() ? SqlNames.snake(field.getName()) : column.name());
+        Column column = field.getAnnotation(Column.class);   // optional: it only renames, retypes or sizes
+        String declared = column == null ? "" : column.name();
+        name = SqlNames.identifier(declared.isEmpty() ? SqlNames.snake(field.getName()) : declared);
         Class<?> t = EntityMeta.boxed(field.getType());
+        ColumnType type = column == null ? ColumnType.DEFAULT : column.type();
+        int length = column == null ? 0 : column.length();
+        if (length < 0 || length > 0 && (type != ColumnType.DEFAULT || t != String.class))
+            throw new IllegalArgumentException("length sizes a DEFAULT String column only: " + field);
+        if (type == ColumnType.DEFAULT && !scalar(t)) type = ColumnType.JSON;
         String automaticDefault = "";
-        switch (column.type()) {
+        switch (type) {
             case JSON -> {
                 sqlType = "JSON";
                 if (t == String.class) { encoder = v -> v; reader = ResultSet::getString; }
@@ -59,19 +65,26 @@ final class MysqlFieldMeta {
                 else if (t == Boolean.class) { sqlType = "TINYINT"; reader = ResultSet::getBoolean; automaticDefault = "0"; }
                 else if (t == Float.class) { sqlType = "FLOAT"; reader = ResultSet::getFloat; automaticDefault = "0"; }
                 else if (t == Double.class) { sqlType = "DOUBLE"; reader = ResultSet::getDouble; automaticDefault = "0"; }
-                else if (t == String.class) { sqlType = "VARCHAR(255)"; reader = ResultSet::getString; automaticDefault = "''"; }
+                else if (t == String.class) {
+                    sqlType = "VARCHAR(" + (length == 0 ? 255 : length) + ")"; reader = ResultSet::getString; automaticDefault = "''";
+                }
                 else if (t == Character.class) {
                     sqlType = "CHAR(1)"; automaticDefault = "''";
                     reader = (r, i) -> { String s = r.getString(i); return s == null ? null : s.isEmpty() ? '\0' : s.charAt(0); };
                 }
                 else if (t == byte[].class) { sqlType = "BLOB"; reader = ResultSet::getBytes; }
-                else throw new IllegalArgumentException("DEFAULT does not support " + field);
+                else throw new AssertionError(t);   // scalar() admitted it
             }
-            default -> throw new AssertionError(column.type());
+            default -> throw new AssertionError(type);
         }
-        if (identity && column.type() != ColumnType.DEFAULT)
+        if (identity && type != ColumnType.DEFAULT)
             throw new IllegalArgumentException("Identity requires DEFAULT scalar column: " + field);
-        defaultValue = column.defaultValue().isEmpty() ? automaticDefault : column.defaultValue();
+        defaultValue = column == null || column.defaultValue().isEmpty() ? automaticDefault : column.defaultValue();
+    }
+    /** The types DEFAULT maps to a column of their own; everything else is JSON. */
+    private static boolean scalar(Class<?> t) {
+        return t == Long.class || t == Integer.class || t == Short.class || t == Byte.class || t == Boolean.class
+                || t == Float.class || t == Double.class || t == String.class || t == Character.class || t == byte[].class;
     }
     Object encode(Object entity) {
         Object value = accessor.get(entity); return value == null ? null : encoder.apply(value);

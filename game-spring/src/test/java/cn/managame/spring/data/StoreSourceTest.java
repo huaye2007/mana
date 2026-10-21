@@ -50,7 +50,8 @@ class StoreSourceTest {
         public void initialize(EntityMeta meta,SchemaMode schema) { calls.add("initialize"); this.schema = schema; }
         public Object load(EntityMeta meta, Object id) { calls.add("load"); return null; }
         public List<?> loadGroup(EntityMeta meta, GroupKeys groupKey) { calls.add("loadGroup"); return List.of(); }
-        public void insertBatch(EntityMeta meta, List<?> entities) { calls.add("insertBatch"); }
+        public void insertBatch(EntityMeta meta, List<?> entities) { calls.add("insertBatch"); sizes.add(entities.size()); }
+        final List<Integer> sizes = new ArrayList<>();
         public void updateBatch(EntityMeta meta, List<?> entities) { calls.add("updateBatch"); }
         public void deleteBatch(EntityMeta meta, List<Object> ids) { calls.add("deleteBatch"); }
         public void deleteInsertBatch(EntityMeta meta, List<?> entities) { calls.add("deleteInsertBatch"); }
@@ -117,6 +118,31 @@ class StoreSourceTest {
         boolean named = false;
         for (Throwable cause = failure; cause != null && !named; cause = cause.getCause())
             named = cause.getMessage() != null && cause.getMessage().contains("game.data.schema must be one of [CREATE, VALIDATE, NONE]");
+        assertTrue(named, failure.toString());
+    }
+
+    @Test void tuningPropertiesReachTheBuilderAndAnInvalidOneIsNamed() {
+        try (var context = new AnnotationConfigApplicationContext()) {
+            context.getEnvironment().getPropertySources()
+                    .addFirst(new MapPropertySource("test", Map.of("game.data.batch-size", "2", "game.data.save-parallelism", "1")));
+            context.register(MapperOnly.class, Players.class);
+            context.refresh();
+            Players players = context.getBean(Players.class);
+            for (long id = 1; id <= 3; id++) { var p = new Player(); p.id = id; players.insert(p); }
+            context.getBean(GameData.class).flush();
+            assertEquals(List.of(2, 1), context.getBean(Recording.class).sizes);   // batches of the configured size
+        }
+        Throwable failure = assertThrows(Throwable.class, () -> {
+            try (var context = new AnnotationConfigApplicationContext()) {
+                context.getEnvironment().getPropertySources()
+                        .addFirst(new MapPropertySource("test", Map.of("game.data.save-parallelism", "0")));
+                context.register(MapperOnly.class, Players.class);
+                context.refresh();
+            }
+        });
+        boolean named = false;
+        for (Throwable cause = failure; cause != null && !named; cause = cause.getCause())
+            named = cause.getMessage() != null && cause.getMessage().contains("game.data.save-parallelism is invalid: 0");
         assertTrue(named, failure.toString());
     }
 

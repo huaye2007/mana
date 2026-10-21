@@ -17,8 +17,9 @@ public interface RetryPolicy {
 
     /**
      * Default: keeps changes only for failures that a later attempt can fix without code or data changes:
-     * lost/refused connections, pool timeouts, I/O errors, lock wait timeouts and deadlocks.
-     * Constraint violations, oversized values and SQL errors are not retried.
+     * lost/refused connections, pool timeouts, I/O errors, lock wait timeouts, deadlocks, and an entity read
+     * while a Route changed it. Constraint violations, oversized values, SQL errors and values a codec cannot
+     * encode are not retried.
      */
     static RetryPolicy transientFailures() { return failure -> isTransient(failure.cause()); }
 
@@ -30,8 +31,13 @@ public interface RetryPolicy {
             Throwable t = pending.poll();
             if (!seen.add(t)) continue;
             if (t instanceof SQLTransientException || t instanceof SQLRecoverableException
-                    || t instanceof SQLNonTransientConnectionException || t instanceof java.io.IOException
+                    || t instanceof SQLNonTransientConnectionException
                     || t instanceof java.util.concurrent.TimeoutException) return true;
+            // The save thread encoded a collection a Route was changing (D-OWN-01): the next pass reads it again.
+            if (t instanceof java.util.ConcurrentModificationException) return true;
+            // Jackson reports a value it cannot encode as an IOException. That is the data, which no retry fixes,
+            // so only other I/O counts; its cause is still looked at, which is where such a race shows up.
+            if (t instanceof java.io.IOException && !t.getClass().getName().startsWith("com.fasterxml.jackson.")) return true;
             if (t instanceof SQLException sql) {
                 String state = sql.getSQLState();
                 // 08xxx connection exception, 40xxx transaction rollback (deadlock/serialization).

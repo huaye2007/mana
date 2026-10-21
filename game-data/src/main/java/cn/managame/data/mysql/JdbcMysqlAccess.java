@@ -8,7 +8,51 @@ import javax.sql.DataSource;
 public final class JdbcMysqlAccess implements MysqlAccess {
     private static final System.Logger LOG = System.getLogger(JdbcMysqlAccess.class.getName());
     private final DataSource source;
+    /** What the database is, read once from connection metadata on first need; null until then. */
+    private volatile Boolean mysql;
     public JdbcMysqlAccess(DataSource source) { this.source = Objects.requireNonNull(source); }
+
+    /**
+     * True for MySQL and MariaDB; H2 and the rest keep one UPDATE per row. When the metadata cannot be read — the
+     * database is down, or a DataSource does not offer it — the answer is the per-row path, which is correct on
+     * any database, and is not remembered, so a later save looks again.
+     */
+    @Override public boolean supportsMultiRowUpdate() {
+        Boolean known = mysql;
+        if (known != null) return known;
+        try { mysql = known = inspect(); return known; }
+        catch (RuntimeException unknown) { return false; }
+    }
+    /**
+     * Reads the database product once. On MySQL it also checks that batched INSERTs are rewritten into one
+     * statement: without {@code rewriteBatchedStatements=true} Connector/J sends them row by row, several times
+     * slower, and nothing else would say so.
+     */
+    private boolean inspect() {
+        return connection("<metadata>", c -> {
+            DatabaseMetaData meta = c.getMetaData();
+            String product = meta.getDatabaseProductName();
+            boolean result = "MySQL".equalsIgnoreCase(product) || "MariaDB".equalsIgnoreCase(product);
+            if (result && !rewritesBatches(c, meta.getURL()))
+                LOG.log(System.Logger.Level.WARNING, "rewriteBatchedStatements is off: Connector/J sends batched INSERTs"
+                        + " row by row, several times slower; add rewriteBatchedStatements=true to the JDBC URL");
+            return result;
+        });
+    }
+    /** Asks Connector/J itself when it is the driver, so a setting made as a DataSource property counts too. */
+    private static boolean rewritesBatches(Connection connection, String url) {
+        try {
+            ClassLoader loader = connection.getClass().getClassLoader();
+            Class<?> jdbc = Class.forName("com.mysql.cj.jdbc.JdbcConnection", false, loader);
+            Object properties = jdbc.getMethod("getPropertySet").invoke(connection.unwrap(jdbc));
+            Object property = Class.forName("com.mysql.cj.conf.PropertySet", false, loader)
+                    .getMethod("getBooleanProperty", String.class).invoke(properties, "rewriteBatchedStatements");
+            return Boolean.TRUE.equals(Class.forName("com.mysql.cj.conf.RuntimeProperty", false, loader)
+                    .getMethod("getValue").invoke(property));
+        } catch (ReflectiveOperationException | SQLException | LinkageError | RuntimeException notConnectorJ) {
+            return url != null && url.toLowerCase(Locale.ROOT).contains("rewritebatchedstatements=true");
+        }
+    }
     private interface SqlAction<T> { T run(Connection connection) throws SQLException; }
     private <T> T connection(String sql, SqlAction<T> action) {
         try (Connection connection = source.getConnection()) { return action.run(connection); }

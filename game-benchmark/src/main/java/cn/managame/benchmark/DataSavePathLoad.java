@@ -104,7 +104,10 @@ public final class DataSavePathLoad {
         };
         boolean throughputPhase = phase.equals("all") || phase.equals("throughput");
         boolean sweepPhase = phase.equals("all") || phase.equals("sweep");
-        if (!throughputPhase && !sweepPhase) throw new IllegalArgumentException("--phase must be all, throughput or sweep");
+        boolean tablesPhase = phase.equals("all") || phase.equals("tables");
+        if (!throughputPhase && !sweepPhase && !tablesPhase)
+            throw new IllegalArgumentException("--phase must be all, throughput, sweep or tables");
+        List<Integer> parallelisms = integers(option(options, "parallelisms", null, "1,4"));
 
         describe(url, user, password, pooled, producers);
         List<Throughput> throughputs = new ArrayList<>();
@@ -127,6 +130,19 @@ public final class DataSavePathLoad {
         }
         report(throughputs, sweeps, rows, sweepSeconds, sweepBatchSize, sweepFlushMillis, maxPending,
                 pendingWaitMillis, producers);
+        // Four tables at each parallelism, with the URL rewritten as the throughput phase does.
+        if (tablesPhase) {
+            List<Tables> runs = new ArrayList<>();
+            for (int parallelism : parallelisms)
+                runs.add(tables(jdbcUrl(url, true), user, password, parallelism, batchSizes.getFirst(), rows, producers,
+                        maxPending, pendingWaitMillis, flushMillis));
+            System.out.printf(Locale.ROOT, "%n## Four tables, %,d rows, batchSize %d, rewriteBatchedStatements=true%n%n",
+                    rows, batchSizes.getFirst());
+            System.out.println("| saveParallelism | INSERT rows/s | UPDATE rows/s |");
+            System.out.println("| --- | --- | --- |");
+            for (Tables run : runs)
+                System.out.printf(Locale.ROOT, "| %d | %,.0f | %,.0f |%n", run.parallelism(), run.insertRate(), run.updateRate());
+        }
     }
 
     /**
@@ -294,15 +310,86 @@ public final class DataSavePathLoad {
         if (source instanceof HikariDataSource pool) pool.close();
     }
 
-    /** Refuses a database holding anything the harness does not own, then starts from an empty table. */
+    /** Refuses a database holding anything the harness does not own, then starts from empty tables. */
     private static void prepare(JdbcMysqlAccess access) {
+        String owned = String.join("', '", OWNED);
         long others = count(access, "SELECT COUNT(*) FROM information_schema.tables"
-                + " WHERE table_schema = DATABASE() AND table_name <> '" + TABLE + "'");
+                + " WHERE table_schema = DATABASE() AND table_name NOT IN ('" + owned + "')");
         if (others != 0) throw new IllegalStateException("The database holds " + others + " table(s) besides "
-                + TABLE + "; point --url at a disposable database, because this harness drops and recreates its table");
+                + OWNED + "; point --url at a disposable database, because this harness drops and recreates its tables");
         drop(access);
     }
-    private static void drop(JdbcMysqlAccess access) { access.update("DROP TABLE IF EXISTS " + TABLE, new Object[0]); }
+    private static void drop(JdbcMysqlAccess access) {
+        for (String table : OWNED) access.update("DROP TABLE IF EXISTS " + table, new Object[0]);
+    }
+
+    /** The tables phase: four tables of the same shape, so what differs between runs is only saveParallelism. */
+    public static class BenchRow { @Id public long id; public int score; public long updated; }
+    @Table(name = "bench_t1") public static class T1 extends BenchRow {}
+    @Table(name = "bench_t2") public static class T2 extends BenchRow {}
+    @Table(name = "bench_t3") public static class T3 extends BenchRow {}
+    @Table(name = "bench_t4") public static class T4 extends BenchRow {}
+    public static final class T1s extends SingleRepository<Long, T1> {}
+    public static final class T2s extends SingleRepository<Long, T2> {}
+    public static final class T3s extends SingleRepository<Long, T3> {}
+    public static final class T4s extends SingleRepository<Long, T4> {}
+    private static final List<String> OWNED = List.of(TABLE, "bench_t1", "bench_t2", "bench_t3", "bench_t4");
+
+    /** One tables-phase run: rows spread evenly over four tables, INSERTed then UPDATEd, at one parallelism. */
+    private record Tables(int parallelism, double insertRate, double updateRate) {}
+    private static Tables tables(String url, String user, String password, int parallelism, int batchSize, long rows,
+                                 int producers, int maxPending, long pendingWaitMillis, long flushMillis) throws Exception {
+        System.out.printf(Locale.ROOT, "%n-- INSERT then UPDATE %,d rows over 4 tables, saveParallelism %d, batchSize %d --%n",
+                rows, parallelism, batchSize);
+        DataSource source = source(url, user, password, true);
+        try {
+            var access = new JdbcMysqlAccess(source);
+            prepare(access);
+            List<Class<?>> types = List.of(T1s.class, T2s.class, T3s.class, T4s.class);
+            GameData data = GameDataBuilder.builder().mysql(source).repositories(types).saveParallelism(parallelism)
+                    .batchSize(batchSize).flushInterval(Duration.ofMillis(flushMillis)).cacheExpire(Duration.ofMinutes(10))
+                    .maxPendingChanges(maxPending).pendingChangeWait(Duration.ofMillis(pendingWaitMillis))
+                    .maxCacheEntries((int) Math.min(Integer.MAX_VALUE, rows + maxPending)).build();
+            try {
+                double insertRate = spread(data, rows, producers, false);
+                System.out.printf(Locale.ROOT, "   INSERT %,.0f rows/s%n", insertRate);
+                double updateRate = spread(data, rows, producers, true);
+                System.out.printf(Locale.ROOT, "   UPDATE %,.0f rows/s%n", updateRate);
+                long stored = 0;
+                for (String table : OWNED.subList(1, OWNED.size())) stored += count(access, "SELECT COUNT(*) FROM " + table + " WHERE score = 2");
+                if (stored != rows) throw new IllegalStateException(stored + " rows updated, expected " + rows);
+                return new Tables(parallelism, insertRate, updateRate);
+            } finally {
+                data.close();
+                drop(access);
+            }
+        } finally { release(source); }
+    }
+    /** Like {@link #timed}, with id {@code n} going to table {@code n % 4}. */
+    @SuppressWarnings("unchecked")
+    private static double spread(GameData data, long rows, int producers, boolean update) throws InterruptedException {
+        List<SingleRepository<Long, BenchRow>> repositories = new ArrayList<>();
+        for (Class<?> type : List.of(T1s.class, T2s.class, T3s.class, T4s.class))
+            repositories.add((SingleRepository<Long, BenchRow>) data.repository(type));
+        List<java.util.function.LongFunction<BenchRow>> rowOf = List.of(id -> new T1(), id -> new T2(), id -> new T3(), id -> new T4());
+        var next = new AtomicLong();
+        long started = System.nanoTime();
+        List<Thread> threads = new ArrayList<>();
+        for (int i = 0; i < producers; i++) threads.add(Thread.ofPlatform().name("producer-" + i).start(() -> {
+            for (long id; (id = next.incrementAndGet()) <= rows;) {
+                int table = (int) (id % 4);
+                BenchRow row = rowOf.get(table).apply(id);
+                row.id = id; row.score = update ? 2 : 1; row.updated = System.currentTimeMillis();
+                for (;;) {
+                    try { if (update) repositories.get(table).update(row); else repositories.get(table).insert(row); break; }
+                    catch (DataOperationException full) { /* retried with the same row, as in timed */ }
+                }
+            }
+        }));
+        for (Thread thread : threads) thread.join();
+        data.flush();
+        return rows / ((System.nanoTime() - started) / 1e9);
+    }
     private static long count(JdbcMysqlAccess access, String sql) {
         Long value = access.queryOne(sql, new Object[0], row -> row.getLong(1));
         return value == null ? 0 : value;
@@ -440,7 +527,8 @@ public final class DataSavePathLoad {
                   --url=jdbc:mysql://127.0.0.1:3306/ogbs_bench   (or OGBS_BENCH_MYSQL_URL) required
                   --user=root                    (or OGBS_BENCH_MYSQL_USER)
                   --password=                    (or OGBS_BENCH_MYSQL_PASSWORD)
-                  --phase=all|throughput|sweep   default all
+                  --phase=all|throughput|sweep|tables   default all
+                  --parallelisms=1,4             saveParallelism values for the four-table phase
                   --rows=200000                  changes per operation in the throughput phase
                   --producers=4                  writing threads
                   --batch-sizes=500,2000         GameDataBuilder.batchSize values to measure

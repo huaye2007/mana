@@ -5,6 +5,7 @@ import cn.managame.data.mapper.EntityMapper;
 import cn.managame.data.meta.EntityMeta;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -65,6 +66,20 @@ public abstract class SingleRepository<K, E> {
             return created;
         }));
         return (E) result[0];
+    }
+    /**
+     * Loads the entity, applies {@code change} and records the update — one call, so changing an entity and
+     * saving it cannot come apart. Returns false and applies nothing when storage has no such entity. The
+     * change runs on the calling thread; if it throws, nothing is recorded, although whatever it changed before
+     * throwing stays in memory.
+     */
+    public final boolean update(K key, Consumer<? super E> change) {
+        Objects.requireNonNull(change);
+        E entity = get(key);
+        if (entity == null) return false;
+        change.accept(entity);
+        update(entity);
+        return true;
     }
     public final void insert(E entity) { change(entity, DataOperation.INSERT); }
     public final void update(E entity) { change(entity, DataOperation.UPDATE); }

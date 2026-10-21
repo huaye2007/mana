@@ -41,6 +41,19 @@ public final class EntityMeta {
                 throw new IllegalArgumentException("Identity field must be integral or String: " + a.field());
         }
     }
+    /**
+     * Whether a field is saved: every instance field that is neither static, transient nor synthetic, whether
+     * or not it carries a mapping annotation, which only renames or retypes it (D-MAP-01). A final one could
+     * not be set again on load, so it is rejected with the two ways out rather than silently left unsaved.
+     */
+    public static boolean persistent(Field field) {
+        int modifiers = field.getModifiers();
+        if (Modifier.isStatic(modifiers) || Modifier.isTransient(modifiers) || field.isSynthetic()) return false;
+        if (Modifier.isFinal(modifiers))
+            throw new IllegalArgumentException("Saved field must not be final: " + field
+                    + " (make it non-final, or mark it transient if it is not saved)");
+        return true;
+    }
     public static List<Field> fieldsOf(Class<?> type) {
         List<Field> fields = new ArrayList<>();
         for (Class<?> c = type; c != Object.class && c != null; c = c.getSuperclass())

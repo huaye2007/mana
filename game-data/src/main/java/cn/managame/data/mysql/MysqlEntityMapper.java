@@ -21,7 +21,11 @@ public final class MysqlEntityMapper implements EntityMapper {
     @Override public void initialize(EntityMeta meta, SchemaMode schema) {
         metas.computeIfAbsent(meta, key -> {
             MysqlEntityMeta result = new MysqlEntityMeta(key, json, binary);
-            MysqlSchema.initialize(access, result, schema); return result;
+            MysqlSchema.initialize(access, result, schema);
+            // Startup already talks to the database here, so a slow batch setting is named now rather than at the
+            // first save; under NONE that first save is where it is found.
+            if (schema != SchemaMode.NONE) access.supportsMultiRowUpdate();
+            return result;
         });
     }
     private MysqlEntityMeta meta(EntityMeta key) {
@@ -42,11 +46,35 @@ public final class MysqlEntityMapper implements EntityMapper {
     // or split into single rows without duplicate-key failures. Encoding happens before the transaction.
     @Override public void insertBatch(EntityMeta key, List<?> entities) {
         var m = meta(key); var rows = entities.stream().map(e -> MysqlEntityMeta.arguments(m.fields, e)).toList();
+        access.supportsMultiRowUpdate();   // under NONE the first save is the first look at the database
         access.transaction(tx -> tx.batchUpdate(m.insert, rows));
     }
-    /** An UPDATE matching no row fails: the row is missing, so silently succeeding would lose the change. */
+    /**
+     * An UPDATE matching no row fails: the row is missing, so silently succeeding would lose the change.
+     *
+     * <p>On MySQL a batch is sent as multi-row UPDATE statements of {@code updateRows} rows each, one round trip
+     * per statement instead of one per row — UPDATE is the statement the driver cannot fold the way it folds
+     * INSERT. A statement that matches fewer rows than it names fails the batch, which the pipeline then splits
+     * into single rows, so the missing row is still the one reported.
+     */
     @Override public void updateBatch(EntityMeta key, List<?> entities) {
         var m = meta(key); if (m.update == null) return;
+        if (access.supportsMultiRowUpdate()) {
+            List<Object[]> statements = new ArrayList<>();
+            for (int from = 0; from < entities.size(); from += m.updateRows)
+                statements.add(m.multiUpdateArguments(entities.subList(from, Math.min(entities.size(), from + m.updateRows))));
+            access.transaction(tx -> {
+                for (Object[] arguments : statements) {
+                    int rows = (arguments.length) / (2 * m.updates.size() + 1);
+                    String sql = m.multiUpdate(rows);
+                    int matched = tx.update(sql, arguments);
+                    if (matched != rows) throw new MysqlException(sql, new SQLException(
+                            "UPDATE matched " + matched + " of " + rows + " rows", "02000"));
+                }
+                return null;
+            });
+            return;
+        }
         var rows = entities.stream().map(e -> MysqlEntityMeta.arguments(m.updateParameters, e)).toList();
         access.transaction(tx -> {
             int[] counts = tx.batchUpdate(m.update, rows);

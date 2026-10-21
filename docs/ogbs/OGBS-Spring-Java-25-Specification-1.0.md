@@ -28,8 +28,18 @@ As soon as either qualifier is present, each store takes only the source named f
 | Property | Default | Boundary |
 | --- | --- | --- |
 | `game.data.schema` | `CREATE` | What startup may do to storage structure ([Data Java §3](OGBS-Data-Java-25-Specification-1.0.md#3-build-and-lifecycle), D-STORE-02): `CREATE`, `VALIDATE` or `NONE`, in any case. It is applied before the `GameDataConfigurer` Beans, so one that knows its storage better can still override it, and an unknown value fails refresh with IllegalArgumentException naming the three |
+| `game.data.flush-interval-millis` | builder default (1000) | `flushInterval` |
+| `game.data.batch-size` | builder default (500) | `batchSize` |
+| `game.data.save-parallelism` | builder default (4) | `saveParallelism`, tables saved at once (D-WRITE-02) |
+| `game.data.cache-expire-millis` | builder default (1800000) | `cacheExpire` |
+| `game.data.max-cache-entries` | builder default (1000000) | `maxCacheEntries` |
+| `game.data.max-pending-changes` | builder default (100000) | `maxPendingChanges` |
+| `game.data.pending-change-wait-millis` | builder default (5000) | `pendingChangeWait` |
+| `game.data.log-queue-capacity` | builder default (100000) | `logQueueCapacity` |
 
-Validation: [StoreSourceTest](../../game-spring/src/test/java/cn/managame/spring/data/StoreSourceTest.java) covers a state EntityMapper Bean carrying state with no DataSource Bean present, the refusal to offer a `@GameStateSource` to logs before any DataSource is opened, and `game.data.schema` reaching every Mapper (with `CREATE` when the property is absent); [DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) covers one unqualified DataSource serving both stores.
+Like `game.data.schema`, the tuning properties above are applied before the `GameDataConfigurer` Beans, so a configurer still wins. An absent property leaves the builder's default ([Data Java §3](OGBS-Data-Java-25-Specification-1.0.md#3-build-and-lifecycle)). A value the builder rejects, such as a batch size of 0, fails refresh with IllegalArgumentException naming the property and the value.
+
+Validation: [StoreSourceTest](../../game-spring/src/test/java/cn/managame/spring/data/StoreSourceTest.java) covers a state EntityMapper Bean carrying state with no DataSource Bean present, the refusal to offer a `@GameStateSource` to logs before any DataSource is opened, `game.data.schema` reaching every Mapper (with `CREATE` when the property is absent), and the tuning properties reaching the builder, with an invalid one named; [DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) covers one unqualified DataSource serving both stores.
 
 `GameDataConfigurer.configure(GameDataBuilder)` Beans run in Spring order after source/Repository configuration and before build, for JSON codecs, write-back/error policy, or redirecting a discovered Repository to another backend — which holds because a registration that names a backend replaces the integration's own. Configurer dependencies must not require the still-building Data/Repository. The singleton gameData has destroyMethod="close"; it borrows every source and closes neither the application pool nor a Mapper's client.
 

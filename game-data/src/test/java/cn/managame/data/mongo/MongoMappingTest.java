@@ -24,7 +24,7 @@ class MongoMappingTest {
         @Field Map<Integer,Long> rewards;
         @Field byte[] bytes;
         @Field short shortValue;
-        String ignored;
+        transient String ignored;   // transient is what keeps a field out (D-MAP-01)
     }
     static class Access implements MongoAccess {
         BsonDocument filter; List<BsonDocument> documents=List.of(); boolean upsert; String operation;

@@ -46,6 +46,18 @@ class DatabaseIntegrationTest {
             assertThrows(MysqlException.class,()->mapper.deleteInsertBatch(meta,List.of(player,player)));
             assertEquals(42,((MysqlPlayer)mapper.load(meta,1L)).score);
             mapper.updateBatch(meta,List.of(player)); assertEquals(99,((MysqlPlayer)mapper.load(meta,1L)).score);
+            // One multi-row UPDATE for many rows on MySQL; a missing row still fails it, and nothing of it stays.
+            assertTrue(access.supportsMultiRowUpdate());
+            var others=new ArrayList<MysqlPlayer>();
+            for (long id=2;id<=250;id++) { var p=new MysqlPlayer(); p.id=id; p.score=1; others.add(p); }
+            mapper.insertBatch(meta,others);
+            for (var p : others) p.score=(int)p.id;
+            mapper.updateBatch(meta,others);   // three statements of up to 100 rows
+            assertEquals(250,((MysqlPlayer)mapper.load(meta,250L)).score); assertEquals(2,((MysqlPlayer)mapper.load(meta,2L)).score);
+            var missing=new MysqlPlayer(); missing.id=999; missing.score=5; player.score=7;
+            var failure=assertThrows(MysqlException.class,()->mapper.updateBatch(meta,List.of(player,missing)));
+            assertEquals("02000",failure.sqlState());
+            assertEquals(99,((MysqlPlayer)mapper.load(meta,1L)).score);   // rolled back with the statement
             mapper.deleteBatch(meta,List.of(1L)); assertNull(mapper.load(meta,1L));
         } finally { access.update("DROP TABLE IF EXISTS ogbs_data_probe",new Object[0]); }
     }

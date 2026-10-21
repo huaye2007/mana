@@ -10,18 +10,21 @@ import cn.managame.data.meta.EntityMeta;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
 /**
- * Single-threaded write-behind pipeline. Each flush claims the dirty set, saves it in operation order
- * and batches, and classifies failures: retryable ones (RetryPolicy) stay pending for the next flush,
- * a non-retryable batch is split into single rows so one bad row cannot drop the others, and only a
- * non-retryable single row is dropped and reported. Two retryable failures in a row stop the pass, because
- * storage is then down and every further call would wait out the same timeout; close never saves past its
- * deadline and hands what is left to DataErrorHandler.
+ * Write-behind pipeline. Each pass claims the dirty set and saves it table by table — every entity type and
+ * every log repository is one lane, the lanes of a pass run in parallel on {@code saveParallelism} threads, and
+ * one lane saves its table alone, in operation order and batches (D-WRITE-02). Failures are classified per batch:
+ * retryable ones (RetryPolicy) stay pending for the next pass, a non-retryable batch is split into single rows
+ * so one bad row cannot drop the others, and only a non-retryable single row is dropped and reported. Two
+ * retryable failures in a row on one backend stop every lane of that backend, because storage is then down and
+ * every further call would wait out the same timeout; close never saves past its deadline and hands what is left
+ * to DataErrorHandler.
  */
 final class WriteBehindManager {
     private enum State { RUNNING, CLOSING, CLOSED }
@@ -34,9 +37,9 @@ final class WriteBehindManager {
     private static final List<DataOperation> ORDER =
             List.of(DataOperation.DELETE, DataOperation.DELETE_INSERT, DataOperation.INSERT, DataOperation.UPDATE);
     /**
-     * Retryable failures in a row after which a pass stops starting saves (D-WRITE-05). One is a row — a lock
-     * wait, a deadlock — and stopping on it would let one locked row hold back everything after it; two in a
-     * row are storage itself, whose every further call would wait out the same timeout.
+     * Retryable failures in a row on one backend after which its lanes stop starting saves (D-WRITE-05). One is a
+     * row — a lock wait, a deadlock — and stopping on it would let one locked row hold back everything after it;
+     * two in a row are storage itself, whose every further call would wait out the same timeout.
      */
     private static final int UNAVAILABLE_AFTER = 2;
     private final PendingBuffer buffer;
@@ -46,11 +49,17 @@ final class WriteBehindManager {
     private final long sweepNanos;
     private long lastSweep = System.nanoTime();
     private final ScheduledExecutorService scheduler;
+    /** The threads lanes run on; null with a parallelism of one, when every lane runs on the passing thread. */
+    private final ExecutorService savers;
     // Shutdown barrier for mutations: high bit = closing, low bits = mutations in progress. One CAS per
     // mutation instead of a read lock; close sets the bit and waits for the count to reach zero.
     private final AtomicLong admission = new AtomicLong();
+    /** Held by the thread running a pass, so passes never overlap; lanes of that pass run on savers. */
     private final Object pipeline = new Object();
-    private volatile Thread pipelineThread;
+    /** Threads inside the pipeline — running a lane or reporting drops — which must not wait on it. */
+    private final Set<Thread> pipelineThreads = ConcurrentHashMap.newKeySet();
+    /** Serializes reports, so DataErrorHandler is never called concurrently however many lanes run. */
+    private final Object reports = new Object();
     private volatile State state = State.RUNNING;
     private final int batchSize;
     private final long maxPending;
@@ -59,21 +68,16 @@ final class WriteBehindManager {
     private final RetryPolicy retry;
     /** First drop in this GameData's lifetime; close reports it, and again on every later close. */
     private volatile DataSaveException lifetimeFailure;
-    /** First drop during the current explicit flush; guarded by {@code pipeline}. */
+    /** First drop during the current explicit flush; guarded by {@code reports}. */
     private DataSaveException callFailure;
-    private int claimedCount;      // changes the latest pass claimed; guarded by pipeline
-    // The running pass, guarded by pipeline: retryable failures in a row, close's deadline for it (when
-    // bounded), and the latest retryable failure, which close gives as the reason for what it could not save.
-    private int retryableStreak;
-    private boolean passBounded;
-    private long passDeadline;
-    private Throwable lastRetryable;
+    /** The latest retryable failure, which close gives as the reason for what it could not save. */
+    private volatile Throwable lastRetryable;
     private final LongAdder failedBatches = new LongAdder(), flushes = new LongAdder(), saveNanos = new LongAdder(),
             droppedLogs = new LongAdder(), rejectedChanges = new LongAdder();
 
     WriteBehindManager(Map<EntityMeta,EntityMapper> mappers, Duration interval, int batchSize, Duration shutdownTimeout,
                        Duration cacheExpire, DataErrorHandler handler, RetryPolicy retry,
-                       int maxPendingChanges, Duration pendingChangeWait) {
+                       int maxPendingChanges, Duration pendingChangeWait, int saveParallelism) {
         this.mappers = Collections.unmodifiableMap(new LinkedHashMap<>(mappers));
         buffer = new PendingBuffer(mappers.keySet());
         this.batchSize = batchSize; this.handler = handler; this.retry = retry;
@@ -84,6 +88,8 @@ final class WriteBehindManager {
         executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         executor.setRemoveOnCancelPolicy(true);
         scheduler = executor;
+        savers = saveParallelism <= 1 ? null
+                : Executors.newFixedThreadPool(saveParallelism, Thread.ofPlatform().daemon().name("game-data-save-", 0).factory());
     }
 
     void addLog(LogRepository<?> log) { logs.add(log); }
@@ -92,6 +98,7 @@ final class WriteBehindManager {
     void ensureRunning() {
         if (state != State.RUNNING) throw new DataOperationException("GameData is " + state);
     }
+    private boolean inPipeline() { return pipelineThreads.contains(Thread.currentThread()); }
     /** Admission is only the shutdown barrier; flushing never waits for it. */
     void mutate(Runnable action) {
         if (admission.getAndIncrement() < 0) {
@@ -120,7 +127,7 @@ final class WriteBehindManager {
         if (id != null && buffer.pending(meta, id)) return;
         // A change recorded from a Mapper or Handler callback would be waiting for the pass it is running
         // inside, so it is refused at once instead of stalling that pass for pendingChangeWait.
-        if (Thread.currentThread() == pipelineThread) {
+        if (inPipeline()) {
             rejectedChanges.increment();
             throw new DataOperationException("Cannot wait for room in the dirty set from a persistence callback");
         }
@@ -174,57 +181,165 @@ final class WriteBehindManager {
             }
         }
     }
-    int flush() { return flush(false, 0); }
+
+    /** What one pass shares between its lanes: close's deadline and, per backend, retryable failures in a row. */
+    private static final class Pass {
+        final boolean bounded; final long deadline;
+        final Map<Object, AtomicInteger> streaks = new IdentityHashMap<>();   // filled before any lane runs
+        final AtomicInteger claimed = new AtomicInteger();
+        volatile boolean stopped;
+        Pass(boolean bounded, long deadline) { this.bounded = bounded; this.deadline = deadline; }
+        boolean pastDeadline() { return bounded && System.nanoTime() - deadline >= 0; }
+    }
+    /** What a pass left pending, and how many changes it claimed. */
+    record Result(int left, int claimed) {}
+
     /**
-     * One bounded pass: each entity type contributes at most what was pending for it when the pass reached
-     * it, so a pass always ends and {@code flushes} advances even while producers keep writing. Returns the
-     * number of changes and logs left pending; {@link #claimedCount} tells whether the pass had anything to
-     * claim at all.
-     *
-     * <p>The pass also stops starting saves once {@link #stopping} says so — storage failing, or close's
-     * deadline passed — and what it did not attempt stays pending, so a pass during an outage costs about two
-     * storage timeouts rather than one per batch (D-WRITE-05).
+     * Saves one table in a pass. A lane is the only thread saving its table, so changes of one key are saved in
+     * order; lanes of different tables share nothing but the backend's failure count and the reporting lock.
      */
-    private int flush(boolean bounded, long deadline) {
-        synchronized (pipeline) {
-            if (state == State.CLOSED) return 0;
-            pipelineThread = Thread.currentThread();
-            long started = System.nanoTime();
-            int left = 0;
-            claimedCount = 0; retryableStreak = 0; passBounded = bounded; passDeadline = deadline;
-            try {
-                for (EntityMeta meta : buffer.metas()) if (!stopping()) left += flushEntity(meta);
-                for (LogRepository<?> log : logs) left += log.drain(this, batchSize);
-                if (stopping()) left = (int) Math.min(Integer.MAX_VALUE, pendingCount());   // skipped ones too
-                if (left > 0) LOG.log(System.Logger.Level.WARNING, left + " changes kept pending after retryable save failures");
-                return left;
-            } finally { passBounded = false; flushes.increment(); saveNanos.add(System.nanoTime() - started); pipelineThread = null; }
+    final class Lane {
+        private final Pass pass;
+        private final AtomicInteger streak;
+        Lane(Pass pass, Object backend) { this.pass = pass; streak = pass.streaks.get(backend); }
+
+        /**
+         * Whether this lane should start no further save: its backend failed retryably {@value #UNAVAILABLE_AFTER}
+         * times in a row, or close's deadline for the pass has passed.
+         */
+        boolean stopping() {
+            boolean stop = streak.get() >= UNAVAILABLE_AFTER || pass.pastDeadline();
+            if (stop) pass.stopped = true;
+            return stop;
+        }
+        /**
+         * Saves one batch. Each item ends in exactly one of: saved, kept (retryable, or not attempted because the
+         * lane is {@link #stopping}) or dropped (reported). Returns how many items were kept. Mappers must apply a
+         * batch atomically, or recognize their own earlier rows, so a retry cannot duplicate rows (D-ERROR-02).
+         */
+        <T> int save(Class<?> type, DataOperation operation, List<T> batch, Consumer<List<T>> action,
+                     Consumer<T> keep, Function<T, Object> reported) {
+            if (stopping()) { batch.forEach(keep); return batch.size(); }
+            Throwable cause;
+            try { action.accept(batch); streak.set(0); return 0; }
+            catch (Throwable error) { cause = error; }
+            if (retryable(type, operation, batch, reported, cause, 1)) { batch.forEach(keep); return batch.size(); }
+            streak.set(0);   // storage answered, so it is up: what failed is the data
+            if (batch.size() == 1) { drop(type, operation, reported.apply(batch.getFirst()), cause, 1); return 0; }
+            int kept = 0;
+            for (T item : batch) {   // isolate the bad rows; the others still persist
+                if (stopping()) { keep.accept(item); kept++; continue; }
+                try { action.accept(List.of(item)); streak.set(0); }
+                catch (Throwable error) {
+                    if (retryable(type, operation, List.of(item), reported, error, 2)) { keep.accept(item); kept++; }
+                    else { streak.set(0); drop(type, operation, reported.apply(item), error, 2); }
+                }
+            }
+            return kept;
+        }
+        /** Asks the policy; a retryable failure also counts toward {@link #stopping}. */
+        private <T> boolean retryable(Class<?> type, DataOperation operation, List<T> batch,
+                                      Function<T, Object> reported, Throwable cause, int attempt) {
+            boolean again;
+            try { again = retry.shouldRetry(failureOf(type, operation, batch.stream().map(reported).toList(), cause, attempt)); }
+            catch (Throwable policyFailure) { if (policyFailure != cause) cause.addSuppressed(policyFailure); again = false; }
+            if (again) { streak.incrementAndGet(); lastRetryable = cause; }
+            return again;
+        }
+        void drop(Class<?> type, DataOperation operation, Object value, Throwable cause, int attempt) {
+            WriteBehindManager.this.drop(type, operation, value, cause, attempt);
         }
     }
+
+    int flush() { return flush(false, 0).left(); }
     /**
-     * Whether the running pass should start no further save: storage failed retryably {@value #UNAVAILABLE_AFTER}
-     * times in a row, or close's deadline for the pass has passed.
+     * One bounded pass: each table contributes at most what was pending for it when its lane claimed it, so a
+     * pass always ends and {@code flushes} advances even while producers keep writing. Returns the number of
+     * changes and logs left pending, together with how many changes the pass claimed.
+     *
+     * <p>The lanes of a pass run in parallel, one per table with something to save, and the pass ends when all
+     * of them have. A lane stops starting saves once {@link Lane#stopping} says so — its storage failing, or
+     * close's deadline passed — and what it did not attempt stays pending, so a pass during an outage costs about
+     * two storage timeouts rather than one per batch (D-WRITE-05).
      */
-    boolean stopping() {
-        return retryableStreak >= UNAVAILABLE_AFTER || (passBounded && System.nanoTime() - passDeadline >= 0);
+    private Result flush(boolean bounded, long deadline) {
+        synchronized (pipeline) {
+            if (state == State.CLOSED) return new Result(0, 0);
+            long started = System.nanoTime();
+            Pass pass = new Pass(bounded, deadline);
+            List<Callable<Integer>> lanes = new ArrayList<>();
+            for (EntityMeta meta : buffer.metas()) {
+                pass.streaks.computeIfAbsent(mappers.get(meta), ignored -> new AtomicInteger());
+                if (!buffer.pending(meta).isEmpty()) lanes.add(lane(() -> flushEntity(meta, new Lane(pass, mappers.get(meta)))));
+            }
+            for (LogRepository<?> log : logs) {
+                pass.streaks.computeIfAbsent(log.storage(), ignored -> new AtomicInteger());
+                if (log.queuedLogs() > 0) lanes.add(lane(() -> log.drain(new Lane(pass, log.storage()), batchSize)));
+            }
+            try {
+                int left = run(lanes);
+                if (pass.stopped) left = (int) Math.min(Integer.MAX_VALUE, pendingCount());   // skipped ones too
+                if (left > 0) LOG.log(System.Logger.Level.WARNING, left + " changes kept pending after retryable save failures");
+                return new Result(left, pass.claimed.get());
+            } finally { flushes.increment(); saveNanos.add(System.nanoTime() - started); }
+        }
+    }
+    /** Marks the running thread as inside the pipeline for the lane's duration. */
+    private Callable<Integer> lane(Callable<Integer> work) {
+        return () -> {
+            Thread current = Thread.currentThread();
+            boolean added = pipelineThreads.add(current);
+            try { return work.call(); }
+            finally { if (added) pipelineThreads.remove(current); }
+        };
+    }
+    /**
+     * Runs a pass's lanes and waits for every one of them — uninterruptibly, because a pass that returned while
+     * a lane still saved would let the next pass claim the same table concurrently.
+     */
+    private int run(List<Callable<Integer>> lanes) {
+        int left = 0;
+        if (savers == null || lanes.size() <= 1) {
+            for (Callable<Integer> lane : lanes) left += call(lane);
+            return left;
+        }
+        List<Future<Integer>> running = new ArrayList<>(lanes.size());
+        for (Callable<Integer> lane : lanes) running.add(savers.submit(lane));
+        boolean interrupted = false;
+        for (Future<Integer> lane : running) {
+            for (;;) {
+                try { left += lane.get(); break; }
+                catch (InterruptedException e) { interrupted = true; }
+                catch (ExecutionException e) { LOG.log(System.Logger.Level.ERROR, "Save lane failed", e.getCause()); break; }
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+        return left;
+    }
+    private static int call(Callable<Integer> lane) {
+        try { return lane.call(); }
+        catch (Exception e) { LOG.log(System.Logger.Level.ERROR, "Save lane failed", e); return 0; }
     }
     private long pendingCount() {
         long count = buffer.size();
         for (LogRepository<?> log : logs) count += log.queuedLogs();
         return count;
     }
-    private int flushEntity(EntityMeta meta) {
+    private int flushEntity(EntityMeta meta, Lane lane) {
+        if (lane.stopping()) return 0;   // its backend already failed in this pass: leave the table unclaimed
         EntityMapper mapper = mappers.get(meta);
         var byOperation = new EnumMap<DataOperation, List<Claimed>>(DataOperation.class);
+        int claimed = 0;
         for (Claimed claim : buffer.claim(meta)) {
-            claimedCount++;
+            claimed++;
             byOperation.computeIfAbsent(claim.change().operation(), ignored -> new ArrayList<>()).add(claim);
         }
+        lane.pass.claimed.addAndGet(claimed);
         int left = 0;
         for (DataOperation op : ORDER) {
-            List<Claimed> claimed = byOperation.getOrDefault(op, List.of());
-            for (int i = 0; i < claimed.size(); i += batchSize) {
-                left += save(meta.entityType(), op, claimed.subList(i, Math.min(claimed.size(), i + batchSize)),
+            List<Claimed> batchable = byOperation.getOrDefault(op, List.of());
+            for (int i = 0; i < batchable.size(); i += batchSize) {
+                left += lane.save(meta.entityType(), op, batchable.subList(i, Math.min(batchable.size(), i + batchSize)),
                         batch -> {
                             List<Object> values = new ArrayList<>(batch.size());
                             for (Claimed c : batch) values.add(op == DataOperation.DELETE ? c.id() : c.change().entity());
@@ -245,54 +360,25 @@ final class WriteBehindManager {
     }
     private static Object valueOf(DataOperation op, Claimed c) { return op == DataOperation.DELETE ? c.id() : c.change().entity(); }
 
-    /**
-     * Saves one batch. Each item ends in exactly one of: saved, kept (retryable, or not attempted because the
-     * pass is {@link #stopping}) or dropped (reported). Returns how many items were kept. Mappers must apply a
-     * batch atomically, or recognize their own earlier rows, so a retry cannot duplicate rows (D-ERROR-02).
-     */
-    <T> int save(Class<?> type, DataOperation operation, List<T> batch, Consumer<List<T>> action,
-                 Consumer<T> keep, Function<T, Object> reported) {
-        if (stopping()) { batch.forEach(keep); return batch.size(); }
-        Throwable cause;
-        try { action.accept(batch); retryableStreak = 0; return 0; }
-        catch (Throwable error) { cause = error; }
-        if (retryable(type, operation, batch, reported, cause, 1)) { batch.forEach(keep); return batch.size(); }
-        retryableStreak = 0;   // storage answered, so it is up: what failed is the data
-        if (batch.size() == 1) { drop(type, operation, reported.apply(batch.getFirst()), cause, 1); return 0; }
-        int kept = 0;
-        for (T item : batch) {   // isolate the bad rows; the others still persist
-            if (stopping()) { keep.accept(item); kept++; continue; }
-            try { action.accept(List.of(item)); retryableStreak = 0; }
-            catch (Throwable error) {
-                if (retryable(type, operation, List.of(item), reported, error, 2)) { keep.accept(item); kept++; }
-                else { retryableStreak = 0; drop(type, operation, reported.apply(item), error, 2); }
-            }
-        }
-        return kept;
-    }
-    /** Asks the policy; a retryable failure also counts toward {@link #stopping}. */
-    private <T> boolean retryable(Class<?> type, DataOperation operation, List<T> batch,
-                                  Function<T, Object> reported, Throwable cause, int attempt) {
-        boolean again;
-        try { again = retry.shouldRetry(failureOf(type, operation, batch.stream().map(reported).toList(), cause, attempt)); }
-        catch (Throwable policyFailure) { if (policyFailure != cause) cause.addSuppressed(policyFailure); again = false; }
-        if (again) { retryableStreak++; lastRetryable = cause; }
-        return again;
-    }
+    /** Reports one drop; serialized, so DataErrorHandler sees one call at a time from whichever lane dropped. */
     void drop(Class<?> type, DataOperation operation, Object value, Throwable cause, int attempt) {
-        if (callFailure == null) callFailure = new DataSaveException("One or more accepted changes failed; see DataErrorHandler", cause);
-        if (lifetimeFailure == null) lifetimeFailure = callFailure;
-        failedBatches.increment();
-        try { handler.onError(failureOf(type, operation, List.of(value), cause, attempt)); }
-        catch (Throwable callbackFailure) { LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", callbackFailure); }
+        synchronized (reports) {
+            if (callFailure == null) callFailure = new DataSaveException("One or more accepted changes failed; see DataErrorHandler", cause);
+            if (lifetimeFailure == null) lifetimeFailure = callFailure;
+            failedBatches.increment();
+            try { handler.onError(failureOf(type, operation, List.of(value), cause, attempt)); }
+            catch (Throwable callbackFailure) { LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", callbackFailure); }
+        }
     }
     /** A log refused because its queue is full: reported on the inserting thread, not a save failure. */
     void rejectLog(Class<?> type, Object log, int capacity) {
         droppedLogs.increment();
-        try {
-            handler.onError(new DataFailure(FrameworkErrorCodes.DATA_LOG_SAVE_FAILED, type, DataOperation.LOG_INSERT,
-                    List.of(log), new DataOperationException("Log queue is full (" + capacity + " waiting)"), 0));
-        } catch (Throwable callbackFailure) { LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", callbackFailure); }
+        synchronized (reports) {
+            try {
+                handler.onError(new DataFailure(FrameworkErrorCodes.DATA_LOG_SAVE_FAILED, type, DataOperation.LOG_INSERT,
+                        List.of(log), new DataOperationException("Log queue is full (" + capacity + " waiting)"), 0));
+            } catch (Throwable callbackFailure) { LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", callbackFailure); }
+        }
     }
     private static DataFailure failureOf(Class<?> type, DataOperation operation, List<?> values, Throwable cause, int attempt) {
         return new DataFailure(operation == DataOperation.LOG_INSERT
@@ -315,30 +401,29 @@ final class WriteBehindManager {
      * the next pass, so quiesce the writers first for a stable barrier.
      */
     void flushNow() {
-        if (Thread.currentThread() == pipelineThread) throw new DataOperationException("Cannot flush from a persistence callback");
+        if (inPipeline()) throw new DataOperationException("Cannot flush from a persistence callback");
         ensureRunning();
-        int left;
+        Result result;
         DataSaveException dropped;
         synchronized (pipeline) {
-            callFailure = null;
+            synchronized (reports) { callFailure = null; }
             long budget = buffer.size();
-            do { left = flush(); budget -= claimedCount; }
-            while (left == 0 && claimedCount > 0 && budget > 0 && buffer.size() > 0);
-            dropped = callFailure;
+            do { result = flush(false, 0); budget -= result.claimed(); }
+            while (result.left() == 0 && result.claimed() > 0 && budget > 0 && buffer.size() > 0);
+            synchronized (reports) { dropped = callFailure; }
         }
         if (dropped != null) throw dropped;
-        if (left > 0) throw new DataSaveException(left + " changes remain pending after retryable failures", null);
+        if (result.left() > 0) throw new DataSaveException(result.left() + " changes remain pending after retryable failures", null);
     }
     /**
      * Stops admission, then saves in passes until nothing is pending or shutdownTimeout elapses; no save starts
      * after that deadline, and a pass that finds storage failing stops and is tried again after a flush
-     * interval. close therefore ends within shutdownTimeout plus the storage call in progress at the deadline.
+     * interval. close therefore ends within shutdownTimeout plus the storage calls in progress at the deadline.
      * What is still unsaved is then reported through DataErrorHandler with its entities — without another
      * attempt, so the application can dump it before the process is killed — and close throws (D-CLOSE-01).
      */
     void close() {
-        if (Thread.currentThread() == pipelineThread)
-            throw new DataOperationException("Cannot close GameData from a persistence callback");
+        if (inPipeline()) throw new DataOperationException("Cannot close GameData from a persistence callback");
         synchronized (this) {
             if (state == State.CLOSED) { if (lifetimeFailure != null) throw lifetimeFailure; return; }
             state = State.CLOSING;
@@ -348,21 +433,23 @@ final class WriteBehindManager {
             boolean interrupted = false;
             for (;;) {   // at least once, which also waits for a pass already running
                 long before = pendingCount();
-                int left = flush(true, deadline);
+                Result result = flush(true, deadline);
                 long remaining = pendingCount();
                 if (remaining == 0 || System.nanoTime() - deadline >= 0) break;
                 // A pass is bounded, so what it did not claim drains at once; only failures wait.
-                if (left == 0 && remaining < before) continue;
+                if (result.left() == 0 && remaining < before) continue;
                 try { TimeUnit.NANOSECONDS.sleep(Math.min(intervalNanos, Math.max(0, deadline - System.nanoTime()))); }
                 catch (InterruptedException e) { interrupted = true; break; }
             }
             synchronized (pipeline) {
-                pipelineThread = Thread.currentThread();
+                Thread current = Thread.currentThread();
+                pipelineThreads.add(current);
                 try {
                     state = State.CLOSED;
                     dropUnsaved();
-                } finally { pipelineThread = null; }
+                } finally { pipelineThreads.remove(current); }
             }
+            if (savers != null) savers.shutdown();
             if (interrupted) Thread.currentThread().interrupt();
             if (lifetimeFailure != null) throw lifetimeFailure;
         }

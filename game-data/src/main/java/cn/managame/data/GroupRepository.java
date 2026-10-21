@@ -7,6 +7,7 @@ import cn.managame.data.meta.EntityMeta;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 /**
  * Cached groups of entities sharing a {@code @GroupKeys}, each group a map by {@code @MapKey}. A group is loaded
@@ -68,6 +69,20 @@ public abstract class GroupRepository<K, E> {
         if (Objects.requireNonNull(mapKey).getClass() != meta.keyType())
             throw new DataOperationException("MapKey type mismatch");
         return group(key).entries.get(mapKey);
+    }
+    /**
+     * Applies {@code change} to the entity at {@code mapKey} of the group and records the update — one call, so
+     * changing an entity and saving it cannot come apart. Returns false and applies nothing when the group has
+     * no such entity. The change runs on the calling thread and must not alter the entity's keys (D-ID-02); if
+     * it throws, nothing is recorded, although whatever it changed before throwing stays in memory.
+     */
+    public final boolean update(GroupKeys key, K mapKey, Consumer<? super E> change) {
+        Objects.requireNonNull(change);
+        E entity = get(key, mapKey);
+        if (entity == null) return false;
+        change.accept(entity);
+        update(entity);
+        return true;
     }
     private static <G> G loaded(G group, GroupKeys key) {
         // The group was loaded (and touched) just before, so only an impossible idle eviction could get here.

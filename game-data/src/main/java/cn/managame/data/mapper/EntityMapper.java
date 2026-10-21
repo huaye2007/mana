@@ -4,6 +4,12 @@ import cn.managame.data.meta.EntityMeta;
 import cn.managame.data.key.GroupKeys;
 import java.util.List;
 
+/**
+ * Storage for state entities. Threads: loads come from whichever threads read repositories; the four batch
+ * methods come from the persistence pipeline, which may call them for different entity types at once (one table
+ * per save thread, D-WRITE-02) but never for one entity type from two threads at once. An implementation shared
+ * by several entity types must therefore be thread-safe across types.
+ */
 public interface EntityMapper {
     /**
      * Prepares this mapping and brings storage structure in line with it, as far as {@code schema} allows.

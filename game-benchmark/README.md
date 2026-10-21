@@ -38,6 +38,8 @@ those figures can be checked on another machine instead of only cited:
   the flag and without it.
 - What a producer rate above the drain rate does: peak and steady `DataStats.pendingChanges()`,
   `DataStats.flushes()` while the window runs, peak heap, and how many writes were accepted and refused.
+- What `saveParallelism` is worth: the same rows spread evenly over four tables (`bench_t1` to `bench_t4`),
+  INSERTed then UPDATEd at each value of `--parallelisms`, with the rewriting URL and the first batch size.
 
 A main class rather than a JMH benchmark, unlike the three above. JMH measures a steady state reached by
 repeating one operation; here the subject is what a whole pipeline does over seconds — passes completing, a
@@ -60,7 +62,8 @@ prints its options and exits without touching anything.
 | `--url` / `OGBS_BENCH_MYSQL_URL` | none; nothing runs without it | JDBC URL, including the database |
 | `--user` / `OGBS_BENCH_MYSQL_USER` | `root` | Database user |
 | `--password` / `OGBS_BENCH_MYSQL_PASSWORD` | empty | Database password |
-| `--phase` | `all` | `throughput`, `sweep` or `all` |
+| `--phase` | `all` | `throughput`, `sweep`, `tables` or `all` |
+| `--parallelisms` | `1,4` | `saveParallelism` values for the four-table phase |
 | `--rows` | 200,000 | Changes per operation in the throughput phase |
 | `--producers` | 4 | Writing threads, each on distinct ids so no change merges into another |
 | `--batch-sizes` | `500,2000` | `GameDataBuilder.batchSize` values to measure |
@@ -81,13 +84,15 @@ pipeline drains, and that is not one number: it is the lower of what the URL and
 interval. `--sweep-flush-ms` and `--max-pending` move that ceiling as much as the URL does.
 
 Every run ends in checks, not only in numbers: a throughput configuration verifies that the table holds
-exactly `rows` rows and that every one of them carries the updated value, and a sweep verifies after `close`
+exactly `rows` rows and that every one of them carries the updated value (summed over the four tables in the
+tables phase), and a sweep verifies after `close`
 that the table holds exactly as many rows as there were accepted changes. A mismatch fails the run.
 
 ### What it needs, and what it will not do
 
-- A real MySQL and a **disposable** database. The harness drops and recreates `bench_players`, and refuses to
-  start when the database holds any other table, so it cannot be aimed at a schema that matters.
+- A real MySQL and a **disposable** database. The harness drops and recreates `bench_players` and
+  `bench_t1` to `bench_t4`, and refuses to start when the database holds any other table, so it cannot be
+  aimed at a schema that matters.
 - Nothing else: no test executes against a database, so `mvn clean verify` and `mvn clean verify -Pquality`
   never open a connection. The opt-in MySQL tests in game-data are separate and read `OGBS_DATA_MYSQL_URL`.
 - The heap exhaustion the original run hit cannot be reproduced as it was, because `maxPendingChanges` now

@@ -28,8 +28,18 @@
 | 属性 | 默认值 | 边界 |
 | --- | --- | --- |
 | `game.data.schema` | `CREATE` | 启动允许对存储结构做什么（[Data Java §3](OGBS-Data-Java-25-Specification-1.0.zh-CN.md#3-构建与生命周期)、D-STORE-02）：`CREATE`、`VALIDATE` 或 `NONE`，大小写不敏感。它在 `GameDataConfigurer` Bean 之前应用，更了解自身存储的 configurer 仍可覆盖；取值不是这三者时 refresh 失败，抛 IllegalArgumentException 并列出这三个值 |
+| `game.data.flush-interval-millis` | Builder 默认值（1000） | `flushInterval` |
+| `game.data.batch-size` | Builder 默认值（500） | `batchSize` |
+| `game.data.save-parallelism` | Builder 默认值（4） | `saveParallelism`，同时保存的表数（D-WRITE-02） |
+| `game.data.cache-expire-millis` | Builder 默认值（1800000） | `cacheExpire` |
+| `game.data.max-cache-entries` | Builder 默认值（1000000） | `maxCacheEntries` |
+| `game.data.max-pending-changes` | Builder 默认值（100000） | `maxPendingChanges` |
+| `game.data.pending-change-wait-millis` | Builder 默认值（5000） | `pendingChangeWait` |
+| `game.data.log-queue-capacity` | Builder 默认值（100000） | `logQueueCapacity` |
 
-验证：[StoreSourceTest](../../game-spring/src/test/java/cn/managame/spring/data/StoreSourceTest.java) 覆盖没有任何 DataSource Bean 时由 EntityMapper Bean 承载状态、在打开任何 DataSource 之前就拒绝把 `@GameStateSource` 提供给日志，以及 `game.data.schema` 到达每个 Mapper（属性缺失时为 `CREATE`）；[DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖未标注的唯一 DataSource 同时服务两个存储。
+上面这些调优属性与 `game.data.schema` 一样，在 `GameDataConfigurer` Bean 之前应用，configurer 仍可覆盖；属性缺失时保留 Builder 的默认值（[Data Java §3](OGBS-Data-Java-25-Specification-1.0.zh-CN.md#3-构建与生命周期)）。Builder 拒绝的取值（例如 batch-size 为 0）让 refresh 失败，抛 IllegalArgumentException，并写明属性名与取值。
+
+验证：[StoreSourceTest](../../game-spring/src/test/java/cn/managame/spring/data/StoreSourceTest.java) 覆盖没有任何 DataSource Bean 时由 EntityMapper Bean 承载状态、在打开任何 DataSource 之前就拒绝把 `@GameStateSource` 提供给日志，`game.data.schema` 到达每个 Mapper（属性缺失时为 `CREATE`），以及调优属性到达 Builder、非法取值时点名该属性；[DataRepositoryRegistrationTest](../../game-demo/src/test/java/cn/managame/demo/DataRepositoryRegistrationTest.java) 覆盖未标注的唯一 DataSource 同时服务两个存储。
 
 `GameDataConfigurer.configure(GameDataBuilder)` Bean 在来源/Repository 配置后、build 前按 Spring 顺序执行，可配置 JSON codec、回写/错误策略，或把已发现的 Repository 改接到别的后端——这一点成立是因为指定了后端的注册会替换集成自己的注册。configurer 依赖不能要求正在构建的 Data/Repository。gameData 单例采用 destroyMethod="close"，借用全部来源，既不关闭应用连接池，也不关闭 Mapper 的客户端。
 

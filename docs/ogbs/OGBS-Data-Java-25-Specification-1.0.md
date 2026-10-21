@@ -29,6 +29,7 @@ One artifact contains repositories, caching, write-back, MySQL/JDBC, MongoDB and
 public abstract class SingleRepository<K, E> {
     public final E get(K key);
     public final E getOrCreate(K key, Function<? super K, ? extends E> factory);
+    public final boolean update(K key, Consumer<? super E> change);   // read, change and record in one step; false if absent
     public final void insert(E entity);
     public final void update(E entity);
     public final void delete(K key);
@@ -36,6 +37,7 @@ public abstract class SingleRepository<K, E> {
 public abstract class GroupRepository<K, E> {
     public final Map<K, E> getGroup(GroupKeys key);   // read-only live view
     public final E get(GroupKeys key, K mapKey);
+    public final boolean update(GroupKeys key, K mapKey, Consumer<? super E> change);
     public final void insert(E entity);
     public final void update(E entity);
     public final void delete(E entity);
@@ -48,6 +50,8 @@ public abstract class LogRepository<E> {
 
 A business repository directly extends one concrete parameterized base and has a no-argument constructor; intermediate generic repositories are unsupported. `build` creates it; obtain it with `data.repository(Players.class)`. One state repository per entity type. Single K is the boxed Id type; Group K is the boxed MapKey type, or String for a composite MapKey. Repositories are initialized only by the builder; extend EntityMapper for a custom backend.
 
+`update(key, change)` reads the entity on the calling thread (loading it when not cached), runs `change` and then records an UPDATE. It replaces the three steps "`get` → change → `update(entity)`", so a change can no longer be made and then never recorded. When the entity is absent, `change` does not run and the call returns false. When `change` throws, nothing is recorded, but fields it changed before throwing stay changed in memory. The Group variant's `change` must not change the entity's identity fields (D-ID-02).
+
 <a id="21-repository-直接持有依赖"></a>
 <a id="22-读写路径"></a>
 
@@ -59,7 +63,7 @@ Data has no asynchronous reads. On the default virtual-thread Route executor a s
 
 Writes are checked as soon as the key is cached: Single insert of an existing entity and update of a key cached as absent throw DataOperationException, and delete of an absent key does nothing; a key that is not cached is recorded as is, without reading storage to check it. Group writes load the group first and are therefore always checked: insert of an existing MapKey, update of a missing one, or update with an entity of another @Id throws; delete removes whatever entity holds the MapKey and does nothing when it is missing. `getOrCreate` records the factory's entity as an INSERT and caches it when none exists; the factory runs outside any lock, must return an entity whose @Id equals the key, and under contention the first recorder wins while the other caller gets the cached entity.
 
-The save thread reads entity fields while encoding (D-OWN-01). Collection fields that business code changes on its Route while the save thread may iterate them should be thread-safe collections (for example ConcurrentHashMap, CopyOnWriteArrayList, ConcurrentLinkedDeque), and scalar fields that need cross-thread visibility volatile or atomic; otherwise encoding may hit ConcurrentModificationException or observe a half-updated state. The framework takes no snapshot, by design, for performance.
+The save thread reads entity fields while encoding (D-OWN-01). Collection fields that business code changes on its Route while the save thread may iterate them should be thread-safe collections (for example ConcurrentHashMap, CopyOnWriteArrayList, ConcurrentLinkedDeque), and scalar fields that need cross-thread visibility volatile or atomic; otherwise encoding may hit ConcurrentModificationException or observe a half-updated state. The framework takes no snapshot, by design, for performance. So that this requirement shows up during development, MySQL mapping checks the initializer of every Collection/Map field at initialization. A field initialized with a java.util collection that is not thread-safe (HashMap, ArrayList and the like) logs one WARNING suggesting a replacement type; so does a field with no initializer, because a load fills it with one that is not. A ConcurrentModificationException met while encoding is retryable, and the next pass reads the entity again (D-ERROR-01).
 
 A mutation validates state and identity, passes the admission count (one CAS, no read-write lock), and then runs inside `EntityCache.update` for its key: the existence checks above run, `writer.record` coalesces the intent (an illegal sequence throws and leaves the cache unchanged), then the cache entry or group Map changes. Running the record inside the cache's per-key atomic update is what makes eviction safe (section 5.1). Recording is not a field transaction: fields changed directly before the call are not rolled back. deleteGroup records a primary-key DELETE for each current member, then clears the original Map.
 
@@ -90,7 +94,8 @@ try (GameData data = GameDataBuilder.builder()
 | --- | --- | --- |
 | cacheExpire | 30 min | Idle time before a clean entry is evicted; must exceed flushInterval |
 | flushInterval | 1 s | Target interval between persistence passes |
-| batchSize | 500 | Rows per batch. INSERT-heavy and UPDATE-heavy stores want different values ([§6.2](#62-batch-throughput-and-the-jdbc-url)) |
+| batchSize | 500 | Rows per batch ([§6.2](#62-batch-throughput-and-the-jdbc-url)) |
+| saveParallelism | 4 | Tables saved at once (D-WRITE-02). In each pass every entity type and every log repository is saved by one thread, and different tables run in parallel, each holding one connection. The DataSource pool should be larger than this plus the loads Routes run at the same time. 1 saves every table in turn on the persistence thread |
 | shutdownTimeout | 30 s | How long close may save (D-CLOSE-01): no save starts after it, and the changes and logs left are reported to DataErrorHandler with attempt 0 without another try; 0 means close saves nothing and reports at once. Under container integration it is set from the shutdown budget's reserved flush slice before the application's configurers run, so it defaults to that instead ([Spring §3.0](OGBS-Spring-Java-25-Specification-1.0.md#30-shutdown-budget)) |
 | retryPolicy | RetryPolicy.transientFailures() | true keeps a failed change for the next pass; false splits, drops and reports (section 5) |
 | errorHandler | System.Logger | Receives dropped changes; archive them here |
@@ -105,7 +110,7 @@ try (GameData data = GameDataBuilder.builder()
 | logQueueCapacity | 100,000 | Logs one LogRepository may hold waiting for storage. At the limit insert returns false, reports the log to DataErrorHandler on the inserting thread as a LOG_INSERT failure (attempt 0) and counts it in DataStats.droppedLogs; a refused log was never accepted and does not make close fail |
 | schema | SchemaMode.CREATE | What build may do to storage structure (D-STORE-02): CREATE creates what is missing and validates what exists, VALIDATE issues no DDL and fails on anything missing or too narrow, NONE reads no catalog. It reaches every Mapper through `EntityMapper.initialize`, including one the application supplied, and decides whether log partitions may be created at run time (only CREATE may), so this is the single place a deployment turns DDL off |
 
-repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore the defaults. A registration that names a backend replaces an earlier one for the same repository type that did not and keeps its position, which is how a container integration lets the application redirect a repository it had already discovered; any other repeat of a type is an IllegalArgumentException at the registration call. A repository still unbound when build runs fails with IllegalArgumentException naming what would bind it, mysql(DataSource) or an EntityMapper for state and logMysql(DataSource) or a MysqlAccess for logs, before any DataSource is opened. build validates repositories, identity and log mappings, then runs each state Mapper's `initialize(EntityMeta, SchemaMode)` with the configured mode (mapping and structure; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread.
+repositories(...) and logRepositories(...) accept classes or lists; overloads with an explicit EntityMapper or MysqlAccess ignore the defaults. A registration that names a backend replaces an earlier one for the same repository type that did not and keeps its position, which is how a container integration lets the application redirect a repository it had already discovered; any other repeat of a type is an IllegalArgumentException at the registration call. A repository still unbound when build runs fails with IllegalArgumentException naming what would bind it, mysql(DataSource) or an EntityMapper for state and logMysql(DataSource) or a MysqlAccess for logs, before any DataSource is opened. build validates repositories, identity and log mappings, then runs each state Mapper's `initialize(EntityMeta, SchemaMode)` with the configured mode (mapping and structure; executed DDL is not rolled back if a later step fails), then creates caches and starts one persistence thread, plus its save threads when saveParallelism is above 1.
 
 GameData closes only its own thread, never the DataSource, MongoClient or Mapper. close may wait for database calls; calling close or flush from a Mapper, RetryPolicy or DataErrorHandler callback is rejected to avoid deadlock. After close every repository operation throws DataOperationException.
 
@@ -130,7 +135,7 @@ public interface EntityMapper {
 
 <a id="41-身份编译与存储编译的分工"></a>
 
-EntityMeta holds identity and field access only; storage rules belong to each Mapper (an @Id without @Column is valid identity but rejected by MySQL mapping). A custom Mapper must keep entity types separate, never turn a load failure into absence, apply each batch atomically, and preserve causes.
+EntityMeta holds identity and field access only; storage rules belong to each Mapper (a transient @Id is valid identity but rejected by the MySQL and Mongo mappings, which must save it). A custom Mapper must keep entity types separate, never turn a load failure into absence, apply each batch atomically, and preserve causes.
 
 <a id="5-write-back-implementation-and-limits"></a>
 <a id="5-写回实现与适用边界"></a>
@@ -139,7 +144,7 @@ EntityMeta holds identity and field access only; storage rules belong to each Ma
 
 PendingBuffer keeps one `ConcurrentHashMap<id, Change>` per EntityMeta; a Change holds the operation and latest entity reference and compares by identity. `record` merges with one `compute` using the merge matrix of the standard, and keeps the count of distinct pending keys inside that per-key atomic operation, so `DataStats.pendingChanges` is exact and O(1) rather than a walk.
 
-Admission (D-WRITE-04). A repository calls the manager before its mutation, outside the shutdown barrier and outside any cache lock, so a waiting writer holds nothing: it returns at once when the dirty set is below maxPendingChanges or when that key is already pending (`containsKey`, a merge that adds no entry), otherwise it parks in 1 ms steps until a pass frees room, the component stops accepting (DataOperationException, so close is never delayed by a waiter), the thread is interrupted (DataOperationException, interrupt flag restored) or pendingChangeWait elapses (DataOperationException, counted in rejectedChanges). A caller that is the persistence thread itself — a Mapper or DataErrorHandler callback — never parks and is refused at once. `deleteGroup` records one change per member and is admitted as one call, so it may overshoot the bound by the size of the group, as concurrent writers may overshoot it by their number. Each pass claims an entry by conditional removal `pending.remove(id, change)`: a change recorded after the claim creates a new entry for the next pass, so nothing is lost between traversal and removal, and a single persistence thread keeps older changes of an id ahead of newer ones.
+Admission (D-WRITE-04). A repository calls the manager before its mutation, outside the shutdown barrier and outside any cache lock, so a waiting writer holds nothing: it returns at once when the dirty set is below maxPendingChanges or when that key is already pending (`containsKey`, a merge that adds no entry), otherwise it parks in 1 ms steps until a pass frees room, the component stops accepting (DataOperationException, so close is never delayed by a waiter), the thread is interrupted (DataOperationException, interrupt flag restored) or pendingChangeWait elapses (DataOperationException, counted in rejectedChanges). A caller that is running a lane itself — a Mapper or DataErrorHandler callback — never parks and is refused at once. `deleteGroup` records one change per member and is admitted as one call, so it may overshoot the bound by the size of the group, as concurrent writers may overshoot it by their number. Each pass claims an entry by conditional removal `pending.remove(id, change)`: a change recorded after the claim creates a new entry for the next pass, so nothing is lost between traversal and removal, and one table is saved by one thread per pass and passes never overlap, so older changes of an id stay ahead of newer ones.
 
 Failure handling. Mappers apply each batch atomically (MySQL in one transaction, Mongo by `_id` replacement), so a failed batch leaves no partial rows:
 
@@ -159,23 +164,32 @@ An entry is evicted when it has been idle for cacheExpire, or when the cache is 
 ### 5.2 One pass
 
 ```text
-for each EntityMeta:
-  claim up to the number pending for it right now (conditional remove), never more
-  group as DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize; save or classify failures
-logs: finite drain, batched per partition table, failures classified the same way
+each EntityMeta with pending changes and each LogRepository with queued logs is one lane,
+run in parallel on saveParallelism save threads (inline on the thread running the pass when
+there is one lane or the parallelism is 1):
+  entity lane: claim up to the number pending for it right now (conditional remove), never more
+               group as DELETE → DELETE_INSERT → INSERT → UPDATE, split by batchSize; save or classify failures
+  log lane:    finite drain, batched per partition table, failures classified the same way
+wait for every lane (uninterruptibly, so the next pass never overlaps a lane still saving)
 then evict cache entries over the bound, and idle clean ones when due
 next pass after max(0, interval − pass duration)
 ```
 
 The claim boundary is a count read once per entity type, as `LogRepository.drain` already did for logs: what is recorded while the pass runs waits for the next pass. A pass therefore costs at most what maxPendingChanges allows, which is what keeps its duration bounded and `flushes` moving while producers write. `GameData.flush()` repeats passes until it has claimed as much as was pending when it was called, and close repeats them within shutdownTimeout until no accepted change or log is left.
 
-After two retryable failures in a row a pass starts no further save (D-WRITE-05): changes of the current type that were claimed but not attempted go back to the buffer by the same path as a retryable failure, later entity types are not claimed and no more logs are dequeued, so nothing it did not attempt moves. The count resets when a pass starts, and on any successful save or non-retryable failure. A pass that stopped returns the whole pending count, which flush reports as `N changes remain pending`.
+A backend is one EntityMapper instance, or the storage of one log repository. After two retryable failures in a row on one backend within a pass, every lane using that backend starts no further save (D-WRITE-05). Changes of the current type that were claimed but not attempted go back to the buffer by the same path as a retryable failure. Lanes not yet started claim nothing, and no more logs are dequeued, so nothing the pass did not attempt moves. The count resets when a pass starts, and on any successful save or non-retryable failure. A pass that stopped returns the whole pending count, which flush reports as `N changes remain pending`.
 
-Periodic passes, explicit flush and close never run Mapper batches concurrently.
+One table is never saved by two threads at once, and passes never overlap. The thread contract follows from that:
+
+- EntityMapper's batch methods are called concurrently for different entity types, never for the same one. A Mapper shared by several entity types must therefore be thread-safe across types; the built-in MysqlEntityMapper and MongoEntityMapper are.
+- RetryPolicy may also be called concurrently.
+- DataErrorHandler calls are serialized by the component: one runs at a time, possibly on different save threads.
+
+Calling flush or close from a Mapper or Handler callback, or waiting there for room in the dirty set, is refused at once. The check is whether the current thread is running a lane.
 
 ### 5.3 RetryPolicy, errors and close
 
-RetryPolicy only chooses between keeping for the next pass and splitting/dropping; there is no immediate retry or backoff thread. A RetryPolicy that throws counts as non-retryable. DataErrorHandler receives only dropped changes and runs on the saving thread, for example to write them to a local dead-letter file. Retryable failures log one WARNING per pass.
+RetryPolicy only chooses between keeping for the next pass and splitting/dropping; there is no immediate retry or backoff thread. A RetryPolicy that throws counts as non-retryable. The default `transientFailures()` treats ConcurrentModificationException as retryable. Jackson's exceptions (`com.fasterxml.jackson.*`) are IOExceptions, but they mean the value cannot be encoded, so they are not retryable; their causes are still examined. DataErrorHandler receives only dropped changes, for example to write them to a local dead-letter file. It runs on one of the save threads, and its calls are serialized. Retryable failures log one WARNING per pass.
 
 An admission count orders shutdown against mutations in progress: each mutation enters and leaves with one CAS, and close sets the closing bit and waits for the count to reach zero. close switches to CLOSING, stops scheduling and saves in passes at flushInterval within shutdownTimeout until no change or log is pending; a pass past the deadline starts no save. It then switches to CLOSED and hands every change and log still unsaved to DataErrorHandler as its own failure (attempt 0, cause a DataOperationException saying close came first, whose cause is the latest retryable failure) without another try, so close ends within shutdownTimeout plus the one Mapper call in progress at the deadline. Any drop during the lifetime makes close throw DataSaveException; repeated calls report the same failure. How long that call in progress takes is up to the pool and driver timeouts, and a call that never returns blocks close; set timeouts in the pool or driver. Verified by [StorageOutageTest](../../game-data/src/test/java/cn/managame/data/StorageOutageTest.java).
 
@@ -187,23 +201,24 @@ An admission count orders shutdown against mutations in progress: each mutation 
 ```java
 @Table(name = "player_task", indexes = { @Index(name = "idx_role_task", columnList = "role_id, task_id") })
 public class Task {
-    @Id @Column private long id;
-    @GroupKey @Column private long roleId;
-    @MapKey @Column private long taskId;
-    @Column private int progress;
+    @Id private long id;
+    @GroupKey private long roleId;
+    @MapKey private long taskId;
+    private int progress;                 // no annotation needed (D-MAP-01)
 }
 ```
 
-Only @Column fields persist; Table.name is required. Names default to snake_case, use ASCII letters, digits and '_' (≤64 characters) and are quoted with backticks; long generated index names are truncated with a stable hash.
+Every non-static, non-transient, non-synthetic instance field is a column (D-MAP-01). `@Column` may be left out; it is needed only to rename a column (`name`), choose a type (`type`), or set a default (`defaultValue`) or a VARCHAR length (`length`). A final field fails initialization, with a message suggesting to drop final or mark the field transient. Table.name is required. Names default to snake_case, use ASCII letters, digits and '_' (≤64 characters) and are quoted with backticks; long generated index names are truncated with a stable hash.
 
 | Java (DEFAULT) | MySQL | Default |
 | --- | --- | --- |
 | byte / short / int / long | TINYINT / SMALLINT / INT / BIGINT | 0 |
 | float / double / boolean | FLOAT / DOUBLE / TINYINT | 0 |
-| char / String | CHAR(1) / VARCHAR(255) | '' |
+| char / String | CHAR(1) / VARCHAR(255), VARCHAR(n) with `@Column(length = n)` | '' |
 | byte[] | BLOB | none |
+| Anything else: collections, maps, enums, objects | JSON (through the JSON codec) | none |
 
-Primitives and identity columns are NOT NULL. TEXT accepts String only. JSON stores a String as raw JSON and other types through the JSON codec; BINARY passes byte[] through and needs a BinaryCodec for other types; DEFAULT rejects complex objects. `Column.defaultValue` is trusted raw DDL.
+Primitives and identity columns are NOT NULL. TEXT accepts String only. JSON stores a String as raw JSON and other types through the JSON codec; BINARY passes byte[] through and needs a BinaryCodec for other types. `length` applies only to a String column of type DEFAULT and fails initialization anywhere else; use `type = TEXT` for longer text. `Column.defaultValue` is trusted raw DDL.
 
 <a id="61-预编译和运行期工作"></a>
 
@@ -216,29 +231,42 @@ MysqlAccess offers queryOne (null for no row, MysqlException for several), query
 
 ### 6.2 Batch throughput and the JDBC URL
 
-The save rate is decided by the application's JDBC URL, not by this component. Connector/J merges a batch
-into one statement only with `rewriteBatchedStatements=true`; on the driver default each row of a
-`batchUpdate` is its own round trip, so a deployment that copies the configuration above and leaves the URL
-plain reaches a fraction of the rate the same code reaches with the flag on.
+On MySQL/MariaDB the component merges UPDATEs itself. A batch is split into multi-row statements of at most
+100 rows each (fewer for wide tables, to stay under 60,000 placeholders):
+`UPDATE t SET c = CASE id WHEN ? THEN ? … END, … WHERE id IN (?, …)`, one round trip each. When a statement
+matches fewer rows than it lists, the whole batch rolls back and fails, and is then split into single rows to
+find the missing one. `MysqlAccess.supportsMultiRowUpdate()` decides whether this path is taken. The default
+implementation returns false (one UPDATE per row). JdbcMysqlAccess reads connection metadata the first time
+it is needed and returns true when the database is MySQL or MariaDB. When the metadata cannot be read it
+answers false and does not remember the answer. The matched count relies on Connector/J's default
+"found rows" count: do not set `useAffectedRows=true` on the URL, or rows whose values did not change count
+as missing. 100 rows per statement is the middle of the flat region measured between 50 and 500. More rows
+make the server's cost for the CASE grow with the statement; fewer pay more round trips.
+
+INSERTs are still merged by the driver. Connector/J turns a batch into one multi-row `VALUES` only with
+`rewriteBatchedStatements=true`; otherwise each row is its own round trip. JdbcMysqlAccess checks this the
+first time it inspects the database and logs a WARNING when the flag is off. It asks Connector/J itself
+first, so a flag set as a DataSource property counts too.
 
 | Setting | INSERT | UPDATE | Why |
 | --- | --- | --- | --- |
-| `rewriteBatchedStatements=true` | ≈4.4× at batchSize 500, ≈7× at 2000 | ≈1.5× at 500, ≈1.1× at 2000 | Only INSERT rows merge into one multi-row `VALUES`, and the merged statement grows with the batch; `UPDATE … WHERE id=?` rows cannot become one statement and keep a round trip each |
-| batchSize 2000 instead of 500 | ≈1.7× faster | ≈0.67× slower | Larger INSERT statements amortise the round trip; larger UPDATE batches only hold one transaction open longer |
+| `rewriteBatchedStatements=true` | ≈4–6× at batchSize 500, ≈7× at 2000 | small (≈1.2× in one smaller run) | The driver merges INSERT rows into one multi-row `VALUES`; UPDATEs are already merged into multi-row statements by the component |
+| batchSize 2000 instead of 500 | ≈1.9× faster | ≈1.6× faster | Larger batches spread round-trip and transaction cost over more rows |
+| saveParallelism 4 instead of 1 (4 tables) | ≈2.6× faster | ≈2.6× faster | Different tables are saved at once on different connections |
 
 Set the flag on the URL the DataSource is built from
-(`jdbc:mysql://host:3306/game?rewriteBatchedStatements=true`) and pick batchSize from the write mix rather
-than assuming the default is best for both: 500 suits UPDATE-dominated state, an INSERT-dominated store
-prefers 2000. A remote database gains more than these ratios, which were measured over loopback, the
-smallest round trip there is. Opening a connection per batch instead of pooling costs between a few percent
-and about half the rate: the handshake is paid per batch and weighs most when the batch's own work is cheap,
-which is as true of a 2000-row INSERT the driver merged into one statement as of a small one. A pool is
-worth having, and it is what makes the flag worth setting: both multiplier columns were measured pooled, and
-without a pool the INSERT figure at 2000 falls to about 4–5× while the UPDATE ones disappear altogether
-(×0.9 to ×1.0 in both runs), so a deployment that sets the flag without pooling gains nothing on state writes.
-Conditions, absolute figures and the spread between runs, and the harness
-that re-measures them:
-[save-path load test](../reviews/2026-10-18-data-save-path-load-test.md), run with
+(`jdbc:mysql://host:3306/game?rewriteBatchedStatements=true`). batchSize defaults to 500; an
+INSERT-dominated store, or one table with a heavy write volume, can use 2000. A remote database gains more than
+these ratios, which were measured over loopback, the smallest round trip there is. Opening a connection per
+batch instead of pooling costs between a few percent and about half the rate. The handshake is paid per batch
+and weighs most when the batch's own work is cheap, which is as true of a 2000-row INSERT the driver merged
+into one statement as of a small batch. A pool is worth having, though it is not the bottleneck, and it is
+what makes the flag worth setting. Both multiplier columns above were measured pooled. Without a pool, the
+INSERT figure at 2000 falls to about 4–5× and the UPDATE ones disappear altogether (×0.9 to ×1.0 in both runs),
+so a deployment that sets the flag without pooling gains nothing on state writes.
+Conditions, absolute figures, the spread between runs, and the harness that re-measures them:
+[save-path load test](../reviews/2026-10-18-data-save-path-load-test.md) and
+[multi-row UPDATE and per-table parallelism](../reviews/2026-10-21-data-save-path-parallel.md), run with
 [DataSavePathLoad](../../game-benchmark/src/main/java/cn/managame/benchmark/DataSavePathLoad.java).
 
 <a id="default-json-field-binding"></a>
@@ -252,7 +280,7 @@ that re-measures them:
 
 ## 7. MongoDB mapping
 
-Collection.name is required; only @Field fields persist; the id is always `_id`. MongoIndex lists database field names, all ascending. `MongoAccess.initialize(String collection, List<IndexDefinition> indexes, SchemaMode schema)` is reached only with CREATE or VALIDATE — under NONE the Mapper compiles the mapping and asks the Access nothing — and `DriverMongoAccess` tolerates MongoCommandException 48 (NamespaceExists) from a concurrent `createCollection`, while an identical `createIndex` is accepted again and needs no such case. MongoEntityMapper takes a MongoDatabase or a MongoAccess; DriverMongoAccess uses the database's CodecRegistry (scalars, byte[], collections and Map with String/Integer/Long keys; register codecs for other classes). Loading uses the no-argument constructor; missing fields keep constructor defaults.
+Collection.name is required. Every non-static, non-transient instance field is saved (D-MAP-01); `@Field` may be left out and is only used to rename a field. The id is always `_id`. MongoIndex lists database field names, all ascending. `MongoAccess.initialize(String collection, List<IndexDefinition> indexes, SchemaMode schema)` is reached only with CREATE or VALIDATE — under NONE the Mapper compiles the mapping and asks the Access nothing — and `DriverMongoAccess` tolerates MongoCommandException 48 (NamespaceExists) from a concurrent `createCollection`, while an identical `createIndex` is accepted again and needs no such case. MongoEntityMapper takes a MongoDatabase or a MongoAccess; DriverMongoAccess uses the database's CodecRegistry (scalars, byte[], collections and Map with String/Integer/Long keys; register codecs for other classes). Loading uses the no-argument constructor; missing fields keep constructor defaults.
 
 | Intent | MySQL | MongoDB |
 | --- | --- | --- |
@@ -318,8 +346,14 @@ DataOperation (INSERT, UPDATE, DELETE, DELETE_INSERT, LOG_INSERT) is the coalesc
 | State and logs are separate stores; neither is derived from the other | StoreBindingTest.logsNeverFallBackToTheStateSource / separateSourcesKeepLogRowsOutOfTheStateDatabase |
 | MongoDB state and MySQL logs in one GameData | StoreBindingTest.mongoStateAndMysqlLogsAreIndependentStores |
 | Naming a backend replaces an implicit registration; other repeats stay duplicates | StoreBindingTest.namingABackendReplacesAnEarlierImplicitRegistration / repeatsThatAreNotRedirectionsStayDuplicates |
+| `update(key, change)` loads, changes and records in one call | DataContractTest.updateWithAChangeLoadsChangesAndRecordsInOneCall |
+| Tables are saved in parallel, one table never by two threads; drops reach the handler one at a time; an outage stops every table of that storage | ParallelSaveTest |
+| A pass stops after two retryable failures; close during an outage ends within its timeout and hands over everything | StorageOutageTest |
+| Every instance field is a column without annotations; unsafe collections are named at startup | MysqlMappingTest.everyInstanceFieldIsAColumnWithoutAnnotations / collectionsTheSaveThreadCannotReadSafelyAreNamedAtStartup |
+| Multi-row UPDATE: statement shape and arguments, 100-row statements, fewer rows for wide tables, a missing row failing with 02000 | MysqlMappingTest.multiRowUpdatesListEveryRowOnceAndFailTheBatchWhenOneIsMissing |
+| Multi-row UPDATE on a real MySQL, and a missing row failing the whole statement with 02000 | DatabaseIntegrationTest.mysqlServerSchemaRoundTripAndRollback |
 
-Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) runs against real servers when `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` are set and is skipped otherwise; the CI `database` job sets both against MySQL 8.4 and MongoDB 7 service containers and fails if the tests are skipped. Live MySQL is verified for schema round trips and for the bounds under a flood of unthrottled producers ([load test](../reviews/2026-10-18-data-save-path-load-test.md)); MongoDB behaviour, production performance and long outages are unverified.
+Verified with in-memory Mappers, H2 in MySQL mode and a recording MongoAccess. [DatabaseIntegrationTest](../../game-data/src/test/java/cn/managame/data/DatabaseIntegrationTest.java) runs against real servers when `OGBS_DATA_MYSQL_URL` / `OGBS_DATA_MONGO_URI` are set and is skipped otherwise; the CI `database` job sets both against MySQL 8.4 and MongoDB 7 service containers and fails if the tests are skipped. Live MySQL is verified for schema round trips, multi-row UPDATE and the bounds under a flood of unthrottled producers ([load test](../reviews/2026-10-18-data-save-path-load-test.md), [multi-row UPDATE and per-table parallelism](../reviews/2026-10-21-data-save-path-parallel.md)); MongoDB behaviour, production performance and long outages are unverified.
 
 <a id="11-explicit-flush-and-datastats"></a>
 <a id="11-显式-flush-与-datastats"></a>

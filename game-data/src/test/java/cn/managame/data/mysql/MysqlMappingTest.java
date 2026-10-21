@@ -20,7 +20,7 @@ class MysqlMappingTest {
         @MapKey @Column long taskId;
         @Column int progress;
         @Column String description;
-        String ignored;
+        transient String ignored;   // transient is what keeps a field out (D-MAP-01)
     }
     @Table(name="complex")
     static class Complex extends Base {
@@ -80,6 +80,98 @@ class MysqlMappingTest {
         assertEquals(30,((Task)mapper.load(meta,1L)).progress);
         mapper.deleteBatch(meta,List.of(1L)); assertNull(mapper.load(meta,1L));
         assertTrue(access.ddl.stream().anyMatch(s -> s.startsWith("CREATE INDEX")));
+    }
+    @Table(name="plain")
+    static class Plain {
+        @Id long id;
+        int level; String name; @Column(length=32) String tag;
+        Map<Integer,Long> items = new java.util.concurrent.ConcurrentHashMap<>();
+        transient int cachedPower; static int instances;
+    }
+    @Table(name="final_field")
+    static class FinalField { @Id long id; final List<Long> ids = new ArrayList<>(); }
+    @Table(name="bad_length")
+    static class BadLength { @Id long id; @Column(length=10) int level; }
+    private static MysqlFieldMeta column(MysqlEntityMeta mapping, String name) {
+        return mapping.fields.stream().filter(f -> f.name.equals(name)).findFirst().orElseThrow();
+    }
+    @Test void everyInstanceFieldIsAColumnWithoutAnnotations() {
+        var mapping = new MysqlEntityMeta(new EntityMeta(Plain.class,EntityMeta.Kind.SINGLE),null,null);
+        // Forgetting an annotation can no longer leave a field unsaved; transient and static stay out (D-MAP-01).
+        assertEquals(Set.of("id","level","name","tag","items"), mapping.fields.stream().map(f -> f.name).collect(java.util.stream.Collectors.toSet()));
+        assertEquals("BIGINT", column(mapping,"id").sqlType); assertEquals("INT", column(mapping,"level").sqlType);
+        assertEquals("VARCHAR(255)", column(mapping,"name").sqlType); assertEquals("VARCHAR(32)", column(mapping,"tag").sqlType);
+        assertEquals("JSON", column(mapping,"items").sqlType);   // a collection needs no type to be stored
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> new MysqlEntityMeta(new EntityMeta(FinalField.class,EntityMeta.Kind.SINGLE),null,null));
+        assertTrue(failure.getMessage().contains("transient"), failure.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> new MysqlEntityMeta(new EntityMeta(BadLength.class,EntityMeta.Kind.SINGLE),null,null));
+    }
+    /** Takes the multi-row path, records each statement, and matches every listed row but {@code missing}. */
+    static final class MultiRowAccess implements MysqlAccess {
+        final List<String> sql = new ArrayList<>(); final List<Object[]> args = new ArrayList<>();
+        int missing;
+        static int rows(String statement) {
+            return (int) statement.substring(statement.indexOf(" IN (")).chars().filter(c -> c == '?').count();
+        }
+        @Override public boolean supportsMultiRowUpdate() { return true; }
+        public int update(String s,Object[] a) { sql.add(s); args.add(a); return rows(s) - missing; }
+        public <T> T queryOne(String s,Object[] a,RowMapper<T> m) { throw new UnsupportedOperationException(s); }
+        public <T> List<T> query(String s,Object[] a,RowMapper<T> m) { throw new UnsupportedOperationException(s); }
+        public int[] batchUpdate(String s,List<Object[]> a) { throw new UnsupportedOperationException(s); }
+        public <T> T transaction(TransactionAction<T> action) {
+            try { return action.execute(this); }
+            catch (RuntimeException e) { throw e; }
+            catch (Exception e) { throw new IllegalStateException(e); }
+        }
+    }
+    @Table(name="scores")
+    static class Score {
+        @Id long id; int points; String note;
+        Score() {}
+        Score(long id,int points) { this.id=id; this.points=points; note="n"+id; }
+    }
+    @Test void multiRowUpdatesListEveryRowOnceAndFailTheBatchWhenOneIsMissing() {
+        var access = new MultiRowAccess(); var mapper = new MysqlEntityMapper(access);
+        var meta = new EntityMeta(Score.class,EntityMeta.Kind.SINGLE); mapper.initialize(meta,SchemaMode.NONE);
+        mapper.updateBatch(meta,List.of(new Score(1,10),new Score(2,20)));
+        assertEquals(List.of("UPDATE `scores` SET `points` = CASE `id` WHEN ? THEN ? WHEN ? THEN ? END, "
+                + "`note` = CASE `id` WHEN ? THEN ? WHEN ? THEN ? END WHERE `id` IN (?, ?)"), access.sql);
+        assertArrayEquals(new Object[]{1L,10,2L,20,1L,"n1",2L,"n2",1L,2L}, access.args.getFirst());
+        access.sql.clear();
+        var many = new ArrayList<Score>(); for (long id=1; id<=250; id++) many.add(new Score(id,1));
+        mapper.updateBatch(meta,many);
+        assertEquals(List.of(100,100,50), access.sql.stream().map(MultiRowAccess::rows).toList());
+        access.missing = 1;   // a row that is not stored fails the statement, so the pipeline splits the batch
+        var failure = assertThrows(MysqlException.class,()->mapper.updateBatch(meta,many.subList(0,3)));
+        assertEquals("02000", failure.sqlState());
+        // A wide table takes fewer rows per statement, so one statement stays under the placeholder limit.
+        assertEquals(100, MysqlEntityMeta.updateRows(299)); assertEquals(99, MysqlEntityMeta.updateRows(300));
+        assertEquals(1, MysqlEntityMeta.updateRows(40_000));
+    }
+    @Table(name="unsafe")
+    static class Unsafe { @Id long id; List<Long> ids = new ArrayList<>(); Map<Integer,Integer> counts; }
+    @Test void collectionsTheSaveThreadCannotReadSafelyAreNamedAtStartup() {
+        var logger = java.util.logging.Logger.getLogger(MysqlEntityMeta.class.getName());
+        var warnings = new ArrayList<String>();
+        var handler = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord record) {
+                if (record.getLevel() == java.util.logging.Level.WARNING) warnings.add(record.getMessage());
+            }
+            @Override public void flush() {}
+            @Override public void close() {}
+        };
+        logger.addHandler(handler);
+        try {
+            new MysqlEntityMeta(new EntityMeta(Unsafe.class,EntityMeta.Kind.SINGLE),null,null);
+            assertEquals(2, warnings.size(), warnings.toString());
+            assertTrue(warnings.stream().anyMatch(w -> w.startsWith("Unsafe.ids is a java.util.ArrayList")), warnings.toString());
+            assertTrue(warnings.stream().anyMatch(w -> w.startsWith("Unsafe.counts is not initialized")), warnings.toString());
+            warnings.clear();
+            new MysqlEntityMeta(new EntityMeta(Plain.class,EntityMeta.Kind.SINGLE),null,null);   // a ConcurrentHashMap
+            assertEquals(List.of(), warnings);
+        } finally { logger.removeHandler(handler); }
     }
     @Test void schemaAddsOnlyMissingColumnsAndExplicitIndexes() {
         var access = new Access();
