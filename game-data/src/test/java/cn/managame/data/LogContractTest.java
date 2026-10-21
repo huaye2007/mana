@@ -1,6 +1,7 @@
 package cn.managame.data;
 
 import cn.managame.data.error.*;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.mysql.*;
 import org.junit.jupiter.api.Test;
 import java.time.*;
@@ -79,6 +80,15 @@ class LogContractTest {
         data.close();
         assertEquals(List.of("CREATE TABLE IF NOT EXISTS `actions_202610` LIKE `actions`"),access.ddl);
         assertEquals(1,access.batches.size());
+    }
+    @Test void withoutCreateAMissingPartitionIsASaveFailureAndNoDdlIsIssued() {
+        var access=new Access(); access.tables=new HashSet<>(Set.of("actions")); var failures=new ArrayList<DataFailure>();
+        var data=GameDataBuilder.builder().logRepositories(access,Logs.class).schema(SchemaMode.VALIDATE)
+                .errorHandler(failures::add).build();
+        data.repository(Logs.class).insert(new Log(1,Instant.parse("2026-10-11T00:00:00Z").toEpochMilli(),"a"));
+        assertThrows(DataSaveException.class,data::close);
+        assertTrue(access.ddl.isEmpty());                    // the deployment owns partitions under VALIDATE
+        assertEquals(1,failures.size()); assertEquals(DataOperation.LOG_INSERT,failures.getFirst().operation());
     }
     @Test void partitionTimezoneAndInvalidSuffix() {
         var access=new Access();

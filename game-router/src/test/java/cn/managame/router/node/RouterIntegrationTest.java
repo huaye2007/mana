@@ -310,6 +310,29 @@ class RouterIntegrationTest {
             }
         } finally { p1.release(); p2.release(); }
     }
+    @Test void aNodeStaysOnItsConnectedRouterWhenALowerOneComesUp() throws Exception {
+        Probe p1 = new Probe(), p2 = new Probe(); p2.echo = true;
+        try (RouterFixture a = new RouterFixture(101); RouterFixture b = new RouterFixture(102)) {
+            mesh(a, b);
+            try (NodeFixture n1 = node(1, 1, p1, a); NodeFixture n2 = node(2, 2, p2, b)) {
+                // A lower Router becomes available while n2's Router is still up: moving now would bring the
+                // responses of calls in flight on B back through A, where nothing waits for them.
+                n2.connect(a.id(), a.rpc.localAddress());
+                await(() -> n2.rpc.isPeerConnected(a.id()));
+                Thread.sleep(500);                               // several attachment ticks
+                assertTrue(b.routing.isAttached(2)); assertFalse(a.routing.isAttached(2));
+                n1.routing.callNode(2, new RpcRequest(8, null), v -> {});
+                assertEquals(0, take(p1.responses).error());
+                assertEquals(102, take(p2.requests).routerId());
+                // Only losing its Router makes the Node choose again.
+                n2.rpc.removePeer(b.id());
+                await(() -> a.routing.isAttached(2));
+                n1.routing.callNode(2, new RpcRequest(9, null), v -> {});
+                assertEquals(0, take(p1.responses).error());
+                assertEquals(101, take(p2.requests).routerId());
+            }
+        } finally { p1.release(); p2.release(); }
+    }
     @Test void aRouterNoLongerInUseIsToldAgainToForgetTheNode() throws Exception {
         Probe p1 = new Probe(), p2 = new Probe();
         try (RouterFixture a = new RouterFixture(101); NodeFixture n1 = node(1, 1, p1, a); NodeFixture n2 = node(2, 2, p2, a)) {

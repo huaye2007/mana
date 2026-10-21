@@ -298,7 +298,7 @@ Calls comprise target Route, computation, and callback. They support local colla
 
 **RT-CALL-05**: Callback exceptions only report execution error; never invoke failure callback recursively.
 
-**RT-CALL-06**: If source executor closes/overloads, report ROUTE_CALLBACK_DISPATCH_FAILED. Never execute the callback on the wrong Route. Callback delivery is not guaranteed then.
+**RT-CALL-06**: A return to the source — a cross-Route call's completion or an explicitly captured continuation (RT-CALL-05) — is the second half of work the source Route itself started, and admitting it is not subject to executor capacity: an overloaded source executor must still accept it, queued behind the Route's existing tasks in submission order; once accepted it counts toward capacity like any task, so later ordinary submissions see it. Rationale: the target side has already run, so refusing the return discards the result of a side effect that already happened rather than shedding load — logic that debits there and credits here would lose its pairing exactly under high load. Their number never exceeds the calls and captures the Route has started and not had back, each of which passed admission when it began. Only a closed executor may refuse a return; then report ROUTE_CALLBACK_DISPATCH_FAILED, never execute the callback on the wrong Route, and do not guarantee delivery. An executor that offers no continuation admission treats returns as ordinary submissions and reports the same error when full; the language binding defines the default.
 
 Source may process tasks before completion. No atomic cross-Route state update. Business failure uses result objects; framework failures use framework codes.
 

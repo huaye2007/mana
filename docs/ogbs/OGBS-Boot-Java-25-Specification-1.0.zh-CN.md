@@ -35,7 +35,7 @@
 
 接缝处的所有权。回调注册**之前**的序列化或绑定失败只抛异常，不占用任何资源。当 `RpcNode` 在注册**之后**同步抛出时，适配器用 `CapturedRouteCallback.cancel()` 释放占用并重新抛出，因此调用方只被告知一次，也不会遗留被占用的续体。这个只传对象的回调不暴露响应 Metadata；需要传输信封的应用使用裸 `RpcNode`。
 
-入站。Call 与 Notify 的命令查找都使用 `ProtocolDescriptor.Type.REQUEST`；Notify 即 `requestId` 为零，而不是另行注册。解码后的请求把来源 Node/Slot、命令、`requestId`、Route Key、业务身份与收到的确切 Metadata 传给 `runtime.dispatchRpc`，由它按 Handler 声明选择 Domain。未知命令、编解码异常以及同步的准入、签名或 Key 失败，对 Call 走 `RpcHandler` 的 `HANDLER_ERROR` 策略，对 Notify 走仅记录日志的策略。
+入站。Call 与 Notify 的命令查找都使用 `ProtocolDescriptor.Type.REQUEST`；Notify 即 `requestId` 为零，而不是另行注册。解码后的请求把来源 Node/Slot、命令、`requestId`、Route Key、业务身份与收到的确切 Metadata 传给 `runtime.dispatchRpc`，由它按 Handler 声明选择 Domain。`dispatchRpc` 抛出的 `RuntimeDispatchException`（准入关闭、过载、Domain/Key 非法、无 Handler）对 Call 以 `errorCode()` 立即经 `RpcNode.reply` 回复，空响应体、空 Metadata，Handler 不运行（B-RPC-04）；对 Notify 重新抛出，由 `RpcNode` 记录日志。未知命令、编解码异常以及参数签名绑定失败，对 Call 仍走 `RpcHandler` 的 `HANDLER_ERROR` 策略，对 Notify 走仅记录日志的策略。验证见 [BootRpcCompositionTest](../../game-boot/src/test/java/cn/managame/boot/rpc/BootRpcCompositionTest.java) 的 `aCallRuntimeRefusedIsAnsweredWithTheRefusalNotAsAHandlerError`。
 
 `GameRpcCodec` 暴露 `byte[] encode(Object)` 与 `<T> T decode(byte[], Class<T>)`，外加默认方法 `ByteBuf encode(Object, ByteBufAllocator)` 与 `<T> T decode(ByteBuf, Class<T>)`。适配器只调用 ByteBuf 形式，其默认实现包装或拷贝后委托给数组形式；可以覆写它们以直接编码进（池化）缓冲，并从收到的帧解码而省去中间拷贝。传给 ByteBuf 解码的 body 是**借用**的，结果不得引用它。编解码器必须支持传输线程与 Route 线程并发调用，返回确切注册类型的非 null 值，并返回与传输缓冲生命周期无关的数组与对象。出站数组在返回后归适配器所有，不得再修改或复用。解码在准入之前同步进行，因此慢解码会拖慢传输 EventLoop。业务序列化是应用策略；框架不定义格式。
 

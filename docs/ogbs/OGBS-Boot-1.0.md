@@ -26,6 +26,8 @@ For example, the RPC adapter of §2 calls all four configurer hooks itself. An e
 
 **B-RPC-03**: The adapter owns the Node it builds. Composition hooks run in one declared order: adjust transport settings, then wrap the adapter's own handler, then, after build and before start, attach. Detach runs in reverse order before the Node closes. A failing attach MUST detach what already attached, in reverse, and close the unstarted Node, so a half-attached Node is never handed back. Closing is idempotent. The adapter replaces any handler a hook installed, because dispatch into Runtime is the thing the adapter is for; a hook that needs to see traffic wraps the handler instead.
 
+**B-RPC-04**: When Runtime refuses an inbound Call before executing it — admission closed, executor overloaded, invalid Domain or Route Key, no Handler — the adapter MUST answer at once with that refusal's own framework error code, not with a generic handler error. Rationale: a refused request never ran, so the caller may safely retry it on another instance, which it may not do after "ran and failed". During rolling restarts and overload this is exactly the distinction a caller needs, and a generic handler error erases it. An inbound Notify has nobody to tell, and its refusal is recorded only as a diagnostic. Unknown commands, decode failures and argument-binding failures are not Runtime's pre-execution refusals and keep RPC's handler-error policy.
+
 For example, a service-role routing layer wraps the adapter's handler, receives it as its own direct handler, starts against the built Node in attach and closes in detach. Routed requests then reach the routing layer rather than Runtime dispatch, and how they enter Runtime afterwards is application code.
 
 ## 3. Shutdown budget

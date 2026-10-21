@@ -20,6 +20,7 @@ import java.util.stream.Collectors;
  * missing or too narrow fails the startup that found it. NONE reads nothing, not even the catalog.
  */
 final class MysqlSchema {
+    private static final System.Logger LOG = System.getLogger(MysqlSchema.class.getName());
     /** Each of these means another instance applied the same structure first; see the class note. */
     private static final int TABLE_EXISTS = 1050, DUPLICATE_COLUMN = 1060, DUPLICATE_INDEX = 1061;
     private static final String TABLE_EXISTS_STATE = "42S01", DUPLICATE_COLUMN_STATE = "42S21";
@@ -94,6 +95,30 @@ final class MysqlSchema {
             if (!applied(() -> access.update(createIndex(meta.table, index), NO_ARGS), DUPLICATE_INDEX, null))
                 match(meta.table, index, statistics(access, meta.table).getOrDefault(key(index.name()), List.of()));
         }
+        warnUnindexedGroup(meta, actual);
+    }
+
+    /**
+     * A group load filters on every GroupKey column, all by equality, so it needs an index whose leading columns
+     * are exactly those, in any order. Without one each load scans the table. That is not an error — a small
+     * table is fine, and GroupKey implies no index (D-STORE) — but it is the usual reason group loads slow down as
+     * a table grows, so the startup that can see it says so.
+     */
+    private static void warnUnindexedGroup(MysqlEntityMeta meta, Map<String, List<IndexRow>> actual) {
+        if (meta.groups.isEmpty()) return;
+        Set<String> group = meta.groups.stream().map(field -> key(field.name)).collect(Collectors.toSet());
+        for (List<IndexRow> rows : actual.values())
+            if (leads(group, rows.stream().sorted(Comparator.comparingInt(IndexRow::position)).map(row -> key(row.column())).toList())) return;
+        for (MysqlEntityMeta.IndexMeta index : meta.indexes)
+            if (leads(group, index.columns().stream().map(MysqlSchema::key).toList())) return;
+        String columns = meta.groups.stream().map(field -> field.name).collect(Collectors.joining(","));
+        LOG.log(System.Logger.Level.WARNING, "Group loads of " + meta.table + " filter on (" + columns
+                + ") and no index starts with those columns, so every group load scans the table;"
+                + " declare @Index(columnList = \"" + columns + "\")");
+    }
+
+    private static boolean leads(Set<String> group, List<String> columns) {
+        return columns.size() >= group.size() && new HashSet<>(columns.subList(0, group.size())).equals(group);
     }
 
     private static String createIndex(String table, MysqlEntityMeta.IndexMeta index) {

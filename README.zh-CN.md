@@ -73,7 +73,7 @@ mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/targe
 
 同一个模块还放着可选的 game-data 保存路径压测驱动：它需要真实 MySQL 与一个可丢弃的库，构建从不运行它，命令行与选项见 [game-benchmark](game-benchmark/README.zh-CN.md#data-保存路径压测)。
 
-CI（`.github/workflows/ci.yml`）在 JDK 25 上运行 `mvn clean verify` 与质量检查。
+CI（`.github/workflows/ci.yml`）在 JDK 25 上运行 `mvn clean verify` 与质量检查；`database` 任务在 MySQL 8.4 与 MongoDB 7 服务容器上运行 game-data 的 `DatabaseIntegrationTest`，这些测试被跳过时任务失败。
 
 当前根构建包含 game-core、game-network、game-rpc、game-router、game-runtime、game-data、game-boot、game-spring、game-demo、game-benchmark。[game-demo 应用](game-demo/README.zh-CN.md) 通过普通 Spring Context 初始化应用持有的 MySQL DataSource/Data Repository，并提供 TCP 分发和 [HTTP/定时/cron 示例](game-demo/README.zh-CN.md#demo-runtime-services)，可用 `mvn -pl game-demo -am clean verify` 构建。独立可运行示例及其执行测试统一放在 game-demo 的 `cn.managame.demo.examples.<component>` 包中，框架 artifact 不包含示例类。使用 mvn -pl game-demo -am test 验证示例。RPC→Runtime 适配器位于 game-boot，不需要容器；game-spring 负责接线。Data 使用由 Spring 应用演示。
 
@@ -152,7 +152,7 @@ RPC 已提供 RpcNode Builder、自管 TCP Server/Client、时间轮、多 Slot�
 
 - 没有预置业务 RouteDomain。每个已注册 Domain 必须且只能绑定一个 RouteExecutor；允许多个 Domain 共享执行器。
 - `build()` 完成校验并立即可用。注册表冻结；不提供运行期动态注册。
-- `runtime.call()` 必须在该 Runtime 的 Context 内调用。成功和失败回调都回原 Route、恢复原 Context；返回 Route 已拒绝时只报告错误，不在别的 Route 上执行回调。
+- `runtime.call()` 必须在该 Runtime 的 Context 内调用。成功和失败回调都回原 Route、恢复原 Context；回调不受原 Route 的队列容量限制，原 Route 过载时照样送达，只有执行器已关闭时才只报告错误，且不在别的 Route 上执行回调。
 - 同 Route 串行不等于异步调用期间锁住实体。跨 Route 返回值应为不可变结果、快照或独立 DTO。
 - Metadata 的 `byte[]` 按不可变约定共享。Wire 为 `uint16 key + uint16 length + bytes`，不含类型字段。读取时才调用 Key 的 codec。
 - Java RPC body 使用 ByteBuf；入站回调内借用，异步使用必须 retain/copy。出站通过校验后接管一个引用，编码时不超过 2 KiB 的 body 复制进帧、更大的直接引用，写出后释放 body。

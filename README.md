@@ -77,7 +77,7 @@ mvn -pl game-benchmark -am package -DskipTests && java -jar game-benchmark/targe
 
 The same module holds the opt-in game-data save path load driver, which needs a real MySQL and a disposable database and is never run by the build; its command line and options are in [game-benchmark](game-benchmark/README.md#data-保存路径压测).
 
-CI (`.github/workflows/ci.yml`) runs `mvn clean verify` and the quality checks on JDK 25.
+CI (`.github/workflows/ci.yml`) runs `mvn clean verify` and the quality checks on JDK 25, and a `database` job runs game-data's `DatabaseIntegrationTest` against MySQL 8.4 and MongoDB 7 service containers, failing if those tests are skipped.
 
 The root build includes game-core, game-network, game-rpc, game-router, game-runtime, game-data, game-boot, game-spring, game-demo, and game-benchmark. The [game-demo application](game-demo/README.md) initializes a plain Spring context and application-owned MySQL DataSource/Data repositories, with TCP dispatch and [HTTP/timer/cron examples](game-demo/README.md#demo-runtime-services); build it with `mvn -pl game-demo -am clean verify`. All standalone runnable examples and their execution tests live in game-demo, under `cn.managame.demo.examples.<component>`; framework artifacts contain no example classes. Run mvn -pl game-demo -am test to validate the examples. The RPC→Runtime adapter is in game-boot and needs no container; game-spring wires it. Data usage is demonstrated by the Spring application.
 
@@ -166,7 +166,7 @@ RPC provides RpcNode Builder, owned TCP Server/Client, a timer wheel, multiple s
 
 - No business RouteDomain is predefined. Each registered Domain must bind exactly one RouteExecutor; multiple Domains may share an executor.
 - `build()` validates and makes Runtime immediately usable. Registries are frozen; runtime registration is unsupported.
-- `runtime.call()` must run inside that Runtime's Context. Success/failure callbacks return to the original Route and restore its Context. If that Route rejects dispatch, report the error without invoking the callback on another Route.
+- `runtime.call()` must run inside that Runtime's Context. Success/failure callbacks return to the original Route and restore its Context. A callback is not subject to that Route's queue capacity, so it arrives even while the Route is overloaded; only a closed executor refuses it, which is reported without invoking the callback on another Route.
 - Same-Route serialization does not lock an entity across asynchronous work. Cross-Route results should be immutable values, snapshots, or independent DTOs.
 - Metadata shares `byte[]` by immutable-use convention. Wire format is `uint16 key + uint16 length + bytes`, with no type field. The Key codec runs only on reads.
 - RPC bodies use ByteBuf. Inbound callbacks borrow them; asynchronous use requires retain/copy. Outbound validation transfers one reference; encoding copies bodies up to 2 KiB into the frame and references larger ones, releasing the body after the write.

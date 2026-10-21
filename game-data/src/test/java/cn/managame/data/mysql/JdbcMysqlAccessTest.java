@@ -36,6 +36,27 @@ class JdbcMysqlAccessTest {
         }));
         assertEquals(Long.valueOf(1),access.<Long>queryOne("SELECT COUNT(*) FROM entry",new Object[0],r -> r.getLong(1)));
     }
+    @Test void aCommittedTransactionStaysSuccessfulWhenConnectionCleanupFails() throws Exception {
+        var h2 = new JdbcDataSource(); h2.setURL("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
+        var loader = getClass().getClassLoader();
+        // Restoring autoCommit after the commit fails, as it does on a connection that broke right after it.
+        javax.sql.DataSource source = (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(loader,
+                new Class<?>[]{javax.sql.DataSource.class}, (proxy, method, args) -> {
+                    if (!method.getName().equals("getConnection")) return method.invoke(h2, args);
+                    java.sql.Connection real = h2.getConnection();
+                    return java.lang.reflect.Proxy.newProxyInstance(loader, new Class<?>[]{java.sql.Connection.class},
+                            (c, m, a) -> {
+                                if (m.getName().equals("setAutoCommit") && Boolean.TRUE.equals(a[0]) && !real.getAutoCommit())
+                                    throw new java.sql.SQLException("connection lost after commit", "08S01");
+                                try { return m.invoke(real, a); }
+                                catch (java.lang.reflect.InvocationTargetException e) { throw e.getCause(); }
+                            });
+                });
+        var committed = new JdbcMysqlAccess(source);
+        committed.update("CREATE TABLE entry (id BIGINT PRIMARY KEY)", new Object[0]);
+        assertEquals("done", committed.transaction(tx -> { tx.update("INSERT INTO entry VALUES (?)", new Object[]{1L}); return "done"; }));
+        assertEquals(Long.valueOf(1), committed.<Long>queryOne("SELECT COUNT(*) FROM entry", new Object[0], r -> r.getLong(1)));
+    }
     @Test void sqlExceptionPreservesCauseAndSqlState() {
         var failure = assertThrows(MysqlException.class, () -> access.update("INVALID SQL",new Object[0]));
         assertEquals("INVALID SQL",failure.sql()); assertNotNull(failure.sqlState());

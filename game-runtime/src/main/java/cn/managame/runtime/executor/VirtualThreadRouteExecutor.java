@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Admission is bounded twice: {@code capacity} tasks across all Routes protects memory, and
  * {@code routeCapacity} queued tasks per Route stops one hot Route (for example a flooding client) from
- * consuming the shared capacity. Either limit returns OVERLOADED without blocking.
+ * consuming the shared capacity. Either limit returns OVERLOADED without blocking. A continuation passes
+ * both limits (it is the return of work the Route already started) and still counts toward them.
  */
 public final class VirtualThreadRouteExecutor implements RouteExecutor {
     /** Default per-Route queue limit used when none is given. */
@@ -52,9 +53,15 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
         this.routeCapacity = routeCapacity;
     }
 
-    public RouteExecuteStatus tryExecute(int domain, long key, Runnable task) {
+    public RouteExecuteStatus tryExecute(int domain, long key, Runnable task) { return submit(domain, key, task, true); }
+
+    @Override public RouteExecuteStatus tryExecuteContinuation(int domain, long key, Runnable task) {
+        return submit(domain, key, task, false);
+    }
+
+    private RouteExecuteStatus submit(int domain, long key, Runnable task, boolean bounded) {
         Objects.requireNonNull(task);
-        RouteExecuteStatus status = reserve();
+        RouteExecuteStatus status = reserve(bounded);
         if (status != RouteExecuteStatus.ACCEPTED) return status;
         boolean submitted = false;
         try {
@@ -67,7 +74,7 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
                     continue;
                 }
                 // The count includes the running task, so a busy Route may queue routeCapacity tasks behind it.
-                if (count > routeCapacity) return RouteExecuteStatus.OVERLOADED;
+                if (bounded && count > routeCapacity) return RouteExecuteStatus.OVERLOADED;
                 if (!mailbox.count.compareAndSet(count, count + 1)) continue;
                 mailbox.queue.offer(task);
                 if (count == 0) start(route, mailbox, task);
@@ -94,11 +101,11 @@ public final class VirtualThreadRouteExecutor implements RouteExecutor {
         }
     }
 
-    private RouteExecuteStatus reserve() {
+    private RouteExecuteStatus reserve(boolean bounded) {
         for (;;) {
             long state = admission.get();
             if (state < 0) return RouteExecuteStatus.CLOSED;
-            if (state >= capacity) return RouteExecuteStatus.OVERLOADED;
+            if (bounded && state >= capacity) return RouteExecuteStatus.OVERLOADED;
             if (admission.compareAndSet(state, state + 1)) return RouteExecuteStatus.ACCEPTED;
         }
     }

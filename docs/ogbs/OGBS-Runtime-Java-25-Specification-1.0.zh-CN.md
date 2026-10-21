@@ -286,14 +286,19 @@ public interface HandlerObserver {
 ```java
 interface RouteExecutor extends AutoCloseable {
     RouteExecuteStatus tryExecute(int domain, long key, Runnable task);   // ACCEPTED、OVERLOADED、CLOSED
+    default RouteExecuteStatus tryExecuteContinuation(int domain, long key, Runnable task) {   // ACCEPTED、CLOSED
+        return tryExecute(domain, key, task);
+    }
     default RouteExecutorStats stats() { return RouteExecutorStats.unreported(); }   // capacity、routeCapacity、activeRoutes
     default void close() {}
 }
 ```
 
+Runtime 只用 `tryExecuteContinuation` 提交回源回调（`call` 的完成与 `callback(...)` 捕获的完成，RT-CALL-06），其余工作——分发、事件、HTTP、Timer、Cron 以及 `call` 的目标——都用 `tryExecute`。续延不检查容量，只有关闭的执行器拒绝它；与普通任务同一队列、同一顺序，接纳后计入容量。两个官方执行器都覆盖了它。默认实现委托给 `tryExecute`，所以未覆盖的自定义执行器在满载时仍会拒绝续延，Runtime 将其报告为 ROUTE_CALLBACK_DISPATCH_FAILED。验证见 [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) 与 [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java) 的 `aFullSourceRouteStillTakesBackItsCallResult`。
+
 | 执行器 | 串行方式 | 容量 |
 | --- | --- | --- |
-| RouteExecutors.platformThreads(n) / StripedRouteExecutor(n, queue) | Route 哈希到 n 个单线程分片之一；同分片的 Route 互相等待 | 每个分片的等待任务数（默认 65,536），不含正在运行的任务 |
+| RouteExecutors.platformThreads(n) / StripedRouteExecutor(n, queue) | Route 哈希到 n 个单线程分片之一；同分片的 Route 互相等待 | 每个分片的等待任务数（默认 65,536），不含正在运行的任务；分片队列本身无界，上限由执行器自己的计数实施，续延可越过它 |
 | RouteExecutors.virtualThreads() / VirtualThreadRouteExecutor(capacity[, routeCapacity]) | 每个有工作的 Route 一个无锁 Mailbox 和一个虚拟线程消费者 | 全部 Route 的未完成任务数（默认 65,536，含运行中）及每个 Route 在运行任务之外的等待任务数（默认 min(capacity, 1024)） |
 
 两者都不阻塞地拒绝，关闭后继续执行已接纳的任务。单 Route 上限防止一个刷请求的 Route 占满共享容量；网络 pipeline 中仍应做连接级限流。同 Route 内联执行不受容量限制（递归仍消耗栈）。自定义执行器必须保证同 Route 互斥与顺序、被拒绝的任务不执行、已接纳的任务恰好执行一次，并处理关闭与提交的竞争。

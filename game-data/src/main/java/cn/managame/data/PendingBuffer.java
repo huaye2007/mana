@@ -17,10 +17,19 @@ final class PendingBuffer {
     static final class Change {
         private final DataOperation operation;
         private final Object entity;
-        Change(DataOperation operation, Object entity) { this.operation = operation; this.entity = entity; }
+        private final boolean attempted;
+        Change(DataOperation operation, Object entity) { this(operation, entity, false); }
+        private Change(DataOperation operation, Object entity, boolean attempted) {
+            this.operation = operation; this.entity = entity; this.attempted = attempted;
+        }
         DataOperation operation() { return operation; }
         /** The latest entity; may be null for a delete recorded by id only. */
         Object entity() { return entity; }
+        /**
+         * An INSERT whose save failed after storage may have taken it, so it is not known to be absent
+         * from storage any more: a DELETE has to delete instead of cancelling it (D-WRITE-01).
+         */
+        boolean attempted() { return attempted; }
     }
     record Claimed(Object id, Change change) {}
 
@@ -69,9 +78,11 @@ final class PendingBuffer {
      */
     boolean requeue(EntityMeta meta, Claimed claimed) {
         boolean[] legal = {true};
+        Change failed = claimed.change();
+        Change older = failed.operation() == DataOperation.INSERT ? new Change(DataOperation.INSERT, failed.entity(), true) : failed;
         pending.get(meta).compute(claimed.id(), (key, newer) -> {
-            if (newer == null) return counted(null, claimed.change());
-            try { return counted(newer, combine(claimed.change(), newer)); }
+            if (newer == null) return counted(null, older);
+            try { return counted(newer, combine(older, newer)); }
             catch (DataOperationException illegal) { legal[0] = false; return newer; }
         });
         return legal[0];
@@ -92,8 +103,9 @@ final class PendingBuffer {
         if (old == null) return new Change(op, entity);
         return switch (old.operation()) {
             case INSERT -> switch (op) {
-                case UPDATE -> new Change(DataOperation.INSERT, entity);
-                case DELETE -> null;
+                case UPDATE -> new Change(DataOperation.INSERT, entity, old.attempted());
+                // Cancels only an INSERT that storage never saw; one that may be stored is deleted.
+                case DELETE -> old.attempted() ? new Change(DataOperation.DELETE, entity) : null;
                 default -> throw invalid(old, op);
             };
             case UPDATE -> switch (op) {

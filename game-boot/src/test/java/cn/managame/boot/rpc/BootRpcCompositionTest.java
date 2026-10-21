@@ -218,6 +218,31 @@ class BootRpcCompositionTest {
         assertEquals("routing:detach:listening", events.getLast());
     }
 
+    @Test void aCallRuntimeRefusedIsAnsweredWithTheRefusalNotAsAHandlerError() throws Exception {
+        var responses = new LinkedBlockingQueue<Integer>();
+        RpcHandler remoteHandler = new RpcHandler() {
+            @Override public void onRequest(int source, int slot, RpcRequest request) {}
+            @Override public void onResponse(int source, int command, RpcResponse response, RpcCallback<?> callback) {
+                responses.add(response.errorCode());
+            }
+            @Override public void onFail(int target, int command, int code, RpcCallback<?> callback) { responses.add(-code); }
+        };
+        var handlers = new Handlers();
+        try (var remote = node(2).handler(remoteHandler).build(); var runtime = runtime(handlers);
+             var rpc = new GameRpc(runtime, new TextCodec(), node(1), List.of())) {
+            handlers.rpc = rpc;
+            remote.start(); rpc.node().start();
+            rpc.node().addPeer(2, remote.localAddress(), 1);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!remote.isPeerConnected(1)) { assertTrue(System.nanoTime() < deadline); Thread.sleep(5); }
+            runtime.shutdown();   // draining: the Handler never runs, and the caller must be able to tell
+            remote.call(1, new RpcRequest(1, 77, 5, 123, null,
+                    Unpooled.wrappedBuffer("hello".getBytes(StandardCharsets.UTF_8))), value -> {});
+            assertEquals(cn.managame.core.FrameworkErrorCodes.RUNTIME_CLOSED, responses.poll(5, TimeUnit.SECONDS));
+            assertTrue(handlers.received.isEmpty());
+        }
+    }
+
     @Test void aFailedAttachDetachesWhatAttachedAndClosesTheNodeItBuilt() {
         var events = new ArrayList<String>();
         GameRpcConfigurer failing = new GameRpcConfigurer() {

@@ -44,12 +44,15 @@ public abstract class LogRepository<E> {
             if (queued.compareAndSet(current, current + 1)) return true;
         }
     }
-    /** Returns how many logs were kept for the next flush after retryable failures. */
+    /**
+     * Returns how many logs were kept for the next flush after retryable failures. Takes no further batch once
+     * the pass is stopping, so logs it never attempted stay where they were, in order.
+     */
     final int drain(WriteBehindManager manager, int batchSize) {
         // Capture a finite boundary: continuous producers cannot starve state persistence.
         int remaining = queued.get(), kept = 0;
         List<E> retry = new ArrayList<>();
-        while (remaining > 0) {
+        while (remaining > 0 && !manager.stopping()) {
             List<E> batch = new ArrayList<>(Math.min(batchSize, remaining));
             while (batch.size() < batchSize && remaining-- > 0) {
                 E log = queue.poll(); if (log == null) break;
@@ -65,11 +68,18 @@ public abstract class LogRepository<E> {
             }
             for (var partition : partitions.entrySet())
                 kept += manager.save(logWriter.logType(), DataOperation.LOG_INSERT, partition.getValue(),
-                        values -> logWriter.insert(partition.getKey(), values), saved -> {}, retry::add, log -> log);
+                        values -> logWriter.insert(partition.getKey(), values), retry::add, log -> log);
         }
         // Retried on the next flush, after logs accepted meanwhile. They were accepted already, so they may
         // briefly exceed the capacity.
         queue.addAll(retry); queued.addAndGet(retry.size());
         return kept;
+    }
+    /** At close: reports every queued log as unsaved, without another attempt. */
+    final void dropQueued(WriteBehindManager manager, Throwable cause) {
+        for (E log; (log = queue.poll()) != null; ) {
+            queued.decrementAndGet();
+            manager.drop(logWriter.logType(), DataOperation.LOG_INSERT, log, cause, 0);
+        }
     }
 }

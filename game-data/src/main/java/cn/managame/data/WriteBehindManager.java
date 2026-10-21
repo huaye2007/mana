@@ -19,7 +19,9 @@ import java.util.function.Consumer;
  * Single-threaded write-behind pipeline. Each flush claims the dirty set, saves it in operation order
  * and batches, and classifies failures: retryable ones (RetryPolicy) stay pending for the next flush,
  * a non-retryable batch is split into single rows so one bad row cannot drop the others, and only a
- * non-retryable single row is dropped and reported.
+ * non-retryable single row is dropped and reported. Two retryable failures in a row stop the pass, because
+ * storage is then down and every further call would wait out the same timeout; close never saves past its
+ * deadline and hands what is left to DataErrorHandler.
  */
 final class WriteBehindManager {
     private enum State { RUNNING, CLOSING, CLOSED }
@@ -31,6 +33,12 @@ final class WriteBehindManager {
     private static final long PENDING_POLL_NANOS = 1_000_000;
     private static final List<DataOperation> ORDER =
             List.of(DataOperation.DELETE, DataOperation.DELETE_INSERT, DataOperation.INSERT, DataOperation.UPDATE);
+    /**
+     * Retryable failures in a row after which a pass stops starting saves (D-WRITE-05). One is a row — a lock
+     * wait, a deadlock — and stopping on it would let one locked row hold back everything after it; two in a
+     * row are storage itself, whose every further call would wait out the same timeout.
+     */
+    private static final int UNAVAILABLE_AFTER = 2;
     private final PendingBuffer buffer;
     private final Map<EntityMeta, EntityMapper> mappers;
     private final List<LogRepository<?>> logs = new ArrayList<>();
@@ -49,15 +57,19 @@ final class WriteBehindManager {
     private final long intervalNanos, shutdownNanos, pendingWaitNanos;
     private final DataErrorHandler handler;
     private final RetryPolicy retry;
-    /** First drop in this GameData's lifetime; close reports it. */
+    /** First drop in this GameData's lifetime; close reports it, and again on every later close. */
     private volatile DataSaveException lifetimeFailure;
     /** First drop during the current explicit flush; guarded by {@code pipeline}. */
     private DataSaveException callFailure;
-    private volatile int deferred; // retryable failures left pending by the latest flush
     private int claimedCount;      // changes the latest pass claimed; guarded by pipeline
+    // The running pass, guarded by pipeline: retryable failures in a row, close's deadline for it (when
+    // bounded), and the latest retryable failure, which close gives as the reason for what it could not save.
+    private int retryableStreak;
+    private boolean passBounded;
+    private long passDeadline;
+    private Throwable lastRetryable;
     private final LongAdder failedBatches = new LongAdder(), flushes = new LongAdder(), saveNanos = new LongAdder(),
             droppedLogs = new LongAdder(), rejectedChanges = new LongAdder();
-    private volatile DataSaveException closeFailure;
 
     WriteBehindManager(Map<EntityMeta,EntityMapper> mappers, Duration interval, int batchSize, Duration shutdownTimeout,
                        Duration cacheExpire, DataErrorHandler handler, RetryPolicy retry,
@@ -162,26 +174,44 @@ final class WriteBehindManager {
             }
         }
     }
+    int flush() { return flush(false, 0); }
     /**
      * One bounded pass: each entity type contributes at most what was pending for it when the pass reached
      * it, so a pass always ends and {@code flushes} advances even while producers keep writing. Returns the
-     * number of retryable leftovers; {@link #claimedCount} tells whether the pass had anything to claim at all.
+     * number of changes and logs left pending; {@link #claimedCount} tells whether the pass had anything to
+     * claim at all.
+     *
+     * <p>The pass also stops starting saves once {@link #stopping} says so — storage failing, or close's
+     * deadline passed — and what it did not attempt stays pending, so a pass during an outage costs about two
+     * storage timeouts rather than one per batch (D-WRITE-05).
      */
-    int flush() {
+    private int flush(boolean bounded, long deadline) {
         synchronized (pipeline) {
             if (state == State.CLOSED) return 0;
             pipelineThread = Thread.currentThread();
             long started = System.nanoTime();
             int left = 0;
-            claimedCount = 0;
+            claimedCount = 0; retryableStreak = 0; passBounded = bounded; passDeadline = deadline;
             try {
-                for (EntityMeta meta : buffer.metas()) left += flushEntity(meta);
+                for (EntityMeta meta : buffer.metas()) if (!stopping()) left += flushEntity(meta);
                 for (LogRepository<?> log : logs) left += log.drain(this, batchSize);
-                deferred = left;
+                if (stopping()) left = (int) Math.min(Integer.MAX_VALUE, pendingCount());   // skipped ones too
                 if (left > 0) LOG.log(System.Logger.Level.WARNING, left + " changes kept pending after retryable save failures");
                 return left;
-            } finally { flushes.increment(); saveNanos.add(System.nanoTime() - started); pipelineThread = null; }
+            } finally { passBounded = false; flushes.increment(); saveNanos.add(System.nanoTime() - started); pipelineThread = null; }
         }
+    }
+    /**
+     * Whether the running pass should start no further save: storage failed retryably {@value #UNAVAILABLE_AFTER}
+     * times in a row, or close's deadline for the pass has passed.
+     */
+    boolean stopping() {
+        return retryableStreak >= UNAVAILABLE_AFTER || (passBounded && System.nanoTime() - passDeadline >= 0);
+    }
+    private long pendingCount() {
+        long count = buffer.size();
+        for (LogRepository<?> log : logs) count += log.queuedLogs();
+        return count;
     }
     private int flushEntity(EntityMeta meta) {
         EntityMapper mapper = mappers.get(meta);
@@ -206,7 +236,6 @@ final class WriteBehindManager {
                                 default -> throw new AssertionError(op);
                             }
                         },
-                        c -> {},
                         c -> { if (!buffer.requeue(meta, c)) drop(meta.entityType(), op, valueOf(op, c),
                                 new DataOperationException("Retryable change conflicts with a newer change"), 1); },
                         c -> valueOf(op, c));
@@ -217,36 +246,38 @@ final class WriteBehindManager {
     private static Object valueOf(DataOperation op, Claimed c) { return op == DataOperation.DELETE ? c.id() : c.change().entity(); }
 
     /**
-     * Saves one batch. Each item ends in exactly one of: saved, kept (retryable) or dropped (reported).
-     * Returns how many items were kept. Mappers must apply a batch atomically so a retry cannot duplicate rows.
+     * Saves one batch. Each item ends in exactly one of: saved, kept (retryable, or not attempted because the
+     * pass is {@link #stopping}) or dropped (reported). Returns how many items were kept. Mappers must apply a
+     * batch atomically, or recognize their own earlier rows, so a retry cannot duplicate rows (D-ERROR-02).
      */
     <T> int save(Class<?> type, DataOperation operation, List<T> batch, Consumer<List<T>> action,
-                 Consumer<T> saved, Consumer<T> keep, Function<T, Object> reported) {
+                 Consumer<T> keep, Function<T, Object> reported) {
+        if (stopping()) { batch.forEach(keep); return batch.size(); }
         Throwable cause;
-        try { action.accept(batch); batch.forEach(saved); return 0; }
+        try { action.accept(batch); retryableStreak = 0; return 0; }
         catch (Throwable error) { cause = error; }
         if (retryable(type, operation, batch, reported, cause, 1)) { batch.forEach(keep); return batch.size(); }
-        if (batch.size() == 1) { dropAndRelease(type, operation, batch.getFirst(), reported, cause, 1, saved); return 0; }
+        retryableStreak = 0;   // storage answered, so it is up: what failed is the data
+        if (batch.size() == 1) { drop(type, operation, reported.apply(batch.getFirst()), cause, 1); return 0; }
         int kept = 0;
         for (T item : batch) {   // isolate the bad rows; the others still persist
-            try { action.accept(List.of(item)); saved.accept(item); }
+            if (stopping()) { keep.accept(item); kept++; continue; }
+            try { action.accept(List.of(item)); retryableStreak = 0; }
             catch (Throwable error) {
                 if (retryable(type, operation, List.of(item), reported, error, 2)) { keep.accept(item); kept++; }
-                else dropAndRelease(type, operation, item, reported, error, 2, saved);
+                else { retryableStreak = 0; drop(type, operation, reported.apply(item), error, 2); }
             }
         }
         return kept;
     }
+    /** Asks the policy; a retryable failure also counts toward {@link #stopping}. */
     private <T> boolean retryable(Class<?> type, DataOperation operation, List<T> batch,
                                   Function<T, Object> reported, Throwable cause, int attempt) {
-        if (state == State.CLOSED) return false;
-        try { return retry.shouldRetry(failureOf(type, operation, batch.stream().map(reported).toList(), cause, attempt)); }
-        catch (Throwable policyFailure) { if (policyFailure != cause) cause.addSuppressed(policyFailure); return false; }
-    }
-    private <T> void dropAndRelease(Class<?> type, DataOperation operation, T item,
-                                    Function<T, Object> reported, Throwable cause, int attempt, Consumer<T> release) {
-        drop(type, operation, reported.apply(item), cause, attempt);
-        release.accept(item); // no longer unsaved: storage keeps whatever it had
+        boolean again;
+        try { again = retry.shouldRetry(failureOf(type, operation, batch.stream().map(reported).toList(), cause, attempt)); }
+        catch (Throwable policyFailure) { if (policyFailure != cause) cause.addSuppressed(policyFailure); again = false; }
+        if (again) { retryableStreak++; lastRetryable = cause; }
+        return again;
     }
     void drop(Class<?> type, DataOperation operation, Object value, Throwable cause, int attempt) {
         if (callFailure == null) callFailure = new DataSaveException("One or more accepted changes failed; see DataErrorHandler", cause);
@@ -299,56 +330,55 @@ final class WriteBehindManager {
         if (left > 0) throw new DataSaveException(left + " changes remain pending after retryable failures", null);
     }
     /**
-     * Stops admission, then flushes until nothing is pending or shutdownTimeout elapses. Remaining
-     * retryable changes are then reported through DataErrorHandler (with their entities, so the
-     * application can dump them) and close throws.
+     * Stops admission, then saves in passes until nothing is pending or shutdownTimeout elapses; no save starts
+     * after that deadline, and a pass that finds storage failing stops and is tried again after a flush
+     * interval. close therefore ends within shutdownTimeout plus the storage call in progress at the deadline.
+     * What is still unsaved is then reported through DataErrorHandler with its entities — without another
+     * attempt, so the application can dump it before the process is killed — and close throws (D-CLOSE-01).
      */
     void close() {
         if (Thread.currentThread() == pipelineThread)
             throw new DataOperationException("Cannot close GameData from a persistence callback");
         synchronized (this) {
-            if (state == State.CLOSED) { if (closeFailure != null) throw closeFailure; return; }
+            if (state == State.CLOSED) { if (lifetimeFailure != null) throw lifetimeFailure; return; }
             state = State.CLOSING;
             closeAdmission();
             scheduler.shutdown();
             long deadline = System.nanoTime() + shutdownNanos;
             boolean interrupted = false;
-            for (;;) {
-                long before = buffer.size();
-                int left = flush();
-                long remaining = buffer.size();
-                if (remaining == 0) break;
-                // A pass is bounded, so what it did not claim drains at once; only retryable failures wait.
+            for (;;) {   // at least once, which also waits for a pass already running
+                long before = pendingCount();
+                int left = flush(true, deadline);
+                long remaining = pendingCount();
+                if (remaining == 0 || System.nanoTime() - deadline >= 0) break;
+                // A pass is bounded, so what it did not claim drains at once; only failures wait.
                 if (left == 0 && remaining < before) continue;
-                if (System.nanoTime() - deadline >= 0) break;
                 try { TimeUnit.NANOSECONDS.sleep(Math.min(intervalNanos, Math.max(0, deadline - System.nanoTime()))); }
                 catch (InterruptedException e) { interrupted = true; break; }
             }
             synchronized (pipeline) {
                 pipelineThread = Thread.currentThread();
                 try {
-                    state = State.CLOSED;   // retryable failures now drop instead of requeueing
-                    flush0();
-                    closeFailure = lifetimeFailure;
+                    state = State.CLOSED;
+                    dropUnsaved();
                 } finally { pipelineThread = null; }
             }
             if (interrupted) Thread.currentThread().interrupt();
-            if (closeFailure != null) throw closeFailure;
+            if (lifetimeFailure != null) throw lifetimeFailure;
         }
     }
     /**
-     * Final passes after CLOSED: one more attempt per change, then anything still failing is dropped and
-     * reported. Admission is closed and CLOSED drops instead of requeueing, so every pass frees what it
-     * claims and the repeat ends with nothing accepted left behind.
+     * Reports every change and log still unsaved at close, each as its own failure with attempt 0, and tries
+     * none of them again: past the deadline, or with storage failing, another attempt would only spend the time
+     * the application needs to dump them.
      */
-    private void flush0() {
-        long before = Long.MAX_VALUE;
-        while (before > 0) {
-            for (EntityMeta meta : buffer.metas()) flushEntity(meta);
-            for (LogRepository<?> log : logs) log.drain(this, batchSize);
-            long remaining = buffer.size();
-            if (remaining >= before) return;   // no progress: stop rather than spin during shutdown
-            before = remaining;
-        }
+    private void dropUnsaved() {
+        Throwable cause = new DataOperationException("GameData closed before this change was saved", lastRetryable);
+        for (EntityMeta meta : buffer.metas())
+            for (Claimed c : buffer.claim(meta)) {
+                DataOperation op = c.change().operation();
+                drop(meta.entityType(), op, valueOf(op, c), cause, 0);
+            }
+        for (LogRepository<?> log : logs) log.dropQueued(this, cause);
     }
 }

@@ -16,6 +16,7 @@ import cn.managame.runtime.executor.RouteExecuteStatus;
 import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.executor.RouteExecutorBinding;
 import cn.managame.runtime.executor.RouteExecutors;
+import cn.managame.runtime.executor.VirtualThreadRouteExecutor;
 import cn.managame.runtime.handler.Handler;
 import cn.managame.runtime.handler.HandlerMethod;
 import cn.managame.runtime.protocol.ProtocolDescriptor;
@@ -160,6 +161,33 @@ class RuntimeTest {
             }))));
         sourceQueue.remove().run(); rejectSource.set(true); targetQueue.remove().run();
         assertEquals(0,callbacks.get()); assertEquals(ROUTE_CALLBACK_DISPATCH_FAILED,errors.getFirst().errorCode());
+    }
+    static void awaitQuietly(CountDownLatch latch) {
+        try { assertTrue(latch.await(5,TimeUnit.SECONDS)); } catch (InterruptedException e) { throw new AssertionError(e); }
+    }
+    @Test void aFullSourceRouteStillTakesBackItsCallResult() throws Exception {
+        var source=new VirtualThreadRouteExecutor(10,1);   // one task may wait behind the running one
+        var runtime=track(builder(source).routeExecutors(List.of(RouteExecutorBinding.of(source,1),
+            RouteExecutorBinding.of(RouteExecutors.virtualThreads(),2))).build());
+        CountDownLatch called=new CountDownLatch(1),targetGo=new CountDownLatch(1),release=new CountDownLatch(1),returned=new CountDownLatch(1);
+        AtomicInteger result=new AtomicInteger();
+        runtime.dispatch(new DefaultHandlerContext(1,1,new Request(() -> {
+            runtime.call(2,1,() -> { awaitQuietly(targetGo); return 42; },new RouteCallback<Integer>() {
+                public void onSuccess(Integer n) { result.set(n); returned.countDown(); }
+                public void onFail(int code) { returned.countDown(); }
+            });
+            called.countDown(); awaitQuietly(release);
+        })));
+        await(called);
+        runtime.dispatch(new DefaultHandlerContext(1,1,new Request(() -> {})));     // the Route's queue is now full
+        assertEquals(ROUTE_EXECUTOR_OVERLOADED,assertThrows(RuntimeDispatchException.class,
+            () -> runtime.dispatch(new DefaultHandlerContext(1,1,new Request(() -> {})))).errorCode());
+        targetGo.countDown();
+        // Wait until the target has run and handed its result back, while the source Route is still full.
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+        while (runtime.stats().domains().get(1).completed()==0) { assertTrue(System.nanoTime()<deadline); Thread.onSpinWait(); }
+        release.countDown(); await(returned);
+        assertEquals(42,result.get()); assertTrue(errors.isEmpty(),errors::toString);   // RT-CALL-06: not dropped
     }
     @Test void targetOverloadReportsFailureInOriginalContext() {
         Queue<Runnable> sourceQueue=new ArrayDeque<>();

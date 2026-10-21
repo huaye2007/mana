@@ -36,6 +36,7 @@ import cn.managame.runtime.error.RuntimeError;
 import cn.managame.runtime.error.RuntimeErrorHandler;
 import cn.managame.runtime.event.Event;
 import cn.managame.runtime.event.EventBus;
+import cn.managame.runtime.executor.RouteExecuteStatus;
 import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.executor.RouteExecutorStats;
 import cn.managame.runtime.handler.ClientResultCodec;
@@ -151,16 +152,20 @@ final class DefaultGameRuntime implements GameRuntime {
         }
     }
 
-    /** Enters the target Route, inline when already on it; returns 0 or the rejection code. */
-    private int submit(Context context, Runnable action, boolean allowClosed) {
-        if (closed.get() && !allowClosed) return RUNTIME_CLOSED;
+    /**
+     * Enters the target Route, inline when already on it; returns 0 or the rejection code. A continuation is
+     * the return leg of work the source Route started (RT-CALL-06): it passes a stopped admission gate and the
+     * executor's capacity, and only a closed Runtime or executor refuses it.
+     */
+    private int submit(Context context, Runnable action, boolean continuation) {
+        if (closed.get() && !continuation) return RUNTIME_CLOSED;
         RouteExecutor executor = routes.get(context.routeDomain());
         if (executor == null) return ROUTE_DOMAIN_MISMATCH;
         if (context.routeKey() == 0) return INVALID_ROUTE_KEY;
         boolean owned = RuntimeContexts.ownedBy(this);
         // The executor lookup above proves the Domain is registered, so its counters exist.
         DomainCounters domain = perDomain.get(context.routeDomain());
-        if (!admission.acquire(allowClosed || owned)) { reject(domain); return RUNTIME_CLOSED; }
+        if (!admission.acquire(continuation || owned)) { reject(domain); return RUNTIME_CLOSED; }
         queued.increment(); domain.queued().increment();
         Runnable bound = () -> {
             queued.decrement(); domain.queued().decrement();
@@ -186,7 +191,10 @@ final class DefaultGameRuntime implements GameRuntime {
             }
         }
         try {
-            int result = switch (Objects.requireNonNull(executor.tryExecute(context.routeDomain(), context.routeKey(), bound))) {
+            RouteExecuteStatus status = continuation
+                    ? executor.tryExecuteContinuation(context.routeDomain(), context.routeKey(), bound)
+                    : executor.tryExecute(context.routeDomain(), context.routeKey(), bound);
+            int result = switch (Objects.requireNonNull(status)) {
                 case ACCEPTED -> 0;
                 case OVERLOADED -> ROUTE_EXECUTOR_OVERLOADED;
                 case CLOSED -> ROUTE_EXECUTOR_CLOSED;

@@ -159,6 +159,44 @@ class MysqlSchemaModeTest {
         assertThrows(MysqlException.class, () -> initialize(denied, SchemaMode.CREATE));
     }
 
+    @Table(name = "items")
+    static class Item { @Id @Column long id; @cn.managame.data.annotation.GroupKey @Column long roleId;
+        @cn.managame.data.annotation.MapKey @Column long itemId; }
+    @Table(name = "items", indexes = @Index(columnList = "role_id,item_id"))
+    static class IndexedItem { @Id @Column long id; @cn.managame.data.annotation.GroupKey @Column long roleId;
+        @cn.managame.data.annotation.MapKey @Column long itemId; }
+
+    /** The warnings MysqlSchema logs while {@code initialize} runs. */
+    private static List<String> warnings(Class<?> entity, Catalog catalog) {
+        var logger = java.util.logging.Logger.getLogger(MysqlSchema.class.getName());
+        var warnings = new ArrayList<String>();
+        var handler = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord record) {
+                if (record.getLevel() == java.util.logging.Level.WARNING) warnings.add(record.getMessage());
+            }
+            @Override public void flush() {}
+            @Override public void close() {}
+        };
+        logger.addHandler(handler);
+        try { new MysqlEntityMapper(catalog).initialize(new EntityMeta(entity, EntityMeta.Kind.GROUP), SchemaMode.VALIDATE); }
+        finally { logger.removeHandler(handler); }
+        return warnings;
+    }
+
+    @Test void aGroupWithoutAnIndexOnItsKeysIsNamedAtStartup() {
+        Catalog bare = new Catalog().table().column("id", "bigint").column("role_id", "bigint").column("item_id", "bigint");
+        List<String> logged = warnings(Item.class, bare);
+        assertEquals(1, logged.size(), logged.toString());
+        assertTrue(logged.getFirst().contains("declare @Index(columnList = \"role_id\")"), logged.getFirst());
+        // An index created outside the mapping counts, in any column order behind the group keys.
+        Catalog external = new Catalog().table().column("id", "bigint").column("role_id", "bigint").column("item_id", "bigint")
+                .index("by_role", false, "role_id", "item_id");
+        assertEquals(List.of(), warnings(Item.class, external));
+        Catalog declared = new Catalog().table().column("id", "bigint").column("role_id", "bigint").column("item_id", "bigint")
+                .index("idx_items_role_id_item_id", false, "role_id", "item_id");
+        assertEquals(List.of(), warnings(IndexedItem.class, declared));
+    }
+
     private static String message(MysqlAccess access, SchemaMode schema) {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> initialize(access, schema));
         assertTrue(failure.getMessage().startsWith("Schema conflict on players:"), failure.getMessage());

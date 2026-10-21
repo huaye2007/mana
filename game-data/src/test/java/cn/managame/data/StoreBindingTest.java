@@ -40,8 +40,11 @@ class StoreBindingTest {
         public void initialize(String collection,List<IndexDefinition> declared,SchemaMode schema) { indexes=declared; }
         public BsonDocument findOne(String collection,BsonDocument filter) { return documents.get(filter.get("_id")); }
         public List<BsonDocument> find(String collection,BsonDocument filter) { return List.copyOf(documents.values()); }
-        public void insertMany(String collection,List<BsonDocument> added) {
-            for (BsonDocument document : added) documents.put(document.get("_id"),document);
+        public List<Integer> insertMany(String collection,List<BsonDocument> added) {
+            List<Integer> existing=new ArrayList<>();
+            for (int i=0;i<added.size();i++)
+                if (documents.putIfAbsent(added.get(i).get("_id"),added.get(i))!=null) existing.add(i);
+            return existing;
         }
         public long replaceMany(String collection,List<BsonDocument> replacements,boolean upsert) {
             long matched=0;

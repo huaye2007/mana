@@ -57,7 +57,7 @@ rpc.addPeer(chosen.id(), chosen.address(), 2);           // 应用只连接其�
 
 serviceId 为正，nodeEpoch 非零；两者对该对象固定，重启后的进程使用新的 nodeEpoch。`addRouter(id)` 声明本 Node 可以使用的一个 Router，`removeRouter(id)` 从它撤销本 Node；两者都不创建、删除或重配 RPC Peer。两者都要求已 start 且角色未关闭，否则 IllegalStateException；非法 ID 抛 IllegalArgumentException。
 
-本角色只附着**一个** Router：已连接的已声明 Router 中 ID 最小的那个。因此它是哪一个取决于应用开了哪条 Peer；迁移一个服务就是关掉一条 Peer 再开另一条，路由在一个检查周期内跟上。切换时先从原 Router 撤销，因此该 Node 绝不会同时被宣告在两处。`removeRouter` 会立即停止发往该 Router，而不是等到下一个检查周期。
+本角色只附着**一个** Router：当前附着的那个，只要它仍是已声明的且连接着；否则选已连接的已声明 Router 中 ID 最小的那个。因此它是哪一个取决于应用开了哪条 Peer；迁移一个服务就是关掉一条 Peer 再开另一条，路由在一个检查周期内跟上。应用可以同时开多条 Router Peer 作为备用：当前 Router 断开时本角色在一个检查周期内改附着到另一个，而一个 ID 更小的 Router 上线或恢复**不会**把它拉走。理由：路由 Call 的待完成记录挂在它发出时经过的那条 Router 连接上，响应却按调用方当前的位置回来；旧 Router 仍连着时切换，在途 Call 的响应会从新 Router 回来、找不到等待它的调用，只能等到超时——而目标侧已经执行过了。保持不动也避免一个恢复或抖动的 Router 一次把网格里所有 Node 拉过去。验证见 [RouterIntegrationTest](../../game-router/src/test/java/cn/managame/router/node/RouterIntegrationTest.java) 的 `aNodeStaysOnItsConnectedRouterWhenALowerOneComesUp`。切换时先从原 Router 撤销，因此该 Node 绝不会同时被宣告在两处。`removeRouter` 会立即停止发往该 Router，而不是等到下一个检查周期。
 
 start 在一个名为 `service-routing` 的守护线程上开始宣告。它每 100 ms 重新计算当前 Router，并在该连接对它而言是新的、或上一次被接纳的宣告已过一秒时，以 Notify 发送 ATTACH（epoch、service）；被拒绝的 ATTACH 在下一次检查重试。没有确认，也没有需要恢复的东西：重启后的 Router 会在一秒内学到本 Node。每个控制操作都用同一个 routeKey，因此 ATTACH 与 DETACH 走同一个 Slot 并保持顺序；removeRouter 在宣告线程上发送 DETACH，因此已在进行中的宣告不会跟在它之后。来自未声明 Router 的投递，或 close 之后到达的投递，会被拒绝并回一条 DETACH，这也修复了盖过撤销的宣告。close 停止该线程、等待进行中的检查完成、向当前 Router 发送 DETACH，并且幂等；此后除 close 以外的每个操作都抛 IllegalStateException。
 

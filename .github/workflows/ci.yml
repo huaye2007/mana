@@ -29,3 +29,43 @@ jobs:
           cache: maven
       - name: Style checks
         run: mvn -B -Pquality -DskipTests verify
+
+  # game-data against real servers: SQL generation, DDL, vendor error codes and the Mongo duplicate-_id
+  # handling are paths H2 and in-memory mappers cannot reach.
+  database:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ogbs-ci
+          MYSQL_DATABASE: ogbs_test
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pogbs-ci"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+      mongo:
+        image: mongo:7.0
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd="mongosh --quiet --eval 'db.runCommand({ping: 1}).ok'"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      OGBS_DATA_MYSQL_URL: jdbc:mysql://127.0.0.1:3306/ogbs_test?rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&useSSL=false
+      OGBS_DATA_MYSQL_USER: root
+      OGBS_DATA_MYSQL_PASSWORD: ogbs-ci
+      OGBS_DATA_MONGO_URI: mongodb://127.0.0.1:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Data against MySQL and MongoDB
+        run: mvn -B -pl game-data -am verify -Dtest=DatabaseIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Fail if the database tests were skipped
+        run: |
+          report=game-data/target/surefire-reports/TEST-cn.managame.data.DatabaseIntegrationTest.xml
+          test -f "$report"
+          if grep -q "<skipped" "$report"; then echo "DatabaseIntegrationTest was skipped"; exit 1; fi

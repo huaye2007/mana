@@ -1,7 +1,9 @@
 package cn.managame.data.mongo;
 
 import cn.managame.data.mapper.SchemaMode;
+import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoCommandException;
+import com.mongodb.bulk.BulkWriteError;
 import com.mongodb.client.*;
 import com.mongodb.client.model.*;
 import java.util.*;
@@ -10,6 +12,7 @@ import org.bson.codecs.configuration.CodecRegistry;
 
 /** Does not own or close the supplied MongoDatabase/MongoClient. */
 public final class DriverMongoAccess implements MongoAccess {
+    private static final int DUPLICATE_KEY = 11000;
     private final MongoDatabase database;
     public DriverMongoAccess(MongoDatabase database) { this.database = Objects.requireNonNull(database); }
     @Override public CodecRegistry codecRegistry() { return database.getCodecRegistry(); }
@@ -45,8 +48,30 @@ public final class DriverMongoAccess implements MongoAccess {
     }
     @Override public BsonDocument findOne(String name, BsonDocument filter) { return collection(name).find(filter).first(); }
     @Override public List<BsonDocument> find(String name, BsonDocument filter) { return collection(name).find(filter).into(new ArrayList<>()); }
-    @Override public void insertMany(String name, List<BsonDocument> documents) {
-        if (!documents.isEmpty()) collection(name).insertMany(documents);
+    /**
+     * Unordered, so one existing {@code _id} does not stop the documents after it. Only a duplicate on the
+     * {@code _id} index is a refusal; a duplicate on another unique index is a constraint violation and
+     * throws, as does a write concern error, which leaves durability unknown.
+     */
+    @Override public List<Integer> insertMany(String name, List<BsonDocument> documents) {
+        if (documents.isEmpty()) return List.of();
+        try {
+            collection(name).insertMany(documents, new InsertManyOptions().ordered(false));
+            return List.of();
+        } catch (MongoBulkWriteException failure) {
+            if (failure.getWriteConcernError() != null) throw failure;
+            List<Integer> existing = new ArrayList<>();
+            for (BulkWriteError error : failure.getWriteErrors()) {
+                if (!duplicateId(error)) throw failure;
+                existing.add(error.getIndex());
+            }
+            Collections.sort(existing);
+            return existing;
+        }
+    }
+    /** The server names the index only in the message: "E11000 duplicate key error collection: … index: _id_ dup key: …". */
+    private static boolean duplicateId(BulkWriteError error) {
+        return error.getCode() == DUPLICATE_KEY && error.getMessage() != null && error.getMessage().contains(" index: _id_ ");
     }
     @Override public long replaceMany(String name, List<BsonDocument> documents, boolean upsert) {
         if (documents.isEmpty()) return 0;

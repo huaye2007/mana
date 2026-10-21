@@ -34,4 +34,23 @@ class RouteExecutorTest {
             assertEquals(RouteExecuteStatus.OVERLOADED,executor.tryExecute(1,1,() -> fail("Rejected task ran")));
         } finally { release.countDown(); executor.close(); }
     }
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void aContinuationPassesAFullExecutorInOrderAndCountsTowardIt(boolean virtual) throws Exception {
+        RouteExecutor executor=virtual ? new VirtualThreadRouteExecutor(2) : new StripedRouteExecutor(1,1);
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1),done=new CountDownLatch(2);
+        List<Integer> order=new CopyOnWriteArrayList<>();
+        try {
+            executor.tryExecute(1,1,() -> {entered.countDown();try{release.await(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}});
+            assertTrue(entered.await(5,TimeUnit.SECONDS));
+            assertEquals(RouteExecuteStatus.ACCEPTED,executor.tryExecute(1,1,() -> {order.add(1);done.countDown();}));
+            assertEquals(RouteExecuteStatus.OVERLOADED,executor.tryExecute(1,1,() -> fail("Rejected task ran")));
+            // The return of work the Route already started is not load to shed (RT-CALL-06) ...
+            assertEquals(RouteExecuteStatus.ACCEPTED,executor.tryExecuteContinuation(1,1,() -> {order.add(2);done.countDown();}));
+            // ... but it is still queued work, so ordinary submissions see it.
+            assertEquals(RouteExecuteStatus.OVERLOADED,executor.tryExecute(1,1,() -> fail("Rejected task ran")));
+            release.countDown(); assertTrue(done.await(5,TimeUnit.SECONDS));
+            assertEquals(List.of(1,2),order);
+        } finally { release.countDown(); executor.close(); }
+        assertEquals(RouteExecuteStatus.CLOSED,executor.tryExecuteContinuation(1,1,() -> fail("Rejected task ran")));
+    }
 }

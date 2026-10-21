@@ -241,6 +241,22 @@ class DataContractTest {
             assertEquals(0, data.stats().pendingChanges()); assertTrue(errors.isEmpty());
         }
     }
+    @Test void aDeleteAfterAFailedInsertDeletesWhatThatInsertMayHaveStored() {
+        var mapper = new RecordingMapper(); mapper.saveFailure = true;
+        try (var data = builder(mapper).retryPolicy(f -> true).build()) {
+            var players = data.repository(Players.class);
+            players.insert(new Player(1));
+            assertThrows(DataSaveException.class, data::flush);   // the failed attempt may have stored the row
+            players.delete(1L);                                   // so this must not cancel the kept INSERT
+            mapper.saveFailure = false; data.flush();
+            assertEquals(List.of("DELETE"), mapper.events);
+            assertEquals(List.of(1L), mapper.batches.getFirst());
+            assertEquals(0, data.stats().pendingChanges());
+            players.insert(new Player(2)); players.delete(2L);    // never attempted: still cancels to nothing
+            data.flush();
+            assertEquals(List.of("DELETE"), mapper.events);
+        }
+    }
     @Test void defaultPolicyKeepsOnlyTransientFailures() {
         assertTrue(RetryPolicy.isTransient(new RuntimeException(new java.sql.SQLTransientConnectionException("pool"))));
         assertTrue(RetryPolicy.isTransient(new java.sql.SQLException("deadlock", "40001", 1213)));
@@ -307,7 +323,9 @@ class DataContractTest {
     @Test void closeRetriesThenDropsAndReportsLeftovers() {
         var mapper = new RecordingMapper(); mapper.saveFailure = true;
         var errors = new CopyOnWriteArrayList<DataFailure>();
-        var data = builder(mapper).retryPolicy(f -> true).shutdownTimeout(Duration.ofMillis(50)).errorHandler(errors::add).build();
+        // close retries at the flush interval, and only within its timeout (D-CLOSE-01).
+        var data = builder(mapper).retryPolicy(f -> true).flushInterval(Duration.ofMillis(10))
+                .shutdownTimeout(Duration.ofMillis(50)).errorHandler(errors::add).build();
         var p = new Player(1); data.repository(Players.class).insert(p);
         assertThrows(DataSaveException.class, data::close);
         assertEquals(1, errors.size()); assertEquals(List.of(p), errors.getFirst().batch());

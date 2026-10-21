@@ -121,7 +121,7 @@ class DatabaseIntegrationTest {
     }
 
     @Test @EnabledIfEnvironmentVariable(named="OGBS_DATA_MONGO_URI",matches=".+")
-    void mongoServerReplacementAndIndexes() {
+    void mongoServerInsertConflictReplacementAndIndexes() {
         try(var client=MongoClients.create(System.getenv("OGBS_DATA_MONGO_URI"))) {
             var database=client.getDatabase("ogbs_data_test_"+UUID.randomUUID().toString().replace("-",""));
             try {
@@ -129,9 +129,18 @@ class DatabaseIntegrationTest {
                 var meta=new EntityMeta(MongoPlayer.class,EntityMeta.Kind.SINGLE); mapper.initialize(meta,SchemaMode.CREATE);
                 new MongoEntityMapper(database).initialize(meta,SchemaMode.CREATE);
                 var player=new MongoPlayer(); player.id=1; player.score=42;
-                mapper.updateBatch(meta,List.of(player)); assertNull(mapper.load(meta,1L));
-                mapper.deleteInsertBatch(meta,List.of(player));
+                // An UPDATE of a missing document fails instead of disappearing (D-ERROR-02).
+                assertThrows(DataOperationException.class,()->mapper.updateBatch(meta,List.of(player)));
+                assertNull(mapper.load(meta,1L));
+                mapper.insertBatch(meta,List.of(player));
                 assertEquals(42,((MongoPlayer)mapper.load(meta,1L)).score);
+                // The server's duplicate _id from another writer is a conflict, never a replacement (D-SINGLE-02).
+                var other=new MongoEntityMapper(database); other.initialize(meta,SchemaMode.CREATE);
+                var foreign=new MongoPlayer(); foreign.id=1; foreign.score=7;
+                assertThrows(DataOperationException.class,()->other.insertBatch(meta,List.of(foreign)));
+                assertEquals(42,((MongoPlayer)mapper.load(meta,1L)).score);
+                mapper.deleteInsertBatch(meta,List.of(foreign));
+                assertEquals(7,((MongoPlayer)mapper.load(meta,1L)).score);
                 mapper.deleteBatch(meta,List.of(1L)); assertNull(mapper.load(meta,1L));
             } finally { database.drop(); }
         }

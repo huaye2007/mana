@@ -7,6 +7,7 @@ import cn.managame.rpc.node.*;
 import cn.managame.rpc.transport.RpcSendStatus;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.context.*;
+import cn.managame.runtime.error.RuntimeDispatchException;
 import cn.managame.runtime.protocol.*;
 import cn.managame.runtime.route.CapturedRouteCallback;
 import cn.managame.runtime.route.RouteCallback;
@@ -162,8 +163,16 @@ public final class GameRpc implements AutoCloseable {
             ProtocolDescriptor protocol = runtime.protocols().get(ProtocolDescriptor.Type.REQUEST, request.command());
             if (protocol == null) throw new IllegalArgumentException("Unknown request command: " + request.command());
             Object message = decode(request.body(), protocol.messageType());
-            runtime.dispatchRpc(sourceNodeId, sourceSlotId, request.command(), request.requestId(),
-                    request.routeKey(), request.businessIdType(), request.businessId(), request.metadata(), message);
+            try {
+                runtime.dispatchRpc(sourceNodeId, sourceSlotId, request.command(), request.requestId(),
+                        request.routeKey(), request.businessIdType(), request.businessId(), request.metadata(), message);
+            } catch (RuntimeDispatchException refused) {
+                // Refused before anything ran (closed, overloaded, bad Domain or Key, no Handler): a Call is
+                // answered with that very code, so the caller knows it is safe to try elsewhere (B-RPC-04).
+                if (request.requestId() == 0) throw refused;   // a Notify has nobody to tell; the Node logs it
+                node.reply(sourceNodeId, sourceSlotId,
+                        new RpcResponse(request.requestId(), refused.errorCode(), Metadata.empty(), null));
+            }
         }
         public void onResponse(int sourceNodeId, int command, RpcResponse response, RpcCallback<?> callback) {
             Completion<?> completion = (Completion<?>) callback;

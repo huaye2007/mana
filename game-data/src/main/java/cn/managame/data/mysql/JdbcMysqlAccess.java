@@ -6,6 +6,7 @@ import javax.sql.DataSource;
 
 /** Stateless JDBC facade. Connections and their owning DataSource remain application-owned. */
 public final class JdbcMysqlAccess implements MysqlAccess {
+    private static final System.Logger LOG = System.getLogger(JdbcMysqlAccess.class.getName());
     private final DataSource source;
     public JdbcMysqlAccess(DataSource source) { this.source = Objects.requireNonNull(source); }
     private interface SqlAction<T> { T run(Connection connection) throws SQLException; }
@@ -26,30 +27,41 @@ public final class JdbcMysqlAccess implements MysqlAccess {
         if (args.isEmpty()) return new int[0];
         return connection(sql, c -> new Session(c).batchUpdate(sql, args));
     }
+    /**
+     * One transaction on one connection. Once commit returns the work is durable, so a failure after it —
+     * restoring autoCommit, returning the connection — is logged and never thrown: reporting a committed batch
+     * as failed would make the persistence pipeline retry or drop changes that are already stored.
+     */
     @Override public <T> T transaction(TransactionAction<T> action) {
-        return connection("<transaction>", c -> {
-            boolean autoCommit = c.getAutoCommit();
+        Connection c;
+        try { c = source.getConnection(); } catch (SQLException e) { throw new MysqlException("<transaction>", e); }
+        Session session = new Session(c);
+        boolean autoCommit = true, switched = false;
+        T result;
+        try {
+            autoCommit = c.getAutoCommit();
             c.setAutoCommit(false);
-            Session session = new Session(c);
-            Throwable failure = null;
-            try {
-                T result = action.execute(session);
-                c.commit();
-                return result;
-            } catch (Throwable e) {
-                failure = e;
+            switched = true;
+            result = action.execute(session);
+            c.commit();
+        } catch (Throwable e) {
+            session.active = false;
+            if (switched) {
                 try { c.rollback(); } catch (SQLException rollback) { e.addSuppressed(rollback); }
-                if (e instanceof RuntimeException r) throw r;
-                if (e instanceof Error error) throw error;
-                throw new MysqlException("<transaction>", e);
-            } finally {
-                session.active = false;
-                try { c.setAutoCommit(autoCommit); }
-                catch (SQLException restore) {
-                    if (failure != null) failure.addSuppressed(restore); else throw restore;
-                }
+                try { c.setAutoCommit(autoCommit); } catch (SQLException restore) { e.addSuppressed(restore); }
             }
-        });
+            try { c.close(); } catch (SQLException close) { e.addSuppressed(close); }
+            if (e instanceof RuntimeException r) throw r;
+            if (e instanceof Error error) throw error;
+            throw new MysqlException("<transaction>", e);
+        }
+        session.active = false;
+        try { c.setAutoCommit(autoCommit); } catch (SQLException after) { cleanupFailed(after); }
+        try { c.close(); } catch (SQLException after) { cleanupFailed(after); }
+        return result;
+    }
+    private static void cleanupFailed(SQLException after) {
+        LOG.log(System.Logger.Level.WARNING, "Connection cleanup failed after a committed transaction", after);
     }
     private static void bind(PreparedStatement statement, Object[] args) throws SQLException {
         statement.clearParameters();

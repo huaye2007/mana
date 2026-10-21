@@ -171,7 +171,7 @@ public final class GameDataBuilder {
                 prepared.add(new Prepared(binding, repository, null,
                         new MysqlLogWriter(entity, (MysqlAccess) binding.backend(),
                                 logCodecsConfigured ? logJsonCodec : jsonCodec,
-                                logCodecsConfigured ? logBinaryCodec : binaryCodec, partitionZone)));
+                                logCodecsConfigured ? logBinaryCodec : binaryCodec, partitionZone, schema)));
             } else {
                 if (!stateTypes.add(entity)) throw new IllegalArgumentException("Duplicate state entity registration: " + entity);
                 EntityMeta meta = new EntityMeta(entity, single ? EntityMeta.Kind.SINGLE : EntityMeta.Kind.GROUP);

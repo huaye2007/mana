@@ -66,8 +66,9 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
         attacher.scheduleWithFixedDelay(this::attach, 0, TICK_MILLIS, TimeUnit.MILLISECONDS);
     }
     /**
-     * Declares a Router this Node may use. The application connects to one of them separately with
-     * RpcNode.addPeer; this role attaches to the connected declared Router with the lowest ID.
+     * Declares a Router this Node may use. The application connects to one or more of them separately with
+     * RpcNode.addPeer; this role stays on the Router it is attached to while that one is connected, and
+     * otherwise attaches to the connected declared Router with the lowest ID.
      */
     public synchronized void addRouter(int routerId) {
         RpcNode node = running();
@@ -117,16 +118,24 @@ public final class ServiceRouting implements RpcHandler, AutoCloseable {
         if (routerId != 0 && node.isPeerConnected(routerId)) RouterWire.notify(node, routerId, detach(epoch));
     }
     /**
-     * Keeps this Node attached to exactly one Router: the connected declared Router with the lowest ID. A
-     * change withdraws from the previous one first, so the Node is never announced in two places.
+     * Keeps this Node attached to exactly one Router: the current one while it is declared and connected,
+     * otherwise the connected declared Router with the lowest ID. A change withdraws from the previous one
+     * first, so the Node is never announced in two places.
+     *
+     * <p>Staying is what keeps routed calls whole. A call's outstanding entry lives on the connection to the
+     * Router it left through, while its response follows this Node's current location; moving while the old
+     * Router is still up would bring every response in flight back through the new Router, where no call is
+     * waiting for it, and leave those calls to time out. It also keeps a Router that recovers, or one that
+     * flaps, from pulling every Node of the mesh across at once.
      */
     private void attach() {
         try {
             if (closed) return;
             RpcNode node = rpc;
             if (node == null) return;
-            int chosen = 0;
-            for (int id : declared) if (node.isPeerConnected(id)) { chosen = id; break; }
+            int stay = current;
+            int chosen = stay != 0 && declares(stay) && node.isPeerConnected(stay) ? stay : 0;
+            if (chosen == 0) for (int id : declared) if (node.isPeerConnected(id)) { chosen = id; break; }
             if (chosen != current) {
                 withdraw(node, current);
                 current = chosen;

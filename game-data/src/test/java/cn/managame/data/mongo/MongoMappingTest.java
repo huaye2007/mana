@@ -44,7 +44,7 @@ class MongoMappingTest {
         public void initialize(String name,List<IndexDefinition> indexes,SchemaMode schema) { assertEquals("tasks",name); this.indexes=indexes; }
         public BsonDocument findOne(String name,BsonDocument filter) { this.filter=filter; return documents.isEmpty()?null:documents.getFirst(); }
         public List<BsonDocument> find(String name,BsonDocument filter) { this.filter=filter; return documents; }
-        public void insertMany(String name,List<BsonDocument> docs) { documents=docs; operation="insert"; }
+        public List<Integer> insertMany(String name,List<BsonDocument> docs) { documents=docs; operation="insert"; return List.of(); }
         long matched=-1;
         public long replaceMany(String name,List<BsonDocument> docs,boolean upsert) { documents=docs; this.upsert=upsert; operation="replace"; return matched<0?docs.size():matched; }
         public void deleteMany(String name,BsonDocument filter) { this.filter=filter; operation="delete"; }
@@ -77,5 +77,73 @@ class MongoMappingTest {
         assertEquals("replace",access.operation);
         mapper.deleteBatch(meta,List.of(7L,8L));
         assertEquals(new BsonArray(List.of(new BsonInt64(7),new BsonInt64(8))),access.filter.getDocument("_id").getArray("$in"));
+    }
+
+    /** A collection that keeps documents by _id, can fail an insert after storing it, and counts replacements. */
+    static class Store extends Access {
+        final Map<BsonValue,BsonDocument> stored=new LinkedHashMap<>();
+        /** Ids an insert stores and then fails for, as a lost connection after the server applied it does. */
+        final Set<Long> storeThenFail=new HashSet<>();
+        int replacements;
+        @Override public BsonDocument findOne(String name,BsonDocument filter) { return stored.get(filter.get("_id")); }
+        @Override public List<Integer> insertMany(String name,List<BsonDocument> docs) {
+            List<Integer> existing=new ArrayList<>(); boolean fail=false;
+            for (int i=0;i<docs.size();i++) {
+                BsonDocument doc=docs.get(i);
+                if (stored.containsKey(doc.get("_id"))) { existing.add(i); continue; }
+                stored.put(doc.get("_id"),doc);
+                fail|=storeThenFail.remove(doc.getInt64("_id").getValue());
+            }
+            if (fail) throw new IllegalStateException("connection lost after the insert was applied");
+            return existing;
+        }
+        @Override public long replaceMany(String name,List<BsonDocument> docs,boolean upsert) {
+            long matched=0;
+            for (BsonDocument doc : docs) {
+                boolean present=stored.containsKey(doc.get("_id"));
+                if (present) matched++;
+                if (present||upsert) { stored.put(doc.get("_id"),doc); replacements++; }
+            }
+            return matched;
+        }
+    }
+    private static Task task(long id,int progress) { var t=new Task(); t.id=id; t.roleId=1; t.taskId=id; t.progress=progress; return t; }
+    private static int progress(Store store,long id) { return store.stored.get(new BsonInt64(id)).getInt32("progress").getValue(); }
+
+    @Test void insertNeverReplacesADocumentThisMapperDidNotWrite() {
+        var store=new Store(); var mapper=new MongoEntityMapper(store);
+        var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta,SchemaMode.CREATE);
+        mapper.insertBatch(meta,List.of(task(1,5)));
+        var other=new MongoEntityMapper(store); other.initialize(meta,SchemaMode.CREATE);
+        // D-SINGLE-02: an insert for an uncached key that storage already holds is a reported conflict.
+        assertThrows(cn.managame.data.error.DataOperationException.class,()->other.insertBatch(meta,List.of(task(1,9))));
+        assertEquals(5,progress(store,1)); assertEquals(0,store.replacements);
+        other.insertBatch(meta,List.of(task(1,5)));   // exactly what is stored: nothing to report or write
+        assertEquals(0,store.replacements);
+    }
+    @Test void anInsertThatFailedAfterStoringIsRecognizedOnItsRetry() {
+        var store=new Store(); var mapper=new MongoEntityMapper(store);
+        var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta,SchemaMode.CREATE);
+        store.storeThenFail.add(1L);
+        assertThrows(IllegalStateException.class,()->mapper.insertBatch(meta,List.of(task(1,5))));
+        mapper.insertBatch(meta,List.of(task(1,6)));  // the entity changed before the retry
+        assertEquals(6,progress(store,1));
+        // Settled: a later foreign document under the same _id is a conflict again, not this mapper's write.
+        store.stored.put(new BsonInt64(1),store.stored.get(new BsonInt64(1)).clone().append("progress",new BsonInt32(99)));
+        assertThrows(cn.managame.data.error.DataOperationException.class,()->mapper.insertBatch(meta,List.of(task(1,7))));
+        assertEquals(99,progress(store,1));
+    }
+    @Test void aConflictFailsTheBatchAndItsSplitStillSavesTheRowsTheBatchStored() {
+        var store=new Store(); var mapper=new MongoEntityMapper(store);
+        var meta=new EntityMeta(Task.class,EntityMeta.Kind.GROUP); mapper.initialize(meta,SchemaMode.CREATE);
+        var foreign=new MongoEntityMapper(store); foreign.initialize(meta,SchemaMode.CREATE);
+        foreign.insertBatch(meta,List.of(task(2,50)));
+        assertThrows(cn.managame.data.error.DataOperationException.class,()->mapper.insertBatch(meta,List.of(task(1,5),task(2,6))));
+        assertEquals(5,progress(store,1)); assertEquals(50,progress(store,2));
+        // The pipeline now retries each row alone; row 1 is this mapper's own even though it changed meanwhile.
+        mapper.insertBatch(meta,List.of(task(1,8)));
+        assertEquals(8,progress(store,1));
+        assertThrows(cn.managame.data.error.DataOperationException.class,()->mapper.insertBatch(meta,List.of(task(2,6))));
+        assertEquals(50,progress(store,2));
     }
 }

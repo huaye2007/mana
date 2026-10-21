@@ -307,14 +307,19 @@ Only `@HandlerMethod` dispatch is observed. Event listeners, timer and Cron acti
 ```java
 interface RouteExecutor extends AutoCloseable {
     RouteExecuteStatus tryExecute(int domain, long key, Runnable task);   // ACCEPTED, OVERLOADED, CLOSED
+    default RouteExecuteStatus tryExecuteContinuation(int domain, long key, Runnable task) {   // ACCEPTED, CLOSED
+        return tryExecute(domain, key, task);
+    }
     default RouteExecutorStats stats() { return RouteExecutorStats.unreported(); }   // capacity, routeCapacity, activeRoutes
     default void close() {}
 }
 ```
 
+Runtime submits returns to the source — the completion of `call` and of a `callback(...)` capture, RT-CALL-06 — through `tryExecuteContinuation` only; everything else — dispatch, events, HTTP, Timers, Cron and the target of `call` — goes through `tryExecute`. A continuation checks no capacity and is refused only by a closed executor; it shares the queue and order of ordinary tasks and counts toward capacity once accepted. Both official executors override it. The default delegates to `tryExecute`, so a custom executor that does not override it still refuses continuations when full, and Runtime reports that as ROUTE_CALLBACK_DISPATCH_FAILED. Verified by [RouteExecutorTest](../../game-runtime/src/test/java/cn/managame/runtime/executor/RouteExecutorTest.java) and `aFullSourceRouteStillTakesBackItsCallResult` in [RuntimeTest](../../game-runtime/src/test/java/cn/managame/runtime/RuntimeTest.java).
+
 | Executor | Serialization | Capacity |
 | --- | --- | --- |
-| RouteExecutors.platformThreads(n) / StripedRouteExecutor(n, queue) | Route hashed to one of n single-thread stripes; Routes on a stripe wait for each other | Waiting tasks per stripe (default 65,536), excluding the running one |
+| RouteExecutors.platformThreads(n) / StripedRouteExecutor(n, queue) | Route hashed to one of n single-thread stripes; Routes on a stripe wait for each other | Waiting tasks per stripe (default 65,536), excluding the running one; the stripe queues themselves are unbounded, the limit is the executor's own count, and continuations may pass it |
 | RouteExecutors.virtualThreads() / VirtualThreadRouteExecutor(capacity[, routeCapacity]) | One lock-free mailbox and one virtual-thread consumer per Route with work | Unfinished tasks across all Routes (default 65,536, running included) and tasks waiting per Route behind the running one (default min(capacity, 1024)) |
 
 Both reject without blocking and keep running accepted tasks after close. The per-Route limit stops one flooding Route from taking the shared capacity; still rate-limit connections in the network pipeline. Same-Route inline execution bypasses capacity (recursion still consumes stack). A custom executor must guarantee per-Route mutual exclusion and order, never run rejected tasks, run accepted tasks exactly once, and handle close/submit races.

@@ -18,7 +18,13 @@ public interface MongoAccess {
     void initialize(String collection, List<IndexDefinition> indexes, SchemaMode schema);
     BsonDocument findOne(String collection, BsonDocument filter);
     List<BsonDocument> find(String collection, BsonDocument filter);
-    void insertMany(String collection, List<BsonDocument> documents);
+    /**
+     * Inserts every document whose {@code _id} is not stored yet, never replacing a stored one, and returns
+     * the positions, ascending, of the documents refused only because their {@code _id} already exists. Any
+     * other failure throws, and the documents it did not concern may be stored anyway: an insert of several
+     * documents is not atomic.
+     */
+    List<Integer> insertMany(String collection, List<BsonDocument> documents);
     /** Replaces by _id in order and returns how many documents already existed (matched). */
     long replaceMany(String collection, List<BsonDocument> documents, boolean upsert);
     void deleteMany(String collection, BsonDocument filter);

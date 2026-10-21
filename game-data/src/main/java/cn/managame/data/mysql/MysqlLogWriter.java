@@ -1,6 +1,7 @@
 package cn.managame.data.mysql;
 
 import cn.managame.data.codec.*;
+import cn.managame.data.mapper.SchemaMode;
 import cn.managame.data.meta.*;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
@@ -8,8 +9,10 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Internal log mapping bridge; does not use EntityMapper. The base table is managed externally; a missing
- * partition table is created from it on first use with {@code CREATE TABLE IF NOT EXISTS ... LIKE base}.
+ * Internal log mapping bridge; does not use EntityMapper. The base table is managed externally. Under
+ * {@link SchemaMode#CREATE} a missing partition table is created from it on first use with
+ * {@code CREATE TABLE IF NOT EXISTS ... LIKE base}; under VALIDATE and NONE this writer issues no DDL, so the
+ * deployment creates partitions ahead and a missing one fails its insert like any other save (D-LOG-02).
  */
 public final class MysqlLogWriter {
     private final Class<?> type;
@@ -18,13 +21,15 @@ public final class MysqlLogWriter {
     private final List<MysqlFieldMeta> fields;
     private final FieldAccessor partition;
     private final PartitionType partitionType;
-    private final ZoneId zone;
+    private final boolean createPartitions;
     /** Time partition suffix format, compiled once; null for VALUE partitions. */
     private final DateTimeFormatter suffixFormat;
     /** INSERT statement per physical table; the set of tables only grows (one per day/month/value). */
     private final Map<String, String> insertSql = new ConcurrentHashMap<>();
-    public MysqlLogWriter(Class<?> type, MysqlAccess access, JsonCodec json, BinaryCodec binary, ZoneId zone) {
-        this.type = type; this.access = access; this.zone = zone;
+    public MysqlLogWriter(Class<?> type, MysqlAccess access, JsonCodec json, BinaryCodec binary, ZoneId zone,
+                          SchemaMode schema) {
+        this.type = type; this.access = access;
+        createPartitions = Objects.requireNonNull(schema, "schema") == SchemaMode.CREATE;
         Table table = type.getAnnotation(Table.class);
         if (table == null) throw new IllegalArgumentException("Log requires @Table: " + type);
         baseTable = SqlNames.identifier(table.name());
@@ -75,7 +80,7 @@ public final class MysqlLogWriter {
         var rows = logs.stream().map(log -> MysqlEntityMeta.arguments(fields, log)).toList();
         try { access.transaction(tx -> tx.batchUpdate(sql, rows)); }
         catch (MysqlException missing) {
-            if (table.equals(baseTable) || !missingTable(missing)) throw missing;
+            if (!createPartitions || table.equals(baseTable) || !missingTable(missing)) throw missing;
             access.update("CREATE TABLE IF NOT EXISTS " + SqlNames.quote(table) + " LIKE " + SqlNames.quote(baseTable), new Object[0]);
             access.transaction(tx -> tx.batchUpdate(sql, rows));
         }
