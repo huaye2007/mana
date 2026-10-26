@@ -1,132 +1,88 @@
-<a id="项目协作规则"></a>
+# AGENTS.md
 
-# Project Collaboration Rules
+Guidance for coding agents working in this workspace. Read it before changing anything.
 
-**[English](AGENTS.md)** | [简体中文](AGENTS.zh-CN.md)
+## Workspace
 
-This file applies to the entire mana3 repository. For framework requirements, design feedback, fixes, and optimizations, proactively identify the appropriate contract layer and update its documentation. The user need not specify the document location each time.
+Four Maven projects with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on Java 25. The workspace is the git
+repository https://github.com/huaye2007/mana (branch `main`).
 
-<a id="项目基线"></a>
+| Project | Depends on | What it is |
+| --- | --- | --- |
+| `managame-common` | nothing | `Metadata`, `MetadataKey`, `FrameworkErrorCodes` |
+| `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
+| `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
+| `managame-rpc` | runtime | `RpcNode` / `RpcPeer`: calls between server processes |
 
-## Project baseline
+## Build and test
 
-- OGBS = Open Game Backend Specification. Start at the [OGBS documentation index](docs/ogbs/README.md).
-- Java uses JDK 25, Maven groupId `cn.managame`, packages `cn.managame.*`, and source directories under `cn/managame/`.
-- Java asynchronous APIs follow the component's callback contract. Do not introduce future-returning application APIs. Use concrete public classes when there is one implementation; add an interface/implementation split only for an actual substitution or integration requirement.
-- Organize subpackages by responsibility and separate public APIs from internal implementation. Create Maven modules for independent releases, dependency boundaries, or actual requirements, not mechanically for every subpackage.
-- Java Network publishes connection interfaces and Netty implementation together in `game-network`, organized into connection, connector, error, netty, and an independent http package. Attributes use Netty AttributeKey directly. NetworkServer/NetworkClient and their package-private implementation live in netty; HttpServer/HttpServerBuilder and package-private HTTP processing live in http without wrapping the long-connection entries or using ConnectionHandler. Do not retain custom attribute or Acceptor/Connector abstractions.
-- Java RPC uses node, message, call, transport, error, and netty packages. Preserve package-private internals; do not expand public APIs merely to split packages.
-- Java RPC Netty codecs and integration live in `cn.managame.rpc.netty` inside `game-rpc`, published in the same artifact as the RPC core.
-- Java Data publishes repositories, MySQL/MongoDB adapters, and MySQL logs in one `game-data` artifact. Keep semantic and Java development specifications separate. Clearly label unimplemented, unverified, and undecided capabilities.
+- Build each project on its own, in dependency order: common → network → runtime → rpc. A project sees another
+  only through the local Maven repository (`d:\maven_repository`), so after changing a lower project run
+  `mvn install` in it before building the projects above it.
+- Tests open real loopback sockets. Run them outside a sandbox, and give the JDK a writable directory for its
+  Unix-domain selector sockets:
 
-<a id="每个组件必须配套两层规范"></a>
+  ```bash
+  mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
+  ```
 
-## Every component requires two specification layers
+- Use `clean` after deleting or moving classes: stale classes left in `target/` are otherwise packaged into the
+  installed jar.
+- Tests are JUnit 5 under each project's `src/test/java`. Every behavior change comes with tests; network,
+  runtime and rpc tests use real connections rather than mocks.
 
-Every framework component, including game-core, game-network, game-runtime, game-data, game-rpc, and future components, must maintain two distinct specification documents:
+## Design principles
 
-1. **Specification**: language-independent responsibilities, models, observable behavior, ordering, lifecycle, ownership, errors, cancellation, time, and compatibility.
-2. **Java Development Specification**: Java public types/APIs, defaults, exceptions, packages and Maven dependencies, threading and resource mechanisms, internal constraints, extension integration, and validation requirements implementing the standard.
+These come from the maintainer. Follow them, and ask when a change would bend one.
 
-Both documents must link to each other and appear in docs/ogbs/README.md, the project README, and the component README. An API list, module README, or external record cannot replace a Java development specification. Do not mix Java-only requirements into the general standard. Shared Core follows the same separation.
+- **Think from first principles.** Design from the requirement, not from earlier implementations or other
+  projects' code.
+- **Discuss before large changes.** Propose the design and confirm intent before broad edits or API changes; the
+  maintainer has reverted rounds that went beyond what was asked. Small, clearly requested changes need no
+  discussion.
+- **Minimal state.** A class holds only the fields its job needs, like a plain Netty handler. Do not wrap what
+  Netty already exposes: socket options go through `ServerBootstrap` / `Bootstrap`, any `ChannelHandler` can be
+  added as is.
+- **The network layer never stores connections.** The application creates, maps, keeps and closes them
+  (`ConnectionMapper`). RPC is the deliberate exception: an `RpcPeer` holds its connections because calls travel
+  over them.
+- **Protocols belong to the application.** The framework defines no client packet format; `Dispatcher` takes any
+  decoded message plus reply and fail callbacks in the application's format.
+- **One entry for business logic.** Player requests, events, timers, RPC and HTTP all run through
+  `GameRuntime.execute`. Tasks with the same `(domain, routingKey)` run one at a time in submission order.
+- **Every context has the same fields:** `domain` (int), `routingKey` (long), `businessType` (byte),
+  `businessId` (long) and `Metadata`.
+- **The business decides routing per domain.** Each domain has its own `RouteExecutor` and its own
+  `RouteKeyResolver`: the key may come from the source context (a player's id) or from the message (a guild id
+  marked `@RouteKey`).
+- **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
+  `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
+  Registrations are immutable once built.
 
-Use docs/ogbs/OGBS-<Component>-1.0.md and docs/ogbs/OGBS-<Component>-Java-25-Specification-1.0.md. Maintain one contract with English and Chinese texts in the existing documents, not competing design versions.
+## Names and API conventions
 
-When adding a component or changing a public contract, update code, both specification layers, examples, and relevant tests in the same task. Unimplemented components also need both design documents, clearly marked as pending implementation; do not claim availability or verification. Follow the ownership rules below for internal-only optimizations; unchanged contracts do not require mechanical specification edits.
+- Names the maintainer chose; keep them: `GameTask` (not ContextTask), `GameContext.copyOf` (not "derive"),
+  `RequestContext` with `reply` / `fail`, `HttpExchange`, `RpcNode` (this process), `RpcPeer` (another process,
+  connected either way, possibly over several connections), `node.peer(id).call(...)`.
+- Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
+  of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
+  `IllegalStateException` (missing setting, wrong state).
+- Builders validate eagerly, and `build()` / `start()` return a ready object with no "not started" state.
+- Netty EventLoop callbacks never block, and business logic never runs on EventLoop or timer threads: they hand
+  work to the runtime.
 
-<a id="规范详细程度与设计记忆"></a>
+## Code style
 
-## Specification depth and design memory
+- Match the surrounding code: compact methods, Javadoc on public API that states behavior, threading and
+  failure modes, few inline comments, records for values, sealed interfaces for closed sets.
+- Log with `System.Logger`.
+- Keep test fixtures small and readable; tests double as usage examples (for instance
+  `PlayerGatewayExampleTest` shows an application-defined player gateway).
 
-Specifications must enable maintainers unfamiliar with the design background to continue implementation and review. Lists of clauses or method signatures are insufficient. For each public behavior, document as applicable:
+## Documentation
 
-- Preconditions, inputs/outputs, normal flow, and observable ordering.
-- Rejection, exception, cancellation, shutdown, and race outcomes; whether results imply execution or persistence.
-- Object/resource ownership, threads/contexts, defaults, and capacity/time boundaries.
-- At least one concrete example of an easily misunderstood boundary, with source and validation entry points.
-- Confirmed tradeoffs, rationale, and reconsideration triggers. Distinguish unimplemented, unverified, out-of-scope, and undecided items.
-
-Use existing confirmed clause IDs and text as the baseline. Discuss only new details or conflicts, without asking the user to reconfirm entire component designs. Do not revive design proposals superseded by later conclusions. When the user explicitly changes a design, update the rules, rationale, examples, code, and validation together.
-
-Documents must be self-contained and directly describe component responsibilities, current contracts, and design rationale. Cite repository specifications, source, or tests as supporting evidence; external discussion records must not serve as normative authority.
-
-Keep rationale and flow explanations in the relevant specification sections, not parallel Specs. Rationale explains clauses and does not independently add MUST requirements. Do not present undecided options as active requirements. Length does not establish completeness; real boundaries and failure paths do.
-
-Keep Java specifications concise: state the API contract (behavior, defaults, errors, threads, ownership) in short sentences, tables or lists. Do not narrate internal implementation steps, change history, migration notes or per-revision test counts; those belong in code comments, tests or commit messages.
-
-<a id="自主判断文档归属"></a>
-
-## Decide documentation ownership autonomously
-
-First ask whether other language implementations must obey the requirement, then whether observable behavior or interoperability is affected. Use this table; do not ask the user merely to classify documentation.
-
-| Change | Update |
-| --- | --- |
-| Language-independent responsibilities, models, ordering, lifecycle, ownership, backpressure, errors, cancellation, time, compatibility | The component's OGBS Specification |
-| Java public types, signatures, annotations, exceptions, defaults, threading, Netty integration, Maven dependencies, packages | The component's Java development / implementation specification |
-| General behavior changes needing Java implementation support | Both layers, consistently |
-| Cross-process fields, byte order, lengths, identifiers, encoding, protocol versions | RPC Wire Profile; related component and Java codec documentation when needed |
-| Shared Metadata, error codes, or conventions | The relevant OGBS Core section; component documents reference it |
-| Internal refactoring, algorithm replacement, optimization without public contract changes | Code and necessary tests; Java documentation only for durable implementation conventions |
-| Module composition, build/usage entry points, directories | Architecture overview, READMEs, dependency diagrams, links |
-
-Examples:
-
-- “Same-Route execution must be serial” belongs in the Runtime Specification; “bind contexts using ScopedValue” belongs in the Java implementation specification.
-- “Changing business time does not automatically reschedule tasks” belongs in the Runtime Specification; `GameTime.setClock(Clock)` belongs in the Java implementation specification.
-- Publishing RPC Netty code in game-rpc is a Java layout decision, not a requirement for other languages to depend on Netty.
-- Reducing allocations without changing behavior is usually an implementation optimization. Changes to queue capacity, rejection, or callback order require revisiting contracts and documentation ownership.
-
-Do not elevate Java techniques into cross-language requirements. Do not document general behavior only in Java documents, leaving other implementations unconstrained.
-
-<a id="文档位置与单一来源"></a>
-
-## Document locations and single source of truth
-
-| Content | Document |
-| --- | --- |
-| Network semantics | [OGBS Network Specification](docs/ogbs/OGBS-Network-1.0.md) |
-| Network Java implementation | [Network Java Development Specification](docs/ogbs/OGBS-Network-Java-25-Specification-1.0.md) |
-| RPC semantics | [OGBS RPC Specification](docs/ogbs/OGBS-RPC-1.0.md) |
-| RPC Java implementation | [RPC Java Development Specification](docs/ogbs/OGBS-RPC-Java-25-Specification-1.0.md) |
-| Runtime semantics | [OGBS Runtime Specification](docs/ogbs/OGBS-Runtime-1.0.md) |
-| Runtime Java implementation | [Runtime Java Development Specification](docs/ogbs/OGBS-Runtime-Java-25-Specification-1.0.md) |
-| Data semantics | [OGBS Data Specification](docs/ogbs/OGBS-Data-1.0.md) |
-| Data Java implementation | [Data Java Development Specification](docs/ogbs/OGBS-Data-Java-25-Specification-1.0.md) |
-| Shared Metadata and error-code standard | [OGBS Core](docs/ogbs/OGBS-Core-1.0.md) |
-| Core Java development | [Core Java Development Specification](docs/ogbs/OGBS-Core-Java-25-Specification-1.0.md) |
-| RPC byte layout | [RPC Wire Profile](docs/rpc-wire.md) |
-| Component composition and build entry points | [Architecture overview](docs/architecture.md), [Project README](README.md) |
-| Review process, evidence, probes and follow-up proposals (non-normative) | `docs/reviews/<date>-<topic>.md`; specifications keep only current contracts and clearly labeled limits, linking to the record |
-
-Maintain one primary definition per rule and reference it elsewhere. Core's standard and Java development specification are separate: maintain shared semantics and Java bindings in their respective documents. Do not create parallel specifications to avoid editing existing ones.
-
-<a id="处理后续需求的流程"></a>
-
-## Workflow for subsequent requirements
-
-1. Read the affected component's standard, language implementation specification, and code. Compare the request with the latest confirmed conclusions; do not use superseded design proposals.
-2. Decide documentation layers autonomously. Implement explicit requests directly; evaluate exploratory suggestions before making them active MUST requirements.
-3. For explicit design changes, update affected rules, code, examples, and tests. Fix code that violates an existing contract instead of rewriting the specification to hide the defect.
-4. Briefly explain and clarify only unresolved ambiguities materially affecting business behavior, compatibility, or scope. Decide document ownership, routine details, and inferable choices yourself.
-5. Remove obsolete wording and repair cross-references, source links, dependencies, and examples. Explain defaults, failure paths, boundaries, and compatibility effects, not just successful flows.
-6. After validation, briefly report results, documentation ownership, and verification. Never label unfinished work as implemented or verified.
-
-<a id="验证要求"></a>
-
-## Validation requirements
-
-- Test behavioral contracts, focusing on ordering, rejection, exceptions, shutdown, and concurrency boundaries. Do not test mechanical renames by restating implementation.
-- For package moves, module merges, Maven dependencies, or cross-component integration, run `mvn clean verify` from the root to prevent stale class files from hiding issues.
-- For local implementation changes, test the module and dependencies first, then integration appropriate to the impact.
-- For documentation-only changes, check naming, consistency, and local links. If complete runnable examples change, verify compilation and execution without repeatedly running unrelated tests.
-
-<a id="双语文档"></a>
-
-## Bilingual documentation
-
-- Every repository document requires complete English and Simplified Chinese versions. The existing unsuffixed `.md` path is the default English entry; its Chinese counterpart uses `.zh-CN.md` in the same directory, including README and AGENTS.
-- Put an English / Simplified Chinese language switch near the top. Link to matching-language documents within each language. Keep source-code and external links unchanged.
-- Both languages express the same contract, not separate designs. Update both in the same task, preserving clause IDs, API names, defaults, constraints, examples, failure paths, and implementation/validation status.
-- English-first display does not permit semantic changes or removal of Chinese detail. Resolve translation discrepancies against confirmed design and code, then fix both texts.
-- When adding or renaming documents/headings, check pairs, switches, local files, and section anchors. Preserve compatibility anchors for existing inbound links when needed.
+- Every project has a README in English (`README.md`, the default) and in Chinese (`README.zh-CN.md`). Each
+  links to the other on its first line.
+- When public API or behavior changes, update both READMEs in the same change and keep their code samples in
+  line with the current API.
+- Update this file when a convention changes.

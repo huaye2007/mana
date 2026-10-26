@@ -1,9 +1,0 @@
-package cn.managame.runtime.handler;
-
-import java.lang.annotation.*;
-@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD)
-public @interface HandlerMethod {
-    int domain() default 0;
-    String routeKey() default "";
-    String routeKeyMethod() default "";
-}
