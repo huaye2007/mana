@@ -11,7 +11,7 @@
 
 ## 快速开始
 
-节点 1 是排行榜服务器；节点 2 是游戏服务器，用两条连接连向节点 1。
+节点 1 是排行榜服务器；节点 2 是游戏服务器，用两条连接连向节点 1。请求由普通的 `@HandleMethod` 类处理：每个节点把玩家网关用的同一个 `Dispatcher` 交给 RpcNode，所以不管消息是谁发来的，处理器都只注册一次。
 
 ```java
 // 节点 1
@@ -19,16 +19,16 @@
 class RankService {
     @HandleMethod Integer rankOf(RankOf query) { return ranks.of(Context.current().businessId()); }
 }
-RpcNode rankNode = RpcNode.builder(rankRuntime)
+Dispatcher rankHandlers = Dispatcher.builder(rankRuntime).register(new RankService()).build();
+RpcNode rankNode = RpcNode.builder(rankHandlers)
         .nodeId(1).codec(codec).listen(7001)
-        .register(new RankService())
         .start();
 
 // 节点 2
-RpcNode gameNode = RpcNode.builder(gameRuntime)
+Dispatcher gameHandlers = Dispatcher.builder(gameRuntime).register(new Shop(), new Ranking(), new Mailbox()).build();
+RpcNode gameNode = RpcNode.builder(gameHandlers)
         .nodeId(2).codec(codec)
         .peer(1, new InetSocketAddress("10.0.0.1", 7001), 2)
-        .register(new Mailbox())
         .start();
 ```
 
@@ -92,16 +92,17 @@ public interface RpcCodec {
 
 ## 处理请求
 
-- 处理器是 `@Domain` 类中的 `@HandleMethod`，通过 `RpcNode.Builder.register(...)` 注册。节点有自己的 Dispatcher，与玩家的 Dispatcher 分开，因此客户端无法调到内部处理器。
+- 请求和通知由传给 `RpcNode.builder(...)` 的 `Dispatcher` 中的处理器执行，通常就是业务玩家网关用的那一个，连同它的拦截器。调用结果在该 Dispatcher 的 runtime 上执行。
 - 请求带着调用方的上下文：domain、路由键、业务类型与 id、metadata。在接收方，它在处理器所在的 domain 中执行，路由键由该 domain 的 resolver 决定，并以调用方的业务身份、带着调用方的 metadata 执行。因此用 `RouteKeys.businessId()` 路由的玩家 domain，会在请求所针对的那个玩家上执行。
 - 返回非 null 即为应答；参数带 `HandleContext` 的处理器可以稍后通过它应答。通知（notice）分发时没有应答方式。
 - `HandleContext.source()` 是一个 `RpcSource`：包含调用方的各字段、`nodeId()`，以及用于回调调用方节点的 `peer()`。
-- 通过 `RpcNode.Builder.intercept(...)` 添加的 `HandleInterceptor` 在每个处理器执行前后运行，规则与 Dispatcher 相同（见 managame-runtime）；`before` 返回的错误码会送到调用方的失败回调。例如只允许部分节点发来请求：
+- 哪些处理器玩家可以调到由业务决定：客户端协议只解码玩家允许发送的消息，Dispatcher 上的拦截器也可以通过来源区分对端节点和玩家。`before` 返回的错误码会送到调用方的失败回调：
 
   ```java
-  class TrustedNodes implements HandleInterceptor {
+  class PeersOnlyCheck implements HandleInterceptor {
       public int before(HandleContext context, Method handler, Object message) {
-          return trusted.contains(((RpcSource) context.source()).nodeId()) ? SUCCESS : NOT_TRUSTED;
+          return handler.isAnnotationPresent(PeersOnly.class) && !(context.source() instanceof RpcSource)
+                  ? HANDLER_NOT_FOUND : SUCCESS;
       }
   }
   ```
@@ -118,14 +119,14 @@ public interface RpcCodec {
 
 ## 配置
 
+`RpcNode.builder(dispatcher)` 传入业务的 Dispatcher，然后：
+
 | Builder 方法 | 默认值 | 含义 |
 | --- | --- | --- |
 | `nodeId(int)` | 必填 | 本节点的 id，对端以此识别它 |
 | `codec(RpcCodec)` | 必填 | 消息编解码，所有节点一致 |
 | `listen(port)` / `listen(address)` | 不监听 | 接受对端的连接；只发起调用的节点可以不监听 |
 | `peer(id, address[, connections])` | 无 | 要连接的节点，一条或多条连接 |
-| `register(Object...)` | 无 | 声明了 `@HandleMethod` 的对象，处理请求和通知 |
-| `intercept(HandleInterceptor...)` | 无 | 作用于所有请求和通知处理器的拦截器 |
 | `timeout(Duration)` | 5 秒 | 调用等待应答的时长 |
 | `idleTimeout(Duration)` | 15 秒 | 连接多久收不到任何数据就关闭；空闲达到它的三分之一时发送 Ping。所有节点必须一致 |
 | `maxFrameLength(int)` | 8 MiB | 帧的最大长度 |

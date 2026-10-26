@@ -15,7 +15,9 @@ Depends on managame-runtime (and through it managame-network and managame-common
 
 ## Quick start
 
-Node 1 is a rank server; node 2, a game server, connects to it with two connections.
+Node 1 is a rank server; node 2, a game server, connects to it with two connections. Requests are handled by
+ordinary `@HandleMethod` classes: each node gives its RpcNode the same `Dispatcher` its player gateway uses, so a
+handler is registered once whoever sends the message.
 
 ```java
 // Node 1
@@ -23,16 +25,16 @@ Node 1 is a rank server; node 2, a game server, connects to it with two connecti
 class RankService {
     @HandleMethod Integer rankOf(RankOf query) { return ranks.of(Context.current().businessId()); }
 }
-RpcNode rankNode = RpcNode.builder(rankRuntime)
+Dispatcher rankHandlers = Dispatcher.builder(rankRuntime).register(new RankService()).build();
+RpcNode rankNode = RpcNode.builder(rankHandlers)
         .nodeId(1).codec(codec).listen(7001)
-        .register(new RankService())
         .start();
 
 // Node 2
-RpcNode gameNode = RpcNode.builder(gameRuntime)
+Dispatcher gameHandlers = Dispatcher.builder(gameRuntime).register(new Shop(), new Ranking(), new Mailbox()).build();
+RpcNode gameNode = RpcNode.builder(gameHandlers)
         .nodeId(2).codec(codec)
         .peer(1, new InetSocketAddress("10.0.0.1", 7001), 2)
-        .register(new Mailbox())
         .start();
 ```
 
@@ -100,8 +102,8 @@ Failure codes a call can receive:
 
 ## Handling requests
 
-- Handlers are `@HandleMethod`s in `@Domain` classes, registered with `RpcNode.Builder.register(...)`. The node
-  keeps its own Dispatcher, separate from the one for players, so clients cannot reach internal handlers.
+- Requests and notices run on the handlers of the `Dispatcher` given to `RpcNode.builder(...)`, normally the one the
+  application's player gateway uses too, with its interceptors. Call results run on that Dispatcher's runtime.
 - A request carries the caller's context: domain, routing key, business type and id, and metadata. At the
   receiver it runs in its handler's domain, on the routing key that domain's resolver finds, acting for the
   caller's business identity with the caller's metadata. A player domain keyed by `RouteKeys.businessId()` thus
@@ -110,14 +112,15 @@ Failure codes a call can receive:
   dispatched without a way to answer.
 - `HandleContext.source()` is an `RpcSource`: the caller's fields, `nodeId()`, and `peer()` to call the calling
   node back.
-- `HandleInterceptor`s added with `RpcNode.Builder.intercept(...)` run before and after every handler, as they do
-  on a Dispatcher (see managame-runtime); a code returned by `before` reaches the caller's failure callback. For
-  example, only some nodes may send a request:
+- Which handlers players may reach is the application's call: its client protocol decodes only the messages
+  players may send, and an interceptor on the Dispatcher can tell peers from players by the source. A code
+  `before` returns reaches the caller's failure callback:
 
   ```java
-  class TrustedNodes implements HandleInterceptor {
+  class PeersOnlyCheck implements HandleInterceptor {
       public int before(HandleContext context, Method handler, Object message) {
-          return trusted.contains(((RpcSource) context.source()).nodeId()) ? SUCCESS : NOT_TRUSTED;
+          return handler.isAnnotationPresent(PeersOnly.class) && !(context.source() instanceof RpcSource)
+                  ? HANDLER_NOT_FOUND : SUCCESS;
       }
   }
   ```
@@ -147,14 +150,14 @@ Failure codes a call can receive:
 
 ## Configuration
 
+`RpcNode.builder(dispatcher)` takes the application's Dispatcher; then:
+
 | Builder method | Default | Meaning |
 | --- | --- | --- |
 | `nodeId(int)` | required | This node's id, which its peers know it by |
 | `codec(RpcCodec)` | required | Message encoding, the same on every node |
 | `listen(port)` / `listen(address)` | not listening | Accepts peers' connections; a node that only calls need not listen |
 | `peer(id, address[, connections])` | none | A node to connect to, with one or more connections |
-| `register(Object...)` | none | Objects declaring `@HandleMethod`s for requests and notices |
-| `intercept(HandleInterceptor...)` | none | Interceptors around every request and notice handler |
 | `timeout(Duration)` | 5 seconds | How long a call waits for its answer |
 | `idleTimeout(Duration)` | 15 seconds | How long a connection may receive nothing before it is closed; Pings go out after a third of it. The same on every node |
 | `maxFrameLength(int)` | 8 MiB | Largest frame |

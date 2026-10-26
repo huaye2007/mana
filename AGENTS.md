@@ -37,6 +37,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 
 - **Think from first principles.** Design from the requirement, not from earlier implementations or other
   projects' code.
+- **Projects stay independent.** A project depends only on the projects below it and never mentions the ones
+  above: runtime's code and docs say nothing about rpc, network's nothing about runtime. The one shared place is
+  common's `FrameworkErrorCodes`, the code table every project draws from.
 - **Discuss before large changes.** Propose the design and confirm intent before broad edits or API changes; the
   maintainer has reverted rounds that went beyond what was asked. Small, clearly requested changes need no
   discussion.

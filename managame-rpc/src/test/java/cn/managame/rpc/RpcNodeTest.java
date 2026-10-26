@@ -38,6 +38,10 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -86,6 +90,11 @@ class RpcNodeTest {
     record Deliver(String text) implements Serializable {}
     record AskRank() {}
 
+    /** The application's own marker for handlers only peers may call. */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.METHOD)
+    @interface PeersOnly {}
+
     private final GameRuntime rankRuntime = GameRuntime.builder()
             .domain(RANK, RouteExecutors.striped(1), RouteKeys.constant(0)).build();
     private final GameRuntime gameRuntime = GameRuntime.builder()
@@ -97,7 +106,7 @@ class RpcNodeTest {
 
     @Domain(RANK)
     class RankService {
-        @HandleMethod String rankOf(HandleContext context, RankOf query) {
+        @PeersOnly @HandleMethod String rankOf(HandleContext context, RankOf query) {
             return "rank of " + context.businessId() + " asked by node " + ((RpcSource) context.source()).nodeId()
                     + " " + context.metadata().get(TRACE);
         }
@@ -129,15 +138,24 @@ class RpcNodeTest {
         rankRuntime.close();
     }
 
-    private RpcNode startRank(int port) {
-        return RpcNode.builder(rankRuntime).nodeId(1).codec(CODEC).listen(new InetSocketAddress("127.0.0.1", port))
-                .idleTimeout(idleTimeout).register(new RankService()).start();
+    private Dispatcher rankHandlers(HandleInterceptor... interceptors) {
+        return Dispatcher.builder(rankRuntime).intercept(interceptors).register(new RankService()).build();
+    }
+
+    private RpcNode startRank(int port) { return startRank(port, rankHandlers()); }
+
+    private RpcNode startRank(int port, Dispatcher handlers) {
+        return RpcNode.builder(handlers).nodeId(1).codec(CODEC).listen(new InetSocketAddress("127.0.0.1", port))
+                .idleTimeout(idleTimeout).start();
     }
 
     private RpcNode startGame(int rankPort, int connections, Duration timeout) {
-        return RpcNode.builder(gameRuntime).nodeId(2).codec(CODEC).timeout(timeout).idleTimeout(idleTimeout)
-                .peer(1, new InetSocketAddress("127.0.0.1", rankPort), connections)
-                .register(new Mailbox()).start();
+        return startGame(rankPort, connections, timeout, Dispatcher.builder(gameRuntime).register(new Mailbox()).build());
+    }
+
+    private RpcNode startGame(int rankPort, int connections, Duration timeout, Dispatcher handlers) {
+        return RpcNode.builder(handlers).nodeId(2).codec(CODEC).timeout(timeout).idleTimeout(idleTimeout)
+                .peer(1, new InetSocketAddress("127.0.0.1", rankPort), connections).start();
     }
 
     private void connect(Duration timeout) throws InterruptedException {
@@ -172,18 +190,23 @@ class RpcNodeTest {
         assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers));
     }
 
-    @Test void aPlayerRequestIsAnsweredFromTheCallback() throws Exception {
+    @Test void oneDispatcherServesPlayersAndPeersAndAPlayerIsAnsweredFromACallback() throws Exception {
         @Domain(PLAYER) class Ranking {
             @HandleMethod String ask(HandleContext request, AskRank ask) {
                 game.peer(1).call(new RankOf(), (Context c, String rank) -> request.reply(rank), (c, errorCode) -> request.fail(errorCode));
                 return null;
             }
         }
-        connect(RpcNode.DEFAULT_TIMEOUT);
-        Dispatcher players = Dispatcher.builder(gameRuntime).register(new Ranking()).build();
-        players.dispatch(GameContext.of(0, 0, ROLE, 7), new AskRank(),
+        Dispatcher handlers = Dispatcher.builder(gameRuntime).register(new Ranking(), new Mailbox()).build();
+        rank = startRank(0);
+        game = startGame(rank.port(), 1, RpcNode.DEFAULT_TIMEOUT, handlers);
+        await(() -> game.peer(1).isConnected() && rank.peer(2).isConnected());
+
+        handlers.dispatch(GameContext.of(0, 0, ROLE, 7), new AskRank(), // a player's request, as a gateway would pass it
                 result -> answers.add("reply " + result), errorCode -> answers.add("fail " + errorCode));
         assertEquals("reply rank of 7 asked by node 2 null", next(answers));
+        rank.peer(2).notice(GameContext.of(RANK, 0, ROLE, 7), new Deliver("mail")); // a peer's, on the same handlers
+        assertEquals("delivered mail on " + PLAYER + ":7", next(handled));
     }
 
     @Test void callsGoBothWaysOverTheConnectionsAPeerOpened() throws Exception {
@@ -211,20 +234,21 @@ class RpcNodeTest {
         assertEquals(IntStream.range(0, 50).mapToObj(i -> "n" + i + " for 1001").toList(), received);
     }
 
-    @Test void interceptorsSeeTheCallingNode() throws Exception {
-        HandleInterceptor guard = new HandleInterceptor() {
+    @Test void anInterceptorKeepsPeersOnlyHandlersFromPlayers() throws Exception {
+        HandleInterceptor peersOnly = new HandleInterceptor() {
             @Override public int before(HandleContext context, Method handler, Object message) {
-                return ((RpcSource) context.source()).nodeId() == 2 && !(message instanceof Boom) ? SUCCESS : 9001;
+                return handler.isAnnotationPresent(PeersOnly.class) && !(context.source() instanceof RpcSource) ? 9001 : SUCCESS;
             }
         };
-        rank = RpcNode.builder(rankRuntime).nodeId(1).codec(CODEC).listen(new InetSocketAddress("127.0.0.1", 0))
-                .intercept(guard).register(new RankService()).start();
+        Dispatcher handlers = rankHandlers(peersOnly);
+        rank = startRank(0, handlers);
         game = startGame(rank.port(), 1, RpcNode.DEFAULT_TIMEOUT);
         await(() -> game.peer(1).isConnected());
         callAsPlayer(new RankOf());
-        assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers));
-        callAsPlayer(new Boom());
-        assertEquals(PLAYER + ":1001 fail 9001", next(answers), "the interceptor's code reaches the caller");
+        assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers), "a peer may ask");
+        handlers.dispatch(GameContext.of(0, 0, ROLE, 1001), new RankOf(),
+                result -> answers.add("reply " + result), errorCode -> answers.add("fail " + errorCode));
+        assertEquals("fail 9001", next(answers), "a player may not");
     }
 
     @Test void failuresAtThePeerCarryItsCode() throws Exception {
@@ -268,7 +292,8 @@ class RpcNodeTest {
 
     @Test void aPeerAnsweringWithAnotherNodeIdIsNotJoined() throws Exception {
         rank = startRank(0);
-        game = RpcNode.builder(gameRuntime).nodeId(2).codec(CODEC).peer(5, new InetSocketAddress("127.0.0.1", rank.port())).start();
+        game = RpcNode.builder(Dispatcher.builder(gameRuntime).build()).nodeId(2).codec(CODEC)
+                .peer(5, new InetSocketAddress("127.0.0.1", rank.port())).start();
         Thread.sleep(300);
         assertFalse(game.peer(5).isConnected(), "node 1 answered, not node 5");
         assertFalse(game.peer(1).isConnected());
@@ -385,12 +410,13 @@ class RpcNodeTest {
         assertThrows(IllegalArgumentException.class, () -> game.peer(1).call(player, new Object(), (c, r) -> {}, null), "unencodable");
         assertThrows(IllegalStateException.class, () -> game.peer(1).call(new RankOf(), (c, r) -> {}), "no task to call from");
 
-        assertThrows(IllegalStateException.class, () -> RpcNode.builder(gameRuntime).codec(CODEC).start(), "no node id");
-        assertThrows(IllegalStateException.class, () -> RpcNode.builder(gameRuntime).nodeId(3).start(), "no codec");
-        assertThrows(IllegalStateException.class, () -> RpcNode.builder(gameRuntime).nodeId(3).codec(CODEC).peer(3, NOWHERE).start());
-        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(gameRuntime).peer(1, NOWHERE).peer(1, NOWHERE));
-        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(gameRuntime).peer(1, NOWHERE, 0));
-        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(gameRuntime).idleTimeout(Duration.ofMillis(2)));
-        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(rankRuntime).register(new RankService(), new RankService()));
+        Dispatcher none = Dispatcher.builder(gameRuntime).build();
+        assertThrows(NullPointerException.class, () -> RpcNode.builder(null), "no dispatcher");
+        assertThrows(IllegalStateException.class, () -> RpcNode.builder(none).codec(CODEC).start(), "no node id");
+        assertThrows(IllegalStateException.class, () -> RpcNode.builder(none).nodeId(3).start(), "no codec");
+        assertThrows(IllegalStateException.class, () -> RpcNode.builder(none).nodeId(3).codec(CODEC).peer(3, NOWHERE).start());
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(none).peer(1, NOWHERE).peer(1, NOWHERE));
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(none).peer(1, NOWHERE, 0));
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(none).idleTimeout(Duration.ofMillis(2)));
     }
 }

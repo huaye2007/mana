@@ -21,7 +21,6 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameTask;
 import cn.managame.runtime.annotation.HandleMethod;
 import cn.managame.runtime.dispatch.Dispatcher;
-import cn.managame.runtime.dispatch.HandleInterceptor;
 import cn.managame.rpc.RpcFrame.Failure;
 import cn.managame.rpc.RpcFrame.Hello;
 import cn.managame.rpc.RpcFrame.Ping;
@@ -53,17 +52,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * This process in a cluster, calling and called by its {@link RpcPeer}s, with all business logic running through
- * the runtime. Requests are handled by {@link HandleMethod}s, as player messages are:
+ * the runtime. Requests are messages like any other: the application's {@link Dispatcher}, the one its player
+ * gateway uses too, runs them on their {@link HandleMethod}s:
  *
  * <pre>{@code
  * @Domain(RANK)
  * class RankService {
  *     @HandleMethod Integer rankOf(RankOf query) { return ranks.of(Context.current().businessId()); }
  * }
- * RpcNode node = RpcNode.builder(runtime)
+ * Dispatcher dispatcher = Dispatcher.builder(runtime).register(rankService, shop).build();
+ * RpcNode node = RpcNode.builder(dispatcher)
  *         .nodeId(1).codec(codec).listen(7001)
  *         .peer(2, new InetSocketAddress("10.0.0.2", 7001))
- *         .register(rankService)
  *         .start();
  *
  * // On node 2, in a player's request handler:
@@ -115,7 +115,7 @@ public final class RpcNode implements AutoCloseable {
         nodeId = b.nodeId;
         runtime = b.runtime;
         codec = b.codec;
-        dispatcher = b.handlers.build();
+        dispatcher = b.dispatcher;
         timeoutNanos = b.timeout.toNanos();
         idleTimeout = b.idleTimeout;
         timeouts = new HashedWheelTimer(Thread.ofPlatform().name("rpc-timeout").daemon().factory(),
@@ -148,7 +148,12 @@ public final class RpcNode implements AutoCloseable {
                 .addLast("rpc-frames", frames);
     }
 
-    public static Builder builder(GameRuntime runtime) { return new Builder(runtime); }
+    /**
+     * A node whose requests and notices run on {@code dispatcher}'s handlers, and whose call results run on its
+     * runtime. A handler tells a peer's request by its {@code HandleContext.source()}, an {@link RpcSource}; an
+     * interceptor can keep handlers meant only for peers from players that way.
+     */
+    public static Builder builder(Dispatcher dispatcher) { return new Builder(dispatcher); }
 
     public int nodeId() { return nodeId; }
 
@@ -407,8 +412,8 @@ public final class RpcNode implements AutoCloseable {
     private record Remote(SocketAddress address, int connections) {}
 
     public static final class Builder {
+        private final Dispatcher dispatcher;
         private final GameRuntime runtime;
-        private final Dispatcher.Builder handlers;
         private Integer nodeId;
         private RpcCodec codec;
         private SocketAddress listen;
@@ -417,9 +422,9 @@ public final class RpcNode implements AutoCloseable {
         private Duration idleTimeout = DEFAULT_IDLE_TIMEOUT;
         private int maxFrameLength = DEFAULT_MAX_FRAME_LENGTH;
 
-        private Builder(GameRuntime runtime) {
-            this.runtime = Objects.requireNonNull(runtime, "runtime");
-            handlers = Dispatcher.builder(runtime);
+        private Builder(Dispatcher dispatcher) {
+            this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+            runtime = dispatcher.runtime();
         }
 
         /** Required: this node's id, which its peers know it by. */
@@ -444,18 +449,6 @@ public final class RpcNode implements AutoCloseable {
                 throw new IllegalArgumentException("Duplicate peer " + id);
             return this;
         }
-
-        /**
-         * Registers every {@link HandleMethod} of each object to handle the requests and notices peers send, as
-         * {@link Dispatcher.Builder#register} does.
-         */
-        public Builder register(Object... targets) { handlers.register(targets); return this; }
-
-        /**
-         * Interceptors for every request and notice handler, as {@link Dispatcher.Builder#intercept} adds them; a
-         * handler's {@code HandleContext.source()} is the request's {@link RpcSource}.
-         */
-        public Builder intercept(HandleInterceptor... interceptors) { handlers.intercept(interceptors); return this; }
 
         /** How long a call waits for its answer; 5 seconds by default. */
         public Builder timeout(Duration timeout) {

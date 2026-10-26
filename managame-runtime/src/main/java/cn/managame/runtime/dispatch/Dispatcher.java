@@ -23,8 +23,9 @@ import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 
 /**
- * Runs messages on their {@link HandleMethod} handlers, whatever protocol carried them. Handlers are registered
- * once, at startup, by passing the objects that declare them:
+ * Runs messages on their {@link HandleMethod} handlers, whatever protocol carried them, so one Dispatcher can serve
+ * every entry of an application. Handlers are registered once, at startup, by passing the objects that declare
+ * them:
  *
  * <pre>{@code
  * Dispatcher dispatcher = Dispatcher.builder(runtime).register(shop, guildSystem, login).build();
@@ -54,6 +55,9 @@ public final class Dispatcher {
     }
 
     public static Builder builder(GameRuntime runtime) { return new Builder(runtime); }
+
+    /** The runtime the handlers run on. */
+    public GameRuntime runtime() { return runtime; }
 
     /** Dispatches a message that expects no answer. */
     public void dispatch(Context source, Object message) { dispatch(source, message, null, null); }

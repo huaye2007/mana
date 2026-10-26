@@ -6,11 +6,10 @@
 `GameTask` 的形式经 `GameRuntime.execute` 执行，并带着一个说明"在哪执行、为谁执行"的上下文。domain 和路由键都相同的任务按提交顺序逐个执行，其余的并行执行。
 
 ```
-玩家数据包 ──── Dispatcher ──┐
+消息 ────────── Dispatcher ──┐
 事件 ────────── EventBus ────┤
 定时器 ──────── GameTimer ───┼──> GameRuntime.execute(context, task) ──> 该 domain 的 RouteExecutor
-HTTP ────────── HttpRoutes ──┤                                           同一 (domain, routingKey) 逐个执行
-其它服务器 ──── RpcNode ─────┘    (managame-rpc)
+HTTP ────────── HttpRoutes ──┘                                           同一 (domain, routingKey) 逐个执行
 ```
 
 依赖 managame-common 和 managame-network（HTTP 用到）。
@@ -163,7 +162,7 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
 - `before` 按拦截器添加的顺序执行。返回 `SUCCESS`（0）继续；返回其它错误码则以该错误码应答失败（单向消息直接丢弃），之后的拦截器、处理器以及所有 `after` 都不再执行。
 - `after` 在处理器返回或抛异常之后、结果发出之前按相反顺序执行。它拿到处理器的返回值（void 或稍后应答时为 null）以及处理器抛出的异常（如果有）。某个 `after` 抛异常时，其余的 `after` 仍会执行。
 - `before` 或 `after` 抛异常时，和处理器抛异常一样，以 `RUNTIME_EXECUTION_ERROR` 应答失败。
-- RPC 处理器通过 `RpcNode.Builder.intercept(...)` 添加拦截器。
+- 把消息交给同一个 Dispatcher 的所有入口共用它的处理器和拦截器；处理器或拦截器可以通过 `HandleContext.source()`（入口传入的上下文）判断消息从哪里来。
 
 ## 事件
 
@@ -272,7 +271,7 @@ class JsonCodec implements HttpCodec {
 
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行。未注册的 domain 抛 `IllegalArgumentException`。
 - 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
-- `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、RPC 节点、定时器），再关闭 runtime。
+- `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、定时器等），再关闭 runtime。
 
 ## 游戏时间
 

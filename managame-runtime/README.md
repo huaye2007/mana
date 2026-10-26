@@ -8,11 +8,10 @@ context that says where and for whom it runs. Tasks with the same domain and rou
 submission order; everything else runs in parallel.
 
 ```
-player packets ── Dispatcher ──┐
+messages ──────── Dispatcher ──┐
 events ────────── EventBus ────┤
 timers ────────── GameTimer ───┼──> GameRuntime.execute(context, task) ──> the domain's RouteExecutor
-HTTP ──────────── HttpRoutes ──┤                                            one at a time per (domain, routingKey)
-other servers ─── RpcNode ─────┘    (managame-rpc)
+HTTP ──────────── HttpRoutes ──┘                                            one at a time per (domain, routingKey)
 ```
 
 Depends on managame-common and managame-network (for HTTP).
@@ -196,7 +195,8 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
   `after` runs even when one throws.
 - An exception from `before` or `after` fails the request with `RUNTIME_EXECUTION_ERROR`, as one from the handler
   does.
-- RPC handlers take interceptors through `RpcNode.Builder.intercept(...)`.
+- Every entry that hands messages to the same Dispatcher shares its handlers and interceptors; a handler or
+  interceptor tells where a message came from by `HandleContext.source()`, the context the entry passed.
 
 ## Events
 
@@ -325,7 +325,7 @@ shape error bodies.
   `IllegalArgumentException`.
 - What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
 - `shutdown()` refuses new tasks while accepted ones still run; `awaitTermination(timeout)` waits for them;
-  `close()` does both and must not be called from a task. Close the entries (servers, RPC node, timer) before the
+  `close()` does both and must not be called from a task. Close the entries (servers, timers and the like) before the
   runtime.
 
 ## Game time
