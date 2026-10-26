@@ -24,6 +24,7 @@ import cn.managame.runtime.dispatch.Dispatcher;
 import cn.managame.runtime.dispatch.HandleInterceptor;
 import cn.managame.rpc.RpcFrame.Failure;
 import cn.managame.rpc.RpcFrame.Hello;
+import cn.managame.rpc.RpcFrame.Ping;
 import cn.managame.rpc.RpcFrame.Request;
 import cn.managame.rpc.RpcFrame.Response;
 import cn.managame.rpc.RpcLink.Pending;
@@ -31,6 +32,9 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.timeout.IdleState;
+import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.AttributeKey;
 import io.netty.util.HashedWheelTimer;
 import java.io.IOException;
@@ -71,6 +75,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * peers open to it. Each connection starts with both sides sending a Hello naming their node, after which it
  * carries calls both ways.
  *
+ * <p>Either side of a connection that has written nothing for a third of the idle timeout sends a Ping, so a live
+ * connection is never silent for long. One that has received nothing for the whole idle timeout, such as one to a
+ * machine that went down without closing it, is taken as dead and closed: its calls fail with RPC_UNAVAILABLE at
+ * once, and a connection this node opened is reconnected.
+ *
  * <p>A request runs at the receiver in its handler's domain, on the routing key that domain's resolver finds,
  * acting for the caller's business identity with the caller's metadata; the handler's {@code HandleContext.source()}
  * is an {@link RpcSource}. The result, or the failure, comes back as a task on the calling context's route, so a
@@ -83,6 +92,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class RpcNode implements AutoCloseable {
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(5);
     public static final int DEFAULT_MAX_FRAME_LENGTH = 8 * 1024 * 1024;
+    public static final Duration DEFAULT_IDLE_TIMEOUT = Duration.ofSeconds(15);
     static final GameContext NO_CALLER = GameContext.of(0, 0);
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
     private static final AttributeKey<RpcLink> LINK = AttributeKey.valueOf("cn.managame.rpc.link");
@@ -92,6 +102,7 @@ public final class RpcNode implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final Map<Integer, RpcPeer> peers = new ConcurrentHashMap<>();
     private final long timeoutNanos;
+    private final Duration idleTimeout;
     private final RpcFrameCodec frames = new RpcFrameCodec();
     private final AtomicInteger requestIds = new AtomicInteger();
     private final HashedWheelTimer timeouts;
@@ -106,6 +117,7 @@ public final class RpcNode implements AutoCloseable {
         codec = b.codec;
         dispatcher = b.handlers.build();
         timeoutNanos = b.timeout.toNanos();
+        idleTimeout = b.idleTimeout;
         timeouts = new HashedWheelTimer(Thread.ofPlatform().name("rpc-timeout").daemon().factory(),
                 10, TimeUnit.MILLISECONDS, 512, false, -1);
         clientGroup = NetworkTransports.newEventLoopGroup(0, "rpc-client");
@@ -127,8 +139,13 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
+    /** Idle detection first, so that any bytes received count, then the framing and the frames. */
     private ConnectionInitializer.Builder pipeline(int maxFrameLength) {
-        return ConnectionInitializer.tcp().addLast(NetworkHandlers.lengthFieldFraming(maxFrameLength)).addLast("rpc-frames", frames);
+        long idle = idleTimeout.toNanos();
+        return ConnectionInitializer.tcp()
+                .addLast("rpc-idle", () -> new IdleStateHandler(idle, idle / 3, 0, TimeUnit.NANOSECONDS))
+                .addLast(NetworkHandlers.lengthFieldFraming(maxFrameLength))
+                .addLast("rpc-frames", frames);
     }
 
     public static Builder builder(GameRuntime runtime) { return new Builder(runtime); }
@@ -226,9 +243,9 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
-    /** A frame from a peer: its Hello first, then requests and answers either way. */
+    /** A frame from a peer: its Hello first, then requests and answers either way; Pings at any time. */
     private void receive(RpcLink link, RpcFrame frame) {
-        if (!(frame instanceof Hello) && link.peer == null) {
+        if (link.peer == null && !(frame instanceof Hello || frame instanceof Ping)) {
             release(frame);
             LOG.log(Level.WARNING, "Closing RPC connection " + link + ": a frame came before the Hello");
             link.connection.close();
@@ -262,6 +279,7 @@ public final class RpcNode implements AutoCloseable {
                 pending.cancelTimeout();
                 fail(pending, failure.errorCode());
             }
+            case Ping ping -> {} // receiving it was the point
         }
     }
 
@@ -365,6 +383,17 @@ public final class RpcNode implements AutoCloseable {
             failAll(link, closed ? RPC_NODE_CLOSED : RPC_UNAVAILABLE);
         }
 
+        /** Pings when this side has written nothing for a while; closes when the other side has sent nothing. */
+        @Override public void onEvent(Connection connection, Object event) {
+            if (!(event instanceof IdleStateEvent idle)) return;
+            if (idle.state() == IdleState.WRITER_IDLE) {
+                connection.write(Ping.INSTANCE);
+            } else if (idle.state() == IdleState.READER_IDLE) {
+                LOG.log(Level.WARNING, "Closing RPC connection " + connection + ": nothing received for " + idleTimeout);
+                connection.close();
+            }
+        }
+
         @Override public void onException(Connection connection, Throwable cause) {
             if (cause instanceof IOException) {
                 if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, "RPC connection failed; " + connection + "; " + cause);
@@ -385,6 +414,7 @@ public final class RpcNode implements AutoCloseable {
         private SocketAddress listen;
         private final Map<Integer, Remote> peers = new LinkedHashMap<>();
         private Duration timeout = DEFAULT_TIMEOUT;
+        private Duration idleTimeout = DEFAULT_IDLE_TIMEOUT;
         private int maxFrameLength = DEFAULT_MAX_FRAME_LENGTH;
 
         private Builder(GameRuntime runtime) {
@@ -431,6 +461,17 @@ public final class RpcNode implements AutoCloseable {
         public Builder timeout(Duration timeout) {
             if (timeout.toMillis() < 1) throw new IllegalArgumentException("timeout must be at least one millisecond");
             this.timeout = timeout;
+            return this;
+        }
+
+        /**
+         * How long a connection may receive nothing before it is taken as dead and closed; 15 seconds by default.
+         * Each side sends a Ping when it has written nothing for a third of it. Every node of the cluster must use
+         * the same value.
+         */
+        public Builder idleTimeout(Duration timeout) {
+            if (timeout.toMillis() < 3) throw new IllegalArgumentException("idleTimeout must be at least 3 milliseconds");
+            idleTimeout = timeout;
             return this;
         }
 

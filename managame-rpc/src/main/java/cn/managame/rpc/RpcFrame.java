@@ -14,4 +14,9 @@ sealed interface RpcFrame {
     record Response(int requestId, ByteBuf body) implements RpcFrame {}
 
     record Failure(int requestId, int errorCode) implements RpcFrame {}
+
+    /** Sent by a side that has written nothing for a while, so that the other side knows it is alive. */
+    record Ping() implements RpcFrame {
+        static final Ping INSTANCE = new Ping();
+    }
 }

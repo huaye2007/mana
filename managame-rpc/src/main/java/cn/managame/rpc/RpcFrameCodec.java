@@ -4,6 +4,7 @@ import cn.managame.Metadata;
 import cn.managame.runtime.GameContext;
 import cn.managame.rpc.RpcFrame.Failure;
 import cn.managame.rpc.RpcFrame.Hello;
+import cn.managame.rpc.RpcFrame.Ping;
 import cn.managame.rpc.RpcFrame.Request;
 import cn.managame.rpc.RpcFrame.Response;
 import io.netty.buffer.ByteBuf;
@@ -21,13 +22,14 @@ import java.util.List;
  * <li>Request: requestId int, then the caller's domain int, routingKey long, businessType byte, businessId long,
  * metadata length unsigned short and metadata bytes, then the body;</li>
  * <li>Response: requestId int, body;</li>
- * <li>Failure: requestId int, errorCode int.</li>
+ * <li>Failure: requestId int, errorCode int;</li>
+ * <li>Ping: nothing.</li>
  * </ul>
  * Bodies are not copied: an outgoing one is appended as is, an incoming one is a slice of the frame.
  */
 @Sharable
 final class RpcFrameCodec extends MessageToMessageCodec<ByteBuf, RpcFrame> {
-    private static final byte HELLO = 0, REQUEST = 1, RESPONSE = 2, FAILURE = 3;
+    private static final byte HELLO = 0, REQUEST = 1, RESPONSE = 2, FAILURE = 3, PING = 4;
 
     @Override protected void encode(ChannelHandlerContext ctx, RpcFrame frame, List<Object> out) {
         switch (frame) {
@@ -46,6 +48,7 @@ final class RpcFrameCodec extends MessageToMessageCodec<ByteBuf, RpcFrame> {
             }
             case Failure failure -> out.add(ctx.alloc().buffer(9).writeByte(FAILURE)
                     .writeInt(failure.requestId()).writeInt(failure.errorCode()));
+            case Ping ping -> out.add(ctx.alloc().buffer(1).writeByte(PING));
         }
     }
 
@@ -65,6 +68,7 @@ final class RpcFrameCodec extends MessageToMessageCodec<ByteBuf, RpcFrame> {
             }
             case RESPONSE -> out.add(new Response(frame.readInt(), frame.readRetainedSlice(frame.readableBytes())));
             case FAILURE -> out.add(new Failure(frame.readInt(), frame.readInt()));
+            case PING -> out.add(Ping.INSTANCE);
             default -> throw new CorruptedFrameException("Unknown RPC frame type " + type);
         }
     }

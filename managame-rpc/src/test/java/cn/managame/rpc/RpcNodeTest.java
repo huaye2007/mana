@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import cn.managame.Metadata;
@@ -29,18 +30,27 @@ import cn.managame.runtime.executor.RouteExecutors;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufInputStream;
 import io.netty.buffer.ByteBufOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.OutputStream;
 import java.io.Serializable;
 import java.lang.reflect.Method;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterEach;
@@ -82,6 +92,7 @@ class RpcNodeTest {
             .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId()).build();
     /** What the handlers did, and what the callbacks got. */
     private final BlockingQueue<String> handled = new LinkedBlockingQueue<>(), answers = new LinkedBlockingQueue<>();
+    private Duration idleTimeout = RpcNode.DEFAULT_IDLE_TIMEOUT;
     private RpcNode rank, game;
 
     @Domain(RANK)
@@ -120,11 +131,11 @@ class RpcNodeTest {
 
     private RpcNode startRank(int port) {
         return RpcNode.builder(rankRuntime).nodeId(1).codec(CODEC).listen(new InetSocketAddress("127.0.0.1", port))
-                .register(new RankService()).start();
+                .idleTimeout(idleTimeout).register(new RankService()).start();
     }
 
     private RpcNode startGame(int rankPort, int connections, Duration timeout) {
-        return RpcNode.builder(gameRuntime).nodeId(2).codec(CODEC).timeout(timeout)
+        return RpcNode.builder(gameRuntime).nodeId(2).codec(CODEC).timeout(timeout).idleTimeout(idleTimeout)
                 .peer(1, new InetSocketAddress("127.0.0.1", rankPort), connections)
                 .register(new Mailbox()).start();
     }
@@ -138,7 +149,7 @@ class RpcNodeTest {
     private static void await(BooleanSupplier condition) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
         while (!condition.getAsBoolean()) {
-            if (System.nanoTime() > deadline) fail("The nodes never connected");
+            if (System.nanoTime() > deadline) fail("The condition never held");
             Thread.sleep(10);
         }
     }
@@ -263,6 +274,88 @@ class RpcNodeTest {
         assertFalse(game.peer(1).isConnected());
     }
 
+    @Test void pingsKeepAnIdleConnectionUp() throws Exception {
+        idleTimeout = Duration.ofMillis(300);
+        connect(RpcNode.DEFAULT_TIMEOUT);
+        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (System.nanoTime() < end) { // a dropped connection would be down for the 100 ms before reconnecting
+            assertTrue(game.peer(1).isConnected() && rank.peer(2).isConnected(), "the idle connection was dropped");
+            Thread.sleep(10);
+        }
+        callAsPlayer(new RankOf());
+        assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers));
+    }
+
+    @Test void aPeerThatFallsSilentIsDroppedAndItsCallsFailAtOnce() throws Exception {
+        idleTimeout = Duration.ofMillis(300);
+        AtomicInteger accepted = new AtomicInteger();
+        try (ServerSocket silentNode = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
+            Thread.ofVirtual().start(() -> { // answers the Hello as node 1, then neither answers nor pings
+                while (true) {
+                    try {
+                        Socket connection = silentNode.accept();
+                        accepted.incrementAndGet();
+                        Thread.ofVirtual().start(() -> {
+                            try (connection) {
+                                DataInputStream in = new DataInputStream(connection.getInputStream());
+                                readHello(in);
+                                writeHello(new DataOutputStream(connection.getOutputStream()), 1);
+                                in.transferTo(OutputStream.nullOutputStream());
+                            } catch (IOException gone) {}
+                        });
+                    } catch (IOException closed) {
+                        return;
+                    }
+                }
+            });
+            game = startGame(silentNode.getLocalPort(), 1, Duration.ofSeconds(10));
+            await(() -> game.peer(1).isConnected());
+            callAsPlayer(new RankOf());
+            assertEquals(PLAYER + ":1001 fail " + RPC_UNAVAILABLE, next(answers), "long before the call's 10-second timeout");
+            await(() -> accepted.get() >= 2); // and the node connects again
+        }
+    }
+
+    @Test void aConnectionThatNeverSaysHelloIsClosed() throws Exception {
+        idleTimeout = Duration.ofMillis(300);
+        rank = startRank(0);
+        try (Socket silent = new Socket("127.0.0.1", rank.port())) {
+            silent.setSoTimeout(5000);
+            InputStream in = silent.getInputStream();
+            while (in.read() != -1) {} // Pings, then the end of the stream; a timeout here fails the test
+        }
+    }
+
+    @Test void aPingBeforeTheHelloIsAccepted() throws Exception {
+        rank = startRank(0);
+        try (Socket socket = new Socket("127.0.0.1", rank.port())) {
+            socket.setSoTimeout(5000);
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            out.writeInt(1);
+            out.writeByte(4); // Ping
+            writeHello(out, 2);
+            assertEquals(1, readHello(new DataInputStream(socket.getInputStream())));
+            await(() -> rank.peer(2).isConnected());
+        }
+    }
+
+    /** A Hello frame as RpcFrameCodec lays it out, inside the length framing. */
+    private static void writeHello(DataOutputStream out, int nodeId) throws IOException {
+        out.writeInt(5);
+        out.writeByte(0);
+        out.writeInt(nodeId);
+        out.flush();
+    }
+
+    /** Reads frames up to a Hello, skipping Pings, and returns its node id. */
+    private static int readHello(DataInputStream in) throws IOException {
+        while (true) {
+            byte[] frame = new byte[in.readInt()];
+            in.readFully(frame);
+            if (frame[0] == 0) return ByteBuffer.wrap(frame, 1, 4).getInt();
+        }
+    }
+
     @Test void aPeerThatGoesAwayFailsItsPendingCalls() throws Exception {
         connect(RpcNode.DEFAULT_TIMEOUT);
         callAsPlayer(new Silent());
@@ -297,6 +390,7 @@ class RpcNodeTest {
         assertThrows(IllegalStateException.class, () -> RpcNode.builder(gameRuntime).nodeId(3).codec(CODEC).peer(3, NOWHERE).start());
         assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(gameRuntime).peer(1, NOWHERE).peer(1, NOWHERE));
         assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(gameRuntime).peer(1, NOWHERE, 0));
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(gameRuntime).idleTimeout(Duration.ofMillis(2)));
         assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(rankRuntime).register(new RankService(), new RankService()));
     }
 }

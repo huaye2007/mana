@@ -114,6 +114,7 @@ public interface RpcCodec {
 - **`node.peer(id)`** 对本节点以外的任意 id 返回对应的对端，同一个 id 总是同一个实例。在它有连接之前，对它的调用以 `RPC_UNAVAILABLE` 失败。连接都断开后对端依然保留。`isConnected()` 和 `connectionCount()` 反映它当前的连接。
 - **连接选择**：调用使用调用方上下文的 `(domain, routingKey)` 哈希到的那条连接。因此只要对端的连接没有变化，同一路由的消息会按发送顺序到达对端，不同的路由则分散到各条连接上。
 - **连接断开**：只让在这条连接上等待应答的调用以 `RPC_UNAVAILABLE` 失败。
+- **存活检测**：连接的任一端在空闲超时的三分之一时间内没有写出任何帧，就发送一个空的 Ping，所以存活的连接不会长时间没有数据。整个空闲超时（默认 15 秒）内什么都没收到的连接被认为已经失效并关闭，例如对端机器宕机却没有断开连接：在这条连接上等待的调用立即以 `RPC_UNAVAILABLE` 失败，不必等到调用超时；本节点发起的连接随后重连。一直不发送 Hello 的连接也按同样规则关闭。有业务流量的连接不会发送 Ping。
 
 ## 配置
 
@@ -126,6 +127,7 @@ public interface RpcCodec {
 | `register(Object...)` | 无 | 声明了 `@HandleMethod` 的对象，处理请求和通知 |
 | `intercept(HandleInterceptor...)` | 无 | 作用于所有请求和通知处理器的拦截器 |
 | `timeout(Duration)` | 5 秒 | 调用等待应答的时长 |
+| `idleTimeout(Duration)` | 15 秒 | 连接多久收不到任何数据就关闭；空闲达到它的三分之一时发送 Ping。所有节点必须一致 |
 | `maxFrameLength(int)` | 8 MiB | 帧的最大长度 |
 
 `start()` 开始监听和连接，返回运行中的节点。绑定失败时释放已启动的资源，然后抛出 `NetworkException`。
@@ -140,6 +142,7 @@ public interface RpcCodec {
 | Request (1) | requestId int（通知为 0），然后是调用方的 domain int、routingKey long、businessType byte、businessId long、metadata 长度 unsigned short、metadata 字节，最后是 body |
 | Response (2) | requestId int，body |
 | Failure (3) | requestId int，errorCode int |
+| Ping (4) | 无内容；任何时候都可以收到，包括 Hello 之前 |
 
 body 就是编解码器写出的内容，传输过程中不会复制。
 
@@ -153,4 +156,4 @@ body 就是编解码器写出的内容，传输过程中不会复制。
 mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
-先安装 managame-runtime。测试在真实回环连接上运行两个节点，覆盖：以调用方身份路由并在其路由上应答、在回调中应答玩家、通过对方建立的连接双向调用、多连接下的顺序、拦截器、对端返回的失败码、超时、通知、对端启动前不可用、对端返回错误的 node id、连接断开、关闭节点，以及错误用法。
+先安装 managame-runtime。测试在真实回环连接上运行两个节点，覆盖：以调用方身份路由并在其路由上应答、在回调中应答玩家、通过对方建立的连接双向调用、多连接下的顺序、拦截器、对端返回的失败码、超时、通知、对端启动前不可用、对端返回错误的 node id、Ping 让空闲连接保持可用、对端静默时连接被关闭且调用立即失败、不发送 Hello 的连接被关闭、连接断开、关闭节点，以及错误用法。

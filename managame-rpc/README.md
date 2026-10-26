@@ -138,6 +138,12 @@ Failure codes a call can receive:
   Messages of one route therefore reach a peer in the order they were sent, as long as the peer's connections do
   not change, while different routes spread over the connections.
 - **Dropped connections.** A connection that drops fails only the calls waiting on it, with `RPC_UNAVAILABLE`.
+- **Liveness.** Either side of a connection that has written nothing for a third of the idle timeout sends an
+  empty Ping, so a live connection is never silent for long. A connection that has received nothing for the whole
+  idle timeout (15 seconds by default) is taken as dead and closed, such as one to a machine that went down
+  without closing it: its calls fail with `RPC_UNAVAILABLE` at once instead of waiting for their timeout, and a
+  connection this node opened is reconnected. The same rule closes a connection that never sends its Hello. A
+  busy connection sends no Pings.
 
 ## Configuration
 
@@ -150,6 +156,7 @@ Failure codes a call can receive:
 | `register(Object...)` | none | Objects declaring `@HandleMethod`s for requests and notices |
 | `intercept(HandleInterceptor...)` | none | Interceptors around every request and notice handler |
 | `timeout(Duration)` | 5 seconds | How long a call waits for its answer |
+| `idleTimeout(Duration)` | 15 seconds | How long a connection may receive nothing before it is closed; Pings go out after a third of it. The same on every node |
 | `maxFrameLength(int)` | 8 MiB | Largest frame |
 
 `start()` listens and connects, and returns the running node. A bind failure throws `NetworkException` after
@@ -165,6 +172,7 @@ Frames are length-prefixed (4 bytes, big-endian, excluding itself). Inside, big-
 | Request (1) | requestId int (0 for a notice), then the caller's domain int, routingKey long, businessType byte, businessId long, metadata length unsigned short, metadata bytes, then the body |
 | Response (2) | requestId int, body |
 | Failure (3) | requestId int, errorCode int |
+| Ping (4) | nothing; accepted at any time, also before the Hello |
 
 Bodies are what the codec wrote; they are not copied on the way.
 
@@ -183,5 +191,6 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 Install managame-runtime first. Tests run two nodes over real loopback connections and cover calls routed for the
 caller and answered on its route, answering a player from a callback, calls both ways over connections the other
 side opened, ordering over several connections, interceptors, remote failure codes, timeouts, notices, a peer that is
-unreachable until it starts, a peer answering with the wrong node id, dropped connections, closing the node, and
-misuse.
+unreachable until it starts, a peer answering with the wrong node id, Pings keeping an idle connection up, a peer
+that falls silent being dropped with its calls failed at once, a connection that never sends its Hello, dropped
+connections, closing the node, and misuse.
