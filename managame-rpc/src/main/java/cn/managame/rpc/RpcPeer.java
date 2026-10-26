@@ -1,6 +1,6 @@
 package cn.managame.rpc;
 
-import cn.managame.runtime.Context;
+import cn.managame.Metadata;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -10,12 +10,12 @@ import java.util.Objects;
  * {@link RpcNode#peer}:
  *
  * <pre>{@code
- * node.peer(1).call(new RankOf(), (Context c, Integer rank) -> request.reply(rank), (c, errorCode) -> request.fail(errorCode));
+ * node.peer(1).call(new RankOf(playerId), RpcCallback.of(rank -> ..., errorCode -> ...));
  * }</pre>
  *
- * A call takes the connection its calling route hashes to, so the messages of one route reach the peer in the
- * order they were sent, as long as the peer's connections do not change. A peer with no connection, including
- * one that has not connected yet, fails calls with RPC_UNAVAILABLE.
+ * A call takes the connection its key hashes to, so messages sent with one key reach the peer in the order they
+ * were sent, as long as the peer's connections do not change. A peer with no connection, including one that has
+ * not connected yet, fails calls with RPC_UNAVAILABLE.
  */
 public final class RpcPeer {
     private static final RpcLink[] NONE = {};
@@ -36,49 +36,39 @@ public final class RpcPeer {
     /** The connections up now, in both directions. */
     public int connectionCount() { return links.length; }
 
-    /** {@link #call(Context, Object, RpcResult, RpcFailure)} from the running game task's context. */
-    public <R> void call(Object request, RpcResult<? super R> onResult, RpcFailure onFailure) {
-        call(Context.current(), request, onResult, onFailure);
-    }
-
-    /** As above, with failures logged. */
-    public <R> void call(Object request, RpcResult<? super R> onResult) {
-        call(Context.current(), request, onResult, null);
-    }
+    /** {@link #call(Object, Metadata, long, RpcCallback)} with no metadata and key 0. */
+    public <R> void call(Object request, RpcCallback<R> callback) { call(request, Metadata.empty(), 0, callback); }
 
     /**
-     * Sends {@code request} to the peer, acting for {@code context}'s business identity with its metadata. The
-     * result, or the failure, runs as a task on {@code context}; a null {@code onFailure} logs failures. A request
-     * the codec cannot encode throws what it threw.
+     * Sends {@code request} with {@code metadata}, on the connection {@code key} picks, and hands the answer to
+     * {@code callback}. A request the codec cannot encode throws what it threw; nothing else does.
      */
     @SuppressWarnings("unchecked")
-    public <R> void call(Context context, Object request, RpcResult<? super R> onResult, RpcFailure onFailure) {
-        Objects.requireNonNull(context, "context");
+    public <R> void call(Object request, Metadata metadata, long key, RpcCallback<R> callback) {
         Objects.requireNonNull(request, "request");
-        Objects.requireNonNull(onResult, "onResult");
-        node.call(this, context, request, (RpcResult<Object>) onResult, onFailure);
+        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(callback, "callback");
+        node.call(this, request, metadata, key, (RpcCallback<Object>) callback);
     }
 
-    /** {@link #notice(Context, Object)} acting for the running game task, if any, otherwise for nobody. */
-    public boolean notice(Object message) {
-        return notice(Context.hasCurrent() ? Context.current() : RpcNode.NO_CALLER, message);
-    }
+    /** {@link #notice(Object, Metadata, long)} with no metadata and key 0. */
+    public boolean notice(Object message) { return notice(message, Metadata.empty(), 0); }
 
     /**
-     * Sends {@code message} to the peer, acting for {@code context}, expecting no answer. False when it could not
-     * be sent, for example because the peer is not connected.
+     * Sends {@code message} with {@code metadata}, on the connection {@code key} picks, expecting no answer. False
+     * when it could not be sent, for example because the peer is not connected.
      */
-    public boolean notice(Context context, Object message) {
-        Objects.requireNonNull(context, "context");
+    public boolean notice(Object message, Metadata metadata, long key) {
         Objects.requireNonNull(message, "message");
-        return node.notice(this, context, message);
+        Objects.requireNonNull(metadata, "metadata");
+        return node.notice(this, message, metadata, key);
     }
 
-    /** The connection for {@code context}'s route, or null when there is none. */
-    RpcLink link(Context context) {
+    /** The connection for {@code key}, or null when there is none. */
+    RpcLink link(long key) {
         RpcLink[] current = links;
         if (current.length <= 1) return current.length == 0 ? null : current[0];
-        int hash = 31 * context.domain() + Long.hashCode(context.routingKey());
+        int hash = Long.hashCode(key);
         return current[Math.floorMod(hash ^ (hash >>> 16), current.length)];
     }
 

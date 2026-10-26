@@ -55,6 +55,8 @@ Rules:
 - The whole encoding is at most 65535 bytes; `build()` and `wrap()` throw `IllegalArgumentException` beyond that,
   and `wrap()` also rejects truncated or duplicate entries.
 - Each `build()` returns an independent snapshot; `Metadata.empty()` is the shared empty instance.
+- `metadata.toBuilder()` derives new metadata with values added or replaced, leaving the original as it was:
+  `metadata.toBuilder().put(FROM_SERVER, 8L).build()`.
 - The application owns the key ids. Allocate them in one place so that every server of a cluster agrees.
 
 ## Error codes
@@ -88,4 +90,4 @@ unknown code reads `UNKNOWN(<code>)`. Never base program logic on the names.
 mvn install
 ```
 
-Install it before building managame-runtime.
+Install it before building the projects that use it. The tests cover reading, deriving and validating metadata.

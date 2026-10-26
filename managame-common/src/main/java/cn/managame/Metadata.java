@@ -1,6 +1,7 @@
 package cn.managame;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -36,6 +37,14 @@ public final class Metadata {
     }
 
     public static Builder builder() { return new Builder(); }
+
+    /** A builder holding these entries, to derive metadata with some values added or replaced. */
+    public Builder toBuilder() {
+        Builder builder = new Builder();
+        for (int p = 0; p < bytes.length; p += 4 + u16(bytes, p + 2))
+            builder.values.put(u16(bytes, p), Arrays.copyOfRange(bytes, p + 4, p + 4 + u16(bytes, p + 2)));
+        return builder;
+    }
 
     public <T> T get(MetadataKey<T> key) {
         int p = offset(key.id());

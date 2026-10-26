@@ -12,11 +12,12 @@ repository https://github.com/huaye2007/mana (branch `main`).
 | `managame-common` | nothing | `Metadata`, `MetadataKey`, `FrameworkErrorCodes` |
 | `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
-| `managame-rpc` | runtime | `RpcNode` / `RpcPeer`: calls between server processes |
+| `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls between server processes, answered through `RpcHandler` / `RpcCallback` |
 
 ## Build and test
 
-- Build each project on its own, in dependency order: common → network → runtime → rpc. A project sees another
+- Build each project on its own, in dependency order: common → network → runtime and rpc (which do not depend on
+  each other). A project sees another
   only through the local Maven repository (`d:\maven_repository`), so after changing a lower project run
   `mvn install` in it before building the projects above it.
 - Tests open real loopback sockets. Run them outside a sandbox, and give the JDK a writable directory for its
@@ -37,9 +38,11 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 
 - **Think from first principles.** Design from the requirement, not from earlier implementations or other
   projects' code.
-- **Projects stay independent.** A project depends only on the projects below it and never mentions the ones
-  above: runtime's code and docs say nothing about rpc, network's nothing about runtime. The one shared place is
-  common's `FrameworkErrorCodes`, the code table every project draws from.
+- **Projects stay independent.** Each component can be used on its own: runtime and rpc are separate components
+  that know nothing of each other, and an application that uses both joins them in its own code. Do not add
+  bridge or integration projects. A project depends only on the projects below it and never mentions the ones
+  above or beside it. The one shared place is common's `FrameworkErrorCodes`, the code table every project draws
+  from.
 - **Discuss before large changes.** Propose the design and confirm intent before broad edits or API changes; the
   maintainer has reverted rounds that went beyond what was asked. Small, clearly requested changes need no
   discussion.
@@ -51,8 +54,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   over them.
 - **Protocols belong to the application.** The framework defines no client packet format; `Dispatcher` takes any
   decoded message plus reply and fail callbacks in the application's format.
-- **One entry for business logic.** Player requests, events, timers, RPC and HTTP all run through
-  `GameRuntime.execute`. Tasks with the same `(domain, routingKey)` run one at a time in submission order.
+- **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
+  (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routingKey)` run one at a time in submission order.
 - **Every context has the same fields:** `domain` (int), `routingKey` (long), `businessType` (byte),
   `businessId` (long) and `Metadata`.
 - **The business decides routing per domain.** Each domain has its own `RouteExecutor` and its own
@@ -66,13 +69,13 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 
 - Names the maintainer chose; keep them: `GameTask` (not ContextTask), `GameContext.copyOf` (not "derive"),
   `RequestContext` with `reply` / `fail`, `HttpExchange`, `RpcNode` (this process), `RpcPeer` (another process,
-  connected either way, possibly over several connections), `node.peer(id).call(...)`.
+  connected either way, possibly over several connections), `node.peer(id).call(request, RpcCallback)`.
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).
 - Builders validate eagerly, and `build()` / `start()` return a ready object with no "not started" state.
 - Netty EventLoop callbacks never block, and business logic never runs on EventLoop or timer threads: they hand
-  work to the runtime.
+  work to the runtime (or, in a component used on its own, to the application's executor).
 
 ## Code style
 

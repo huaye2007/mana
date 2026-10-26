@@ -53,6 +53,7 @@ Metadata received = Metadata.wrap(wire);  // 校验格式，不复制
 - 键 id 取值 1–65535，同一个 metadata 内唯一；对已有的键再次 `put` 保留最后一次的值。
 - 整体编码最多 65535 字节，超出时 `build()` 和 `wrap()` 抛 `IllegalArgumentException`；`wrap()` 还会拒绝被截断或键重复的数据。
 - 每次 `build()` 返回一份独立的快照；`Metadata.empty()` 是共享的空实例。
+- `metadata.toBuilder()` 在现有内容上增加或替换一些值，得到新的 metadata，原来的不变：`metadata.toBuilder().put(FROM_SERVER, 8L).build()`。
 - 键 id 由业务分配。请集中定义，保证集群里所有服务器一致。
 
 ## 错误码
@@ -86,4 +87,4 @@ Metadata received = Metadata.wrap(wire);  // 校验格式，不复制
 mvn install
 ```
 
-构建 managame-runtime 之前先安装它。
+构建使用它的项目之前先安装它。测试覆盖 metadata 的读取、派生与校验。

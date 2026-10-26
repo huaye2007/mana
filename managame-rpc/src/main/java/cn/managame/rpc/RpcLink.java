@@ -1,7 +1,6 @@
 package cn.managame.rpc;
 
 import cn.managame.network.connection.Connection;
-import cn.managame.runtime.Context;
 import io.netty.util.Timeout;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -24,17 +23,12 @@ final class RpcLink {
 
     @Override public String toString() { return connection.toString(); }
 
+    /** A call waiting for its answer. */
     static final class Pending {
-        final Context context;
-        final RpcResult<Object> onResult;
-        final RpcFailure onFailure;
+        final RpcCallback<Object> callback;
         volatile Timeout timeout;
 
-        Pending(Context context, RpcResult<Object> onResult, RpcFailure onFailure) {
-            this.context = context;
-            this.onResult = onResult;
-            this.onFailure = onFailure;
-        }
+        Pending(RpcCallback<Object> callback) { this.callback = callback; }
 
         void cancelTimeout() {
             Timeout current = timeout;

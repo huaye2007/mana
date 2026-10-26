@@ -2,16 +2,19 @@ English | [中文](README.zh-CN.md)
 
 # managame
 
-A game server framework on Java 25 and Netty 4.2. Every piece of business logic (player requests, events, timers,
-HTTP calls and requests from other servers) runs through one entry, and tasks with the same domain and routing
-key run one at a time in order.
+Game server components on Java 25 and Netty 4.2. Each is a project of its own, so an application takes only the
+ones it needs:
 
-| Project | What it is |
-| --- | --- |
-| [managame-common](managame-common/README.md) | `Metadata`, `MetadataKey` and the framework's error codes |
-| [managame-network](managame-network/README.md) | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
-| [managame-runtime](managame-runtime/README.md) | `GameRuntime`, routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |
-| [managame-rpc](managame-rpc/README.md) | Calls between server processes: `RpcNode` and `RpcPeer` |
+| Project | Depends on | What it is |
+| --- | --- | --- |
+| [managame-common](managame-common/README.md) | nothing | `Metadata`, `MetadataKey` and the shared error codes |
+| [managame-network](managame-network/README.md) | Netty | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
+| [managame-runtime](managame-runtime/README.md) | common, network | Every piece of business logic through one entry, with tasks of one domain and routing key run one at a time: routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |
+| [managame-rpc](managame-rpc/README.md) | common, network | Calls between server processes: `RpcNode`, `RpcPeer`, heartbeats and reconnection |
+
+runtime and rpc know nothing of each other. An application that uses both joins them in its own code: its
+`RpcHandler` hands peers' requests to its `Dispatcher`, and its `RpcCallback`s run their work through its
+`GameRuntime`.
 
 ## Build
 

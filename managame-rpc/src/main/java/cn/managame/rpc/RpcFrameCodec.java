@@ -1,7 +1,6 @@
 package cn.managame.rpc;
 
 import cn.managame.Metadata;
-import cn.managame.runtime.GameContext;
 import cn.managame.rpc.RpcFrame.Failure;
 import cn.managame.rpc.RpcFrame.Hello;
 import cn.managame.rpc.RpcFrame.Ping;
@@ -19,8 +18,7 @@ import java.util.List;
  * The frame layout inside the length framing, big-endian: a type byte, then
  * <ul>
  * <li>Hello: nodeId int;</li>
- * <li>Request: requestId int, then the caller's domain int, routingKey long, businessType byte, businessId long,
- * metadata length unsigned short and metadata bytes, then the body;</li>
+ * <li>Request: requestId int, metadata length unsigned short, metadata bytes, body;</li>
  * <li>Response: requestId int, body;</li>
  * <li>Failure: requestId int, errorCode int;</li>
  * <li>Ping: nothing.</li>
@@ -35,11 +33,9 @@ final class RpcFrameCodec extends MessageToMessageCodec<ByteBuf, RpcFrame> {
         switch (frame) {
             case Hello hello -> out.add(ctx.alloc().buffer(5).writeByte(HELLO).writeInt(hello.nodeId()));
             case Request request -> {
-                GameContext caller = request.caller();
-                byte[] metadata = caller.metadata().bytes();
-                ByteBuf header = ctx.alloc().buffer(28 + metadata.length).writeByte(REQUEST).writeInt(request.requestId())
-                        .writeInt(caller.domain()).writeLong(caller.routingKey()).writeByte(caller.businessType())
-                        .writeLong(caller.businessId()).writeShort(metadata.length).writeBytes(metadata);
+                byte[] metadata = request.metadata().bytes();
+                ByteBuf header = ctx.alloc().buffer(7 + metadata.length).writeByte(REQUEST).writeInt(request.requestId())
+                        .writeShort(metadata.length).writeBytes(metadata);
                 out.add(Unpooled.wrappedBuffer(header, request.body()));
             }
             case Response response -> {
@@ -57,14 +53,10 @@ final class RpcFrameCodec extends MessageToMessageCodec<ByteBuf, RpcFrame> {
         switch (type) {
             case HELLO -> out.add(new Hello(frame.readInt()));
             case REQUEST -> {
-                int requestId = frame.readInt(), domain = frame.readInt();
-                long routingKey = frame.readLong();
-                byte businessType = frame.readByte();
-                long businessId = frame.readLong();
+                int requestId = frame.readInt();
                 byte[] metadata = new byte[frame.readUnsignedShort()];
                 frame.readBytes(metadata);
-                GameContext caller = new GameContext(domain, routingKey, businessType, businessId, Metadata.wrap(metadata));
-                out.add(new Request(requestId, caller, frame.readRetainedSlice(frame.readableBytes())));
+                out.add(new Request(requestId, Metadata.wrap(metadata), frame.readRetainedSlice(frame.readableBytes())));
             }
             case RESPONSE -> out.add(new Response(frame.readInt(), frame.readRetainedSlice(frame.readableBytes())));
             case FAILURE -> out.add(new Failure(frame.readInt(), frame.readInt()));

@@ -5,8 +5,6 @@ import static cn.managame.FrameworkErrorCodes.RPC_HANDLER_ERROR;
 import static cn.managame.FrameworkErrorCodes.RPC_NODE_CLOSED;
 import static cn.managame.FrameworkErrorCodes.RPC_TIMEOUT;
 import static cn.managame.FrameworkErrorCodes.RPC_UNAVAILABLE;
-import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
-import static cn.managame.FrameworkErrorCodes.SUCCESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -17,16 +15,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import cn.managame.Metadata;
 import cn.managame.MetadataKey;
-import cn.managame.runtime.Context;
-import cn.managame.runtime.GameContext;
-import cn.managame.runtime.GameRuntime;
-import cn.managame.runtime.RouteKeys;
-import cn.managame.runtime.annotation.Domain;
-import cn.managame.runtime.annotation.HandleMethod;
-import cn.managame.runtime.dispatch.Dispatcher;
-import cn.managame.runtime.dispatch.HandleContext;
-import cn.managame.runtime.dispatch.HandleInterceptor;
-import cn.managame.runtime.executor.RouteExecutors;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufInputStream;
 import io.netty.buffer.ByteBufOutputStream;
@@ -38,11 +26,6 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
-import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -60,13 +43,8 @@ import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-/**
- * Node 1 is a rank server that listens; node 2, a game server, connects to it and calls it from its players'
- * tasks. Node 1 calls node 2 back over the connections node 2 opened.
- */
+/** Node 1 is a rank server that listens; node 2, a game server, connects to it and calls it. */
 class RpcNodeTest {
-    private static final int PLAYER = 1, RANK = 2;
-    private static final byte ROLE = 1;
     private static final MetadataKey<String> TRACE = MetadataKey.stringKey(1);
     private static final InetSocketAddress NOWHERE = new InetSocketAddress("127.0.0.1", 1);
 
@@ -80,82 +58,64 @@ class RpcNodeTest {
         }
     };
 
-    record RankOf() implements Serializable {}
+    record RankOf(long playerId) implements Serializable {}
+    record Later() implements Serializable {}
+    record Refuse() implements Serializable {}
     record Boom() implements Serializable {}
     record Silent() implements Serializable {}
     record Unencodable() implements Serializable {}
     record Unknown() implements Serializable {}
     record Note(String text) implements Serializable {}
+    record Probe() implements Serializable {}
     record EchoBack(String text) implements Serializable {}
     record Deliver(String text) implements Serializable {}
-    record AskRank() {}
 
-    /** The application's own marker for handlers only peers may call. */
-    @Retention(RetentionPolicy.RUNTIME)
-    @Target(ElementType.METHOD)
-    @interface PeersOnly {}
-
-    private final GameRuntime rankRuntime = GameRuntime.builder()
-            .domain(RANK, RouteExecutors.striped(1), RouteKeys.constant(0)).build();
-    private final GameRuntime gameRuntime = GameRuntime.builder()
-            .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId()).build();
     /** What the handlers did, and what the callbacks got. */
     private final BlockingQueue<String> handled = new LinkedBlockingQueue<>(), answers = new LinkedBlockingQueue<>();
     private Duration idleTimeout = RpcNode.DEFAULT_IDLE_TIMEOUT;
     private RpcNode rank, game;
 
-    @Domain(RANK)
-    class RankService {
-        @PeersOnly @HandleMethod String rankOf(HandleContext context, RankOf query) {
-            return "rank of " + context.businessId() + " asked by node " + ((RpcSource) context.source()).nodeId()
-                    + " " + context.metadata().get(TRACE);
-        }
-        @HandleMethod String boom(Boom boom) { throw new IllegalStateException("boom"); }
-        @HandleMethod String silent(Silent silent) {
-            handled.add("silent");
-            return null; // and never answers
-        }
-        @HandleMethod Object unencodable(Unencodable query) { return new Object(); }
-        @HandleMethod void note(Note note) { handled.add(note.text() + " for " + Context.current().businessId()); }
-        @HandleMethod void echoBack(HandleContext context, EchoBack echo) {
-            ((RpcSource) context.source()).peer().notice(context, new Deliver(echo.text()));
+    /** Node 1's handler, as an application would write it: it decides by the message what to do. */
+    private void rankHandler(RpcRequest request) {
+        switch (request.message()) {
+            case RankOf query -> request.reply("rank of " + query.playerId() + " asked by node " + request.peer().nodeId()
+                    + " " + request.metadata().get(TRACE));
+            case Later later -> Thread.ofVirtual().start(() -> request.reply("later"));
+            case Refuse refuse -> request.fail(9001);
+            case Boom boom -> throw new IllegalStateException("boom");
+            case Silent silent -> handled.add("silent"); // and never answers
+            case Unencodable unencodable -> request.reply(new Object());
+            case Note note -> handled.add(note.text());
+            case Probe probe -> handled.add("probe " + request.expectsAnswer() + " " + request.reply("x") + " " + request.fail(1));
+            case EchoBack echo -> request.peer().notice(new Deliver(echo.text())); // calls the sender back
+            default -> request.fail(HANDLER_NOT_FOUND);
         }
     }
 
-    @Domain(PLAYER)
-    class Mailbox {
-        @HandleMethod String deliver(Deliver deliver) {
-            String delivered = "delivered " + deliver.text() + " on " + onRoute();
-            handled.add(delivered);
-            return delivered;
+    /** Node 2's handler. */
+    private void gameHandler(RpcRequest request) {
+        if (request.message() instanceof Deliver deliver) {
+            handled.add("delivered " + deliver.text());
+            request.reply("delivered " + deliver.text());
+        } else {
+            request.fail(HANDLER_NOT_FOUND);
         }
     }
 
     @AfterEach void stop() {
         if (game != null) game.close();
         if (rank != null) rank.close();
-        gameRuntime.close();
-        rankRuntime.close();
     }
 
-    private Dispatcher rankHandlers(HandleInterceptor... interceptors) {
-        return Dispatcher.builder(rankRuntime).intercept(interceptors).register(new RankService()).build();
-    }
-
-    private RpcNode startRank(int port) { return startRank(port, rankHandlers()); }
-
-    private RpcNode startRank(int port, Dispatcher handlers) {
-        return RpcNode.builder(handlers).nodeId(1).codec(CODEC).listen(new InetSocketAddress("127.0.0.1", port))
-                .idleTimeout(idleTimeout).start();
+    private RpcNode startRank(int port) {
+        return RpcNode.builder().nodeId(1).codec(CODEC).listen(new InetSocketAddress("127.0.0.1", port))
+                .idleTimeout(idleTimeout).handler(this::rankHandler).start();
     }
 
     private RpcNode startGame(int rankPort, int connections, Duration timeout) {
-        return startGame(rankPort, connections, timeout, Dispatcher.builder(gameRuntime).register(new Mailbox()).build());
-    }
-
-    private RpcNode startGame(int rankPort, int connections, Duration timeout, Dispatcher handlers) {
-        return RpcNode.builder(handlers).nodeId(2).codec(CODEC).timeout(timeout).idleTimeout(idleTimeout)
-                .peer(1, new InetSocketAddress("127.0.0.1", rankPort), connections).start();
+        return RpcNode.builder().nodeId(2).codec(CODEC).timeout(timeout).idleTimeout(idleTimeout)
+                .peer(1, new InetSocketAddress("127.0.0.1", rankPort), connections)
+                .handler(this::gameHandler).start();
     }
 
     private void connect(Duration timeout) throws InterruptedException {
@@ -172,131 +132,85 @@ class RpcNodeTest {
         }
     }
 
-    /** Calls node 1 from player 1001's task; the callbacks record the route they ran on and what they got. */
-    private void callAsPlayer(Object request) {
-        Metadata traced = Metadata.builder().put(TRACE, "t1").build();
-        gameRuntime.execute(new GameContext(PLAYER, 1001, ROLE, 1001, traced), context -> game.peer(1).call(request,
-                (c, result) -> answers.add(onRoute() + " " + result),
-                (c, errorCode) -> answers.add(onRoute() + " fail " + errorCode)));
+    private RpcCallback<Object> recorder() {
+        return RpcCallback.of(result -> answers.add("ok " + result), errorCode -> answers.add("fail " + errorCode));
     }
 
-    private static String onRoute() { return Context.current().domain() + ":" + Context.current().routingKey(); }
+    /** Calls node 1 with a trace in the metadata, keyed by player 1001. */
+    private void call(Object request) {
+        game.peer(1).call(request, Metadata.builder().put(TRACE, "t1").build(), 1001, recorder());
+    }
 
     private static String next(BlockingQueue<String> queue) throws InterruptedException { return queue.poll(5, TimeUnit.SECONDS); }
 
-    @Test void aCallRunsAtThePeerActingForTheCallerAndIsAnsweredOnTheCallersRoute() throws Exception {
+    @Test void aCallIsAnsweredWithWhatTheHandlerReplied() throws Exception {
         connect(RpcNode.DEFAULT_TIMEOUT);
-        callAsPlayer(new RankOf());
-        assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers));
+        call(new RankOf(1001));
+        assertEquals("ok rank of 1001 asked by node 2 t1", next(answers));
+        call(new Later());
+        assertEquals("ok later", next(answers), "answered from another thread after the handler returned");
     }
 
-    @Test void oneDispatcherServesPlayersAndPeersAndAPlayerIsAnsweredFromACallback() throws Exception {
-        @Domain(PLAYER) class Ranking {
-            @HandleMethod String ask(HandleContext request, AskRank ask) {
-                game.peer(1).call(new RankOf(), (Context c, String rank) -> request.reply(rank), (c, errorCode) -> request.fail(errorCode));
-                return null;
-            }
-        }
-        Dispatcher handlers = Dispatcher.builder(gameRuntime).register(new Ranking(), new Mailbox()).build();
-        rank = startRank(0);
-        game = startGame(rank.port(), 1, RpcNode.DEFAULT_TIMEOUT, handlers);
-        await(() -> game.peer(1).isConnected() && rank.peer(2).isConnected());
-
-        handlers.dispatch(GameContext.of(0, 0, ROLE, 7), new AskRank(), // a player's request, as a gateway would pass it
-                result -> answers.add("reply " + result), errorCode -> answers.add("fail " + errorCode));
-        assertEquals("reply rank of 7 asked by node 2 null", next(answers));
-        rank.peer(2).notice(GameContext.of(RANK, 0, ROLE, 7), new Deliver("mail")); // a peer's, on the same handlers
-        assertEquals("delivered mail on " + PLAYER + ":7", next(handled));
+    @Test void failuresCarryTheirCodes() throws Exception {
+        connect(RpcNode.DEFAULT_TIMEOUT);
+        call(new Refuse());
+        assertEquals("fail 9001", next(answers));
+        call(new Unknown());
+        assertEquals("fail " + HANDLER_NOT_FOUND, next(answers));
+        call(new Boom());
+        assertEquals("fail " + RPC_HANDLER_ERROR, next(answers), "the handler threw");
+        call(new Unencodable());
+        assertEquals("fail " + RPC_HANDLER_ERROR, next(answers), "the result cannot be encoded");
     }
 
-    @Test void callsGoBothWaysOverTheConnectionsAPeerOpened() throws Exception {
-        connect(RpcNode.DEFAULT_TIMEOUT); // node 2 does not listen
-        rank.peer(2).call(GameContext.of(RANK, 0, ROLE, 1001), new Deliver("mail"),
-                (c, result) -> answers.add("answered " + result), (c, errorCode) -> answers.add("fail " + errorCode));
-        assertEquals("delivered mail on " + PLAYER + ":1001", next(handled));
-        assertEquals("answered delivered mail on " + PLAYER + ":1001", next(answers));
-
-        // A handler calls back the peer a request came from.
-        gameRuntime.execute(GameContext.of(PLAYER, 1002, ROLE, 1002), context -> game.peer(1).notice(new EchoBack("echo")));
-        assertEquals("delivered echo on " + PLAYER + ":1002", next(handled));
-    }
-
-    @Test void aPeerMayHaveSeveralConnectionsAndARouteKeepsToOne() throws Exception {
-        rank = startRank(0);
-        game = startGame(rank.port(), 3, RpcNode.DEFAULT_TIMEOUT);
-        await(() -> game.peer(1).connectionCount() == 3 && rank.peer(2).connectionCount() == 3);
-
-        gameRuntime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> {
-            for (int i = 0; i < 50; i++) game.peer(1).notice(new Note("n" + i));
-        });
-        List<String> received = new ArrayList<>();
-        for (int i = 0; i < 50; i++) received.add(next(handled));
-        assertEquals(IntStream.range(0, 50).mapToObj(i -> "n" + i + " for 1001").toList(), received);
-    }
-
-    @Test void anInterceptorKeepsPeersOnlyHandlersFromPlayers() throws Exception {
-        HandleInterceptor peersOnly = new HandleInterceptor() {
-            @Override public int before(HandleContext context, Method handler, Object message) {
-                return handler.isAnnotationPresent(PeersOnly.class) && !(context.source() instanceof RpcSource) ? 9001 : SUCCESS;
-            }
-        };
-        Dispatcher handlers = rankHandlers(peersOnly);
-        rank = startRank(0, handlers);
+    @Test void aNodeWithoutAHandlerAnswersHandlerNotFound() throws Exception {
+        rank = RpcNode.builder().nodeId(1).codec(CODEC).listen(new InetSocketAddress("127.0.0.1", 0)).start();
         game = startGame(rank.port(), 1, RpcNode.DEFAULT_TIMEOUT);
         await(() -> game.peer(1).isConnected());
-        callAsPlayer(new RankOf());
-        assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers), "a peer may ask");
-        handlers.dispatch(GameContext.of(0, 0, ROLE, 1001), new RankOf(),
-                result -> answers.add("reply " + result), errorCode -> answers.add("fail " + errorCode));
-        assertEquals("fail 9001", next(answers), "a player may not");
-    }
-
-    @Test void failuresAtThePeerCarryItsCode() throws Exception {
-        connect(RpcNode.DEFAULT_TIMEOUT);
-        callAsPlayer(new Unknown());
-        assertEquals(PLAYER + ":1001 fail " + HANDLER_NOT_FOUND, next(answers));
-        callAsPlayer(new Boom());
-        assertEquals(PLAYER + ":1001 fail " + RUNTIME_EXECUTION_ERROR, next(answers));
-        callAsPlayer(new Unencodable());
-        assertEquals(PLAYER + ":1001 fail " + RPC_HANDLER_ERROR, next(answers), "the peer cannot encode its result");
+        call(new RankOf(1));
+        assertEquals("fail " + HANDLER_NOT_FOUND, next(answers));
     }
 
     @Test void aCallNobodyAnswersTimesOut() throws Exception {
         connect(Duration.ofMillis(200));
-        callAsPlayer(new Silent());
-        assertEquals(PLAYER + ":1001 fail " + RPC_TIMEOUT, next(answers));
+        call(new Silent());
+        assertEquals("fail " + RPC_TIMEOUT, next(answers));
     }
 
-    @Test void noticesActForTheSenderAndExpectNoAnswer() throws Exception {
+    @Test void noticesExpectNoAnswer() throws Exception {
         connect(RpcNode.DEFAULT_TIMEOUT);
-        gameRuntime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> game.peer(1).notice(new Note("hi")));
-        assertEquals("hi for 1001", next(handled));
-        game.peer(1).notice(new Note("outside a task"));
-        assertEquals("outside a task for 0", next(handled));
+        assertTrue(game.peer(1).notice(new Note("hi")));
+        assertEquals("hi", next(handled));
+        game.peer(1).notice(new Probe());
+        assertEquals("probe false false false", next(handled), "a notice cannot be answered");
         assertNull(answers.poll(100, TimeUnit.MILLISECONDS));
     }
 
-    @Test void aPeerIsUnavailableUntilItCanBeReached() throws Exception {
-        int port;
-        try (ServerSocket probe = new ServerSocket(0)) { port = probe.getLocalPort(); }
-        game = startGame(port, 1, RpcNode.DEFAULT_TIMEOUT);
-        callAsPlayer(new RankOf());
-        assertEquals(PLAYER + ":1001 fail " + RPC_UNAVAILABLE, next(answers));
-        assertFalse(game.peer(1).notice(new Note("lost")));
+    @Test void callsGoBothWaysOverTheConnectionsAPeerOpened() throws Exception {
+        connect(RpcNode.DEFAULT_TIMEOUT); // node 2 does not listen
+        rank.peer(2).call(new Deliver("mail"), recorder());
+        assertEquals("delivered mail", next(handled));
+        assertEquals("ok delivered mail", next(answers));
 
-        rank = startRank(port);
-        await(() -> game.peer(1).isConnected()); // the node keeps reconnecting
-        callAsPlayer(new RankOf());
-        assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers));
+        game.peer(1).notice(new EchoBack("echo")); // node 1's handler calls back the peer the notice came from
+        assertEquals("delivered echo", next(handled));
     }
 
-    @Test void aPeerAnsweringWithAnotherNodeIdIsNotJoined() throws Exception {
+    @Test void aPeerMayHaveSeveralConnectionsAndAKeyKeepsToOne() throws Exception {
         rank = startRank(0);
-        game = RpcNode.builder(Dispatcher.builder(gameRuntime).build()).nodeId(2).codec(CODEC)
-                .peer(5, new InetSocketAddress("127.0.0.1", rank.port())).start();
-        Thread.sleep(300);
-        assertFalse(game.peer(5).isConnected(), "node 1 answered, not node 5");
-        assertFalse(game.peer(1).isConnected());
+        game = startGame(rank.port(), 3, RpcNode.DEFAULT_TIMEOUT);
+        await(() -> game.peer(1).connectionCount() == 3 && rank.peer(2).connectionCount() == 3);
+        for (int i = 0; i < 50; i++) game.peer(1).notice(new Note("n" + i), Metadata.empty(), 1001);
+        List<String> received = new ArrayList<>();
+        for (int i = 0; i < 50; i++) received.add(next(handled));
+        assertEquals(IntStream.range(0, 50).mapToObj(i -> "n" + i).toList(), received);
+    }
+
+    @Test void aCallbackThatThrowsDoesNotHurtTheNode() throws Exception {
+        connect(RpcNode.DEFAULT_TIMEOUT);
+        game.peer(1).call(new RankOf(1), RpcCallback.of(result -> { throw new IllegalStateException("callback"); }, errorCode -> {}));
+        call(new RankOf(2));
+        assertEquals("ok rank of 2 asked by node 2 t1", next(answers));
     }
 
     @Test void pingsKeepAnIdleConnectionUp() throws Exception {
@@ -307,8 +221,8 @@ class RpcNodeTest {
             assertTrue(game.peer(1).isConnected() && rank.peer(2).isConnected(), "the idle connection was dropped");
             Thread.sleep(10);
         }
-        callAsPlayer(new RankOf());
-        assertEquals(PLAYER + ":1001 rank of 1001 asked by node 2 t1", next(answers));
+        call(new RankOf(1001));
+        assertEquals("ok rank of 1001 asked by node 2 t1", next(answers));
     }
 
     @Test void aPeerThatFallsSilentIsDroppedAndItsCallsFailAtOnce() throws Exception {
@@ -335,8 +249,8 @@ class RpcNodeTest {
             });
             game = startGame(silentNode.getLocalPort(), 1, Duration.ofSeconds(10));
             await(() -> game.peer(1).isConnected());
-            callAsPlayer(new RankOf());
-            assertEquals(PLAYER + ":1001 fail " + RPC_UNAVAILABLE, next(answers), "long before the call's 10-second timeout");
+            call(new RankOf(1));
+            assertEquals("fail " + RPC_UNAVAILABLE, next(answers), "long before the call's 10-second timeout");
             await(() -> accepted.get() >= 2); // and the node connects again
         }
     }
@@ -381,42 +295,60 @@ class RpcNodeTest {
         }
     }
 
+    @Test void aPeerIsUnavailableUntilItCanBeReached() throws Exception {
+        int port;
+        try (ServerSocket probe = new ServerSocket(0)) { port = probe.getLocalPort(); }
+        game = startGame(port, 1, RpcNode.DEFAULT_TIMEOUT);
+        call(new RankOf(1));
+        assertEquals("fail " + RPC_UNAVAILABLE, next(answers));
+        assertFalse(game.peer(1).notice(new Note("lost")));
+
+        rank = startRank(port);
+        await(() -> game.peer(1).isConnected()); // the node keeps reconnecting
+        call(new RankOf(1));
+        assertEquals("ok rank of 1 asked by node 2 t1", next(answers));
+    }
+
+    @Test void aPeerAnsweringWithAnotherNodeIdIsNotJoined() throws Exception {
+        rank = startRank(0);
+        game = RpcNode.builder().nodeId(2).codec(CODEC).peer(5, new InetSocketAddress("127.0.0.1", rank.port())).start();
+        Thread.sleep(300);
+        assertFalse(game.peer(5).isConnected(), "node 1 answered, not node 5");
+        assertFalse(game.peer(1).isConnected());
+    }
+
     @Test void aPeerThatGoesAwayFailsItsPendingCalls() throws Exception {
         connect(RpcNode.DEFAULT_TIMEOUT);
-        callAsPlayer(new Silent());
+        call(new Silent());
         assertEquals("silent", next(handled));
         rank.close();
-        assertEquals(PLAYER + ":1001 fail " + RPC_UNAVAILABLE, next(answers));
+        assertEquals("fail " + RPC_UNAVAILABLE, next(answers));
     }
 
     @Test void closingTheNodeFailsPendingAndLaterCalls() throws Exception {
         connect(RpcNode.DEFAULT_TIMEOUT);
-        callAsPlayer(new Silent());
+        call(new Silent());
         assertEquals("silent", next(handled));
         game.close();
-        assertEquals(PLAYER + ":1001 fail " + RPC_NODE_CLOSED, next(answers));
-        callAsPlayer(new RankOf());
-        assertEquals(PLAYER + ":1001 fail " + RPC_NODE_CLOSED, next(answers));
+        assertEquals("fail " + RPC_NODE_CLOSED, next(answers));
+        call(new RankOf(1));
+        assertEquals("fail " + RPC_NODE_CLOSED, next(answers));
         assertFalse(game.peer(1).notice(new Note("late")));
     }
 
     @Test void misuseIsRejected() throws Exception {
         connect(RpcNode.DEFAULT_TIMEOUT);
-        GameContext player = GameContext.of(PLAYER, 1001);
         assertSame(game.peer(9), game.peer(9));
-        game.peer(9).call(player, new RankOf(), (c, r) -> {}, (c, errorCode) -> answers.add("peer 9 fail " + errorCode));
-        assertEquals("peer 9 fail " + RPC_UNAVAILABLE, next(answers), "a peer that never connected");
+        game.peer(9).call(new RankOf(1), recorder());
+        assertEquals("fail " + RPC_UNAVAILABLE, next(answers), "a peer that never connected");
         assertThrows(IllegalArgumentException.class, () -> game.peer(2), "this node");
-        assertThrows(IllegalArgumentException.class, () -> game.peer(1).call(player, new Object(), (c, r) -> {}, null), "unencodable");
-        assertThrows(IllegalStateException.class, () -> game.peer(1).call(new RankOf(), (c, r) -> {}), "no task to call from");
+        assertThrows(IllegalArgumentException.class, () -> game.peer(1).call(new Object(), recorder()), "unencodable");
 
-        Dispatcher none = Dispatcher.builder(gameRuntime).build();
-        assertThrows(NullPointerException.class, () -> RpcNode.builder(null), "no dispatcher");
-        assertThrows(IllegalStateException.class, () -> RpcNode.builder(none).codec(CODEC).start(), "no node id");
-        assertThrows(IllegalStateException.class, () -> RpcNode.builder(none).nodeId(3).start(), "no codec");
-        assertThrows(IllegalStateException.class, () -> RpcNode.builder(none).nodeId(3).codec(CODEC).peer(3, NOWHERE).start());
-        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(none).peer(1, NOWHERE).peer(1, NOWHERE));
-        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(none).peer(1, NOWHERE, 0));
-        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder(none).idleTimeout(Duration.ofMillis(2)));
+        assertThrows(IllegalStateException.class, () -> RpcNode.builder().codec(CODEC).start(), "no node id");
+        assertThrows(IllegalStateException.class, () -> RpcNode.builder().nodeId(3).start(), "no codec");
+        assertThrows(IllegalStateException.class, () -> RpcNode.builder().nodeId(3).codec(CODEC).peer(3, NOWHERE).start());
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder().peer(1, NOWHERE).peer(1, NOWHERE));
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder().peer(1, NOWHERE, 0));
+        assertThrows(IllegalArgumentException.class, () -> RpcNode.builder().idleTimeout(Duration.ofMillis(2)));
     }
 }

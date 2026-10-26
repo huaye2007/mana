@@ -1,12 +1,13 @@
 package cn.managame.rpc;
 
+import static cn.managame.FrameworkErrorCodes.HANDLER_NOT_FOUND;
 import static cn.managame.FrameworkErrorCodes.RPC_HANDLER_ERROR;
 import static cn.managame.FrameworkErrorCodes.RPC_NODE_CLOSED;
 import static cn.managame.FrameworkErrorCodes.RPC_PROTOCOL_ERROR;
 import static cn.managame.FrameworkErrorCodes.RPC_TIMEOUT;
 import static cn.managame.FrameworkErrorCodes.RPC_UNAVAILABLE;
 
-import cn.managame.FrameworkErrorCodes;
+import cn.managame.Metadata;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import cn.managame.network.connection.WriteStatus;
@@ -15,12 +16,6 @@ import cn.managame.network.netty.NetworkClient;
 import cn.managame.network.netty.NetworkHandlers;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.network.netty.NetworkTransports;
-import cn.managame.runtime.Context;
-import cn.managame.runtime.GameContext;
-import cn.managame.runtime.GameRuntime;
-import cn.managame.runtime.GameTask;
-import cn.managame.runtime.annotation.HandleMethod;
-import cn.managame.runtime.dispatch.Dispatcher;
 import cn.managame.rpc.RpcFrame.Failure;
 import cn.managame.rpc.RpcFrame.Hello;
 import cn.managame.rpc.RpcFrame.Ping;
@@ -51,23 +46,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * This process in a cluster, calling and called by its {@link RpcPeer}s, with all business logic running through
- * the runtime. Requests are messages like any other: the application's {@link Dispatcher}, the one its player
- * gateway uses too, runs them on their {@link HandleMethod}s:
+ * This process in a cluster, calling and called by its {@link RpcPeer}s:
  *
  * <pre>{@code
- * @Domain(RANK)
- * class RankService {
- *     @HandleMethod Integer rankOf(RankOf query) { return ranks.of(Context.current().businessId()); }
- * }
- * Dispatcher dispatcher = Dispatcher.builder(runtime).register(rankService, shop).build();
- * RpcNode node = RpcNode.builder(dispatcher)
+ * RpcNode node = RpcNode.builder()
  *         .nodeId(1).codec(codec).listen(7001)
  *         .peer(2, new InetSocketAddress("10.0.0.2", 7001))
+ *         .handler(request -> executor.execute(() -> request.reply(answer(request.message()))))
  *         .start();
  *
- * // On node 2, in a player's request handler:
- * node.peer(1).call(new RankOf(), (Context c, Integer rank) -> request.reply(rank), (c, errorCode) -> request.fail(errorCode));
+ * node.peer(2).call(new RankOf(playerId), RpcCallback.of(rank -> ..., errorCode -> ...));
  * }</pre>
  *
  * <p>A peer is any other node this one connects to or that connects to this one, and may have several
@@ -80,26 +68,22 @@ import java.util.concurrent.atomic.AtomicInteger;
  * machine that went down without closing it, is taken as dead and closed: its calls fail with RPC_UNAVAILABLE at
  * once, and a connection this node opened is reconnected.
  *
- * <p>A request runs at the receiver in its handler's domain, on the routing key that domain's resolver finds,
- * acting for the caller's business identity with the caller's metadata; the handler's {@code HandleContext.source()}
- * is an {@link RpcSource}. The result, or the failure, comes back as a task on the calling context's route, so a
- * call made while answering a player can answer the player from its callback. Calls never throw for the network:
- * a peer that is not connected, a timeout, a dropped connection or a closed node reach the failure callback as
- * RPC_UNAVAILABLE, RPC_TIMEOUT or RPC_NODE_CLOSED, and a request the peer failed carries the peer's code, such as
- * HANDLER_NOT_FOUND, RUNTIME_EXECUTION_ERROR, or RPC_HANDLER_ERROR for a result its codec could not encode. A
- * notice expects no answer.
+ * <p>Requests and notices from peers go to the application's {@link RpcHandler}, which answers each request
+ * through it. Calls never throw for the network: a peer that is not connected, a timeout, a dropped connection or
+ * a closed node reach the callback as RPC_UNAVAILABLE, RPC_TIMEOUT or RPC_NODE_CLOSED, and a request the peer
+ * failed carries the peer's code, or RPC_HANDLER_ERROR when its handler threw or its result could not be encoded.
+ * A notice expects no answer.
  */
 public final class RpcNode implements AutoCloseable {
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(5);
     public static final int DEFAULT_MAX_FRAME_LENGTH = 8 * 1024 * 1024;
     public static final Duration DEFAULT_IDLE_TIMEOUT = Duration.ofSeconds(15);
-    static final GameContext NO_CALLER = GameContext.of(0, 0);
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
     private static final AttributeKey<RpcLink> LINK = AttributeKey.valueOf("cn.managame.rpc.link");
+    private static final RpcHandler NO_HANDLER = request -> request.fail(HANDLER_NOT_FOUND);
     private final int nodeId;
-    private final GameRuntime runtime;
     private final RpcCodec codec;
-    private final Dispatcher dispatcher;
+    private final RpcHandler handler;
     private final Map<Integer, RpcPeer> peers = new ConcurrentHashMap<>();
     private final long timeoutNanos;
     private final Duration idleTimeout;
@@ -113,9 +97,8 @@ public final class RpcNode implements AutoCloseable {
 
     private RpcNode(Builder b) {
         nodeId = b.nodeId;
-        runtime = b.runtime;
         codec = b.codec;
-        dispatcher = b.dispatcher;
+        handler = b.handler;
         timeoutNanos = b.timeout.toNanos();
         idleTimeout = b.idleTimeout;
         timeouts = new HashedWheelTimer(Thread.ofPlatform().name("rpc-timeout").daemon().factory(),
@@ -148,12 +131,7 @@ public final class RpcNode implements AutoCloseable {
                 .addLast("rpc-frames", frames);
     }
 
-    /**
-     * A node whose requests and notices run on {@code dispatcher}'s handlers, and whose call results run on its
-     * runtime. A handler tells a peer's request by its {@code HandleContext.source()}, an {@link RpcSource}; an
-     * interceptor can keep handlers meant only for peers from players that way.
-     */
-    public static Builder builder(Dispatcher dispatcher) { return new Builder(dispatcher); }
+    public static Builder builder() { return new Builder(); }
 
     public int nodeId() { return nodeId; }
 
@@ -169,11 +147,11 @@ public final class RpcNode implements AutoCloseable {
         return peers.computeIfAbsent(nodeId, id -> new RpcPeer(this, id));
     }
 
-    void call(RpcPeer peer, Context context, Object request, RpcResult<Object> onResult, RpcFailure onFailure) {
-        Pending pending = new Pending(context, onResult, onFailure);
-        RpcLink link = closed ? null : peer.link(context);
+    void call(RpcPeer peer, Object request, Metadata metadata, long key, RpcCallback<Object> callback) {
+        Pending pending = new Pending(callback);
+        RpcLink link = closed ? null : peer.link(key);
         if (link == null) {
-            fail(pending, closed ? RPC_NODE_CLOSED : RPC_UNAVAILABLE);
+            failCall(pending, closed ? RPC_NODE_CLOSED : RPC_UNAVAILABLE);
             return;
         }
         ByteBuf body = encode(request);
@@ -181,30 +159,45 @@ public final class RpcNode implements AutoCloseable {
         link.pending.put(requestId, pending);
         try {
             pending.timeout = timeouts.newTimeout(expired -> {
-                if (link.pending.remove(requestId, pending)) fail(pending, RPC_TIMEOUT);
+                if (link.pending.remove(requestId, pending)) failCall(pending, RPC_TIMEOUT);
             }, timeoutNanos, TimeUnit.NANOSECONDS);
         } catch (IllegalStateException stopped) { // the node closed since the check above
             body.release();
-            if (link.pending.remove(requestId, pending)) fail(pending, RPC_NODE_CLOSED);
+            if (link.pending.remove(requestId, pending)) failCall(pending, RPC_NODE_CLOSED);
             return;
         }
-        if (link.connection.write(new Request(requestId, GameContext.copyOf(context), body)) != WriteStatus.ACCEPTED) {
+        if (link.connection.write(new Request(requestId, metadata, body)) != WriteStatus.ACCEPTED) {
             body.release();
             if (link.pending.remove(requestId, pending)) {
                 pending.cancelTimeout();
-                fail(pending, RPC_UNAVAILABLE);
+                failCall(pending, RPC_UNAVAILABLE);
             }
         }
     }
 
-    boolean notice(RpcPeer peer, Context context, Object message) {
-        RpcLink link = closed ? null : peer.link(context);
+    boolean notice(RpcPeer peer, Object message, Metadata metadata, long key) {
+        RpcLink link = closed ? null : peer.link(key);
         if (link == null) return false;
         ByteBuf body = encode(message);
-        if (link.connection.write(new Request(0, GameContext.copyOf(context), body)) == WriteStatus.ACCEPTED) return true;
+        if (link.connection.write(new Request(0, metadata, body)) == WriteStatus.ACCEPTED) return true;
         body.release();
         return false;
     }
+
+    /** Answers a peer's request; a result the codec cannot encode fails it with RPC_HANDLER_ERROR instead. */
+    void reply(RpcLink link, int requestId, Object result) {
+        ByteBuf body;
+        try {
+            body = encode(result);
+        } catch (RuntimeException e) {
+            LOG.log(Level.ERROR, "Cannot encode the RPC result " + result.getClass().getName(), e);
+            link.connection.write(new Failure(requestId, RPC_HANDLER_ERROR));
+            return;
+        }
+        if (link.connection.write(new Response(requestId, body)) != WriteStatus.ACCEPTED) body.release();
+    }
+
+    void fail(RpcLink link, int requestId, int errorCode) { link.connection.write(new Failure(requestId, errorCode)); }
 
     private ByteBuf encode(Object message) {
         ByteBuf body = ByteBufAllocator.DEFAULT.buffer();
@@ -225,10 +218,20 @@ public final class RpcNode implements AutoCloseable {
         return id != 0 ? id : requestIds.incrementAndGet(); // zero marks a notice
     }
 
-    private void fail(Pending pending, int errorCode) {
-        RpcFailure onFailure = pending.onFailure;
-        callback(pending.context, onFailure != null ? context -> onFailure.onFailure(context, errorCode)
-                : context -> LOG.log(Level.WARNING, "RPC call failed: " + FrameworkErrorCodes.describe(errorCode)));
+    private static void failCall(Pending pending, int errorCode) {
+        try {
+            pending.callback.onFailure(errorCode);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "An RPC callback threw", e);
+        }
+    }
+
+    private static void succeedCall(Pending pending, Object result) {
+        try {
+            pending.callback.onResult(result);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "An RPC callback threw", e);
+        }
     }
 
     private void failAll(RpcLink link, int errorCode) {
@@ -236,15 +239,7 @@ public final class RpcNode implements AutoCloseable {
             Pending call = link.pending.remove(requestId);
             if (call == null) continue;
             call.cancelTimeout();
-            fail(call, errorCode);
-        }
-    }
-
-    private void callback(Context context, GameTask<Context> task) {
-        try {
-            runtime.execute(context, task);
-        } catch (RuntimeException refused) {
-            LOG.log(Level.WARNING, "Dropped an RPC callback the runtime refused", refused);
+            failCall(call, errorCode);
         }
     }
 
@@ -271,18 +266,18 @@ public final class RpcNode implements AutoCloseable {
                     result = codec.decode(response.body());
                 } catch (Throwable e) {
                     LOG.log(Level.ERROR, "Cannot decode an RPC result from " + link.peer, e);
-                    fail(pending, RPC_PROTOCOL_ERROR);
+                    failCall(pending, RPC_PROTOCOL_ERROR);
                     return;
                 } finally {
                     response.body().release();
                 }
-                callback(pending.context, context -> pending.onResult.onResult(context, result));
+                succeedCall(pending, result);
             }
             case Failure failure -> {
                 Pending pending = link.pending.remove(failure.requestId());
                 if (pending == null) return;
                 pending.cancelTimeout();
-                fail(pending, failure.errorCode());
+                failCall(pending, failure.errorCode());
             }
             case Ping ping -> {} // receiving it was the point
         }
@@ -305,40 +300,25 @@ public final class RpcNode implements AutoCloseable {
         peer.add(link);
     }
 
-    private void dispatch(RpcLink link, Request request) {
-        int requestId = request.requestId();
+    private void dispatch(RpcLink link, Request frame) {
+        int requestId = frame.requestId();
         Object message;
         try {
-            message = codec.decode(request.body());
+            message = codec.decode(frame.body());
         } catch (Throwable e) {
             LOG.log(Level.ERROR, "Cannot decode an RPC request from " + link.peer, e);
-            if (requestId != 0) link.connection.write(new Failure(requestId, RPC_PROTOCOL_ERROR));
+            if (requestId != 0) fail(link, requestId, RPC_PROTOCOL_ERROR);
             return;
         } finally {
-            request.body().release();
+            frame.body().release();
         }
-        GameContext caller = request.caller();
-        RpcSource source = new RpcSource(link.peer, caller.domain(), caller.routingKey(), caller.businessType(),
-                caller.businessId(), caller.metadata());
-        if (requestId == 0) {
-            dispatcher.dispatch(source, message);
-            return;
-        }
-        dispatcher.dispatch(source, message, result -> reply(link.connection, requestId, result),
-                errorCode -> link.connection.write(new Failure(requestId, errorCode)));
-    }
-
-    /** A result the codec cannot encode fails the request with RPC_HANDLER_ERROR, and is logged. */
-    private void reply(Connection connection, int requestId, Object result) {
-        ByteBuf body;
+        RpcRequest request = new RpcRequest(this, link, requestId, message, frame.metadata());
         try {
-            body = encode(result);
-        } catch (RuntimeException e) {
-            LOG.log(Level.ERROR, "Cannot encode the RPC result " + result.getClass().getName(), e);
-            connection.write(new Failure(requestId, RPC_HANDLER_ERROR));
-            return;
+            handler.onRequest(request);
+        } catch (Exception e) {
+            LOG.log(Level.ERROR, "The RPC handler failed on " + request, e);
+            request.fail(RPC_HANDLER_ERROR);
         }
-        if (connection.write(new Response(requestId, body)) != WriteStatus.ACCEPTED) body.release();
     }
 
     private static void release(RpcFrame frame) {
@@ -351,7 +331,7 @@ public final class RpcNode implements AutoCloseable {
 
     /**
      * Fails every pending call with RPC_NODE_CLOSED, then stops listening and disconnects from the peers. Requests
-     * already handed to the runtime still run, but their answers may no longer reach the callers.
+     * already handed to the handler may still be answered, but their answers may no longer reach the callers.
      */
     @Override public void close() {
         closed = true;
@@ -412,26 +392,28 @@ public final class RpcNode implements AutoCloseable {
     private record Remote(SocketAddress address, int connections) {}
 
     public static final class Builder {
-        private final Dispatcher dispatcher;
-        private final GameRuntime runtime;
         private Integer nodeId;
         private RpcCodec codec;
+        private RpcHandler handler = NO_HANDLER;
         private SocketAddress listen;
         private final Map<Integer, Remote> peers = new LinkedHashMap<>();
         private Duration timeout = DEFAULT_TIMEOUT;
         private Duration idleTimeout = DEFAULT_IDLE_TIMEOUT;
         private int maxFrameLength = DEFAULT_MAX_FRAME_LENGTH;
 
-        private Builder(Dispatcher dispatcher) {
-            this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
-            runtime = dispatcher.runtime();
-        }
+        private Builder() {}
 
         /** Required: this node's id, which its peers know it by. */
         public Builder nodeId(int id) { nodeId = id; return this; }
 
         /** Required: how messages are encoded; every node of the cluster must use the same format. */
         public Builder codec(RpcCodec codec) { this.codec = Objects.requireNonNull(codec, "codec"); return this; }
+
+        /**
+         * Handles the requests and notices peers send. Without one, requests are failed with HANDLER_NOT_FOUND and
+         * notices dropped.
+         */
+        public Builder handler(RpcHandler handler) { this.handler = Objects.requireNonNull(handler, "handler"); return this; }
 
         /** Accepts peers' connections on {@code port} of all interfaces; a node that only calls need not listen. */
         public Builder listen(int port) { return listen(new InetSocketAddress(port)); }

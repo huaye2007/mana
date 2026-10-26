@@ -2,60 +2,44 @@ English | [中文](README.zh-CN.md)
 
 # managame-rpc
 
-Calls between the processes of a game server cluster. Requests are handled by the same `@HandleMethod`s as player
-messages, and requests, results and failures all run through the runtime, so per-route ordering holds across
-servers too.
+Calls between the processes of a game server cluster. It stands on its own, on managame-network and
+managame-common: how a request is handled and on which thread an answer is used is up to the application.
 
-- **`RpcNode`** is this process: it listens, connects to the peers it is configured with, and holds the handlers.
+- **`RpcNode`** is this process: it listens, connects to the peers it is configured with, and hands peers'
+  requests to the application's `RpcHandler`.
 - **`RpcPeer`** is another process, known by its node id, whichever side opened the connection. A peer may have
   several connections: those this node opens to it and those it opens to this node. Every connection carries
   calls both ways.
 
-Depends on managame-runtime (and through it managame-network and managame-common).
-
 ## Quick start
 
-Node 1 is a rank server; node 2, a game server, connects to it with two connections. Requests are handled by
-ordinary `@HandleMethod` classes: each node gives its RpcNode the same `Dispatcher` its player gateway uses, so a
-handler is registered once whoever sends the message.
+Node 1 is a rank server; node 2, a game server, connects to it with two connections.
 
 ```java
 // Node 1
-@Domain(RANK)
-class RankService {
-    @HandleMethod Integer rankOf(RankOf query) { return ranks.of(Context.current().businessId()); }
-}
-Dispatcher rankHandlers = Dispatcher.builder(rankRuntime).register(new RankService()).build();
-RpcNode rankNode = RpcNode.builder(rankHandlers)
+RpcNode rankNode = RpcNode.builder()
         .nodeId(1).codec(codec).listen(7001)
+        .handler(request -> {
+            if (request.message() instanceof RankOf query)
+                executor.execute(() -> request.reply(ranks.of(query.playerId())));
+            else
+                request.fail(HANDLER_NOT_FOUND);
+        })
         .start();
 
 // Node 2
-Dispatcher gameHandlers = Dispatcher.builder(gameRuntime).register(new Shop(), new Ranking(), new Mailbox()).build();
-RpcNode gameNode = RpcNode.builder(gameHandlers)
+RpcNode gameNode = RpcNode.builder()
         .nodeId(2).codec(codec)
         .peer(1, new InetSocketAddress("10.0.0.1", 7001), 2)
         .start();
-```
 
-A player's request on node 2, answered from the call's callback:
-
-```java
-@Domain(PLAYER)
-class Ranking {
-    @HandleMethod void rank(HandleContext request, AskRank ask) {
-        gameNode.peer(1).call(new RankOf(),
-                (Context c, Integer rank) -> request.reply(rank),
-                (c, errorCode) -> request.fail(errorCode));
-    }
-}
+gameNode.peer(1).call(new RankOf(playerId), RpcCallback.of(
+        rank -> executor.execute(() -> show(rank)),
+        errorCode -> log.warn("rank failed: " + errorCode)));
 ```
 
 Node 1 can call node 2 back over the connections node 2 opened, though node 2 does not listen:
-
-```java
-rankNode.peer(2).notice(GameContext.of(RANK, 0, ROLE, playerId), new Deliver(mail));
-```
+`rankNode.peer(2).notice(new Deliver(mail))`.
 
 ## Codec
 
@@ -68,26 +52,27 @@ public interface RpcCodec {
 }
 ```
 
-- It must be self-describing: the receiver picks the handler by the class of the decoded message, so the bytes
-  carry the type (a type id plus payload, a protobuf `Any`, and so on).
+- It must be self-describing: the receiver tells messages apart by what it decodes, so the bytes carry the type
+  (a type id plus payload, a protobuf `Any`, and so on).
 - Every node of a cluster uses the same format. The codec is thread-safe: requests are encoded on the calling
-  thread, results on the handler's thread, and decoding runs on the connection's EventLoop.
+  thread, results on the answering thread, and decoding runs on the connection's EventLoop.
 
 ## Calling
 
-| Method | Acts for | Answer |
-| --- | --- | --- |
-| `peer.call(request, onResult, onFailure)` | The running game task (`Context.current()`) | Callbacks |
-| `peer.call(context, request, onResult, onFailure)` | `context`, from anywhere | Callbacks |
-| `peer.call(request, onResult)` | The running game task | Failures are logged |
-| `peer.notice(message)` | The running task, or nobody outside a task | None; false when not sent |
-| `peer.notice(context, message)` | `context` | None; false when not sent |
+| Method | Answer |
+| --- | --- |
+| `peer.call(request, callback)` | `callback.onResult(result)` or `callback.onFailure(errorCode)` |
+| `peer.call(request, metadata, key, callback)` | The same, sending `metadata` and taking the connection `key` picks |
+| `peer.notice(message)` / `peer.notice(message, metadata, key)` | None; false when it could not be sent |
 
-- `onResult` and `onFailure` run as a task on the calling context's route, after the work that made the call and
-  in order with the route's other tasks. When the calling context is a request, the callback can answer it.
-- A call never throws for the network. A request the codec cannot encode throws what the codec threw, and calling
-  outside a task without a context throws `IllegalStateException`.
-- A callback the runtime refuses, because it was shut down, is logged and dropped.
+- **`RpcCallback`** has `onResult` and `onFailure`; exactly one runs, once. `RpcCallback.of(onResult, onFailure)`
+  builds one from two lambdas. Callbacks run on a network thread (the connection's EventLoop, the timeout thread,
+  or the calling thread when the call fails at once), so they must not block: hand longer work to your own
+  executor. An exception from a callback is logged.
+- **`metadata`** is common's `Metadata`, delivered with the request: a trace id, the caller's identity, and so on.
+- **`key`** picks the connection: messages sent with one key reach the peer in the order they were sent, as long as
+  the peer's connections do not change. Use, say, a player id to keep one player's messages in order.
+- A call never throws for the network; a request the codec cannot encode throws what the codec threw.
 
 Failure codes a call can receive:
 
@@ -97,33 +82,27 @@ Failure codes a call can receive:
 | `RPC_TIMEOUT` | No answer within the node's timeout (5 seconds by default) |
 | `RPC_NODE_CLOSED` | This node was closed |
 | `RPC_PROTOCOL_ERROR` | The request or the result could not be decoded |
-| `RPC_HANDLER_ERROR` | The peer could not encode its handler's result |
-| `HANDLER_NOT_FOUND`, `INVALID_ROUTE_KEY`, `RUNTIME_EXECUTION_ERROR`, `RUNTIME_CLOSED`, `ROUTE_EXECUTOR_OVERLOADED` | What the peer's Dispatcher or runtime answered |
+| `RPC_HANDLER_ERROR` | The peer's handler threw, or its result could not be encoded |
+| `HANDLER_NOT_FOUND` | The peer has no handler, or its handler says so |
+| Any other | What the peer's handler failed the request with |
 
 ## Handling requests
 
-- Requests and notices run on the handlers of the `Dispatcher` given to `RpcNode.builder(...)`, normally the one the
-  application's player gateway uses too, with its interceptors. Call results run on that Dispatcher's runtime.
-- A request carries the caller's context: domain, routing key, business type and id, and metadata. At the
-  receiver it runs in its handler's domain, on the routing key that domain's resolver finds, acting for the
-  caller's business identity with the caller's metadata. A player domain keyed by `RouteKeys.businessId()` thus
-  runs a request on the player it was sent for.
-- A non-null result is the answer; a handler taking `HandleContext` may answer later through it. Notices are
-  dispatched without a way to answer.
-- `HandleContext.source()` is an `RpcSource`: the caller's fields, `nodeId()`, and `peer()` to call the calling
-  node back.
-- Which handlers players may reach is the application's call: its client protocol decodes only the messages
-  players may send, and an interceptor on the Dispatcher can tell peers from players by the source. A code
-  `before` returns reaches the caller's failure callback:
+The `RpcHandler` given to the builder receives every request and notice as an `RpcRequest`:
 
-  ```java
-  class PeersOnlyCheck implements HandleInterceptor {
-      public int before(HandleContext context, Method handler, Object message) {
-          return handler.isAnnotationPresent(PeersOnly.class) && !(context.source() instanceof RpcSource)
-                  ? HANDLER_NOT_FOUND : SUCCESS;
-      }
-  }
-  ```
+| Method | |
+| --- | --- |
+| `peer()` | The node that sent it, for calling it back |
+| `message()` | The decoded message |
+| `metadata()` | What the sender attached |
+| `expectsAnswer()` | False for a notice |
+| `reply(result)` / `fail(errorCode)` | Answers once, from any thread, also after the handler returned; false for a notice or a second answer |
+
+- The handler runs on the connection's EventLoop and must not block: hand the request to wherever the
+  application runs its logic, and answer from there.
+- An exception from the handler fails the request with `RPC_HANDLER_ERROR`; a result the codec cannot encode
+  fails it the same way.
+- A node built without a handler fails requests with `HANDLER_NOT_FOUND` and drops notices.
 
 ## Peers and connections
 
@@ -137,9 +116,6 @@ Failure codes a call can receive:
 - **`node.peer(id)`** returns the peer for any id other than this node's, always the same instance. Before it has
   a connection, calls to it fail with `RPC_UNAVAILABLE`. A peer stays known after its connections drop.
   `isConnected()` and `connectionCount()` report its connections.
-- **Choosing a connection.** A call takes the connection its calling context's `(domain, routingKey)` hashes to.
-  Messages of one route therefore reach a peer in the order they were sent, as long as the peer's connections do
-  not change, while different routes spread over the connections.
 - **Dropped connections.** A connection that drops fails only the calls waiting on it, with `RPC_UNAVAILABLE`.
 - **Liveness.** Either side of a connection that has written nothing for a third of the idle timeout sends an
   empty Ping, so a live connection is never silent for long. A connection that has received nothing for the whole
@@ -150,12 +126,11 @@ Failure codes a call can receive:
 
 ## Configuration
 
-`RpcNode.builder(dispatcher)` takes the application's Dispatcher; then:
-
 | Builder method | Default | Meaning |
 | --- | --- | --- |
 | `nodeId(int)` | required | This node's id, which its peers know it by |
 | `codec(RpcCodec)` | required | Message encoding, the same on every node |
+| `handler(RpcHandler)` | requests fail with `HANDLER_NOT_FOUND` | Handles peers' requests and notices |
 | `listen(port)` / `listen(address)` | not listening | Accepts peers' connections; a node that only calls need not listen |
 | `peer(id, address[, connections])` | none | A node to connect to, with one or more connections |
 | `timeout(Duration)` | 5 seconds | How long a call waits for its answer |
@@ -172,7 +147,7 @@ Frames are length-prefixed (4 bytes, big-endian, excluding itself). Inside, big-
 | Frame | Layout |
 | --- | --- |
 | Hello (0) | nodeId int |
-| Request (1) | requestId int (0 for a notice), then the caller's domain int, routingKey long, businessType byte, businessId long, metadata length unsigned short, metadata bytes, then the body |
+| Request (1) | requestId int (0 for a notice), metadata length unsigned short, metadata bytes, body |
 | Response (2) | requestId int, body |
 | Failure (3) | requestId int, errorCode int |
 | Ping (4) | nothing; accepted at any time, also before the Hello |
@@ -182,8 +157,7 @@ Bodies are what the codec wrote; they are not copied on the way.
 ## Closing
 
 `close()` fails every waiting call with `RPC_NODE_CLOSED`, stops listening and closes all connections. Requests
-already handed to the runtime still run, but their answers may no longer reach the callers. Close the node before
-its runtime.
+already handed to the handler may still be answered, but their answers may no longer reach the callers.
 
 ## Build and tests
 
@@ -191,9 +165,10 @@ its runtime.
 mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
-Install managame-runtime first. Tests run two nodes over real loopback connections and cover calls routed for the
-caller and answered on its route, answering a player from a callback, calls both ways over connections the other
-side opened, ordering over several connections, interceptors, remote failure codes, timeouts, notices, a peer that is
-unreachable until it starts, a peer answering with the wrong node id, Pings keeping an idle connection up, a peer
-that falls silent being dropped with its calls failed at once, a connection that never sends its Hello, dropped
-connections, closing the node, and misuse.
+Install managame-common and managame-network first. Tests run two nodes over real loopback connections and cover
+answers given at once and later, metadata, failure codes (refusals, unknown messages, a handler that throws, an
+unencodable result, a node without a handler), timeouts, notices, calls both ways over connections the other side
+opened, ordering by key over several connections, callbacks that throw, Pings keeping an idle connection up, a
+peer that falls silent being dropped with its calls failed at once, a connection that never sends its Hello, a
+peer that is unreachable until it starts, a peer answering with the wrong node id, dropped connections, closing
+the node, and misuse.
