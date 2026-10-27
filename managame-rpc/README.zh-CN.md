@@ -205,7 +205,7 @@ RpcNode.builder()
 
 ## 背压与帧长度
 
-- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（返回 `RPC_UNAVAILABLE`）和通知（返回 false），这样慢对端不会撑爆本节点的内存；但通过 `writeTo` 写出的应答照样接收。
+- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（返回 `RPC_UNAVAILABLE`）和通知（返回 false），这样慢对端不会撑爆本节点的内存；但通过 `writeTo` 写出的应答照样接收。从其他线程发出的消息在等待连接的 EventLoop 时，按实际大小计入水位：除非 bootstrap 自己设置了 Netty 的 `MESSAGE_SIZE_ESTIMATOR`，节点会设置一个认识调用、通知和应答的估算器。
 - 超过 `maxFrameLength` 的消息在发出前就会单独失败，不影响其他消息：调用得到 `RPC_PROTOCOL_ERROR`，通知返回 false，应答改为 `RPC_PROTOCOL_ERROR`。集群内所有节点必须使用相同的 `maxFrameLength`。
 
 ## 握手与保活
@@ -217,7 +217,7 @@ RpcNode.builder()
   - 本节点正在关闭；
   - 准入检查拒绝；
   - 连进来的是某个对端的旧实例，而它的更新实例正在线。
-- **保活。** 连接的任一方如果在空闲超时的三分之一时间内没写过任何数据，就发一个 Ping。连接在整个空闲超时内（默认 15 秒）没收到任何数据，就被视为已失效并关闭，比如对端机器宕机但没有关闭连接的情况。这时连接上的调用会立即以 `RPC_UNAVAILABLE` 失败，不必等到各自超时；本节点主动建立的连接会重连。始终没有完成握手的连接，也按同样的规则关闭。繁忙的连接不发 Ping。
+- **保活。** 连接的每一方每隔空闲超时的三分之一检查一次这段时间发生了什么。这段时间没写过数据，就发一个 Ping（前提是自己的 Hello 已经发出）。连续三次检查都没收到任何数据，也就是至少一个空闲超时（默认 15 秒）、最多再多三分之一，就认为连接已失效并关闭，比如对端机器宕机但没有关闭连接的情况。这时连接上的调用会立即以 `RPC_UNAVAILABLE` 失败，不必等到各自超时；本节点主动建立的连接会重连。始终没有完成握手的连接，也按同样的规则关闭。繁忙的连接不发 Ping。读写只打一个标记，不为每条消息取时间戳，也不创建 Netty promise。
 
 ## 可观测性
 
@@ -253,7 +253,7 @@ RpcNode.builder()
 | `bootstrap(Bootstrap)` / `serverBootstrap(ServerBootstrap)` | 节点自己的 EventLoop | 用于主动连接和监听的 Netty bootstrap，可设置 EventLoop、channel 类型和 socket 选项。handler 由节点设置；没设置的项，节点会在副本上补全 |
 | `redialDelay(min, max)` | 100 毫秒、10 秒 | 主动建立的连接断开后，等多久再重连 |
 | `timeout(Duration)` | 5 秒 | 调用没有单独指定超时时，等待应答的时长 |
-| `idleTimeout(Duration)` | 15 秒 | 连接多久收不到数据就关闭；超过它的三分之一没写数据就发 Ping。所有节点必须相同 |
+| `idleTimeout(Duration)` | 15 秒 | 连接多久收不到数据就关闭，最多再多三分之一；每方每隔它的三分之一检查一次，期间没写数据就发 Ping。所有节点必须相同 |
 | `maxFrameLength(int)` | 8 MiB | 最大帧长度，包括长度字段。所有节点必须相同 |
 
 `start()` 按配置开始监听，并返回运行中的节点。绑定端口失败时，会先释放已启动的资源，再抛出 `NetworkException`。
@@ -287,7 +287,9 @@ game.createPeer(1, new LocalAddress("world"));
 | Ping (4) | 无 |
 | Goodbye (5) | 无 |
 
-metadata 的格式是：先用 unsigned short 写长度，再写字节。Hello、Ping 和 Goodbye 是节点内部的帧，不会交给处理器。`command` 完全归业务所有，整个 `int` 范围都能用。以后的版本可以在 Hello 末尾追加字段，当前版本会忽略这些字段。收到未知类型的帧会关闭连接。本节点使用协议版本 1。
+metadata 的格式是：先用 unsigned short 写长度，再写字节。Hello、Ping 和 Goodbye 是节点内部的帧，不会交给处理器。`command` 完全归业务所有，整个 `int` 范围都能用。以后的版本可以在 Hello 末尾追加字段，当前版本会忽略这些字段。收到未知类型的帧、超过 `maxFrameLength` 的帧，或者长度不够放下自身字段的帧，都会关闭连接。本节点使用协议版本 1。
+
+每条连接有一个编解码器，位于 TLS 和 flush 合并之后，负责双向分帧：发出的消息是一个包含长度的头部缓冲区，后面紧跟原样的 body；收到的 body 是读到的数据的一个切片。
 
 ## 构建与测试
 
@@ -303,10 +305,10 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 - 多条连接下按 route key 保序；
 - 业务按握手 metadata 给对端分组；
 - 通过一个能切断连接的代理，区分重启和重连；更新的实例替换旧实例；
-- 握手相关的拒绝和校验：两个节点互相连接、以错误 id 应答、协议版本协商、握手前收到其他帧、始终不握手的连接、两个方向的准入检查，以及 TLS；
+- 握手相关的拒绝和校验：两个节点互相连接、以错误 id 应答、协议版本协商、握手前收到其他帧、超过最大长度的帧、始终不握手的连接、两个方向的准入检查，以及 TLS；
 - Ping 保持空闲连接，沉默的对端被断开且其调用立即失败；
 - 对端启动前不可达，启动后自动连上；
-- 超过帧长度的消息单独失败；
+- 超过帧长度的消息单独失败；EventLoop 被占住时，排队等待的消息按实际大小让连接变为繁忙；
 - 观察者和各项计数；
 - 先排空再关闭、两个方向的移除对端、对端离开、关闭节点；
 - 使用业务自己的 bootstrap 和 Netty 本地传输；

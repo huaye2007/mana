@@ -1,0 +1,9 @@
+# recorded 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99
+EchoThroughputBenchmark.echo,connections=1 payload=64 window=1024,thrpt,710408.384,40260.853,ops/s,553.745,,
+EchoThroughputBenchmark.echo,connections=1 payload=1024 window=1024,thrpt,426481.539,105016.743,ops/s,562.051,,
+EchoThroughputBenchmark.echo,connections=4 payload=64 window=1024,thrpt,1083856.300,47837.988,ops/s,557.732,,
+EchoThroughputBenchmark.echo,connections=4 payload=1024 window=1024,thrpt,948460.785,255572.018,ops/s,559.919,,
+EchoLatencyBenchmark.echo,payload=64,sample,45.891,0.185,us/op,830.547,42.240,116.352
+EchoLatencyBenchmark.echo,payload=1024,sample,42.820,0.169,us/op,829.959,38.784,113.280
+EchoLatencyBenchmark.echo,payload=16384,sample,52.141,0.112,us/op,830.379,48.640,113.920

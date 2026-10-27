@@ -1,0 +1,6 @@
+# recorded 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99
+DispatchThroughputBenchmark.dispatch,executor=virtualThreads window=4096,thrpt,2126925.986,51584.259,ops/s,867.468,,
+DispatchThroughputBenchmark.dispatch,executor=striped window=4096,thrpt,2883382.398,106187.273,ops/s,258.784,,
+ExecuteThroughputBenchmark.execute,executor=virtualThreads window=4096,thrpt,2139268.009,103490.889,ops/s,723.555,,
+ExecuteThroughputBenchmark.execute,executor=striped window=4096,thrpt,3306085.455,113727.563,ops/s,115.000,,

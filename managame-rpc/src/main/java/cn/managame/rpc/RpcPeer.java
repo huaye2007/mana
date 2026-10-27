@@ -13,6 +13,7 @@ import cn.managame.rpc.RpcFrames.Goodbye;
 import cn.managame.rpc.RpcFrames.Hello;
 import io.netty.util.AttributeKey;
 import io.netty.util.Timeout;
+import io.netty.util.TimerTask;
 import java.lang.System.Logger.Level;
 import java.time.Duration;
 import java.util.Arrays;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Another node, known by its id: one this node dials ({@link RpcNode#createPeer}) or one that dials this node and
@@ -54,6 +56,7 @@ public final class RpcPeer {
     private final int nodeId;
     private final boolean outbound;
     private final Map<Integer, Pending> pending = new ConcurrentHashMap<>();
+    private final AtomicInteger requestIds = new AtomicInteger();
     /** The dialers keeping the connections to an outbound peer up. */
     private volatile List<NetworkClient> clients = List.of();
     private volatile Connection[] connections = NONE;
@@ -122,8 +125,8 @@ public final class RpcPeer {
         }
         long start = System.nanoTime();
         long deadline = start + timeoutNanos;
-        RpcRequest sent = request.sentAs(node.nextRequestId(), deadline != 0 ? deadline : 1);
-        int id = sent.requestId();
+        int id = nextRequestId();
+        RpcRequest sent = request.sentAs(id, deadline != 0 ? deadline : 1);
         Connection connection = connection(sent.routeKey());
         Pending call = new Pending(sent.withoutBody(), callback, connection, start);
         pending.put(id, call);
@@ -132,7 +135,7 @@ public final class RpcPeer {
                 : connection == null || closing ? RPC_UNAVAILABLE
                 : !RpcFrames.fits(sent, node.maxFrameLength()) ? RPC_PROTOCOL_ERROR : 0;
         if (failure == 0) {
-            call.timeout = node.newTimeout(() -> settle(id, call, RPC_TIMEOUT), timeoutNanos);
+            call.timeout = node.newTimeout(call, timeoutNanos);
             if (RpcFrames.send(connection, sent)) return;
             failure = RPC_UNAVAILABLE;
         } else {
@@ -156,6 +159,12 @@ public final class RpcPeer {
         }
         notify.release();
         return false;
+    }
+
+    /** Ids are the peer's own, never 0. */
+    private int nextRequestId() {
+        int id = requestIds.incrementAndGet();
+        return id != 0 ? id : requestIds.incrementAndGet();
     }
 
     private Connection connection(long routeKey) {
@@ -281,8 +290,11 @@ public final class RpcPeer {
         return "RpcPeer[" + nodeId + (outbound ? ", dialed" : ", dialing in") + ", " + connections.length + " connections]";
     }
 
-    /** A call waiting for its answer: the request without its body, the connection it went out on, its start. */
-    private final class Pending {
+    /**
+     * A call waiting for its answer: the request without its body, the connection it went out on, its start. It is
+     * its own timeout task, which fails it with RPC_TIMEOUT unless something settled it first.
+     */
+    private final class Pending implements TimerTask {
         final RpcRequest request;
         final RpcCallback callback;
         final Connection connection;
@@ -295,6 +307,8 @@ public final class RpcPeer {
             this.connection = connection;
             this.start = start;
         }
+
+        @Override public void run(Timeout expired) { settle(request.requestId(), this, RPC_TIMEOUT); }
 
         void complete(RpcResponse response) {
             Timeout current = timeout;

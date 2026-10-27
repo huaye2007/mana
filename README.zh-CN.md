@@ -9,7 +9,9 @@
 | [managame-common](managame-common/README.zh-CN.md) | 无 | `Metadata`、`MetadataKey` 与共用的错误码 |
 | [managame-network](managame-network/README.zh-CN.md) | Netty | TCP / TLS / ws / wss 服务端、HTTP/1.1 服务端与自动重连客户端，可接入任意 Netty handler |
 | [managame-runtime](managame-runtime/README.zh-CN.md) | common、network | 所有业务逻辑经同一个入口执行，同一 domain 与路由键的任务逐个执行：按 domain 路由、注解处理器（`Dispatcher`、`EventBus`、`HttpRoutes`）、拦截器与定时器 |
-| [managame-rpc](managame-rpc/README.zh-CN.md) | common、network | 服务器进程之间的调用：`RpcNode`、`RpcPeer`、心跳与重连 |
+| [managame-rpc](managame-rpc/README.zh-CN.md) | common、network | 服务器进程之间的调用与通知：`RpcNode`、`RpcPeer`、对等连接、重启识别、排空下线、TLS |
+
+[managame-benchmark](managame-benchmark/README.zh-CN.md) 为每个组件提供 JMH 基准测试，并各自记录基线，改动让组件变快或变慢都能立刻看出来。
 
 runtime 和 rpc 互不知道对方。同时使用两者的业务在自己的代码里把它们连起来：自己的 `RpcHandler` 把对端请求交给自己的 `Dispatcher`，自己的 `RpcCallback` 把后续工作交给自己的 `GameRuntime` 执行。
 
@@ -22,6 +24,7 @@ cd managame-common && mvn install
 cd ../managame-network && mvn install
 cd ../managame-runtime && mvn install
 cd ../managame-rpc && mvn install
+cd ../managame-benchmark && mvn package    # 然后：java -jar target/benchmarks.jar all
 ```
 
 测试会打开真实的回环连接。贡献者与编码代理的约定见 [AGENTS.md](AGENTS.md)。

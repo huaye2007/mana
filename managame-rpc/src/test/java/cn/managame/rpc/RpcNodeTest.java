@@ -26,12 +26,16 @@ import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.local.LocalAddress;
 import io.netty.channel.local.LocalChannel;
 import io.netty.channel.local.LocalIoHandler;
 import io.netty.channel.local.LocalServerChannel;
+import io.netty.channel.nio.NioIoHandler;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.util.ResourceLeakDetector;
@@ -55,6 +59,7 @@ import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -450,6 +455,17 @@ class RpcNodeTest {
         }
     }
 
+    @Test void aFrameLongerThanTheLargestClosesTheConnection() throws Exception {
+        world = start(node(1, "world").listen(LOOPBACK));
+        try (Socket socket = new Socket("127.0.0.1", world.port())) {
+            socket.setSoTimeout(5000);
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            out.writeInt(Integer.MAX_VALUE);
+            out.flush();
+            assertEquals(-1, socket.getInputStream().read());
+        }
+    }
+
     @Test void aConnectionThatNeverSaysHelloIsClosed() throws Exception {
         idleTimeout = Duration.ofMillis(300);
         world = start(node(1, "world").listen(LOOPBACK));
@@ -653,6 +669,35 @@ class RpcNodeTest {
             world.close();
             assertFalse(group.isShuttingDown(), "the application's EventLoops stay its own");
             assertFalse(peer.isConnected());
+        } finally {
+            group.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
+    /** Messages sent from other threads wait for their EventLoop, counting toward the water mark by their size. */
+    @Test void messagesWaitingForTheirEventLoopMakeTheConnectionBusy() throws Exception {
+        EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        try {
+            world = start(node(1, "world").listen(LOOPBACK));
+            game = start(node(2, "game").bootstrap(new Bootstrap().group(group).channel(NioSocketChannel.class)
+                    .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(1024, 4096))));
+            RpcPeer peer = game.createPeer(1, address(world));
+            await(peer::isConnected);
+            CountDownLatch busy = new CountDownLatch(1);
+            group.execute(() -> { // the connection's only EventLoop, held up
+                try {
+                    busy.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            String kilobyte = "x".repeat(1000);
+            int taken = 0;
+            while (taken < 100 && peer.notify(RpcNotify.of(NOTE, text(kilobyte)))) taken++;
+            busy.countDown();
+            assertTrue(taken > 0 && taken < 10, taken + " kilobyte notifies were taken by a connection that holds 4 KiB");
+            for (int i = 0; i < taken; i++) assertEquals("world notified " + kilobyte + " from 2", next(seen));
+            game.close();
         } finally {
             group.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
         }

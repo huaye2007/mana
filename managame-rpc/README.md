@@ -253,6 +253,9 @@ RpcNode.builder()
 - A connection may queue `DEFAULT_WRITE_BUFFER_WATER_MARK` (1 MiB low, 4 MiB high) before it counts as busy, unless
   the bootstraps set Netty's `WRITE_BUFFER_WATER_MARK`. A busy connection refuses new calls (`RPC_UNAVAILABLE`) and
   notifies (false) at once, so a slow peer cannot fill this node's memory, but takes answers through `writeTo`.
+  Messages sent from other threads count by their size while they wait for the connection's EventLoop: the node
+  sets Netty's `MESSAGE_SIZE_ESTIMATOR` to one that knows calls, notifies and answers, unless the bootstraps set
+  one.
 - A message larger than `maxFrameLength` fails alone before it is sent: the call with `RPC_PROTOCOL_ERROR`, the
   notify with false, an answer as `RPC_PROTOCOL_ERROR`. Every node of a cluster must use the same `maxFrameLength`.
 
@@ -269,11 +272,13 @@ RpcNode.builder()
   - this node is closing;
   - the authenticator refuses it;
   - it is an older instance of a peer while a newer one is connected.
-- **Liveness.** Either side of a connection that has written nothing for a third of the idle timeout sends a Ping.
-  A connection that has received nothing for the whole idle timeout (15 seconds by default) is taken as dead and
-  closed, such as one to a machine that went down without closing it. Its calls fail with `RPC_UNAVAILABLE` at
-  once instead of waiting for their timeout, and a connection this node dialed is redialed. The same rule closes a
-  connection that never completes its handshake. A busy connection sends no Pings.
+- **Liveness.** Each side of a connection looks every third of the idle timeout at what passed since it last
+  looked. Having written nothing, it sends a Ping, once it has sent its Hello. Having received nothing three times
+  in a row, which is at least the idle timeout (15 seconds by default) and at most a third more, it takes the
+  connection as dead and closes it, such as one to a machine that went down without closing it. Its calls fail
+  with `RPC_UNAVAILABLE` at once instead of waiting for their timeout, and a connection this node dialed is
+  redialed. The same rule closes a connection that never completes its handshake. A busy connection sends no
+  Pings. Reads and writes are only marked, with no timestamp or Netty promise per message.
 
 ## Observability
 
@@ -313,7 +318,7 @@ None of the callbacks may block: business logic belongs on the application's own
 | `bootstrap(Bootstrap)` / `serverBootstrap(ServerBootstrap)` | the node's own EventLoops | Netty's bootstraps for dialing and listening: EventLoops, channel type, socket options. The handlers are the node's; what is left unset the node fills in on a copy |
 | `redialDelay(min, max)` | 100 ms, 10 s | How long a dialed connection waits before dialing again |
 | `timeout(Duration)` | 5 seconds | How long a call waits for its answer unless it says otherwise |
-| `idleTimeout(Duration)` | 15 seconds | How long a connection may receive nothing before it is closed; Pings go out after a third of it. The same on every node |
+| `idleTimeout(Duration)` | 15 seconds | How long a connection may receive nothing before it is closed, at most a third longer; each side looks every third of it and Pings when it wrote nothing since. The same on every node |
 | `maxFrameLength(int)` | 8 MiB | Largest frame, its length field included. The same on every node |
 
 `start()` listens when asked to and returns the running node. A bind failure throws `NetworkException` after
@@ -353,8 +358,11 @@ Frames are length-prefixed (4 bytes, big-endian, excluding itself). Inside, big-
 
 Metadata is its length as an unsigned short, then its bytes. Hello, Ping and Goodbye are the node's own and never
 reach the handler; `command` is the application's alone, so the whole `int` range is its own. A later version may
-append to a Hello, which this one ignores. An unknown frame type closes the connection. This node speaks protocol
-version 1.
+append to a Hello, which this one ignores. An unknown frame type, a frame longer than `maxFrameLength` and one
+cut short of its fields close the connection. This node speaks protocol version 1.
+
+One codec per connection, after TLS and flush consolidation, does the framing both ways: an outgoing message is
+a header buffer, its length included, followed by the body as it is; an incoming body is a slice of what was read.
 
 ## Build and tests
 
@@ -372,10 +380,12 @@ Netty's leak detection at its strictest. They cover:
 - an application grouping peers by their handshake metadata;
 - a restart told from a reconnect through a proxy that cuts connections, and a newer instance replacing an older;
 - two nodes dialing each other, a node answering under another id, protocol versions, a frame before the Hello, a
-  connection that never says Hello, the authenticator in both directions, and TLS;
+  frame longer than the largest, a connection that never says Hello, the authenticator in both directions, and
+  TLS;
 - Pings keeping an idle connection up, and a silent peer being dropped with its calls failed at once;
 - a peer that is unreachable until it starts;
-- messages larger than a frame failing alone;
+- messages larger than a frame failing alone, and messages waiting for a held-up EventLoop making the connection
+  busy by their size;
 - the observer and the counts;
 - draining before closing, removing peers in both directions, a peer going away, and closing the node;
 - the application's own bootstraps with Netty's local transport;

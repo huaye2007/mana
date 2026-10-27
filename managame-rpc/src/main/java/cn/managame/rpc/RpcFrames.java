@@ -6,17 +6,29 @@ import cn.managame.Metadata;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.WriteStatus;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandler;
+import io.netty.channel.ChannelPromise;
+import io.netty.channel.DefaultMessageSizeEstimator;
+import io.netty.channel.MessageSizeEstimator;
+import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.CorruptedFrameException;
-import io.netty.handler.codec.MessageToMessageCodec;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.collection.IntObjectHashMap;
+import io.netty.util.concurrent.Future;
 import java.lang.System.Logger.Level;
+import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
- * The frames inside the length framing, big-endian, each starting with its type byte:
+ * Every connection's codec, one per connection after TLS and flush consolidation: bytes to frames and frames to
+ * bytes, liveness, and the requests received and not answered yet. Each frame is its length as an int that excludes
+ * itself, then, big-endian, its type byte and
  * <ul>
  * <li>Hello (0): lowest and highest protocol version byte each, nodeId int, incarnation long, metadata;</li>
  * <li>Request (1): requestId int, time left in milliseconds int (0 for none), command int, routeKey long,
@@ -27,21 +39,74 @@ import java.util.concurrent.TimeUnit;
  * </ul>
  * Metadata is its length as an unsigned short, then its bytes. A later version may append to a Hello, which this
  * one ignores. Requests, notifies and responses are the public records, written to a connection as they are;
- * Hello, Ping and Goodbye are the node's own. Bodies are not copied: an outgoing one is appended to its header, an
- * incoming one is a slice of its frame. Other outgoing messages pass through untouched.
+ * Hello, Ping and Goodbye are the node's own. Bodies are not copied: an outgoing one follows its header as a buffer
+ * of its own, an incoming one is a slice of what was read. Other outgoing messages pass through untouched.
  *
- * <p>Encoding an answer tells the node its request was answered. An answer too large for a frame goes out as
- * RPC_PROTOCOL_ERROR instead, so that the connection, and every other call on it, survives it.
+ * <p>Liveness costs a field write per read and write: every third of the idle timeout the codec looks at what
+ * happened since it last looked. Having written nothing, it sends a Ping, once this side has sent its Hello; having
+ * received nothing three times in a row, at least the idle timeout and at most a third more, it closes the
+ * connection.
+ *
+ * <p>A request counts as unanswered, toward the node-wide count, from its decoding until its answer is encoded or
+ * the connection closes; one that expired on the way is dropped instead. An answer too large for a frame goes out
+ * as RPC_PROTOCOL_ERROR, so that the connection, and every other call on it, survives it.
  */
-final class RpcFrames extends MessageToMessageCodec<ByteBuf, Object> {
+final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHandler {
     /** The protocol versions this node speaks; two nodes speak the highest both do. */
     static final int MIN_VERSION = 1, MAX_VERSION = 1;
+    /** Sizes RPC frames as they will be encoded, so that back pressure counts them while they wait for their EventLoop. */
+    static final MessageSizeEstimator SIZES = new MessageSizeEstimator() {
+        private final Handle others = DefaultMessageSizeEstimator.DEFAULT.newHandle();
+        private final Handle handle = msg -> {
+            long size = size(msg);
+            return size < 0 ? others.size(msg) : (int) Math.min(size, Integer.MAX_VALUE);
+        };
+
+        @Override public Handle newHandle() { return handle; }
+    };
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
     private static final byte HELLO = 0, REQUEST = 1, NOTIFY = 2, RESPONSE = 3, PING = 4, GOODBYE = 5;
-    private static final int REQUEST_HEADER = 32, NOTIFY_HEADER = 24, RESPONSE_HEADER = 11, HELLO_HEADER = 17;
-    /** The length the framing puts before every frame, which counts toward the largest frame. */
+    /** Each frame's fixed part: the type byte, the fields and the metadata length. */
+    private static final int REQUEST_HEADER = 32, NOTIFY_HEADER = 24, RESPONSE_HEADER = 11, HELLO_HEADER = 17, SIGNAL = 1;
     private static final int LENGTH_FIELD = 4;
-    private final RpcNode node;
+    private final int maxFrameLength;
+    private final Duration idleTimeout;
+    private final LongAdder unanswered;
+    /** The ids of the requests received and not answered yet. */
+    private IntObjectHashMap<Boolean> waiting;
+    private boolean read, wrote, helloSent;
+    private int silentChecks;
+    private Future<?> checks;
+
+    /** {@code unanswered} is the node's count, shared by its connections. */
+    RpcFrames(int maxFrameLength, Duration idleTimeout, LongAdder unanswered) {
+        this.maxFrameLength = maxFrameLength;
+        this.idleTimeout = idleTimeout;
+        this.unanswered = unanswered;
+    }
+
+    /** Writes {@code frame}; false when the connection did not take it, which releases it. */
+    static boolean send(Connection connection, Object frame) {
+        if (connection.write(frame) == WriteStatus.ACCEPTED) return true;
+        ReferenceCountUtil.release(frame);
+        return false;
+    }
+
+    /** Whether {@code frame}, with its length, is no larger than {@code maxFrameLength}. */
+    static boolean fits(Object frame, int maxFrameLength) { return size(frame) <= maxFrameLength; }
+
+    /** The bytes {@code frame} takes on the wire, its length included; -1 for what is no RPC frame. */
+    private static long size(Object frame) {
+        return switch (frame) {
+            case RpcRequest request -> LENGTH_FIELD + REQUEST_HEADER + request.metadata().bytes().length + (long) request.body().readableBytes();
+            case RpcNotify notify -> LENGTH_FIELD + NOTIFY_HEADER + notify.metadata().bytes().length + (long) notify.body().readableBytes();
+            case RpcResponse response -> LENGTH_FIELD + RESPONSE_HEADER + response.metadata().bytes().length + (long) response.body().readableBytes();
+            case Hello hello -> LENGTH_FIELD + HELLO_HEADER + hello.metadata().bytes().length;
+            case Ping ping -> LENGTH_FIELD + SIGNAL;
+            case Goodbye goodbye -> LENGTH_FIELD + SIGNAL;
+            default -> -1;
+        };
+    }
 
     /** The first frame each way on a connection; the side that dialed sends first. */
     record Hello(int minVersion, int maxVersion, int nodeId, long incarnation, Metadata metadata) {}
@@ -52,86 +117,186 @@ final class RpcFrames extends MessageToMessageCodec<ByteBuf, Object> {
     /** Sent by a node that is closing: it takes nothing new. */
     enum Goodbye { INSTANCE }
 
-    RpcFrames(RpcNode node) { this.node = node; }
-
-    /** Writes {@code frame}; false when the connection did not take it, which releases it. */
-    static boolean send(Connection connection, Object frame) {
-        if (connection.write(frame) == WriteStatus.ACCEPTED) return true;
-        ReferenceCountUtil.release(frame);
-        return false;
+    @Override public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        long every = idleTimeout.toNanos() / 3;
+        checks = ctx.executor().scheduleWithFixedDelay(() -> check(ctx), every, every, TimeUnit.NANOSECONDS);
+        super.channelActive(ctx);
     }
 
-    /** Whether {@code frame}, with the length before it, is no larger than {@code maxFrameLength}. */
-    static boolean fits(Object frame, int maxFrameLength) {
-        long size = LENGTH_FIELD + switch (frame) {
-            case RpcRequest request -> REQUEST_HEADER + request.metadata().bytes().length + request.body().readableBytes();
-            case RpcNotify notify -> NOTIFY_HEADER + notify.metadata().bytes().length + notify.body().readableBytes();
-            case RpcResponse response -> RESPONSE_HEADER + response.metadata().bytes().length + response.body().readableBytes();
-            default -> 1;
-        };
-        return size <= maxFrameLength;
+    @Override public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        read = true;
+        super.channelRead(ctx, msg);
     }
 
-    @Override public boolean acceptOutboundMessage(Object msg) {
-        return msg instanceof RpcRequest || msg instanceof RpcNotify || msg instanceof RpcResponse
-                || msg instanceof Hello || msg instanceof Ping || msg instanceof Goodbye;
-    }
-
-    /** The body joins the header; the frame itself is released after this returns. */
-    @Override protected void encode(ChannelHandlerContext ctx, Object frame, List<Object> out) {
-        switch (frame) {
-            case RpcRequest request -> {
-                byte[] metadata = request.metadata().bytes();
-                out.add(Unpooled.wrappedBuffer(ctx.alloc().buffer(REQUEST_HEADER + metadata.length).writeByte(REQUEST)
-                        .writeInt(request.requestId()).writeInt(millisLeft(request.deadline()))
-                        .writeInt(request.command()).writeLong(request.routeKey())
-                        .writeByte(request.businessType()).writeLong(request.businessId())
-                        .writeShort(metadata.length).writeBytes(metadata), request.body().retain()));
+    /** The requests that came on the connection can no longer be answered, even those decoded as it closes. */
+    @Override public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        if (checks != null) checks.cancel(false);
+        try {
+            super.channelInactive(ctx);
+        } finally {
+            if (waiting != null) {
+                unanswered.add(-waiting.size());
+                waiting.clear();
             }
-            case RpcNotify notify -> {
-                byte[] metadata = notify.metadata().bytes();
-                out.add(Unpooled.wrappedBuffer(ctx.alloc().buffer(NOTIFY_HEADER + metadata.length).writeByte(NOTIFY)
-                        .writeInt(notify.command()).writeLong(notify.routeKey())
-                        .writeByte(notify.businessType()).writeLong(notify.businessId())
-                        .writeShort(metadata.length).writeBytes(metadata), notify.body().retain()));
-            }
-            case RpcResponse answer -> {
-                node.answered(ctx.channel(), answer.requestId());
-                RpcResponse response = answer;
-                if (!fits(answer, node.maxFrameLength())) {
-                    LOG.log(Level.WARNING, "The answer to request " + answer.requestId() + " on " + ctx.channel()
-                            + " is larger than the largest frame; RPC_PROTOCOL_ERROR goes instead");
-                    response = RpcResponse.failure(answer.requestId(), RPC_PROTOCOL_ERROR);
-                }
-                byte[] metadata = response.metadata().bytes();
-                out.add(Unpooled.wrappedBuffer(ctx.alloc().buffer(RESPONSE_HEADER + metadata.length).writeByte(RESPONSE)
-                        .writeInt(response.requestId()).writeInt(response.code())
-                        .writeShort(metadata.length).writeBytes(metadata), response.body().retain()));
-            }
-            case Hello hello -> {
-                byte[] metadata = hello.metadata().bytes();
-                out.add(ctx.alloc().buffer(HELLO_HEADER + metadata.length).writeByte(HELLO)
-                        .writeByte(hello.minVersion()).writeByte(hello.maxVersion()).writeInt(hello.nodeId())
-                        .writeLong(hello.incarnation()).writeShort(metadata.length).writeBytes(metadata));
-            }
-            case Goodbye goodbye -> out.add(ctx.alloc().buffer(1).writeByte(GOODBYE));
-            default -> out.add(ctx.alloc().buffer(1).writeByte(PING));
         }
+    }
+
+    private void check(ChannelHandlerContext ctx) {
+        silentChecks = read ? 0 : silentChecks + 1;
+        read = false;
+        if (silentChecks >= 3) {
+            LOG.log(Level.WARNING, "Closing RPC connection " + ctx.channel() + ": nothing received for " + idleTimeout);
+            ctx.close();
+        } else if (!wrote && helloSent) {
+            ctx.writeAndFlush(signal(ctx.alloc(), PING), ctx.voidPromise());
+        }
+        wrote = false;
     }
 
     @Override protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
-        byte type = in.readByte();
-        switch (type) {
-            case HELLO -> out.add(new Hello(in.readUnsignedByte(), in.readUnsignedByte(), in.readInt(), in.readLong(), metadata(in)));
-            case REQUEST -> out.add(new RpcRequest(in.readInt(), deadline(in.readInt()), in.readInt(), in.readLong(),
-                    in.readByte(), in.readLong(), metadata(in), body(in)));
-            case NOTIFY -> out.add(new RpcNotify(in.readInt(), in.readLong(), in.readByte(), in.readLong(),
-                    metadata(in), body(in)));
-            case RESPONSE -> out.add(new RpcResponse(in.readInt(), in.readInt(), metadata(in), body(in)));
-            case PING -> out.add(Ping.INSTANCE);
-            case GOODBYE -> out.add(Goodbye.INSTANCE);
-            default -> throw new CorruptedFrameException("Unknown RPC frame type " + type);
+        int start = in.readerIndex();
+        if (in.readableBytes() < LENGTH_FIELD) return;
+        int length = in.getInt(start);
+        if (length < SIGNAL || length > maxFrameLength - LENGTH_FIELD) {
+            in.skipBytes(in.readableBytes());
+            throw new CorruptedFrameException("An RPC frame of " + length + " bytes, the largest being " + (maxFrameLength - LENGTH_FIELD));
         }
+        if (in.readableBytes() < LENGTH_FIELD + length) return;
+        int end = start + LENGTH_FIELD + length;
+        in.skipBytes(LENGTH_FIELD);
+        Object frame = frame(in, end);
+        in.readerIndex(end);
+        if (frame != null) out.add(frame);
+    }
+
+    /** The frame between the reader index and {@code end}, or null for a request that expired on the way. */
+    private Object frame(ByteBuf in, int end) {
+        byte type = in.readByte();
+        int header = switch (type) {
+            case HELLO -> HELLO_HEADER;
+            case REQUEST -> REQUEST_HEADER;
+            case NOTIFY -> NOTIFY_HEADER;
+            case RESPONSE -> RESPONSE_HEADER;
+            case PING, GOODBYE -> SIGNAL;
+            default -> throw new CorruptedFrameException("Unknown RPC frame type " + type);
+        };
+        if (end - in.readerIndex() < header - 1) throw new CorruptedFrameException("RPC frame type " + type + " cut short");
+        switch (type) {
+            case HELLO -> {
+                return new Hello(in.readUnsignedByte(), in.readUnsignedByte(), in.readInt(), in.readLong(), metadata(in, end));
+            }
+            case REQUEST -> {
+                int id = in.readInt();
+                long deadline = deadline(in.readInt());
+                if (deadline != 0 && System.nanoTime() - deadline >= 0) return null;
+                RpcRequest request = new RpcRequest(id, deadline, in.readInt(), in.readLong(), in.readByte(), in.readLong(),
+                        metadata(in, end), body(in, end));
+                if (waiting == null) waiting = new IntObjectHashMap<>();
+                if (waiting.put(id, Boolean.TRUE) == null) unanswered.increment();
+                return request;
+            }
+            case NOTIFY -> {
+                return new RpcNotify(in.readInt(), in.readLong(), in.readByte(), in.readLong(), metadata(in, end), body(in, end));
+            }
+            case RESPONSE -> {
+                return new RpcResponse(in.readInt(), in.readInt(), metadata(in, end), body(in, end));
+            }
+            case PING -> {
+                return Ping.INSTANCE;
+            }
+            default -> {
+                return Goodbye.INSTANCE;
+            }
+        }
+    }
+
+    /**
+     * Encodes RPC frames, each into a header buffer followed by its body, which goes on as it is. Building a header
+     * is all that can throw, and then the frame is released here, as nothing else will.
+     */
+    @Override public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+        wrote = true;
+        try {
+            switch (msg) {
+                case RpcRequest request -> send(ctx, request(ctx.alloc(), request), request.body(), promise);
+                case RpcNotify notify -> send(ctx, notify(ctx.alloc(), notify), notify.body(), promise);
+                case RpcResponse answer -> {
+                    RpcResponse response = answered(ctx, answer);
+                    send(ctx, response(ctx.alloc(), response), response.body(), promise);
+                }
+                case Hello hello -> {
+                    helloSent = true;
+                    ctx.write(hello(ctx.alloc(), hello), promise);
+                }
+                case Ping ping -> ctx.write(signal(ctx.alloc(), PING), promise);
+                case Goodbye goodbye -> ctx.write(signal(ctx.alloc(), GOODBYE), promise);
+                default -> ctx.write(msg, promise);
+            }
+        } catch (RuntimeException | Error e) {
+            ReferenceCountUtil.safeRelease(msg);
+            throw e;
+        }
+    }
+
+    /** The header, then the body unless it is empty; the header shares the promise only through the body's write. */
+    private static void send(ChannelHandlerContext ctx, ByteBuf header, ByteBuf body, ChannelPromise promise) {
+        if (body.isReadable()) {
+            ctx.write(header, ctx.voidPromise());
+            ctx.write(body, promise);
+        } else {
+            body.release();
+            ctx.write(header, promise);
+        }
+    }
+
+    /** The answer is no longer waited for here; one too large for a frame is replaced by RPC_PROTOCOL_ERROR. */
+    private RpcResponse answered(ChannelHandlerContext ctx, RpcResponse answer) {
+        if (waiting != null && waiting.remove(answer.requestId()) != null) unanswered.decrement();
+        if (fits(answer, maxFrameLength)) return answer;
+        LOG.log(Level.WARNING, "The answer to request " + answer.requestId() + " on " + ctx.channel()
+                + " is larger than the largest frame; RPC_PROTOCOL_ERROR goes instead");
+        answer.release();
+        return RpcResponse.failure(answer.requestId(), RPC_PROTOCOL_ERROR);
+    }
+
+    private static ByteBuf request(ByteBufAllocator alloc, RpcRequest request) {
+        byte[] metadata = request.metadata().bytes();
+        return start(alloc, REQUEST, REQUEST_HEADER, metadata, request.body())
+                .writeInt(request.requestId()).writeInt(millisLeft(request.deadline())).writeInt(request.command())
+                .writeLong(request.routeKey()).writeByte(request.businessType()).writeLong(request.businessId())
+                .writeShort(metadata.length).writeBytes(metadata);
+    }
+
+    private static ByteBuf notify(ByteBufAllocator alloc, RpcNotify notify) {
+        byte[] metadata = notify.metadata().bytes();
+        return start(alloc, NOTIFY, NOTIFY_HEADER, metadata, notify.body())
+                .writeInt(notify.command()).writeLong(notify.routeKey())
+                .writeByte(notify.businessType()).writeLong(notify.businessId())
+                .writeShort(metadata.length).writeBytes(metadata);
+    }
+
+    private static ByteBuf response(ByteBufAllocator alloc, RpcResponse response) {
+        byte[] metadata = response.metadata().bytes();
+        return start(alloc, RESPONSE, RESPONSE_HEADER, metadata, response.body())
+                .writeInt(response.requestId()).writeInt(response.code())
+                .writeShort(metadata.length).writeBytes(metadata);
+    }
+
+    private static ByteBuf hello(ByteBufAllocator alloc, Hello hello) {
+        byte[] metadata = hello.metadata().bytes();
+        return start(alloc, HELLO, HELLO_HEADER, metadata, Unpooled.EMPTY_BUFFER)
+                .writeByte(hello.minVersion()).writeByte(hello.maxVersion()).writeInt(hello.nodeId())
+                .writeLong(hello.incarnation()).writeShort(metadata.length).writeBytes(metadata);
+    }
+
+    private static ByteBuf signal(ByteBufAllocator alloc, byte type) {
+        return alloc.buffer(LENGTH_FIELD + SIGNAL).writeInt(SIGNAL).writeByte(type);
+    }
+
+    /** A header buffer with the frame's length, counting the body, and its type written. */
+    private static ByteBuf start(ByteBufAllocator alloc, byte type, int header, byte[] metadata, ByteBuf body) {
+        return alloc.buffer(LENGTH_FIELD + header + metadata.length)
+                .writeInt(header + metadata.length + body.readableBytes()).writeByte(type);
     }
 
     /** The time a deadline leaves, at least a millisecond; 0 for no deadline. */
@@ -148,15 +313,33 @@ final class RpcFrames extends MessageToMessageCodec<ByteBuf, Object> {
         return deadline != 0 ? deadline : 1;
     }
 
-    private static Metadata metadata(ByteBuf in) {
+    private static Metadata metadata(ByteBuf in, int end) {
         int length = in.readUnsignedShort();
+        if (length > end - in.readerIndex()) throw new CorruptedFrameException("RPC metadata runs past its frame");
         if (length == 0) return Metadata.empty();
         byte[] bytes = new byte[length];
         in.readBytes(bytes);
         return Metadata.wrap(bytes);
     }
 
-    private static ByteBuf body(ByteBuf in) {
-        return in.isReadable() ? in.readRetainedSlice(in.readableBytes()) : Unpooled.EMPTY_BUFFER;
+    private static ByteBuf body(ByteBuf in, int end) {
+        int length = end - in.readerIndex();
+        return length > 0 ? in.readRetainedSlice(length) : Unpooled.EMPTY_BUFFER;
     }
+
+    @Override public void bind(ChannelHandlerContext ctx, SocketAddress localAddress, ChannelPromise promise) { ctx.bind(localAddress, promise); }
+
+    @Override public void connect(ChannelHandlerContext ctx, SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
+        ctx.connect(remoteAddress, localAddress, promise);
+    }
+
+    @Override public void disconnect(ChannelHandlerContext ctx, ChannelPromise promise) { ctx.disconnect(promise); }
+
+    @Override public void close(ChannelHandlerContext ctx, ChannelPromise promise) { ctx.close(promise); }
+
+    @Override public void deregister(ChannelHandlerContext ctx, ChannelPromise promise) { ctx.deregister(promise); }
+
+    @Override public void read(ChannelHandlerContext ctx) { ctx.read(); }
+
+    @Override public void flush(ChannelHandlerContext ctx) { ctx.flush(); }
 }

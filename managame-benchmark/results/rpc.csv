@@ -1,0 +1,13 @@
+# recorded 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99
+CallThroughputBenchmark.call,connections=1 payload=64 window=1024,thrpt,624271.036,19005.730,ops/s,1009.971,,
+CallThroughputBenchmark.call,connections=1 payload=1024 window=1024,thrpt,417916.770,54372.452,ops/s,1018.881,,
+CallThroughputBenchmark.call,connections=4 payload=64 window=1024,thrpt,1108501.567,73629.974,ops/s,1012.305,,
+CallThroughputBenchmark.call,connections=4 payload=1024 window=1024,thrpt,962983.243,50614.977,ops/s,1012.493,,
+NotifyThroughputBenchmark.notifyPeer,connections=1 payload=64 window=1024,thrpt,827067.349,15596.085,ops/s,404.728,,
+NotifyThroughputBenchmark.notifyPeer,connections=1 payload=1024 window=1024,thrpt,727007.158,49613.190,ops/s,404.637,,
+NotifyThroughputBenchmark.notifyPeer,connections=4 payload=64 window=1024,thrpt,2164576.684,281056.882,ops/s,404.068,,
+NotifyThroughputBenchmark.notifyPeer,connections=4 payload=1024 window=1024,thrpt,2047847.202,202825.708,ops/s,401.312,,
+CallLatencyBenchmark.call,payload=64,sample,47.076,0.172,us/op,1335.671,43.648,110.556
+CallLatencyBenchmark.call,payload=1024,sample,49.844,0.193,us/op,1337.161,44.480,128.512
+CallLatencyBenchmark.call,payload=16384,sample,55.608,0.141,us/op,1401.129,50.880,126.720

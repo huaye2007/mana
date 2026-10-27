@@ -1,0 +1,5 @@
+# recorded 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99
+MetadataBenchmark.build,,avgt,86.658,1.765,ns/op,776.001,,
+MetadataBenchmark.get,,avgt,5.308,0.272,ns/op,24.000,,
+MetadataBenchmark.wrap,,avgt,8.939,0.127,ns/op,40.000,,

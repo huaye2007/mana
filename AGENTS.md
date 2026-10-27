@@ -4,8 +4,8 @@ Guidance for coding agents working in this workspace. Read it before changing an
 
 ## Workspace
 
-Four Maven projects with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on Java 25. The workspace is the git
-repository https://github.com/huaye2007/mana (branch `main`).
+Four component projects and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
+Java 25. The workspace is the git repository https://github.com/huaye2007/mana (branch `main`).
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
@@ -13,6 +13,7 @@ repository https://github.com/huaye2007/mana (branch `main`).
 | `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric connections, membership the application drives, restart detection, draining, TLS and admission |
+| `managame-benchmark` | all four, JMH 1.37 | JMH benchmarks per component with recorded baselines (`results/*.csv`); a tool nothing depends on |
 
 ## Build and test
 
@@ -31,6 +32,21 @@ repository https://github.com/huaye2007/mana (branch `main`).
   installed jar.
 - Tests are JUnit 5 under each project's `src/test/java`. Every behavior change comes with tests; network,
   runtime and rpc tests use real connections rather than mocks.
+- managame-benchmark builds last (`mvn -o clean package`), after the four components are installed.
+
+## Benchmarks
+
+Every component has JMH benchmarks in `managame-benchmark`, package `cn.managame.benchmark.<component>`, and a
+baseline in `managame-benchmark/results/<component>.csv`; its README has the details.
+
+- After changing a component's code, run its benchmarks from `managame-benchmark` and read the comparison:
+  `java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar <component>`. Report results marked
+  `WORSE` or `MORE ALLOCATION`, and look into them before calling the change done.
+- When a change makes a component faster or slower on purpose, save the baseline (`--save`) and commit `results/`
+  with the change. Never save over a baseline to hide a regression.
+- A new feature on a hot path, or a new component, comes with benchmarks of its own, in the package of the
+  component it measures and using only that component and those below it.
+- Baselines compare only on the machine they were recorded on, named on their first line.
 
 ## Design principles
 
