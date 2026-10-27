@@ -65,18 +65,19 @@ Zero is success and every failure code is positive. The framework uses these:
 
 | Code | Name | Meaning |
 | --- | --- | --- |
-| 2002 | `RPC_UNAVAILABLE` | The peer has no connection up, its connection could not take the call, or it dropped while the call waited |
-| 2003 | `RPC_TIMEOUT` | No answer within the node's timeout |
+| 2002 | `RPC_UNAVAILABLE` | The peer has no connection up, its connection could not take the call, or it closed while the call waited |
+| 2003 | `RPC_TIMEOUT` | No answer within the call's timeout |
+| 2004 | `RPC_PEER_REMOVED` | The peer was removed before or while the call waited |
+| 2007 | `RPC_PROTOCOL_ERROR` | The request, or its answer, is larger than the largest frame |
 | 2005 | `RPC_NODE_CLOSED` | The calling node was closed |
-| 2006 | `RPC_HANDLER_ERROR` | The peer could not encode its handler's result |
-| 2007 | `RPC_PROTOCOL_ERROR` | A request or result could not be decoded |
+| 2006 | `RPC_HANDLER_ERROR` | The peer's RPC handler threw |
 | 3001 | `RUNTIME_CLOSED` | The runtime is shut down and refuses new tasks |
-| 3002 | `HANDLER_NOT_FOUND` | No handler for the message's class |
+| 3002 | `HANDLER_NOT_FOUND` | No handler for the message |
 | 3005 | `INVALID_ROUTE_KEY` | The handler's domain could not find a routing key for the message |
 | 3006 | `ROUTE_EXECUTOR_OVERLOADED` | The domain's executor has too many tasks waiting |
 | 3009 | `RUNTIME_EXECUTION_ERROR` | The handler threw |
 
-The others (`RPC_PEER_NOT_FOUND`, `RPC_PEER_REMOVED`, `HANDLER_CONTEXT_MISMATCH`, `ROUTE_DOMAIN_MISMATCH`,
+The others (`RPC_PEER_NOT_FOUND`, `HANDLER_CONTEXT_MISMATCH`, `ROUTE_DOMAIN_MISMATCH`,
 `ROUTE_EXECUTOR_CLOSED`, `ROUTE_CALL_EXECUTION_ERROR`, `ROUTE_CALLBACK_DISPATCH_FAILED`, `DATA_SAVE_FAILED`,
 `DATA_LOG_SAVE_FAILED`) are allocated for the framework and not raised today. Ranges: RPC 2001–2999, runtime
 3001–3999, data 4001–4999; application codes should stay outside them.

@@ -63,17 +63,18 @@ Metadata received = Metadata.wrap(wire);  // 校验格式，不复制
 | 错误码 | 名称 | 含义 |
 | --- | --- | --- |
 | 2002 | `RPC_UNAVAILABLE` | 对端没有可用连接、连接无法接收这次调用，或等待应答期间连接断开 |
-| 2003 | `RPC_TIMEOUT` | 在节点的超时时间内没有收到应答 |
+| 2003 | `RPC_TIMEOUT` | 在调用的超时时间内没有收到应答 |
+| 2004 | `RPC_PEER_REMOVED` | 对端在调用前或等待应答期间被移除 |
+| 2007 | `RPC_PROTOCOL_ERROR` | 请求或它的应答超过最大帧长度 |
 | 2005 | `RPC_NODE_CLOSED` | 发起调用的节点已关闭 |
-| 2006 | `RPC_HANDLER_ERROR` | 对端无法编码处理器返回的结果 |
-| 2007 | `RPC_PROTOCOL_ERROR` | 请求或结果无法解码 |
+| 2006 | `RPC_HANDLER_ERROR` | 对端的 RPC 处理器抛出了异常 |
 | 3001 | `RUNTIME_CLOSED` | runtime 已关闭，不再接受新任务 |
-| 3002 | `HANDLER_NOT_FOUND` | 没有处理该消息类型的处理器 |
+| 3002 | `HANDLER_NOT_FOUND` | 没有处理该消息的处理器 |
 | 3005 | `INVALID_ROUTE_KEY` | 处理器所在的 domain 无法为该消息找到路由键 |
 | 3006 | `ROUTE_EXECUTOR_OVERLOADED` | 该 domain 的执行器排队任务过多 |
 | 3009 | `RUNTIME_EXECUTION_ERROR` | 处理器抛出了异常 |
 
-其余错误码（`RPC_PEER_NOT_FOUND`、`RPC_PEER_REMOVED`、`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、
+其余错误码（`RPC_PEER_NOT_FOUND`、`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、
 `ROUTE_EXECUTOR_CLOSED`、`ROUTE_CALL_EXECUTION_ERROR`、`ROUTE_CALLBACK_DISPATCH_FAILED`、`DATA_SAVE_FAILED`、
 `DATA_LOG_SAVE_FAILED`）已为框架预留，目前不会出现。号段：RPC 2001–2999，runtime 3001–3999，数据 4001–4999；
 业务自己的错误码应避开这些号段。

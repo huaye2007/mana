@@ -12,7 +12,7 @@ repository https://github.com/huaye2007/mana (branch `main`).
 | `managame-common` | nothing | `Metadata`, `MetadataKey`, `FrameworkErrorCodes` |
 | `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
-| `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls between server processes, answered through `RpcHandler` / `RpcCallback` |
+| `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric connections, membership the application drives, restart detection, draining, TLS and admission |
 
 ## Build and test
 
@@ -54,6 +54,12 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   over them.
 - **Protocols belong to the application.** The framework defines no client packet format; `Dispatcher` takes any
   decoded message plus reply and fail callbacks in the application's format.
+- **Components carry no business concepts.** rpc knows nodes by id only: what a node is for (game, world, gate)
+  travels in its handshake `Metadata`, and grouping peers and picking one for a key are the application's.
+  Message fields such as `command`, `businessType` and `businessId` are carried as is, never interpreted.
+- **Reference counting follows Netty.** Bodies are `ByteBuf`s, never copied on the way; RPC messages are
+  `ReferenceCounted` through them. What is handed to the framework becomes its own; what the framework hands to a
+  callback is released when it returns.
 - **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
   (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routingKey)` run one at a time in submission order.
 - **Every context has the same fields:** `domain` (int), `routingKey` (long), `businessType` (byte),
@@ -69,7 +75,12 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 
 - Names the maintainer chose; keep them: `GameTask` (not ContextTask), `GameContext.copyOf` (not "derive"),
   `RequestContext` with `reply` / `fail`, `HttpExchange`, `RpcNode` (this process), `RpcPeer` (another process,
-  connected either way, possibly over several connections), `node.peer(id).call(request, RpcCallback)`.
+  connected either way, possibly over several connections), `RpcRequest` (with `requestId`) / `RpcNotify`
+  (without) / `RpcResponse` (`requestId`, `code`, `metadata`, `body`), `node.createPeer` / `removePeer`,
+  `node.peer(id).call(request, callback)`, `peer.notify(notify)`, `node.broadcast(peers, notify)`,
+  `RpcHandler.handleMessage(RpcPeer rpcPeer, Connection connection, Object msg)` answered with
+  `response.writeTo(connection)`, `RpcListener.onConnected(peer, restarted)`, `incarnation` (a running instance of
+  a node), `node.close(Duration drain)`, `RpcAuthenticator`, `RpcObserver`.
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).

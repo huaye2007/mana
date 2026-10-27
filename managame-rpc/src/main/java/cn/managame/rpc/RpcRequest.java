@@ -1,60 +1,63 @@
 package cn.managame.rpc;
 
 import cn.managame.Metadata;
-import java.util.concurrent.atomic.AtomicBoolean;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.util.ReferenceCounted;
+import java.util.Objects;
 
 /**
- * A request or notice from a peer, as the {@link RpcHandler} receives it. A request is answered at most once, from
- * any thread, also after the handler returned; a notice expects no answer, and reply and fail then return false.
+ * A call to another node, as the caller builds it and as the callee's {@link RpcHandler} receives it. Every field
+ * but the id and the deadline is the application's and travels as is: {@code command} says what is asked,
+ * {@code businessType} and {@code businessId} whom it is about. {@code routeKey} also picks the connection on the
+ * way, so requests with one key reach the peer in the order they were sent.
+ *
+ * <p>The {@code requestId} and the {@code deadline} are the calling node's: build a request with {@link #of} and
+ * the call assigns both, replacing whatever the request carried, so a received request can be passed on as is.
+ * The callee answers with an {@link RpcResponse} carrying the same id. The deadline is a {@link System#nanoTime()}
+ * value of the process holding the request, 0 for none: the caller stops waiting then, so the callee may skip a
+ * request that {@link #isExpired()}. It travels as the time left, so the two clocks need not agree.
+ *
+ * <p>Like Netty's own messages, it is reference-counted through its body; {@link RpcPeer} and {@link RpcHandler}
+ * say who releases it.
  */
-public final class RpcRequest {
-    private final RpcNode node;
-    private final RpcLink link;
-    private final int requestId;
-    private final Object message;
-    private final Metadata metadata;
-    private final AtomicBoolean answered = new AtomicBoolean();
-
-    RpcRequest(RpcNode node, RpcLink link, int requestId, Object message, Metadata metadata) {
-        this.node = node;
-        this.link = link;
-        this.requestId = requestId;
-        this.message = message;
-        this.metadata = metadata;
+public record RpcRequest(int requestId, long deadline, int command, long routeKey, byte businessType, long businessId,
+                         Metadata metadata, ByteBuf body) implements ReferenceCounted {
+    public RpcRequest {
+        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(body, "body");
     }
 
-    /** The node that sent it; requests to it go back over the same peer. */
-    public RpcPeer peer() { return link.peer; }
+    /** A request with route key 0, no business and no metadata. */
+    public static RpcRequest of(int command, ByteBuf body) { return of(command, 0, body); }
 
-    /** The message the codec decoded. */
-    public Object message() { return message; }
-
-    /** What the sender attached to it. */
-    public Metadata metadata() { return metadata; }
-
-    /** False for a notice. */
-    public boolean expectsAnswer() { return requestId != 0; }
-
-    /**
-     * Answers with {@code result}; false when it is a notice or was already answered. A result the codec cannot
-     * encode fails the request with RPC_HANDLER_ERROR instead, and is logged.
-     */
-    public boolean reply(Object result) {
-        if (!claim()) return false;
-        node.reply(link, requestId, result);
-        return true;
+    /** A request with no business and no metadata. */
+    public static RpcRequest of(int command, long routeKey, ByteBuf body) {
+        return of(command, routeKey, (byte) 0, 0, Metadata.empty(), body);
     }
 
-    /** Answers with a failure; false when it is a notice or was already answered. */
-    public boolean fail(int errorCode) {
-        if (!claim()) return false;
-        node.fail(link, requestId, errorCode);
-        return true;
+    public static RpcRequest of(int command, long routeKey, byte businessType, long businessId, Metadata metadata,
+                                ByteBuf body) {
+        return new RpcRequest(0, 0, command, routeKey, businessType, businessId, metadata, body);
     }
 
-    private boolean claim() { return requestId != 0 && answered.compareAndSet(false, true); }
+    /** Whether the caller has stopped waiting for the answer. */
+    public boolean isExpired() { return deadline != 0 && System.nanoTime() - deadline >= 0; }
 
-    @Override public String toString() {
-        return (requestId == 0 ? "RpcNotice[" : "RpcRequest[") + message.getClass().getName() + " from " + link.peer + "]";
+    RpcRequest sentAs(int id, long deadline) {
+        return new RpcRequest(id, deadline, command, routeKey, businessType, businessId, metadata, body);
     }
+
+    /** What a call keeps for its callback: everything but the body, which is released once sent. */
+    RpcRequest withoutBody() {
+        return new RpcRequest(requestId, deadline, command, routeKey, businessType, businessId, metadata, Unpooled.EMPTY_BUFFER);
+    }
+
+    @Override public int refCnt() { return body.refCnt(); }
+    @Override public RpcRequest retain() { body.retain(); return this; }
+    @Override public RpcRequest retain(int increment) { body.retain(increment); return this; }
+    @Override public RpcRequest touch() { body.touch(); return this; }
+    @Override public RpcRequest touch(Object hint) { body.touch(hint); return this; }
+    @Override public boolean release() { return body.release(); }
+    @Override public boolean release(int decrement) { return body.release(decrement); }
 }

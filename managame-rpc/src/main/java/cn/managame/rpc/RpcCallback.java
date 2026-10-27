@@ -1,30 +1,20 @@
 package cn.managame.rpc;
 
-import java.util.Objects;
-import java.util.function.Consumer;
-import java.util.function.IntConsumer;
-
 /**
- * What a call does with its answer: exactly one of the methods runs, once. They run on a network thread, the
- * connection's EventLoop or the timeout thread, or on the calling thread when the call fails at once, so they must
- * not block; hand longer work to the application's own executor. An exception from them is logged.
+ * Receives the answer to one call, exactly once, together with the request it answers, so that the application
+ * can carry on with the request's command, route key and business, for example on the executor that key maps to.
+ *
+ * <p>It runs on one of the node's EventLoops when the answer arrives, the call times out or its connection closes;
+ * on the thread that removed the peer or closed the node; or on the calling thread when the call fails before it
+ * is sent. Either way it must not block: hand longer work to the application's own executor. An exception it throws
+ * is logged.
  */
-public interface RpcCallback<R> {
-    void onResult(R result);
-
+@FunctionalInterface
+public interface RpcCallback {
     /**
-     * {@code errorCode} is RPC_UNAVAILABLE, RPC_TIMEOUT or RPC_NODE_CLOSED for a failure on this side, otherwise the
-     * code the peer failed the request with.
+     * @param request  the request as it was sent, with the id the call assigned, but with an empty body: the body
+     *                 was released once sent
+     * @param response the answer; it is released when this method returns, so decode it here or retain it
      */
-    void onFailure(int errorCode);
-
-    /** A callback from two lambdas. */
-    static <R> RpcCallback<R> of(Consumer<? super R> onResult, IntConsumer onFailure) {
-        Objects.requireNonNull(onResult, "onResult");
-        Objects.requireNonNull(onFailure, "onFailure");
-        return new RpcCallback<>() {
-            @Override public void onResult(R result) { onResult.accept(result); }
-            @Override public void onFailure(int errorCode) { onFailure.accept(errorCode); }
-        };
-    }
+    void onResponse(RpcRequest request, RpcResponse response);
 }
