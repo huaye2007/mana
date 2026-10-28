@@ -1,6 +1,7 @@
 package cn.managame.benchmark.network;
 
 import cn.managame.benchmark.CountingSocketChannel;
+import cn.managame.benchmark.PeerProcess;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import cn.managame.network.connection.WriteStatus;
@@ -16,6 +17,7 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.handler.flush.FlushConsolidationHandler;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
@@ -23,30 +25,27 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A server that echoes every length-framed message and clients holding {@code connections} connections to it,
- * all in this process over loopback, with flush consolidation as RPC has it. Each echo runs {@code onEcho}.
- * Frames are duplicates of one payload, so the benchmarks measure the transport, not the making of messages. The
- * clients' channels count the bytes on the wire.
+ * A server that echoes every length-framed message and clients holding {@code connections} connections to it over
+ * loopback, with flush consolidation as RPC has it; the server runs in this process or, with {@code otherProcess},
+ * in an {@link EchoPeer} of its own. Each echo runs {@code onEcho}. Frames are duplicates of one payload, so the
+ * benchmarks measure the transport, not the making of messages. The clients' channels count the bytes on the wire.
  */
 final class EchoFixture implements AutoCloseable {
     private static final int MAX_FRAME = 8 * 1024 * 1024;
     /** What rpc sets, so that both see the same back pressure; Netty's own 64 KiB refuses a window of 1024 at once. */
     private static final WriteBufferWaterMark WATER_MARK = new WriteBufferWaterMark(1 << 20, 4 << 20);
     private final NetworkServer server;
+    private final PeerProcess peer;
     private final EventLoopGroup clientGroup;
     private final List<NetworkClient> clients = new ArrayList<>();
     final List<Connection> open = new CopyOnWriteArrayList<>();
     final ByteBuf payload;
 
-    EchoFixture(int payloadSize, int connections, Runnable onEcho) throws InterruptedException {
+    EchoFixture(int payloadSize, int connections, boolean otherProcess, Runnable onEcho) throws IOException, InterruptedException {
         payload = Unpooled.directBuffer(payloadSize).writeZero(payloadSize);
-        server = NetworkServer.start(new ServerBootstrap().childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, WATER_MARK)
-                .childHandler(pipeline(new Handler() {
-                    @Override public void onRead(Connection connection, Object message) {
-                        ByteBuf frame = ((ByteBuf) message).retain();
-                        if (connection.write(frame) != WriteStatus.ACCEPTED) frame.release();
-                    }
-                })), new InetSocketAddress("127.0.0.1", 0));
+        server = otherProcess ? null : startServer();
+        peer = otherProcess ? PeerProcess.start(EchoPeer.class) : null;
+        int port = otherProcess ? peer.port() : server.port();
         clientGroup = CountingSocketChannel.newGroup("echo-client");
         Bootstrap bootstrap = new Bootstrap().group(clientGroup).channel(CountingSocketChannel.class)
                 .option(ChannelOption.WRITE_BUFFER_WATER_MARK, WATER_MARK)
@@ -56,12 +55,23 @@ final class EchoFixture implements AutoCloseable {
                     @Override public void onRead(Connection connection, Object message) { onEcho.run(); }
                 }));
         for (int i = 0; i < connections; i++)
-            clients.add(NetworkClient.connect(bootstrap, new InetSocketAddress("127.0.0.1", server.port())));
+            clients.add(NetworkClient.connect(bootstrap, new InetSocketAddress("127.0.0.1", port)));
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (open.size() < connections) {
             if (System.nanoTime() > deadline) throw new IllegalStateException("The connections did not open");
             Thread.sleep(10);
         }
+    }
+
+    /** The echo server, on a free loopback port. */
+    static NetworkServer startServer() {
+        return NetworkServer.start(new ServerBootstrap().childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, WATER_MARK)
+                .childHandler(pipeline(new Handler() {
+                    @Override public void onRead(Connection connection, Object message) {
+                        ByteBuf frame = ((ByteBuf) message).retain();
+                        if (connection.write(frame) != WriteStatus.ACCEPTED) frame.release();
+                    }
+                })), new InetSocketAddress("127.0.0.1", 0));
     }
 
     private static ConnectionInitializer pipeline(ConnectionHandler handler) {
@@ -83,7 +93,8 @@ final class EchoFixture implements AutoCloseable {
     @Override public void close() {
         clients.forEach(NetworkClient::close);
         clientGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
-        server.close();
+        if (server != null) server.close();
+        if (peer != null) peer.close();
         payload.release();
     }
 

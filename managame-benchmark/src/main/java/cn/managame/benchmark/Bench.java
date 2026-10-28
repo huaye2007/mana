@@ -65,15 +65,23 @@ public final class Bench {
     private static final String ALLOC = "alloc_bytes_per_op", P50 = "p50", P99 = "p99", ALLOC_RATE = "alloc_mb_per_s",
             GC_COUNT = "gc_count", GC_MS = "gc_ms", CPU = "cpu_ns_per_op", CPU_CALLER = "cpu_caller_ns_per_op",
             CPU_EVENT_LOOP = "cpu_eventloop_ns_per_op", CPU_OTHER = "cpu_other_ns_per_op", CPU_JVM = "cpu_jvm_ns_per_op",
-            DIRECT = "direct_mib", SENT = "sent_bytes_per_op", RECEIVED = "received_bytes_per_op", BUSY = "busy_percent";
-    /** What a result records besides its score, in the order of the baseline's columns. */
+            DIRECT = "direct_mib", SENT = "sent_bytes_per_op", RECEIVED = "received_bytes_per_op", BUSY = "busy_percent",
+            PEER_CPU = "peer_cpu_ns_per_op", PEER_CPU_EVENT_LOOP = "peer_cpu_eventloop_ns_per_op",
+            PEER_CPU_OTHER = "peer_cpu_other_ns_per_op", PEER_CPU_JVM = "peer_cpu_jvm_ns_per_op",
+            PEER_ALLOC = "peer_alloc_bytes_per_op", PEER_GC_COUNT = "peer_gc_count", PEER_GC_MS = "peer_gc_ms",
+            PEER_DIRECT = "peer_direct_mib";
+    /** What a result records besides its score, in the order of the baseline's columns; the peer's when it has one. */
     static final List<String> COLUMNS = List.of(ALLOC, P50, P99, ALLOC_RATE, GC_COUNT, GC_MS, CPU, CPU_CALLER,
-            CPU_EVENT_LOOP, CPU_OTHER, CPU_JVM, DIRECT, SENT, RECEIVED, BUSY);
+            CPU_EVENT_LOOP, CPU_OTHER, CPU_JVM, DIRECT, SENT, RECEIVED, BUSY, PEER_CPU, PEER_CPU_EVENT_LOOP,
+            PEER_CPU_OTHER, PEER_CPU_JVM, PEER_ALLOC, PEER_GC_COUNT, PEER_GC_MS, PEER_DIRECT);
     /** The JMH result each column but the percentiles comes from: the GC profiler's, then {@link CostProfiler}'s. */
     private static final Map<String, String> SOURCES = sources(ALLOC, "gc.alloc.rate.norm", ALLOC_RATE, "gc.alloc.rate",
             GC_COUNT, "gc.count", GC_MS, "gc.time", CPU, "cost.cpu", CPU_CALLER, "cost.cpu.caller",
             CPU_EVENT_LOOP, "cost.cpu.eventloop", CPU_OTHER, "cost.cpu.other", CPU_JVM, "cost.cpu.jvm",
-            DIRECT, "cost.direct", SENT, "cost.net.sent", RECEIVED, "cost.net.received", BUSY, "cost.busy");
+            DIRECT, "cost.direct", SENT, "cost.net.sent", RECEIVED, "cost.net.received", BUSY, "cost.busy",
+            PEER_CPU, "cost.peer.cpu", PEER_CPU_EVENT_LOOP, "cost.peer.cpu.eventloop", PEER_CPU_OTHER, "cost.peer.cpu.other",
+            PEER_CPU_JVM, "cost.peer.cpu.jvm", PEER_ALLOC, "cost.peer.alloc", PEER_GC_COUNT, "cost.peer.gc.count",
+            PEER_GC_MS, "cost.peer.gc.time", PEER_DIRECT, "cost.peer.direct");
 
     private Bench() {}
 
@@ -214,6 +222,7 @@ public final class Bench {
      */
     private static String costChanges(Row before, Row now, double threshold) {
         return change(before.get(ALLOC), now.get(ALLOC), threshold, 32, "ALLOCATION", "allocation")
+                + change(before.get(PEER_ALLOC), now.get(PEER_ALLOC), threshold, 32, "SERVER ALLOCATION", "server allocation")
                 + change(before.get(SENT) + before.get(RECEIVED), now.get(SENT) + now.get(RECEIVED), threshold, 4, "BYTES", "bytes");
     }
 
@@ -226,17 +235,19 @@ public final class Bench {
     }
 
     /**
-     * The second line of a result: CPU per operation by kind of thread, garbage collection, Netty's direct memory,
-     * bytes on the wire and the bandwidth they make, and how busy the rest of the machine was; the CPU and the bytes
-     * of {@code before}, when there is one that has them, come first.
+     * The lines under a result: CPU per operation by kind of thread, garbage collection, Netty's direct memory, bytes
+     * on the wire and the bandwidth they make, and how busy the rest of the machine was; the CPU and the bytes of
+     * {@code before}, when there is one that has them, come first. A result with a peer process shows its two sides
+     * apart: the benchmark's JVM as the client, then the peer's as the server.
      */
     private static String costs(Row before, Row row) {
+        boolean apart = Double.isFinite(row.get(PEER_CPU));
         List<String> parts = new ArrayList<>();
         if (Double.isFinite(row.get(CPU))) {
             String was = before != null && Double.isFinite(before.get(CPU)) ? number(before.get(CPU)) + " -> " : "";
-            parts.add(String.format(Locale.ROOT, "cpu %s%s ns/op (caller %s, eventloop %s, other %s, jvm %s)", was,
-                    number(row.get(CPU)), number(row.get(CPU_CALLER)), number(row.get(CPU_EVENT_LOOP)),
-                    number(row.get(CPU_OTHER)), number(row.get(CPU_JVM))));
+            parts.add(String.format(Locale.ROOT, "%scpu %s%s ns/op (caller %s, eventloop %s, other %s, jvm %s)",
+                    apart ? "client " : "", was, number(row.get(CPU)), number(row.get(CPU_CALLER)),
+                    number(row.get(CPU_EVENT_LOOP)), number(row.get(CPU_OTHER)), number(row.get(CPU_JVM))));
         }
         if (Double.isFinite(row.get(GC_COUNT)))
             parts.add(String.format(Locale.ROOT, "gc %.0f in %.0f ms", row.get(GC_COUNT), finite(row.get(GC_MS))));
@@ -249,7 +260,13 @@ public final class Bench {
                     row.get(RECEIVED), bytes * row.opsPerSecond() / 1e6));
         }
         if (Double.isFinite(row.get(BUSY))) parts.add(String.format(Locale.ROOT, "busy %.0f%%", row.get(BUSY)));
-        return "    " + String.join("  |  ", parts);
+        String lines = "    " + String.join("  |  ", parts);
+        if (!apart) return lines;
+        String was = before != null && Double.isFinite(before.get(PEER_CPU)) ? number(before.get(PEER_CPU)) + " -> " : "";
+        return lines + String.format(Locale.ROOT, "%n    server cpu %s%s ns/op (eventloop %s, other %s, jvm %s)  |  alloc %s B/op"
+                        + "  |  gc %.0f in %.0f ms  |  direct %.1f MiB", was, number(row.get(PEER_CPU)),
+                number(row.get(PEER_CPU_EVENT_LOOP)), number(row.get(PEER_CPU_OTHER)), number(row.get(PEER_CPU_JVM)),
+                number(row.get(PEER_ALLOC)), finite(row.get(PEER_GC_COUNT)), finite(row.get(PEER_GC_MS)), finite(row.get(PEER_DIRECT)));
     }
 
     /** Runs {@code jar} and this jar in turn, {@code jar} first, and prints how this one compares with it. */

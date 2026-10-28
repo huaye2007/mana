@@ -9,12 +9,13 @@ depends on it, and its benchmarks of one component never join it with another.
 | Package | Benchmarks | What they measure |
 | --- | --- | --- |
 | `cn.managame.benchmark.common` | `MetadataBenchmark` | Building metadata, reading a value, wrapping received bytes (ns/op) |
-| `cn.managame.benchmark.network` | `EchoThroughputBenchmark`, `EchoLatencyBenchmark` | Length-framed messages echoed over loopback: per second with many in flight, and the round trip of one |
+| `cn.managame.benchmark.network` | `EchoThroughputBenchmark`, `EchoLatencyBenchmark`, and the same as `…ProcessBenchmark` | Length-framed messages echoed over loopback: per second with many in flight, and the round trip of one |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`, `DispatchThroughputBenchmark` | Tasks through `GameRuntime.execute`, and player requests through the `Dispatcher` to an annotated handler, per second |
-| `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`, `CallLatencyBenchmark`, `NotifyThroughputBenchmark` | Calls answered and notifies handled per second with many in flight, and the round trip of one call |
+| `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`, `CallLatencyBenchmark`, `NotifyThroughputBenchmark`, and the same as `…ProcessBenchmark` | Calls answered and notifies handled per second with many in flight, and the round trip of one call |
 
 The network echo benchmarks put the same load on the transport as the rpc ones, so the difference between them is
-what RPC adds.
+what RPC adds. Each runs twice: with both sides in one benchmark JVM, and, as its `…ProcessBenchmark`, with the
+server in a process of its own; see [Two processes](#two-processes).
 
 ## Running
 
@@ -63,7 +64,13 @@ benchmarks' own `CostProfiler`, around every iteration in the benchmark JVM:
 | `cpu_jvm_ns_per_op` | ... on the JVM's own work: garbage collection and compilation |
 | `direct_mib` | Direct memory Netty holds at the end of an iteration, the highest of them |
 | `sent_bytes_per_op`, `received_bytes_per_op` | Bytes on the wire per operation, without TCP and IP headers, counted by the dialing side's `CountingSocketChannel` |
-| `busy_percent` | How much of the machine's CPU other programs used, the highest of the iterations |
+| `busy_percent` | How much of the machine's CPU other programs used, the highest of the iterations; the peer process does not count |
+| `peer_cpu_ns_per_op`, `peer_cpu_eventloop_ns_per_op`, `peer_cpu_other_ns_per_op`, `peer_cpu_jvm_ns_per_op` | For a `…ProcessBenchmark`, the server process's CPU per operation, split the same way |
+| `peer_alloc_bytes_per_op`, `peer_gc_count`, `peer_gc_ms`, `peer_direct_mib` | ... and its heap allocated per operation, garbage collections and direct memory |
+
+A thread's CPU time can only be read while it lives, and JMH stops a benchmark's fixture, and with it its
+EventLoops, before the last iteration's measurement is taken; the profiler therefore samples every thread every
+50 ms and counts one that ended with its last reading.
 
 Each run prints every result next to its baseline, and what it cost on a second line; the bandwidth is the bytes
 per operation times the operations per second:
@@ -82,6 +89,23 @@ count as worse. CPU time per operation is shown, not judged, as a slower core ra
 Other programs that use more than a tenth of the machine move the scores: a score that got worse then is
 `unsure (machine N% busy)`, and `--save` saves nothing of that component. The exit code is 1 when anything got
 worse, 3 when nothing did but something is unsure, and 0 otherwise.
+
+## Two processes
+
+Game servers talk between processes, each with its own JVM, garbage collection and threads. A `…ProcessBenchmark`
+runs the server side, the echo server or the world node, in a process of its own: `PeerProcess` starts it from the
+same jar with the benchmark JVM's settings, and the benchmark JVM is the client, the game node. Around every
+iteration the peer measures what it used itself, and the result shows the two sides apart:
+
+```
+CallThroughputProcessBenchmark.call   connections=1 payload=64 window=1024   598,000 ops/s  new  alloc 610 B/op
+    client cpu 2,450 ns/op (caller 610, eventloop 1,600, other 40, jvm 200)  |  gc 4 in 15 ms  |  direct 3.4 MiB  |  net 100+79 B/op, 107.0 MB/s  |  busy 4%
+    server cpu 1,700 ns/op (eventloop 1,550, other 0, jvm 150)  |  alloc 400 B/op  |  gc 2 in 8 ms  |  direct 2.0 MiB
+```
+
+Both processes still share the machine's CPUs. A world node in its own process cannot release the client's
+window as the in-process one does, so for notifies it sends a notify back for every 64 it handled, and answers a
+call at the end of each iteration with those not acknowledged yet. `SERVER ALLOCATION` is flagged like the client's.
 
 ## Against the code before a change
 
@@ -145,6 +169,9 @@ no baseline from a run taken while the machine was busy.
   not pass for a fast one.
 - A benchmark that talks over sockets dials through `CountingSocketChannel` (`channel(CountingSocketChannel.class)`
   on a group from `CountingSocketChannel.newGroup`), so that its bytes on the wire are counted.
+- One with a server side also runs it apart: its fixture starts the server with `PeerProcess.start(<main class>)`
+  when asked to, that class's `main` starts the server and calls `PeerProcess.serve`, and a `…ProcessBenchmark`
+  subclass turns it on by overriding `otherProcess()`.
 - Run it with `--save` and commit the new baseline lines.
 
 ## Build

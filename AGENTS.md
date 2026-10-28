@@ -54,6 +54,8 @@ baseline in `managame-benchmark/results/<component>.csv`; its README has the det
   with the change. Never save over a baseline to hide a regression, nor from a run taken while the machine was
   busy; Bench refuses to save a component during which other programs used more than a tenth of the CPU.
 - A benchmark that talks over sockets dials through `CountingSocketChannel`, so its bytes on the wire are counted.
+  One with a server side also has a `…ProcessBenchmark` that runs the server in a process of its own
+  (`PeerProcess`), whose results show client and server costs apart.
 - A new feature on a hot path, or a new component, comes with benchmarks of its own, in the package of the
   component it measures and using only that component and those below it.
 - Baselines compare only on the machine they were recorded on, named on their first line.

@@ -45,8 +45,8 @@ public class CallThroughputBenchmark {
     private final AtomicLong failures = new AtomicLong();
     private RpcCallback done;
 
-    @Setup(Level.Trial) public void start() throws InterruptedException {
-        fixture = new RpcFixture(payload, connections);
+    @Setup(Level.Trial) public void start() throws Exception {
+        fixture = new RpcFixture(payload, connections, otherProcess());
         inFlight = new Semaphore(window);
         done = (request, response) -> {
             if (response.code() != FrameworkErrorCodes.SUCCESS) failures.incrementAndGet();
@@ -62,6 +62,9 @@ public class CallThroughputBenchmark {
     }
 
     @TearDown(Level.Trial) public void stop() { fixture.close(); }
+
+    /** Whether the world server runs in a process of its own; here it does not. */
+    protected boolean otherProcess() { return false; }
 
     @Benchmark public void call(ThreadParams thread) throws InterruptedException {
         inFlight.acquire();

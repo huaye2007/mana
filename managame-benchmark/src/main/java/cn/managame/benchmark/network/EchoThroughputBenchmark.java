@@ -42,9 +42,9 @@ public class EchoThroughputBenchmark {
     private Semaphore inFlight;
     private final AtomicLong refused = new AtomicLong();
 
-    @Setup(Level.Trial) public void start() throws InterruptedException {
+    @Setup(Level.Trial) public void start() throws Exception {
         inFlight = new Semaphore(window);
-        fixture = new EchoFixture(payload, connections, inFlight::release);
+        fixture = new EchoFixture(payload, connections, otherProcess(), inFlight::release);
     }
 
     /** Lets the messages of an iteration come back before the next starts or the connections close. */
@@ -55,6 +55,9 @@ public class EchoThroughputBenchmark {
     }
 
     @TearDown(Level.Trial) public void stop() { fixture.close(); }
+
+    /** Whether the server runs in a process of its own; here it does not. */
+    protected boolean otherProcess() { return false; }
 
     @Benchmark public void echo(ThreadParams thread) throws InterruptedException {
         inFlight.acquire();

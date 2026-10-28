@@ -41,18 +41,20 @@ public class NotifyThroughputBenchmark {
     private RpcFixture fixture;
     private final AtomicLong refused = new AtomicLong();
 
-    @Setup(Level.Trial) public void start() throws InterruptedException {
-        fixture = new RpcFixture(payload, connections);
+    @Setup(Level.Trial) public void start() throws Exception {
+        fixture = new RpcFixture(payload, connections, otherProcess());
         fixture.notified.release(window);
     }
 
     @TearDown(Level.Iteration) public void settle() throws InterruptedException {
-        fixture.notified.acquire(window);
-        fixture.notified.release(window);
+        fixture.settleNotifies(window);
         if (refused.get() > 0) throw new IllegalStateException(refused.get() + " notifies were refused");
     }
 
     @TearDown(Level.Trial) public void stop() { fixture.close(); }
+
+    /** Whether the world server runs in a process of its own; here it does not. */
+    protected boolean otherProcess() { return false; }
 
     @Benchmark public void notifyPeer(ThreadParams thread) throws InterruptedException {
         fixture.notified.acquire();

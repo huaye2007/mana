@@ -7,11 +7,11 @@
 | 包 | 基准 | 测量内容 |
 | --- | --- | --- |
 | `cn.managame.benchmark.common` | `MetadataBenchmark` | 构建 metadata、读取一个值、包装收到的字节（ns/op） |
-| `cn.managame.benchmark.network` | `EchoThroughputBenchmark`、`EchoLatencyBenchmark` | 在回环地址上回显带长度前缀的消息：多个消息在途时的每秒吞吐，以及单条消息的往返时间 |
+| `cn.managame.benchmark.network` | `EchoThroughputBenchmark`、`EchoLatencyBenchmark`，以及对应的 `…ProcessBenchmark` | 在回环地址上回显带长度前缀的消息：多个消息在途时的每秒吞吐，以及单条消息的往返时间 |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`、`DispatchThroughputBenchmark` | 每秒经过 `GameRuntime.execute` 执行的任务数，以及每秒经 `Dispatcher` 交给注解处理器的玩家请求数 |
-| `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`、`CallLatencyBenchmark`、`NotifyThroughputBenchmark` | 多个请求在途时每秒应答的调用数和处理的通知数，以及单个调用的往返时间 |
+| `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`、`CallLatencyBenchmark`、`NotifyThroughputBenchmark`，以及对应的 `…ProcessBenchmark` | 多个请求在途时每秒应答的调用数和处理的通知数，以及单个调用的往返时间 |
 
-network 回显基准给传输层施加的负载和 rpc 基准相同，所以两者的差值就是 RPC 本身带来的开销。
+network 回显基准给传输层施加的负载和 rpc 基准相同，所以两者的差值就是 RPC 本身带来的开销。每个基准跑两种形态：两端都在同一个基准 JVM 里；以及对应的 `…ProcessBenchmark`，服务端在单独的进程里，见[两个进程](#两个进程)。
 
 ## 运行
 
@@ -56,7 +56,11 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 | `cpu_jvm_ns_per_op` | 花在 JVM 自身工作上的部分：GC 和 JIT 编译 |
 | `direct_mib` | 迭代结束时 Netty 占用的直接内存，取各轮中的最大值 |
 | `sent_bytes_per_op`、`received_bytes_per_op` | 每次操作在线上收发的字节数，不含 TCP/IP 头，由主动连接一方的 `CountingSocketChannel` 统计 |
-| `busy_percent` | 其他程序占用了机器多少 CPU，取各轮中的最大值 |
+| `busy_percent` | 其他程序占用了机器多少 CPU，取各轮中的最大值；对端进程不算在内 |
+| `peer_cpu_ns_per_op`、`peer_cpu_eventloop_ns_per_op`、`peer_cpu_other_ns_per_op`、`peer_cpu_jvm_ns_per_op` | `…ProcessBenchmark` 中服务端进程每次操作的 CPU 时间，拆分方式同上 |
+| `peer_alloc_bytes_per_op`、`peer_gc_count`、`peer_gc_ms`、`peer_direct_mib` | 服务端进程每次操作的堆分配、GC 次数和耗时、直接内存 |
+
+线程结束后就读不到它的 CPU 时间了，而 JMH 会在最后一轮迭代取数之前就关闭基准的 fixture，连同其中的 EventLoop。所以 profiler 每 50 毫秒采样一次所有线程，已结束的线程按最后一次读数计算。
 
 每次运行都会把各项结果和基线并排打印出来，第二行是开销；带宽等于每次操作的字节数乘以每秒操作数：
 
@@ -72,6 +76,18 @@ CallThroughputBenchmark.call   connections=1 payload=64 window=1024   612,000 ->
 - 每次操作的 CPU 时间只显示、不参与判定，因为被调度到较慢的核上时它也会升高。
 - 其他程序占用超过机器十分之一的 CPU 时，得分会被拖慢：这时变差的得分标为 `unsure (machine N% busy)`，`--save` 也不会保存这个组件的结果。
 - 有任何一项变差，退出码为 1；没有变差但有 `unsure` 时为 3；否则为 0。
+
+## 两个进程
+
+游戏服务器之间是进程间通信，每个进程有自己的 JVM、GC 和线程。`…ProcessBenchmark` 把服务端（回显服务器或 world 节点）放进单独的进程：`PeerProcess` 用同一个 jar 和基准 JVM 相同的 JVM 参数启动它，基准 JVM 自己作为客户端（game 节点）。每轮迭代前后，对端进程测量自己的消耗，结果中两端分开显示：
+
+```
+CallThroughputProcessBenchmark.call   connections=1 payload=64 window=1024   598,000 ops/s  new  alloc 610 B/op
+    client cpu 2,450 ns/op (caller 610, eventloop 1,600, other 40, jvm 200)  |  gc 4 in 15 ms  |  direct 3.4 MiB  |  net 100+79 B/op, 107.0 MB/s  |  busy 4%
+    server cpu 1,700 ns/op (eventloop 1,550, other 0, jvm 150)  |  alloc 400 B/op  |  gc 2 in 8 ms  |  direct 2.0 MiB
+```
+
+两个进程仍然共享这台机器的 CPU。在单独进程里的 world 节点无法像进程内那样直接释放客户端的窗口，所以对于通知：它每处理 64 个就回一个通知，并在每轮迭代结束时，通过一次调用回报还没确认的数量。服务端的分配量变化也会标为 `SERVER ALLOCATION`，规则和客户端相同。
 
 ## 与改动前的代码对比
 
@@ -120,6 +136,7 @@ NotifyThroughputBenchmark.notifyPeer   connections=1 payload=64 window=1024   77
 - 不需要测量的准备工作放在 `@Setup` 里：payload 用同一个 buffer 的副本，context 只构建一次。
 - 测异步操作时，用一个窗口（由完成回调释放的 `Semaphore`）限制在途数量，并在 `@TearDown(Level.Iteration)` 里等本轮全部完成。调用失败就让基准失败，免得一条坏掉的路径因为"跑得快"而被当成正常。
 - 走网络的基准，主动连接一方要使用 `CountingSocketChannel`（在 `CountingSocketChannel.newGroup` 创建的 group 上设置 `channel(CountingSocketChannel.class)`），这样才能统计线上字节数。
+- 有服务端的基准，也要能把服务端放到单独进程里跑：fixture 在需要时用 `PeerProcess.start(<主类>)` 启动服务端；这个主类的 `main` 启动服务端后调用 `PeerProcess.serve`；再写一个 `…ProcessBenchmark` 子类，覆盖 `otherProcess()` 打开这个形态。
 - 用 `--save` 运行一次，把新的基线行一起提交。
 
 ## 构建

@@ -35,9 +35,12 @@ public class EchoLatencyBenchmark {
     private final Semaphore echoed = new Semaphore(0);
     private EchoFixture fixture;
 
-    @Setup(Level.Trial) public void start() throws InterruptedException { fixture = new EchoFixture(payload, 1, echoed::release); }
+    @Setup(Level.Trial) public void start() throws Exception { fixture = new EchoFixture(payload, 1, otherProcess(), echoed::release); }
 
     @TearDown(Level.Trial) public void stop() { fixture.close(); }
+
+    /** Whether the server runs in a process of its own; here it does not. */
+    protected boolean otherProcess() { return false; }
 
     @Benchmark public void echo() throws InterruptedException {
         if (!fixture.send(0)) throw new IllegalStateException("The connection refused the message");

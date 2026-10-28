@@ -33,9 +33,12 @@ public class CallLatencyBenchmark {
     public int payload;
     private RpcFixture fixture;
 
-    @Setup(Level.Trial) public void start() throws InterruptedException { fixture = new RpcFixture(payload, 1); }
+    @Setup(Level.Trial) public void start() throws Exception { fixture = new RpcFixture(payload, 1, otherProcess()); }
 
     @TearDown(Level.Trial) public void stop() { fixture.close(); }
+
+    /** Whether the world server runs in a process of its own; here it does not. */
+    protected boolean otherProcess() { return false; }
 
     @Benchmark public int call() throws Exception {
         CompletableFuture<Integer> answer = new CompletableFuture<>();
