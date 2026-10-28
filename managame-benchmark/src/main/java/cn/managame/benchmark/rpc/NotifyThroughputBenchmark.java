@@ -1,5 +1,6 @@
 package cn.managame.benchmark.rpc;
 
+import cn.managame.network.connection.WriteStatus;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -55,7 +56,7 @@ public class NotifyThroughputBenchmark {
 
     @Benchmark public void notifyPeer(ThreadParams thread) throws InterruptedException {
         fixture.notified.acquire();
-        if (!fixture.peer.notify(fixture.notify(thread.getThreadIndex()))) {
+        if (fixture.peer.notify(fixture.notify(thread.getThreadIndex())) != WriteStatus.ACCEPTED) {
             refused.incrementAndGet();
             fixture.notified.release();
         }

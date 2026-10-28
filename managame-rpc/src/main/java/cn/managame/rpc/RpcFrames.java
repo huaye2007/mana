@@ -5,9 +5,11 @@ import static cn.managame.FrameworkErrorCodes.RPC_PROTOCOL_ERROR;
 import cn.managame.Metadata;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.WriteStatus;
+import cn.managame.network.netty.NettyConnection;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelOutboundHandler;
 import io.netty.channel.ChannelPromise;
@@ -35,12 +37,17 @@ import java.util.concurrent.atomic.LongAdder;
  * businessType byte, businessId long, metadata, body;</li>
  * <li>Notify (2): command int, routeKey long, businessType byte, businessId long, metadata, body;</li>
  * <li>Response (3): requestId int, code int, metadata, body;</li>
- * <li>Ping (4) and Goodbye (5): nothing.</li>
+ * <li>Ping (4), Goodbye (5) and Goodbye ack (6): nothing.</li>
  * </ul>
  * Metadata is its length as an unsigned short, then its bytes. A later version may append to a Hello, which this
  * one ignores. Requests, notifies and responses are the public records, written to a connection as they are;
- * Hello, Ping and Goodbye are the node's own. Bodies are not copied: an outgoing one follows its header as a buffer
- * of its own, an incoming one is a slice of what was read. Other outgoing messages pass through untouched.
+ * Hello, Ping, Goodbye and Goodbye ack are the node's own. Bodies are not copied: an outgoing one follows its header
+ * as a buffer of its own, an incoming one is a slice of what was read. Other outgoing messages pass through
+ * untouched.
+ *
+ * <p>Once this side has sent a Goodbye ack, the codec encodes no new request or notify, so that the ack is the
+ * last of them the other side receives: it releases them instead, and tells the pipeline of each request it did
+ * not send with an {@link Unsent} event. Answers, Pings and Goodbyes still go out.
  *
  * <p>Liveness costs a field write per read and write: every third of the idle timeout the codec looks at what
  * happened since it last looked. Having written nothing, it sends a Ping, once this side has sent its Hello; having
@@ -65,7 +72,7 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
         @Override public Handle newHandle() { return handle; }
     };
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
-    private static final byte HELLO = 0, REQUEST = 1, NOTIFY = 2, RESPONSE = 3, PING = 4, GOODBYE = 5;
+    private static final byte HELLO = 0, REQUEST = 1, NOTIFY = 2, RESPONSE = 3, PING = 4, GOODBYE = 5, GOODBYE_ACK = 6;
     /** Each frame's fixed part: the type byte, the fields and the metadata length. */
     private static final int REQUEST_HEADER = 32, NOTIFY_HEADER = 24, RESPONSE_HEADER = 11, HELLO_HEADER = 17, SIGNAL = 1;
     private static final int LENGTH_FIELD = 4;
@@ -74,7 +81,7 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
     private final LongAdder unanswered;
     /** The ids of the requests received and not answered yet. */
     private IntObjectHashMap<Boolean> waiting;
-    private boolean read, wrote, helloSent;
+    private boolean read, wrote, helloSent, goodbyeAcknowledged;
     private int silentChecks;
     private Future<?> checks;
 
@@ -85,11 +92,29 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
         this.unanswered = unanswered;
     }
 
-    /** Writes {@code frame}; false when the connection did not take it, which releases it. */
-    static boolean send(Connection connection, Object frame) {
-        if (connection.write(frame) == WriteStatus.ACCEPTED) return true;
-        ReferenceCountUtil.release(frame);
-        return false;
+    /** Writes {@code frame} and returns what the connection did with it; unless it was ACCEPTED, releases it. */
+    static WriteStatus send(Connection connection, Object frame) {
+        WriteStatus status = connection.write(frame);
+        if (status != WriteStatus.ACCEPTED) ReferenceCountUtil.release(frame);
+        return status;
+    }
+
+    /**
+     * Writes {@code frame} from any thread even when the connection is busy, as answers and the Goodbye exchange
+     * must go: ACCEPTED, or INACTIVE once the connection has closed, which releases it. A connection other than
+     * network's NettyConnection writes it as its {@code write} does.
+     */
+    static WriteStatus sendAnyway(Connection connection, Object frame) {
+        WriteStatus status;
+        if (connection instanceof NettyConnection netty) {
+            Channel channel = netty.channel();
+            status = channel.isActive() ? WriteStatus.ACCEPTED : WriteStatus.INACTIVE;
+            if (status == WriteStatus.ACCEPTED) channel.writeAndFlush(frame, channel.voidPromise());
+        } else {
+            status = connection.write(frame);
+        }
+        if (status != WriteStatus.ACCEPTED) ReferenceCountUtil.release(frame);
+        return status;
     }
 
     /** Whether {@code frame}, with its length, is no larger than {@code maxFrameLength}. */
@@ -104,6 +129,7 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
             case Hello hello -> LENGTH_FIELD + HELLO_HEADER + hello.metadata().bytes().length;
             case Ping ping -> LENGTH_FIELD + SIGNAL;
             case Goodbye goodbye -> LENGTH_FIELD + SIGNAL;
+            case GoodbyeAck ack -> LENGTH_FIELD + SIGNAL;
             default -> -1;
         };
     }
@@ -116,6 +142,15 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
 
     /** Sent by a node that is closing: it takes nothing new. */
     enum Goodbye { INSTANCE }
+
+    /**
+     * Sent back on each connection a Goodbye came on: this side sends no new request or notify on it, so everything
+     * it sent there before has arrived once the ack has.
+     */
+    enum GoodbyeAck { INSTANCE }
+
+    /** Fired up the pipeline for a request the codec did not send, as it had sent a Goodbye ack. */
+    record Unsent(int requestId) {}
 
     @Override public void channelActive(ChannelHandlerContext ctx) throws Exception {
         long every = idleTimeout.toNanos() / 3;
@@ -177,7 +212,7 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
             case REQUEST -> REQUEST_HEADER;
             case NOTIFY -> NOTIFY_HEADER;
             case RESPONSE -> RESPONSE_HEADER;
-            case PING, GOODBYE -> SIGNAL;
+            case PING, GOODBYE, GOODBYE_ACK -> SIGNAL;
             default -> throw new CorruptedFrameException("Unknown RPC frame type " + type);
         };
         if (end - in.readerIndex() < header - 1) throw new CorruptedFrameException("RPC frame type " + type + " cut short");
@@ -204,8 +239,11 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
             case PING -> {
                 return Ping.INSTANCE;
             }
-            default -> {
+            case GOODBYE -> {
                 return Goodbye.INSTANCE;
+            }
+            default -> {
+                return GoodbyeAck.INSTANCE;
             }
         }
     }
@@ -218,6 +256,15 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
         wrote = true;
         try {
             switch (msg) {
+                case RpcRequest request when goodbyeAcknowledged -> {
+                    request.release();
+                    unsent(promise);
+                    ctx.fireUserEventTriggered(new Unsent(request.requestId()));
+                }
+                case RpcNotify notify when goodbyeAcknowledged -> {
+                    notify.release();
+                    unsent(promise);
+                }
                 case RpcRequest request -> send(ctx, request(ctx.alloc(), request), request.body(), promise);
                 case RpcNotify notify -> send(ctx, notify(ctx.alloc(), notify), notify.body(), promise);
                 case RpcResponse answer -> {
@@ -230,12 +277,21 @@ final class RpcFrames extends ByteToMessageDecoder implements ChannelOutboundHan
                 }
                 case Ping ping -> ctx.write(signal(ctx.alloc(), PING), promise);
                 case Goodbye goodbye -> ctx.write(signal(ctx.alloc(), GOODBYE), promise);
+                case GoodbyeAck ack -> {
+                    goodbyeAcknowledged = true;
+                    ctx.write(signal(ctx.alloc(), GOODBYE_ACK), promise);
+                }
                 default -> ctx.write(msg, promise);
             }
         } catch (RuntimeException | Error e) {
             ReferenceCountUtil.safeRelease(msg);
             throw e;
         }
+    }
+
+    /** A write that was not sent fails its promise, unless that is the void one, which would close the connection. */
+    private static void unsent(ChannelPromise promise) {
+        if (!promise.isVoid()) promise.tryFailure(new IllegalStateException("The other node said Goodbye"));
     }
 
     /** The header, then the body unless it is empty; the header shares the promise only through the body's write. */

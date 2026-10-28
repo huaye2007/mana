@@ -62,8 +62,8 @@ Node 1 can call node 2 back over the connection node 2 dialed: `world.peer(2).no
 | --- | --- |
 | `peer.call(request, callback)` | `callback.onResponse(request, response)`, exactly once, within the node's timeout |
 | `peer.call(request, timeout, callback)` | The same, within `timeout` |
-| `peer.notify(notify)` | None; false when it could not be sent |
-| `node.broadcast(peers, notify)` | A notify to each peer, sharing one body; returns how many it was sent to |
+| `peer.notify(notify)` | None; returns network's `WriteStatus`: `ACCEPTED`, `NOT_WRITABLE` when the connection is busy, `INACTIVE` with no connection up or a peer that is closing or removed |
+| `node.broadcast(peers, notify)` | A notify to each peer, sharing one body; returns how many accepted it |
 
 - **Order.** A call or notify takes the connection its `routeKey` picks, so messages with one key reach the peer in
   the order they were sent, as long as the peer's connections do not change. Use, say, a player id to keep one
@@ -114,8 +114,9 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
   on. A request is answered with an `RpcResponse` under its `requestId`, written to that connection now or later,
   from any thread. Only the first answer counts; the caller drops later ones.
 - **`response.writeTo(connection)`** writes the answer even when the connection is busy, since the work behind it
-  is done and dropping it would leave the caller unsure. It releases the response when the connection has closed.
-  A plain `connection.write(response)` works too, but it refuses a busy connection and leaves the release to you.
+  is done and dropping it would leave the caller unsure. It returns `ACCEPTED`, or `INACTIVE` and releases the
+  response when the connection has closed. A plain `connection.write(response)` works too, but it refuses a busy
+  connection and leaves the release to you.
 - An answer larger than the largest frame goes out as `RPC_PROTOCOL_ERROR` instead, so the connection survives.
 - A request that has already expired when it arrives is dropped without reaching the handler.
 - The handler runs on the connection's EventLoop, in the order messages arrived on it, and must not block.
@@ -223,10 +224,19 @@ Calls for one peer never overlap and come in order. They run on an EventLoop and
 
 ## Closing and draining
 
-- **`node.close(Duration drain)`** drains first, for a rolling restart or maintenance: it stops listening, says
-  Goodbye to every peer, which then sends it nothing new (`peer.isClosing()`, `onClosing`), and waits until it has
-  answered every request peers sent it and its own calls have settled, or `drain` has passed. Its own calls still go
-  out meanwhile, so handlers can finish their work. Then it closes as below.
+- **`node.close(Duration drain)`** drains first, for a planned shutdown, so that no call is left in doubt: a
+  stateful node taken down for maintenance or scaled in once its players have moved or been saved, still owing
+  answers such as those to saves, or a stateless node such as a gateway or login server restarted one at a time. Until everything below holds or `drain` has passed, it:
+  1. stops listening;
+  2. says Goodbye on every connection; each peer stops making new calls and notifies to it (`peer.isClosing()`,
+     `onClosing`) and acknowledges the Goodbye on that connection, and the ack is the last request or notify the
+     connection carries, so every request sent before it has arrived once it has;
+  3. waits until every connection has acknowledged, it has answered every request peers sent it, and its own calls
+     have settled;
+  4. waits until its answers have been written out, then closes as below.
+
+  Its own calls still go out meanwhile, so handlers can finish their work. A call racing the Goodbye on the peer is
+  not sent at all and fails there with `RPC_UNAVAILABLE`, so it is safe to retry on another node.
 - **`node.close()`** closes at once: it fails every waiting call, and calls made afterwards, with
   `RPC_NODE_CLOSED`, stops listening and dialing, and closes every connection. Answers still to come no longer
   reach their callers.
@@ -252,12 +262,15 @@ RpcNode.builder()
 
 - A connection may queue `DEFAULT_WRITE_BUFFER_WATER_MARK` (1 MiB low, 4 MiB high) before it counts as busy, unless
   the bootstraps set Netty's `WRITE_BUFFER_WATER_MARK`. A busy connection refuses new calls (`RPC_UNAVAILABLE`) and
-  notifies (false) at once, so a slow peer cannot fill this node's memory, but takes answers through `writeTo`.
+  notifies (`NOT_WRITABLE`) at once, so a slow peer cannot fill this node's memory, but takes answers through
+  `writeTo`.
   Messages sent from other threads count by their size while they wait for the connection's EventLoop: the node
   sets Netty's `MESSAGE_SIZE_ESTIMATOR` to one that knows calls, notifies and answers, unless the bootstraps set
   one.
-- A message larger than `maxFrameLength` fails alone before it is sent: the call with `RPC_PROTOCOL_ERROR`, the
-  notify with false, an answer as `RPC_PROTOCOL_ERROR`. Every node of a cluster must use the same `maxFrameLength`.
+- A message larger than `maxFrameLength` fails alone before it is sent: the call with `RPC_PROTOCOL_ERROR`, an
+  answer as `RPC_PROTOCOL_ERROR`, and a notify or broadcast, which only the sender's code can make too large,
+  throws `IllegalArgumentException` after releasing it. Every node of a cluster must use the same
+  `maxFrameLength`.
 
 ## Handshake and liveness
 
@@ -355,8 +368,9 @@ Frames are length-prefixed (4 bytes, big-endian, excluding itself). Inside, big-
 | Response (3) | requestId int, code int, metadata, body |
 | Ping (4) | nothing |
 | Goodbye (5) | nothing |
+| Goodbye ack (6) | nothing |
 
-Metadata is its length as an unsigned short, then its bytes. Hello, Ping and Goodbye are the node's own and never
+Metadata is its length as an unsigned short, then its bytes. Hello, Ping, Goodbye and Goodbye ack are the node's own and never
 reach the handler; `command` is the application's alone, so the whole `int` range is its own. A later version may
 append to a Hello, which this one ignores. An unknown frame type, a frame longer than `maxFrameLength` and one
 cut short of its fields close the connection. This node speaks protocol version 1.
@@ -387,6 +401,8 @@ Netty's leak detection at its strictest. They cover:
 - messages larger than a frame failing alone, and messages waiting for a held-up EventLoop making the connection
   busy by their size;
 - the observer and the counts;
-- draining before closing, removing peers in both directions, a peer going away, and closing the node;
+- draining before closing, with calls kept going from callbacks during the drain and none lost, a connection
+  sending no new call or notify after its Goodbye ack, removing peers in both directions, a peer going away, and
+  closing the node;
 - the application's own bootstraps with Netty's local transport;
 - bodies released on every path, callbacks, listeners and observers that throw, and misuse.

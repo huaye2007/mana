@@ -57,8 +57,8 @@ worldPeer.call(RpcRequest.of(RANK_OF, playerId, body), (request, response) -> {
 | --- | --- |
 | `peer.call(request, callback)` | 在节点的超时时间内执行 `callback.onResponse(request, response)`，恰好一次 |
 | `peer.call(request, timeout, callback)` | 同上，超时时间为 `timeout` |
-| `peer.notify(notify)` | 没有应答；发不出去时返回 false |
-| `node.broadcast(peers, notify)` | 给每个对端各发一个通知，所有通知共用同一个 body；返回成功发出的个数 |
+| `peer.notify(notify)` | 没有应答；返回 network 的 `WriteStatus`：`ACCEPTED`；连接繁忙时为 `NOT_WRITABLE`；没有可用连接、对端正在关闭或已被移除时为 `INACTIVE` |
+| `node.broadcast(peers, notify)` | 给每个对端各发一个通知，所有通知共用同一个 body；返回被接收的个数 |
 
 - **顺序。** 调用和通知按 `routeKey` 选连接。只要对端的连接没有变化，同一个 key 的消息就按发送顺序到达对端。比如用玩家 id 作为 key，就能保证同一个玩家的消息有序。
 - **回调**拿到它所应答的请求：带有调用时分配的 id 和 deadline，但不带 body。业务可以按请求的 command、route key 和业务字段继续处理，比如交给这个 key 对应的执行器。回调不能阻塞；它抛出的异常只记日志。
@@ -98,7 +98,7 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
 ```
 
 - `rpcPeer` 是发送消息的节点，可以用它回调对方。`connection` 是消息到达的那条 network `Connection`。应答请求时，用请求的 `requestId` 构造 `RpcResponse` 写到这条连接上，可以立即写，也可以之后在任意线程写。只有第一个应答有效，调用方会丢弃后面的应答。
-- **`response.writeTo(connection)`** 在连接繁忙时也会写出应答：应答对应的工作已经做完，丢掉它只会让调用方无法确定结果。连接已关闭时，它负责释放这个应答。直接用 `connection.write(response)` 也可以，但连接繁忙时会被拒绝，而且被拒后需要你自己释放。
+- **`response.writeTo(connection)`** 在连接繁忙时也会写出应答：应答对应的工作已经做完，丢掉它只会让调用方无法确定结果。它返回 `ACCEPTED`；连接已关闭时返回 `INACTIVE`，并负责释放这个应答。直接用 `connection.write(response)` 也可以，但连接繁忙时会被拒绝，而且被拒后需要你自己释放。
 - 超过最大帧长度的应答，会改成以 `RPC_PROTOCOL_ERROR` 发出，连接不会因此断开。
 - 到达时就已过期的请求，会直接丢弃，不交给处理器。
 - 处理器在该连接的 EventLoop 上按消息到达顺序执行，不能阻塞。
@@ -181,13 +181,13 @@ RpcListener grouping = new RpcListener() {
 
 ## 关闭与排空
 
-- **`node.close(Duration drain)`** 先排空再关闭，用于滚动更新或停服维护。它会：
+- **`node.close(Duration drain)`** 先排空再关闭，用于计划内的下线，保证不留下结果不明的调用：比如有状态的节点在玩家迁走或数据保存完之后停服维护或缩容，此时它还欠着一些应答（例如保存数据的调用）；又比如网关、登录服这类无状态节点逐个重启。在下面的条件全部满足、或者 `drain` 时间用完之前，它会：
   1. 停止监听；
-  2. 向每个对端发送 Goodbye，对端此后不再给它发新消息（`peer.isClosing()` 变为 true，并触发 `onClosing`）；
-  3. 等到它应答完对端发来的所有请求、自己发出的调用也都结束，或者 `drain` 时间用完；
-  4. 按下面 `close()` 的方式关闭。
+  2. 在每条连接上发送 Goodbye。对端随即不再向它发起新的调用和通知（`peer.isClosing()` 变为 true，并触发 `onClosing`），并在这条连接上回一个 Goodbye 确认。确认是这条连接上最后一个请求或通知，所以确认到达时，对端在它之前发出的请求都已经到了；
+  3. 等到所有连接都已确认、对端发来的请求全部应答完、自己发出的调用也都结束；
+  4. 等应答全部写出，再按下面 `close()` 的方式关闭。
 
-  排空期间，它自己发出的调用照常进行，所以处理器可以把手头的工作做完。
+  排空期间，它自己发出的调用照常进行，所以处理器可以把手头的工作做完。对端上恰好和 Goodbye 同时发起的调用根本不会发出，在对端以 `RPC_UNAVAILABLE` 失败，可以放心地改发到别的节点重试。
 - **`node.close()`** 立即关闭：所有等待中的调用、以及之后发起的调用都以 `RPC_NODE_CLOSED` 失败；停止监听和重连；关闭所有连接。之后才到达的应答不会再送达调用方。
 
 两者都会阻塞到关闭完成，重复调用没有副作用。
@@ -205,8 +205,8 @@ RpcNode.builder()
 
 ## 背压与帧长度
 
-- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（返回 `RPC_UNAVAILABLE`）和通知（返回 false），这样慢对端不会撑爆本节点的内存；但通过 `writeTo` 写出的应答照样接收。从其他线程发出的消息在等待连接的 EventLoop 时，按实际大小计入水位：除非 bootstrap 自己设置了 Netty 的 `MESSAGE_SIZE_ESTIMATOR`，节点会设置一个认识调用、通知和应答的估算器。
-- 超过 `maxFrameLength` 的消息在发出前就会单独失败，不影响其他消息：调用得到 `RPC_PROTOCOL_ERROR`，通知返回 false，应答改为 `RPC_PROTOCOL_ERROR`。集群内所有节点必须使用相同的 `maxFrameLength`。
+- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（返回 `RPC_UNAVAILABLE`）和通知（返回 `NOT_WRITABLE`），这样慢对端不会撑爆本节点的内存；但通过 `writeTo` 写出的应答照样接收。从其他线程发出的消息在等待连接的 EventLoop 时，按实际大小计入水位：除非 bootstrap 自己设置了 Netty 的 `MESSAGE_SIZE_ESTIMATOR`，节点会设置一个认识调用、通知和应答的估算器。
+- 超过 `maxFrameLength` 的消息在发出前就会单独失败，不影响其他消息：调用得到 `RPC_PROTOCOL_ERROR`，应答改为 `RPC_PROTOCOL_ERROR`；通知和广播的大小只取决于发送方自己的代码，超长时先释放消息，再抛 `IllegalArgumentException`。集群内所有节点必须使用相同的 `maxFrameLength`。
 
 ## 握手与保活
 
@@ -286,8 +286,9 @@ game.createPeer(1, new LocalAddress("world"));
 | Response (3) | requestId int、code int、metadata、body |
 | Ping (4) | 无 |
 | Goodbye (5) | 无 |
+| Goodbye 确认 (6) | 无 |
 
-metadata 的格式是：先用 unsigned short 写长度，再写字节。Hello、Ping 和 Goodbye 是节点内部的帧，不会交给处理器。`command` 完全归业务所有，整个 `int` 范围都能用。以后的版本可以在 Hello 末尾追加字段，当前版本会忽略这些字段。收到未知类型的帧、超过 `maxFrameLength` 的帧，或者长度不够放下自身字段的帧，都会关闭连接。本节点使用协议版本 1。
+metadata 的格式是：先用 unsigned short 写长度，再写字节。Hello、Ping、Goodbye 和 Goodbye 确认是节点内部的帧，不会交给处理器。`command` 完全归业务所有，整个 `int` 范围都能用。以后的版本可以在 Hello 末尾追加字段，当前版本会忽略这些字段。收到未知类型的帧、超过 `maxFrameLength` 的帧，或者长度不够放下自身字段的帧，都会关闭连接。本节点使用协议版本 1。
 
 每条连接有一个编解码器，位于 TLS 和 flush 合并之后，负责双向分帧：发出的消息是一个包含长度的头部缓冲区，后面紧跟原样的 body；收到的 body 是读到的数据的一个切片。
 
@@ -310,6 +311,6 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 - 对端启动前不可达，启动后自动连上；
 - 超过帧长度的消息单独失败；EventLoop 被占住时，排队等待的消息按实际大小让连接变为繁忙；
 - 观察者和各项计数；
-- 先排空再关闭、两个方向的移除对端、对端离开、关闭节点；
+- 先排空再关闭（排空期间回调里不断发起新调用，一个都不丢），连接发出 Goodbye 确认后不再发送新的调用和通知，两个方向的移除对端、对端离开、关闭节点；
 - 使用业务自己的 bootstrap 和 Netty 本地传输；
 - 各种路径下 body 都被释放，回调、监听器和观察者抛异常，以及各种误用。

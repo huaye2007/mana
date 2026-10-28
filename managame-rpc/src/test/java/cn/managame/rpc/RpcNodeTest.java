@@ -20,16 +20,19 @@ import static org.junit.jupiter.api.Assertions.fail;
 import cn.managame.Metadata;
 import cn.managame.MetadataKey;
 import cn.managame.network.connection.Connection;
+import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.netty.NetworkSsl;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.local.LocalAddress;
 import io.netty.channel.local.LocalChannel;
 import io.netty.channel.local.LocalIoHandler;
@@ -62,7 +65,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 import javax.net.ssl.TrustManagerFactory;
@@ -229,7 +234,7 @@ class RpcNodeTest {
         game = start(node(2, "game"));
         RpcPeer peer = game.createPeer(1, address(world));
         await(peer::isConnected);
-        assertTrue(peer.notify(RpcNotify.of(NOTE, text("dropped"))));
+        assertEquals(WriteStatus.ACCEPTED, peer.notify(RpcNotify.of(NOTE, text("dropped"))));
         peer.call(RpcRequest.of(ECHO, text("")), recorder());
         assertEquals("fail " + HANDLER_NOT_FOUND, next(answers));
     }
@@ -257,9 +262,9 @@ class RpcNodeTest {
         assertFalse(world.peer(2).isOutbound());
         world.peer(2).call(RpcRequest.of(ECHO, text("mail")), recorder());
         assertEquals("ok game got mail from 1", next(answers));
-        assertTrue(world.peer(2).notify(RpcNotify.of(NOTE, text("news"))));
+        assertEquals(WriteStatus.ACCEPTED, world.peer(2).notify(RpcNotify.of(NOTE, text("news"))));
         assertEquals("game notified news from 1", next(seen));
-        assertTrue(game.peer(1).notify(RpcNotify.of(NOTE, text("hello"))));
+        assertEquals(WriteStatus.ACCEPTED, game.peer(1).notify(RpcNotify.of(NOTE, text("hello"))));
         assertEquals("world notified hello from 2", next(seen));
     }
 
@@ -543,7 +548,7 @@ class RpcNodeTest {
         RpcPeer peer = game.createPeer(1, new InetSocketAddress("127.0.0.1", port));
         peer.call(RpcRequest.of(ECHO, text("")), recorder());
         assertEquals("fail " + RPC_UNAVAILABLE, next(answers));
-        assertFalse(peer.notify(RpcNotify.of(NOTE, text("lost"))));
+        assertEquals(WriteStatus.INACTIVE, peer.notify(RpcNotify.of(NOTE, text("lost"))));
 
         world = start(node(1, "world").listen(new InetSocketAddress("127.0.0.1", port)));
         await(peer::isConnected); // the node keeps dialing
@@ -556,7 +561,12 @@ class RpcNodeTest {
         connect(1);
         game.peer(1).call(RpcRequest.of(ECHO, text("x".repeat(2000))), recorder());
         assertEquals("fail " + RPC_PROTOCOL_ERROR, next(answers), "a request too large");
-        assertFalse(game.peer(1).notify(RpcNotify.of(NOTE, text("x".repeat(2000)))), "a notify too large");
+        ByteBuf large = text("x".repeat(2000));
+        assertThrows(IllegalArgumentException.class, () -> game.peer(1).notify(RpcNotify.of(NOTE, large)), "a notify too large");
+        assertEquals(0, large.refCnt());
+        ByteBuf largeBroadcast = text("x".repeat(2000));
+        assertThrows(IllegalArgumentException.class, () -> game.broadcast(game.peers(), RpcNotify.of(NOTE, largeBroadcast)));
+        assertEquals(0, largeBroadcast.refCnt());
         game.peer(1).call(RpcRequest.of(BIG, text("")), recorder());
         assertEquals("fail " + RPC_PROTOCOL_ERROR, next(answers), "an answer too large");
         game.peer(1).call(RpcRequest.of(ECHO, text("small")), recorder());
@@ -604,6 +614,83 @@ class RpcNodeTest {
         await(() -> !peer.isConnected());
     }
 
+    /**
+     * Calls keep going out, each from the callback of the one before, while the callee drains. A call either fails at
+     * once because the caller has heard Goodbye, or is answered: none is lost on the way, and every call the callee
+     * ran had its answer arrive.
+     */
+    @Test void aDrainingNodeAnswersEveryCallSentBeforeItsGoodbyeArrived() throws Exception {
+        AtomicInteger ran = new AtomicInteger();
+        world = start(node(1, "world").listen(LOOPBACK).handler((rpcPeer, connection, msg) -> {
+            if (msg instanceof RpcRequest request) {
+                ran.incrementAndGet();
+                RpcResponse.of(request.requestId(), Unpooled.EMPTY_BUFFER).writeTo(connection);
+            }
+        }));
+        game = start(node(2, "game"));
+        RpcPeer peer = game.createPeer(1, address(world));
+        await(peer::isConnected);
+        int chains = 256;
+        AtomicInteger answered = new AtomicInteger(), lost = new AtomicInteger();
+        CountDownLatch ended = new CountDownLatch(chains);
+        for (int i = 0; i < chains; i++) chain(peer, answered, lost, ended);
+        Thread.sleep(200);
+        world.close(Duration.ofSeconds(5));
+        assertTrue(ended.await(10, TimeUnit.SECONDS), "every chain ended on Goodbye");
+        assertEquals(0, lost.get(), "calls sent before Goodbye arrived and failed on the way");
+        assertEquals(ran.get(), answered.get(), "calls the callee ran without their answer arriving");
+        assertTrue(answered.get() > chains);
+    }
+
+    /**
+     * A call or notify reaching a connection after this side acknowledged a Goodbye there is not sent, so that the ack
+     * is the last of them the other side receives, and the call is told. Such a call raced the Goodbye from another
+     * thread, which no real connection reproduces at will, so the codec runs in Netty's EmbeddedChannel here.
+     */
+    @Test void afterItsGoodbyeAckAConnectionSendsNoNewCallsOrNotifiesButStillAnswers() {
+        List<Object> events = new ArrayList<>();
+        EmbeddedChannel channel = new EmbeddedChannel(new RpcFrames(1024, Duration.ofSeconds(15), new LongAdder()),
+                new ChannelInboundHandlerAdapter() {
+                    @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) { events.add(event); }
+                });
+        channel.writeAndFlush(RpcFrames.GoodbyeAck.INSTANCE, channel.voidPromise());
+        ByteBuf ack = channel.readOutbound();
+        assertEquals(1, ack.readInt());
+        assertEquals(6, ack.readByte());
+        ack.release();
+
+        ByteBuf request = text("late"), notify = text("late");
+        channel.writeAndFlush(RpcRequest.of(ECHO, request).sentAs(7, 0), channel.voidPromise());
+        channel.writeAndFlush(RpcNotify.of(NOTE, notify), channel.voidPromise());
+        assertNull(channel.readOutbound(), "neither went out");
+        assertEquals(List.of(new RpcFrames.Unsent(7)), events, "the call is told");
+        assertEquals(0, request.refCnt());
+        assertEquals(0, notify.refCnt());
+
+        channel.writeAndFlush(RpcResponse.of(3, text("answer")), channel.voidPromise());
+        ByteBuf header = channel.readOutbound(), body = channel.readOutbound();
+        assertEquals(3, header.getByte(4), "an answer still goes out");
+        assertEquals("answer", text(body));
+        header.release();
+        body.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /** One call after another until one fails; a failure counts as lost unless it came before the call returned. */
+    private static void chain(RpcPeer peer, AtomicInteger answered, AtomicInteger lost, CountDownLatch ended) {
+        AtomicBoolean calling = new AtomicBoolean(true);
+        peer.call(RpcRequest.of(ECHO, Unpooled.EMPTY_BUFFER), (request, response) -> {
+            if (response.isSuccess()) {
+                answered.incrementAndGet();
+                chain(peer, answered, lost, ended);
+                return;
+            }
+            if (!calling.get()) lost.incrementAndGet();
+            ended.countDown();
+        });
+        calling.set(false);
+    }
+
     @Test void removingAPeerFailsItsCallsAndForgetsIt() throws Exception {
         connect(1);
         RpcPeer peer = game.peer(1);
@@ -613,7 +700,7 @@ class RpcNodeTest {
         assertEquals("fail " + RPC_PEER_REMOVED, next(answers), "the call that waited");
         peer.call(RpcRequest.of(ECHO, text("")), recorder());
         assertEquals("fail " + RPC_PEER_REMOVED, next(answers), "a call through the removed peer");
-        assertFalse(peer.notify(RpcNotify.of(NOTE, text(""))));
+        assertEquals(WriteStatus.INACTIVE, peer.notify(RpcNotify.of(NOTE, text(""))));
         assertNull(game.peer(1));
         assertFalse(game.removePeer(1));
         await(() -> !world.peer(2).isConnected());
@@ -647,7 +734,7 @@ class RpcNodeTest {
         assertEquals("fail " + RPC_NODE_CLOSED, next(answers));
         peer.call(RpcRequest.of(ECHO, text("")), recorder());
         assertEquals("fail " + RPC_NODE_CLOSED, next(answers));
-        assertFalse(peer.notify(RpcNotify.of(NOTE, text(""))));
+        assertEquals(WriteStatus.INACTIVE, peer.notify(RpcNotify.of(NOTE, text(""))));
         assertThrows(IllegalStateException.class, () -> game.createPeer(3, address(world)));
         game.close(); // idempotent
     }
@@ -693,14 +780,41 @@ class RpcNodeTest {
             });
             String kilobyte = "x".repeat(1000);
             int taken = 0;
-            while (taken < 100 && peer.notify(RpcNotify.of(NOTE, text(kilobyte)))) taken++;
+            WriteStatus status;
+            while ((status = peer.notify(RpcNotify.of(NOTE, text(kilobyte)))) == WriteStatus.ACCEPTED) taken++;
             busy.countDown();
+            assertEquals(WriteStatus.NOT_WRITABLE, status);
             assertTrue(taken > 0 && taken < 10, taken + " kilobyte notifies were taken by a connection that holds 4 KiB");
             for (int i = 0; i < taken; i++) assertEquals("world notified " + kilobyte + " from 2", next(seen));
             game.close();
         } finally {
             group.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
         }
+    }
+
+    @Test void writeToSaysWhatBecameOfTheAnswer() throws Exception {
+        BlockingQueue<Connection> connections = new LinkedBlockingQueue<>();
+        BlockingQueue<Integer> ids = new LinkedBlockingQueue<>();
+        world = start(node(1, "world").listen(LOOPBACK).handler((rpcPeer, connection, msg) -> {
+            if (msg instanceof RpcRequest request) { // answered later, by the test
+                ids.add(request.requestId());
+                connections.add(connection);
+            }
+        }));
+        game = start(node(2, "game"));
+        RpcPeer peer = game.createPeer(1, address(world));
+        await(peer::isConnected);
+        peer.call(RpcRequest.of(ECHO, text("")), recorder());
+        peer.call(RpcRequest.of(ECHO, text("")), recorder());
+        Connection connection = connections.poll(5, TimeUnit.SECONDS);
+        assertEquals(WriteStatus.ACCEPTED, RpcResponse.of(ids.take(), text("answered")).writeTo(connection));
+        assertEquals("ok answered", next(answers));
+
+        game.close();
+        await(() -> !connection.isActive());
+        ByteBuf late = text("late");
+        assertEquals(WriteStatus.INACTIVE, RpcResponse.of(ids.take(), late).writeTo(connection));
+        assertEquals(0, late.refCnt(), "released, as nobody will send it");
     }
 
     @Test void theNodeReleasesTheBodiesItIsGiven() throws Exception {
@@ -714,7 +828,7 @@ class RpcNodeTest {
         ByteBuf unsent = text("lost"), unsentNotify = text("lost");
         unreachable.call(RpcRequest.of(ECHO, unsent), recorder());
         assertEquals("fail " + RPC_UNAVAILABLE, next(answers));
-        assertFalse(unreachable.notify(RpcNotify.of(NOTE, unsentNotify)));
+        assertEquals(WriteStatus.INACTIVE, unreachable.notify(RpcNotify.of(NOTE, unsentNotify)));
         assertEquals(0, unsent.refCnt());
         assertEquals(0, unsentNotify.refCnt());
 

@@ -100,6 +100,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).
+- A method that sends one message returns network's `WriteStatus` (`connection.write`, `peer.notify`,
+  `response.writeTo`), not a boolean; one that sends to many returns how many accepted it.
 - Builders validate eagerly, and `build()` / `start()` return a ready object with no "not started" state.
 - Netty EventLoop callbacks never block, and business logic never runs on EventLoop or timer threads: they hand
   work to the runtime (or, in a component used on its own, to the application's executor).

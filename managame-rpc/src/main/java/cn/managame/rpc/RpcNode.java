@@ -3,12 +3,14 @@ package cn.managame.rpc;
 import static cn.managame.FrameworkErrorCodes.HANDLER_NOT_FOUND;
 
 import cn.managame.Metadata;
+import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.netty.ConnectionInitializer;
 import cn.managame.network.netty.NetworkClient;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.network.netty.NetworkTransports;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -245,13 +247,17 @@ public final class RpcNode implements AutoCloseable {
 
     /**
      * Sends {@code notify} to each of {@code peers}, as {@link RpcPeer#notify(RpcNotify)} does, sharing its body,
-     * which is not copied, and releases it afterwards. Returns how many peers it was sent to.
+     * which is not copied, and releases it afterwards. Returns how many peers' connections accepted it.
+     *
+     * @throws IllegalArgumentException when the notify is larger than the largest frame, after releasing it
      */
     public int broadcast(Collection<RpcPeer> peers, RpcNotify notify) {
         Objects.requireNonNull(notify, "notify");
         int sent = 0;
         try {
-            for (RpcPeer peer : peers) if (peer.notify(notify.retainedDuplicate())) sent++;
+            if (!RpcFrames.fits(notify, maxFrameLength))
+                throw new IllegalArgumentException("Notify " + notify.command() + " is larger than the largest frame, " + maxFrameLength + " bytes");
+            for (RpcPeer peer : peers) if (peer.notify(notify.retainedDuplicate()) == WriteStatus.ACCEPTED) sent++;
         } finally {
             notify.release();
         }
@@ -265,12 +271,14 @@ public final class RpcNode implements AutoCloseable {
     @Override public void close() { close(Duration.ZERO); }
 
     /**
-     * Closes the node, first draining it for up to {@code drain}: it stops listening and says Goodbye to every
-     * peer, which then sends it nothing new, and waits until it has answered the requests peers sent it and its own
-     * calls have settled, so that a rolling restart leaves no call in doubt. Its own calls still go out meanwhile.
-     * Then it fails every waiting call, and calls made afterwards, with RPC_NODE_CLOSED, stops dialing and closes
-     * every connection; answers still to come no longer reach their callers. Blocks until done; idempotent; must not
-     * run on the node's EventLoops or timer (IllegalStateException).
+     * Closes the node, first draining it for up to {@code drain}: it stops listening and says Goodbye on every
+     * connection, and each peer acknowledges it on that connection and sends nothing new there. The node waits until
+     * every connection has acknowledged, so that every request sent before has arrived, it has answered those
+     * requests and its own calls have settled, and then until its answers have been written out, so that a planned
+     * shutdown leaves no call in doubt. Its own calls still go out meanwhile. Then it fails every waiting call, and
+     * calls made afterwards, with RPC_NODE_CLOSED, stops dialing and closes every connection; answers still to come
+     * no longer reach their callers. Blocks until done; idempotent; must not run on the node's EventLoops or timer
+     * (IllegalStateException).
      */
     public void close(Duration drain) {
         Objects.requireNonNull(drain, "drain");
@@ -295,12 +303,22 @@ public final class RpcNode implements AutoCloseable {
         for (RpcPeer peer : peers.values()) peer.goodbye();
         long deadline = System.nanoTime() + nanos;
         try {
-            while (System.nanoTime() - deadline < 0
-                    && (unanswered.sum() > 0 || peers.values().stream().anyMatch(RpcPeer::hasWaitingCalls)))
-                Thread.sleep(10);
+            while (System.nanoTime() - deadline < 0 && !drained()) Thread.sleep(10);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        long left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+        // An empty write on each connection completes once everything written before it has gone out.
+        if (left > 0) channels.writeAndFlush(Unpooled.EMPTY_BUFFER).awaitUninterruptibly(left);
+    }
+
+    /**
+     * Whether nothing more can arrive or is owed. The acknowledgments come first: once a connection's has come,
+     * every request the peer sent on it before has been counted as unanswered.
+     */
+    private boolean drained() {
+        return peers.values().stream().allMatch(RpcPeer::acknowledgedGoodbye)
+                && unanswered.sum() == 0 && peers.values().stream().noneMatch(RpcPeer::hasWaitingCalls);
     }
 
     @Override public String toString() { return "RpcNode[" + nodeId + "]"; }
@@ -309,7 +327,7 @@ public final class RpcNode implements AutoCloseable {
 
     int maxFrameLength() { return maxFrameLength; }
 
-    /** Draining or closed: it takes no new peers. */
+    /** Draining or closed: it takes no new peers, and says Goodbye on the connections it dialed that join meanwhile. */
     boolean isClosing() { return closing; }
 
     /** Closed for good: calls fail with RPC_NODE_CLOSED. While it only drains, calls still go out. */

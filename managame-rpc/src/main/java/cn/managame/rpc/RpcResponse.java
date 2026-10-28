@@ -4,10 +4,8 @@ import cn.managame.FrameworkErrorCodes;
 import cn.managame.Metadata;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.WriteStatus;
-import cn.managame.network.netty.NettyConnection;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
 import io.netty.util.ReferenceCounted;
 import java.util.Objects;
 
@@ -48,22 +46,11 @@ public record RpcResponse(int requestId, int code, Metadata metadata, ByteBuf bo
     /**
      * Writes this answer to {@code connection}, the one its request came on, from any thread, and releases it when
      * the connection does not take it. Unlike {@code connection.write}, it writes even when the connection is busy:
-     * the work behind an answer is done, and dropping it would leave the caller unsure whether it was. False when
-     * the connection has closed.
+     * the work behind an answer is done, and dropping it would leave the caller unsure whether it was. Returns
+     * ACCEPTED, or INACTIVE when the connection has closed; a Connection other than network's NettyConnection
+     * returns what its {@code write} does.
      */
-    public boolean writeTo(Connection connection) {
-        if (connection instanceof NettyConnection netty) {
-            Channel channel = netty.channel();
-            if (channel.isActive()) {
-                channel.writeAndFlush(this, channel.voidPromise());
-                return true;
-            }
-        } else if (connection.write(this) == WriteStatus.ACCEPTED) {
-            return true;
-        }
-        release();
-        return false;
-    }
+    public WriteStatus writeTo(Connection connection) { return RpcFrames.sendAnyway(connection, this); }
 
     @Override public int refCnt() { return body.refCnt(); }
     @Override public RpcResponse retain() { body.retain(); return this; }

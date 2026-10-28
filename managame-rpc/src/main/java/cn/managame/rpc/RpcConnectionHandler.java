@@ -5,7 +5,9 @@ import static cn.managame.FrameworkErrorCodes.RPC_HANDLER_ERROR;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import cn.managame.rpc.RpcFrames.Goodbye;
+import cn.managame.rpc.RpcFrames.GoodbyeAck;
 import cn.managame.rpc.RpcFrames.Hello;
+import cn.managame.rpc.RpcFrames.Unsent;
 import io.netty.util.AttributeKey;
 import java.io.IOException;
 import java.lang.System.Logger.Level;
@@ -13,7 +15,8 @@ import java.lang.System.Logger.Level;
 /**
  * What every connection of a node does with its frames, shared by all of them: the handshake that joins it to a
  * peer, then answers to the peer's calls, the peer's requests and notifies to the application's handler, and Goodbye
- * to the peer. Pings only had to arrive. Received frames are released by network after each call returns.
+ * to the peer, which is acknowledged on the connection it came on. Pings only had to arrive. Received frames are
+ * released by network after each call returns.
  */
 final class RpcConnectionHandler implements ConnectionHandler {
     /** The peer a connection was dialed to; unset on connections peers dial in. */
@@ -46,10 +49,19 @@ final class RpcConnectionHandler implements ConnectionHandler {
                 case RpcResponse response -> peer.answer(response);
                 case RpcRequest request -> dispatch(peer, connection, request);
                 case RpcNotify notify -> dispatch(peer, connection, notify);
-                case Goodbye goodbye -> peer.closing();
+                case Goodbye goodbye -> {
+                    peer.closing(); // calls made from now on fail at once; the codec refuses those that raced it
+                    RpcFrames.sendAnyway(connection, GoodbyeAck.INSTANCE);
+                }
+                case GoodbyeAck ack -> peer.acknowledged(connection);
                 default -> {} // a Ping: receiving it was the point
             }
         }
+    }
+
+    /** A request the codec did not send, as the peer had said Goodbye: its call fails at once. */
+    @Override public void onEvent(Connection connection, Object event) {
+        if (event instanceof Unsent unsent && RpcPeer.of(connection) instanceof RpcPeer peer) peer.unsent(unsent.requestId());
     }
 
     /**
@@ -77,6 +89,7 @@ final class RpcConnectionHandler implements ConnectionHandler {
                     : peer.attach(connection, hello, dialed != null ? () -> {} : () -> hello(connection));
         }
         if (refusal != null) refuse(connection, refusal);
+        else if (node.isClosing()) RpcFrames.sendAnyway(connection, Goodbye.INSTANCE); // joined while this node drains
     }
 
     private boolean authenticate(Connection connection, Hello hello) {

@@ -8,6 +8,7 @@ import static cn.managame.FrameworkErrorCodes.RPC_UNAVAILABLE;
 
 import cn.managame.Metadata;
 import cn.managame.network.connection.Connection;
+import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.netty.NetworkClient;
 import cn.managame.rpc.RpcFrames.Goodbye;
 import cn.managame.rpc.RpcFrames.Hello;
@@ -51,6 +52,8 @@ public final class RpcPeer {
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
     /** The peer a connection belongs to, once its handshake is done. */
     private static final AttributeKey<RpcPeer> KEY = AttributeKey.valueOf("cn.managame.rpc.peer");
+    /** Set on a connection once the peer acknowledged this node's Goodbye on it. */
+    private static final AttributeKey<Boolean> ACKNOWLEDGED = AttributeKey.valueOf("cn.managame.rpc.goodbye-acknowledged");
     private static final Connection[] NONE = {};
     private final RpcNode node;
     private final int nodeId;
@@ -136,7 +139,7 @@ public final class RpcPeer {
                 : !RpcFrames.fits(sent, node.maxFrameLength()) ? RPC_PROTOCOL_ERROR : 0;
         if (failure == 0) {
             call.timeout = node.newTimeout(call, timeoutNanos);
-            if (RpcFrames.send(connection, sent)) return;
+            if (RpcFrames.send(connection, sent) == WriteStatus.ACCEPTED) return;
             failure = RPC_UNAVAILABLE;
         } else {
             if (failure == RPC_PROTOCOL_ERROR) LOG.log(Level.WARNING, "Request " + sent.command() + " to " + this + " is larger than the largest frame");
@@ -146,19 +149,27 @@ public final class RpcPeer {
     }
 
     /**
-     * Sends {@code notify} on the connection its route key picks. False when it cannot be sent: no connection is up
-     * or it is too busy, the peer is closing or was removed, this node closed, or the notify is larger than the
-     * largest frame. True means the connection took it, though it may still close before the notify leaves.
+     * Sends {@code notify} on the connection its route key picks and returns what became of it, releasing it unless
+     * ACCEPTED:
+     * <ul>
+     * <li>ACCEPTED: the connection took it, though it may still close before the notify leaves;</li>
+     * <li>NOT_WRITABLE: the connection is too busy;</li>
+     * <li>INACTIVE: no connection is up, the peer is closing or was removed, or this node closed.</li>
+     * </ul>
+     *
+     * @throws IllegalArgumentException when the notify is larger than the largest frame, after releasing it
      */
-    public boolean notify(RpcNotify notify) {
+    public WriteStatus notify(RpcNotify notify) {
         Objects.requireNonNull(notify, "notify");
-        Connection connection = node.isClosed() || removed || closing ? null : connection(notify.routeKey());
-        if (connection != null) {
-            if (RpcFrames.fits(notify, node.maxFrameLength())) return RpcFrames.send(connection, notify);
-            LOG.log(Level.WARNING, "Notify " + notify.command() + " to " + this + " is larger than the largest frame");
+        if (!RpcFrames.fits(notify, node.maxFrameLength())) {
+            notify.release();
+            throw new IllegalArgumentException("Notify " + notify.command() + " is larger than the largest frame, "
+                    + node.maxFrameLength() + " bytes");
         }
+        Connection connection = node.isClosed() || removed || closing ? null : connection(notify.routeKey());
+        if (connection != null) return RpcFrames.send(connection, notify);
         notify.release();
-        return false;
+        return WriteStatus.INACTIVE;
     }
 
     /** Ids are the peer's own, never 0. */
@@ -183,6 +194,12 @@ public final class RpcPeer {
     void answer(RpcResponse response) {
         Pending call = pending.remove(response.requestId());
         if (call != null) call.complete(response);
+    }
+
+    /** A request that was not sent, as the peer had said Goodbye: its call fails with RPC_UNAVAILABLE. */
+    void unsent(int requestId) {
+        Pending call = pending.remove(requestId);
+        if (call != null) call.complete(RpcResponse.failure(requestId, RPC_UNAVAILABLE));
     }
 
     private void settle(int id, Pending call, int code) {
@@ -258,9 +275,21 @@ public final class RpcPeer {
         node.closing(this);
     }
 
-    /** This node is closing: the peer hears Goodbye on every connection. */
+    /** This node is closing: the peer hears Goodbye on every connection, busy or not. */
     void goodbye() {
-        for (Connection connection : connections) RpcFrames.send(connection, Goodbye.INSTANCE);
+        for (Connection connection : connections) RpcFrames.sendAnyway(connection, Goodbye.INSTANCE);
+    }
+
+    /** The peer acknowledged this node's Goodbye on {@code connection}: nothing new comes on it any more. */
+    void acknowledged(Connection connection) { connection.set(ACKNOWLEDGED, Boolean.TRUE); }
+
+    /**
+     * Whether the peer acknowledged this node's Goodbye on every connection, so that whatever it sent before has
+     * arrived and nothing new will.
+     */
+    boolean acknowledgedGoodbye() {
+        for (Connection connection : connections) if (connection.get(ACKNOWLEDGED) == null) return false;
+        return true;
     }
 
     /** Fails the waiting calls with RPC_PEER_REMOVED, then stops dialing and closes every connection. */
