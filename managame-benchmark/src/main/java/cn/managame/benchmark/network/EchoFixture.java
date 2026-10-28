@@ -1,5 +1,6 @@
 package cn.managame.benchmark.network;
 
+import cn.managame.benchmark.CountingSocketChannel;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import cn.managame.network.connection.WriteStatus;
@@ -7,7 +8,6 @@ import cn.managame.network.netty.ConnectionInitializer;
 import cn.managame.network.netty.NetworkClient;
 import cn.managame.network.netty.NetworkHandlers;
 import cn.managame.network.netty.NetworkServer;
-import cn.managame.network.netty.NetworkTransports;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
@@ -25,7 +25,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * A server that echoes every length-framed message and clients holding {@code connections} connections to it,
  * all in this process over loopback, with flush consolidation as RPC has it. Each echo runs {@code onEcho}.
- * Frames are duplicates of one payload, so the benchmarks measure the transport, not the making of messages.
+ * Frames are duplicates of one payload, so the benchmarks measure the transport, not the making of messages. The
+ * clients' channels count the bytes on the wire.
  */
 final class EchoFixture implements AutoCloseable {
     private static final int MAX_FRAME = 8 * 1024 * 1024;
@@ -46,8 +47,9 @@ final class EchoFixture implements AutoCloseable {
                         if (connection.write(frame) != WriteStatus.ACCEPTED) frame.release();
                     }
                 })), new InetSocketAddress("127.0.0.1", 0));
-        clientGroup = NetworkTransports.newEventLoopGroup(0, "echo-client");
-        Bootstrap bootstrap = new Bootstrap().group(clientGroup).option(ChannelOption.WRITE_BUFFER_WATER_MARK, WATER_MARK)
+        clientGroup = CountingSocketChannel.newGroup("echo-client");
+        Bootstrap bootstrap = new Bootstrap().group(clientGroup).channel(CountingSocketChannel.class)
+                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, WATER_MARK)
                 .handler(pipeline(new Handler() {
                     @Override public void onActive(Connection connection) { open.add(connection); }
 

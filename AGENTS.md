@@ -41,9 +41,19 @@ baseline in `managame-benchmark/results/<component>.csv`; its README has the det
 
 - After changing a component's code, run its benchmarks from `managame-benchmark` and read the comparison:
   `java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar <component>`. Report results marked
-  `WORSE` or `MORE ALLOCATION`, and look into them before calling the change done.
+  `WORSE`, `MORE ALLOCATION` or `MORE BYTES`, and look into them before calling the change done. Each result also
+  shows CPU per operation by kind of thread (caller, eventloop, other, jvm), GC, Netty's direct memory and bytes on
+  the wire; use them to tell where a cost went.
+- The machine moves results too: the maintainer's laptop has performance and efficiency cores, and Windows at
+  times runs background benchmarks on the slower ones, halving every result with the code unchanged. When a result
+  is `WORSE` and its allocation did not move, build the code before the change into a jar and rerun with
+  `--against=<that jar>` before looking for a cause in the code. Only a difference that holds against it counts; a
+  large regression that holds is traced to its cause and fixed, a small one is explained. `unsure` means run again
+  on a steadier machine.
 - When a change makes a component faster or slower on purpose, save the baseline (`--save`) and commit `results/`
-  with the change. Never save over a baseline to hide a regression.
+  with the change. Never save over a baseline to hide a regression, nor from a run taken while the machine was
+  busy; Bench refuses to save a component during which other programs used more than a tenth of the CPU.
+- A benchmark that talks over sockets dials through `CountingSocketChannel`, so its bytes on the wire are counted.
 - A new feature on a hot path, or a new component, comes with benchmarks of its own, in the package of the
   component it measures and using only that component and those below it.
 - Baselines compare only on the machine they were recorded on, named on their first line.
