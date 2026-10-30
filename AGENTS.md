@@ -12,7 +12,7 @@ Java 25. The workspace is the git repository https://github.com/huaye2007/mana (
 | `managame-common` | nothing | `Metadata`, `MetadataKey`, `FrameworkErrorCodes` |
 | `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
-| `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric connections, membership the application drives, restart detection, draining, TLS and admission |
+| `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
 | `managame-benchmark` | all four, JMH 1.37 | JMH benchmarks per component with recorded baselines (`results/*.csv`); a tool nothing depends on |
 
 ## Build and test
@@ -77,6 +77,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - **Minimal state.** A class holds only the fields its job needs, like a plain Netty handler. Do not wrap what
   Netty already exposes: socket options go through `ServerBootstrap` / `Bootstrap`, any `ChannelHandler` can be
   added as is.
+- **Simple over rare cases.** Do not build mechanisms for situations that seldom happen; they are hard to
+  maintain and cost speed. Document what happens instead: an answer written while a peer's only connection is
+  being dialed again is lost, rather than held for the connection to come back. Name methods plainly for what
+  they do (`call.fail(code)`, `pending.failAll(code)`).
 - **The network layer never stores connections.** The application creates, maps, keeps and closes them
   (`ConnectionMapper`). RPC is the deliberate exception: an `RpcPeer` holds its connections because calls travel
   over them.
@@ -105,10 +109,18 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   `RequestContext` with `reply` / `fail`, `HttpExchange`, `RpcNode` (this process), `RpcPeer` (another process,
   connected either way, possibly over several connections), `RpcRequest` (with `requestId`) / `RpcNotify`
   (without) / `RpcResponse` (`requestId`, `code`, `metadata`, `body`), `node.createPeer` / `removePeer`,
-  `node.peer(id).call(request, callback)`, `peer.notify(notify)`, `node.broadcast(peers, notify)`,
-  `RpcHandler.handleMessage(RpcPeer rpcPeer, Connection connection, Object msg)` answered with
-  `response.writeTo(connection)`, `RpcListener.onConnected(peer, restarted)`, `incarnation` (a running instance of
-  a node), `node.close(Duration drain)`, `RpcAuthenticator`, `RpcObserver`.
+  `node.peer(id).call(request, callback)` with `RpcCallback.onResponse(request, response)`, `peer.notify(notify)`,
+  `node.broadcast(peers, notify)`, `RpcHandler.handleMessage(RpcPeer rpcPeer, Connection connection, Object msg)`
+  answered with `response.writeTo(connection)`, `RpcListener.onConnected(peer, restarted)`, `incarnation` (a
+  running instance of a node), `node.close()`, `RpcAuthenticator`, handshake and heartbeat (the internal frames).
+- rpc decisions the maintainer made: TCP only; waiting calls belong to the `RpcPeer`, under its own request ids,
+  so an answer may come back on any connection of the same instance, and they fail at once when the peer's last
+  connection closes; a callee pushes back by pausing reads with Netty's `autoRead`, with no API of rpc's own; a
+  route key hashes to a fixed connection and
+  falls back to another one up while that one is down; heartbeats are the dialing side's; there is no Goodbye or
+  drain protocol, as a node announces going offline itself; callbacks never run on the calling thread; one time
+  wheel per node does all its timing (call timeouts, heartbeats); the handshake negotiates nothing, so the nodes
+  of a cluster share one protocol version, heartbeat interval and largest frame.
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).

@@ -19,7 +19,7 @@ import java.util.Objects;
  * }</pre>
  *
  * Reference-counted through its body, like a request. Only the first answer to a request counts; the caller drops
- * later ones. A response larger than the largest frame reaches the caller as RPC_PROTOCOL_ERROR instead.
+ * later ones.
  */
 public record RpcResponse(int requestId, int code, Metadata metadata, ByteBuf body) implements ReferenceCounted {
     public RpcResponse {
@@ -44,13 +44,15 @@ public record RpcResponse(int requestId, int code, Metadata metadata, ByteBuf bo
     public boolean isSuccess() { return code == FrameworkErrorCodes.SUCCESS; }
 
     /**
-     * Writes this answer to {@code connection}, the one its request came on, from any thread, and releases it when
-     * the connection does not take it. Unlike {@code connection.write}, it writes even when the connection is busy:
-     * the work behind an answer is done, and dropping it would leave the caller unsure whether it was. Returns
-     * ACCEPTED, or INACTIVE when the connection has closed; a Connection other than network's NettyConnection
-     * returns what its {@code write} does.
+     * Writes this answer, from any thread, to {@code connection}, the one its request came on, or, once that has
+     * closed, to another connection up of the same running instance of the peer, so that an answer outlives the
+     * connection its request came on. It writes even when the connection is busy: the work behind an answer is
+     * done, and dropping it would leave the caller unsure whether it was. Returns ACCEPTED, or INACTIVE, releasing
+     * the answer, when that instance has no connection up, as while its only one is dialed again; the call failed
+     * with RPC_UNAVAILABLE on the caller when that last connection closed. An answer larger than the largest frame
+     * reaches the caller as RPC_PROTOCOL_ERROR instead.
      */
-    public WriteStatus writeTo(Connection connection) { return RpcFrames.sendAnyway(connection, this); }
+    public WriteStatus writeTo(Connection connection) { return RpcPeer.reply(connection, this); }
 
     @Override public int refCnt() { return body.refCnt(); }
     @Override public RpcResponse retain() { body.retain(); return this; }

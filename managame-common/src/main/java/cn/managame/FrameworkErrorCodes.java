@@ -10,11 +10,8 @@ public final class FrameworkErrorCodes {
     public static final int SUCCESS = 0;
 
     // RPC 2001..2999
-    public static final int RPC_PEER_NOT_FOUND = 2001;
     public static final int RPC_UNAVAILABLE = 2002;
     public static final int RPC_TIMEOUT = 2003;
-    public static final int RPC_PEER_REMOVED = 2004;
-    public static final int RPC_NODE_CLOSED = 2005;
     public static final int RPC_HANDLER_ERROR = 2006;
     public static final int RPC_PROTOCOL_ERROR = 2007;
 

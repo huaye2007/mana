@@ -10,43 +10,36 @@ import cn.managame.network.netty.NetworkServer;
 import cn.managame.network.netty.NetworkTransports;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.handler.flush.FlushConsolidationHandler;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslHandler;
-import io.netty.util.AttributeKey;
 import io.netty.util.HashedWheelTimer;
-import io.netty.util.Timeout;
-import io.netty.util.TimerTask;
+import io.netty.util.Timer;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import java.lang.System.Logger.Level;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.LongAdder;
 
 /**
- * This process among the nodes of a game server cluster. Every node may dial others; a node that listens may also
- * be dialed. Between two nodes only one side dials, and once connected both sides call and notify each other
- * alike:
+ * This process among the nodes of a game server cluster, over TCP; a process that talks to no other needs none.
+ * Every node may dial others; a node that listens may also be dialed. Between two nodes only one side dials, and
+ * once connected both sides call and notify each other alike:
  *
  * <pre>{@code
  * RpcNode node = RpcNode.builder()
- *         .nodeId(101).metadata(hello).listen(7101)       // listening is optional
+ *         .nodeId(101).metadata(about).listen(7101)       // listening is optional
  *         .handler(handler).listener(listener)
  *         .start();
  *
@@ -55,28 +48,32 @@ import java.util.concurrent.atomic.LongAdder;
  * }</pre>
  *
  * <p>The application drives membership: it creates the peers this node dials and removes peers that left, from its
- * own configuration or service discovery. Peers that dial in join by the id in their handshake. What a node is
- * for, such as a game or a world server, is the application's to put in the handshake {@link Builder#metadata},
- * which every peer reads as {@link RpcPeer#metadata()}.
+ * own configuration or service discovery. Peers that dial in join by the id in their handshake, one {@link RpcPeer}
+ * for each node, whichever side dialed. What a node is for, such as a game or a world server, is the application's
+ * to put in the handshake {@link Builder#metadata}, which every peer reads as {@link RpcPeer#metadata()}. Going
+ * offline as planned is the application's too: a node tells its peers it is leaving, in a notify or through
+ * service discovery, finishes its work and then closes.
  *
- * <p>Connections are network's plain connections, with the frame codec in their pipeline. Each starts with both
- * sides sending a Hello with the protocol versions they speak, node id, {@link #incarnation()} and metadata, the
- * dialing side first. A connection is refused when the two share no protocol version, the dialed node is not the
- * one meant, the dialing node is this node or one this node dials itself, the {@link RpcAuthenticator} says no,
- * or an older instance of a peer dials while a newer one is connected. Each side of a connection looks every third
- * of the idle timeout at what passed: having written nothing since, it sends a Ping; having received nothing for
- * three looks in a row, the idle timeout at least, as on a connection to a machine that went down without closing
- * it, it closes the connection, failing its calls at once, and redials it when this node dialed it.
+ * <p>Each connection starts with both sides sending a handshake with the protocol version, node id,
+ * {@link #incarnation()} and metadata, the dialing side first, naming also the slot of the connection among those
+ * it opens. A connection is refused when the two speak different protocol versions, the dialed node is not the one
+ * meant, the dialing node is this node or one this node dials itself, the {@link RpcAuthenticator} says no, or an
+ * older instance of a peer dials while a newer one is connected. Then the dialing side sends a heartbeat every
+ * interval, which the other side answers; a side that receives nothing for three of its own intervals, as on a
+ * connection to a machine that went down without closing it, closes the connection, and the dialing side dials it
+ * again. Nodes of a cluster use the same heartbeat interval and largest frame.
+ *
+ * <p>One time wheel, ticking every 10 milliseconds, does all of a node's timing: call timeouts and heartbeats.
  */
 public final class RpcNode implements AutoCloseable {
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(5);
-    public static final Duration DEFAULT_IDLE_TIMEOUT = Duration.ofSeconds(15);
+    public static final Duration DEFAULT_HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
     public static final int DEFAULT_MAX_FRAME_LENGTH = 8 * 1024 * 1024;
+    public static final int DEFAULT_MAX_PENDING_CALLS = 4096;
     /** How much a connection may queue before calls and notifies are refused; set unless the bootstraps do. */
     public static final WriteBufferWaterMark DEFAULT_WRITE_BUFFER_WATER_MARK = new WriteBufferWaterMark(1 << 20, 4 << 20);
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
-    /** The address a connection was dialed to. */
-    private static final AttributeKey<SocketAddress> ADDRESS = AttributeKey.valueOf("cn.managame.rpc.address");
+    private static final long TICK_MILLIS = 10;
     private static final RpcHandler NO_HANDLER = (rpcPeer, connection, msg) -> {
         if (msg instanceof RpcRequest request) RpcResponse.failure(request.requestId(), HANDLER_NOT_FOUND).writeTo(connection);
     };
@@ -84,61 +81,60 @@ public final class RpcNode implements AutoCloseable {
     private final long incarnation;
     private final Metadata metadata;
     private final RpcListener listener;
-    private final RpcObserver observer;
     private final Duration timeout, redialMin, redialMax;
-    private final int maxFrameLength;
+    private final int maxFrameLength, maxPendingCalls;
     private final ConcurrentHashMap<Integer, RpcPeer> peers = new ConcurrentHashMap<>();
-    /** The requests peers sent and connections have not answered yet, counted by their codecs. */
-    private final LongAdder unanswered = new LongAdder();
     /** Every connection, dialed or accepted, to close them all on close whoever owns their EventLoops. */
     private final ChannelGroup channels = new DefaultChannelGroup("rpc", GlobalEventExecutor.INSTANCE);
     private final HashedWheelTimer timer;
-    private volatile Thread timerThread;
     /** The EventLoops this node created and shuts down on close. */
     private final List<EventLoopGroup> ownedGroups = new ArrayList<>();
     /** Every EventLoop connections run on, where nothing may block. */
     private final List<EventLoopGroup> loops = new ArrayList<>();
+    /** The EventLoops this node dials on, which run the callbacks of calls that fail before they are sent. */
+    private final EventExecutor[] dialingLoops;
     private final Bootstrap dialing;
     private final NetworkServer server;
-    private final int port;
     private final Object lifecycle = new Object();
-    private volatile boolean closing, closed;
+    private volatile boolean closed;
 
     private RpcNode(Builder b) {
         nodeId = b.nodeId;
         incarnation = System.currentTimeMillis() * 1000 + ThreadLocalRandom.current().nextInt(1000);
         metadata = b.metadata;
         listener = b.listener;
-        observer = b.observer;
         timeout = b.timeout;
         redialMin = b.redialMin;
         redialMax = b.redialMax;
         maxFrameLength = b.maxFrameLength;
-        timer = new HashedWheelTimer(task -> timerThread = Thread.ofPlatform().name("rpc-timer-" + nodeId).daemon().unstarted(task),
-                10, TimeUnit.MILLISECONDS);
+        maxPendingCalls = b.maxPendingCalls;
+        timer = new HashedWheelTimer(Thread.ofPlatform().name("rpc-timer-" + nodeId).daemon().factory(), TICK_MILLIS, TimeUnit.MILLISECONDS);
         RpcConnectionHandler connections = new RpcConnectionHandler(this, b.handler, b.authenticator);
+        long heartbeatMillis = b.heartbeatInterval.toMillis();
         EventLoopGroup shared = null;
-        Bootstrap client = b.bootstrap.clone().handler(initializer(b, false, connections));
-        if (client.config().group() == null) client.group(shared = own(NetworkTransports.newEventLoopGroup(0, "rpc-io")));
+        Bootstrap client = b.bootstrap.clone().handler(initializer(false, heartbeatMillis, connections));
+        if (client.config().group() == null) client.group(shared = owned(NetworkTransports.newEventLoopGroup(0, "rpc-io")));
         if (!client.config().options().containsKey(ChannelOption.WRITE_BUFFER_WATER_MARK))
             client.option(ChannelOption.WRITE_BUFFER_WATER_MARK, DEFAULT_WRITE_BUFFER_WATER_MARK);
         if (!client.config().options().containsKey(ChannelOption.MESSAGE_SIZE_ESTIMATOR))
-            client.option(ChannelOption.MESSAGE_SIZE_ESTIMATOR, RpcFrames.SIZES);
+            client.option(ChannelOption.MESSAGE_SIZE_ESTIMATOR, RpcCodec.SIZES);
         loops.add(client.config().group());
+        List<EventExecutor> executors = new ArrayList<>();
+        client.config().group().forEach(executors::add);
+        dialingLoops = executors.toArray(EventExecutor[]::new);
         dialing = client;
         if (b.listen == null) {
             server = null;
-            port = -1;
             return;
         }
-        ServerBootstrap accepting = b.serverBootstrap.clone().childHandler(initializer(b, true, connections));
+        ServerBootstrap accepting = b.serverBootstrap.clone().childHandler(initializer(true, heartbeatMillis, connections));
         if (accepting.config().group() == null)
-            accepting.group(own(NetworkTransports.newEventLoopGroup(1, "rpc-accept")),
-                    shared != null ? shared : own(NetworkTransports.newEventLoopGroup(0, "rpc-io")));
+            accepting.group(owned(NetworkTransports.newEventLoopGroup(1, "rpc-accept")),
+                    shared != null ? shared : owned(NetworkTransports.newEventLoopGroup(0, "rpc-io")));
         if (!accepting.config().childOptions().containsKey(ChannelOption.WRITE_BUFFER_WATER_MARK))
             accepting.childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, DEFAULT_WRITE_BUFFER_WATER_MARK);
         if (!accepting.config().childOptions().containsKey(ChannelOption.MESSAGE_SIZE_ESTIMATOR))
-            accepting.childOption(ChannelOption.MESSAGE_SIZE_ESTIMATOR, RpcFrames.SIZES);
+            accepting.childOption(ChannelOption.MESSAGE_SIZE_ESTIMATOR, RpcCodec.SIZES);
         loops.add(accepting.config().childGroup());
         try {
             server = NetworkServer.start(accepting, b.listen);
@@ -147,33 +143,19 @@ public final class RpcNode implements AutoCloseable {
             ownedGroups.forEach(RpcNode::shutdown);
             throw e;
         }
-        port = b.listen instanceof InetSocketAddress ? server.port() : -1;
     }
 
-    /** Every connection's pipeline: TLS when configured, then flush consolidation and the codec. */
-    private ConnectionInitializer initializer(Builder b, boolean accepting, RpcConnectionHandler connections) {
-        Duration idle = b.idleTimeout;
-        int maxFrame = b.maxFrameLength;
-        ConnectionInitializer.Builder pipeline = ConnectionInitializer.tcp();
-        SslContext clientSsl = b.clientSsl;
-        if (accepting && b.serverSsl != null) pipeline.ssl(b.serverSsl);
-        if (!accepting && clientSsl != null) pipeline.customize(created -> created.addFirst("rpc-tls", clientSsl(clientSsl, created.channel())));
-        return pipeline
+    /** Every connection's pipeline: flush consolidation, then the codec. */
+    private ConnectionInitializer initializer(boolean accepting, long heartbeatMillis, RpcConnectionHandler connections) {
+        return ConnectionInitializer.tcp()
                 .addLast("rpc-flush", () -> new FlushConsolidationHandler(FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES, true))
-                .addLast("rpc-frames", () -> new RpcFrames(maxFrame, idle, unanswered))
+                .addLast("rpc-codec", () -> new RpcCodec(maxFrameLength, timer, heartbeatMillis, !accepting))
                 .customize(created -> channels.add(created.channel()))
                 .handler(connections)
                 .build();
     }
 
-    /** TLS toward the address dialed, so that the context can check the certificate names it. */
-    private static SslHandler clientSsl(SslContext ssl, Channel channel) {
-        return channel.attr(ADDRESS).get() instanceof InetSocketAddress address
-                ? ssl.newHandler(channel.alloc(), address.getHostString(), address.getPort())
-                : ssl.newHandler(channel.alloc());
-    }
-
-    private EventLoopGroup own(EventLoopGroup group) {
+    private EventLoopGroup owned(EventLoopGroup group) {
         ownedGroups.add(group);
         return group;
     }
@@ -191,48 +173,49 @@ public final class RpcNode implements AutoCloseable {
     /** What this node sends in every handshake. */
     public Metadata metadata() { return metadata; }
 
-    /** The listening port, or -1 when the node does not listen on an IP address. */
-    public int port() { return port; }
+    /** The listening port, or -1 when the node does not listen. */
+    public int port() { return server == null ? -1 : server.port(); }
 
-    /** {@link #createPeer(int, SocketAddress, int)} with one connection. */
-    public RpcPeer createPeer(int nodeId, SocketAddress address) { return createPeer(nodeId, address, 1); }
+    /** {@link #createPeer(int, InetSocketAddress, int)} with one connection. */
+    public RpcPeer createPeer(int nodeId, InetSocketAddress address) { return createPeer(nodeId, address, 1); }
 
     /**
-     * Starts dialing node {@code nodeId} at {@code address} with {@code connections} connections and returns its
-     * peer at once; calls to it fail with RPC_UNAVAILABLE until a connection completes its handshake. Each connection
-     * is redialed whenever it fails or closes, with the builder's redial delays. The node answering must be
-     * {@code nodeId}, or the connection is closed and redialed.
+     * Starts dialing node {@code nodeId} at {@code address} with {@code connections} connections, one per slot, and
+     * returns its peer at once; calls to it fail with RPC_UNAVAILABLE until a connection completes its handshake.
+     * Each connection is dialed again whenever it fails or closes, with the builder's redial delays. The node
+     * answering must be {@code nodeId}, or the connection is closed and dialed again.
      *
-     * @throws IllegalArgumentException for this node's own id, or fewer than one connection
+     * @throws IllegalArgumentException for this node's own id, or connections outside 1 to 65535
      * @throws IllegalStateException    when the id is a peer already, dialed by this node or dialing in (two nodes
-     *                                  must not dial each other; remove it first), or the node is closing
+     *                                  must not dial each other; remove it first), or the node is closed
      */
-    public RpcPeer createPeer(int nodeId, SocketAddress address, int connections) {
+    public RpcPeer createPeer(int nodeId, InetSocketAddress address, int connections) {
         Objects.requireNonNull(address, "address");
         if (nodeId == this.nodeId) throw new IllegalArgumentException("Node " + nodeId + " is this node");
-        if (connections < 1) throw new IllegalArgumentException("connections must be positive");
+        if (connections < 1 || connections > 65535) throw new IllegalArgumentException("connections must be 1 to 65535");
         synchronized (lifecycle) {
-            if (closing) throw new IllegalStateException("The node is closing");
-            RpcPeer peer = new RpcPeer(this, nodeId, true);
+            if (closed) throw new IllegalStateException("The node is closed");
+            RpcPeer peer = new RpcPeer(this, nodeId, true, connections);
             RpcPeer known = peers.putIfAbsent(nodeId, peer);
             if (known != null)
                 throw new IllegalStateException("Node " + nodeId + " is a peer already, " + (known.isOutbound() ? "dialed by this node" : "dialing in"));
-            Bootstrap bootstrap = dialing.clone().attr(RpcConnectionHandler.DIALED, peer).attr(ADDRESS, address);
+            Bootstrap bootstrap = dialing.clone().attr(RpcConnectionHandler.DIALED, peer);
             List<NetworkClient> clients = new ArrayList<>(connections);
-            for (int i = 0; i < connections; i++) clients.add(NetworkClient.connect(bootstrap, address, redialMin, redialMax));
+            for (int slot = 0; slot < connections; slot++)
+                clients.add(NetworkClient.connect(bootstrap.clone().attr(RpcConnectionHandler.SLOT, slot), address, redialMin, redialMax));
             peer.dial(clients);
             return peer;
         }
     }
 
     /**
-     * Forgets node {@code nodeId}, dialed or dialing in: fails its waiting calls, and later calls through the removed
-     * peer, with RPC_PEER_REMOVED, stops dialing it and closes its connections. A node that dials in again afterwards
-     * joins as a new peer. False when there was no such peer. Blocks until the connections are closed, so it must not
-     * run on the node's EventLoops or timer, in its handler, listener or callbacks (IllegalStateException).
+     * Forgets node {@code nodeId}, dialed or dialing in: fails its waiting calls with RPC_UNAVAILABLE, on this
+     * thread, stops dialing it and closes its connections. A node that dials in again afterwards joins as a new
+     * peer. False when there was no such peer. Blocks until the connections are closed, so it must not run on the
+     * node's EventLoops, where its handler, listener and answered callbacks run (IllegalStateException).
      */
     public boolean removePeer(int nodeId) {
-        checkNotOnNodeThread();
+        checkNotOnEventLoop();
         RpcPeer peer = peers.remove(nodeId);
         if (peer == null) return false;
         peer.remove();
@@ -255,7 +238,7 @@ public final class RpcNode implements AutoCloseable {
         Objects.requireNonNull(notify, "notify");
         int sent = 0;
         try {
-            if (!RpcFrames.fits(notify, maxFrameLength))
+            if (!RpcCodec.fits(notify, maxFrameLength))
                 throw new IllegalArgumentException("Notify " + notify.command() + " is larger than the largest frame, " + maxFrameLength + " bytes");
             for (RpcPeer peer : peers) if (peer.notify(notify.retainedDuplicate()) == WriteStatus.ACCEPTED) sent++;
         } finally {
@@ -264,61 +247,27 @@ public final class RpcNode implements AutoCloseable {
         return sent;
     }
 
-    /** The requests peers sent to this node that it has neither answered nor seen expire. */
-    public int unansweredCount() { return unanswered.intValue(); }
-
-    /** {@link #close(Duration)} without draining. */
-    @Override public void close() { close(Duration.ZERO); }
-
     /**
-     * Closes the node, first draining it for up to {@code drain}: it stops listening and says Goodbye on every
-     * connection, and each peer acknowledges it on that connection and sends nothing new there. The node waits until
-     * every connection has acknowledged, so that every request sent before has arrived, it has answered those
-     * requests and its own calls have settled, and then until its answers have been written out, so that a planned
-     * shutdown leaves no call in doubt. Its own calls still go out meanwhile. Then it fails every waiting call, and
-     * calls made afterwards, with RPC_NODE_CLOSED, stops dialing and closes every connection; answers still to come
-     * no longer reach their callers. Blocks until done; idempotent; must not run on the node's EventLoops or timer
-     * (IllegalStateException).
+     * Closes the node at once: stops listening and dialing, fails every waiting call with RPC_UNAVAILABLE, on this
+     * thread, and closes every connection, so that peers see this node leave; calls made afterwards fail too, and
+     * answers still to come no longer reach their callers. What was written before, such as answers, is flushed as
+     * each connection closes; only what a busy connection's socket cannot take at that moment is lost. Blocks until
+     * done; idempotent; must not run on the node's EventLoops or its timer (IllegalStateException).
      */
-    public void close(Duration drain) {
-        Objects.requireNonNull(drain, "drain");
-        checkNotOnNodeThread();
+    @Override public void close() {
+        checkNotOnEventLoop();
+        timer.stop(); // first: on the timer's own thread it throws IllegalStateException before anything closed
         synchronized (lifecycle) {
-            if (closing) return;
-            closing = true;
+            if (closed) return;
+            closed = true;
         }
         try {
             if (server != null) server.close();
-            if (drain.toNanos() > 0) drain(drain.toNanos());
         } finally {
-            closed = true;
             for (RpcPeer peer : peers.values()) peer.close();
             channels.close().awaitUninterruptibly();
-            timer.stop();
             ownedGroups.forEach(RpcNode::shutdown);
         }
-    }
-
-    private void drain(long nanos) {
-        for (RpcPeer peer : peers.values()) peer.goodbye();
-        long deadline = System.nanoTime() + nanos;
-        try {
-            while (System.nanoTime() - deadline < 0 && !drained()) Thread.sleep(10);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        long left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
-        // An empty write on each connection completes once everything written before it has gone out.
-        if (left > 0) channels.writeAndFlush(Unpooled.EMPTY_BUFFER).awaitUninterruptibly(left);
-    }
-
-    /**
-     * Whether nothing more can arrive or is owed. The acknowledgments come first: once a connection's has come,
-     * every request the peer sent on it before has been counted as unanswered.
-     */
-    private boolean drained() {
-        return peers.values().stream().allMatch(RpcPeer::acknowledgedGoodbye)
-                && unanswered.sum() == 0 && peers.values().stream().noneMatch(RpcPeer::hasWaitingCalls);
     }
 
     @Override public String toString() { return "RpcNode[" + nodeId + "]"; }
@@ -327,34 +276,30 @@ public final class RpcNode implements AutoCloseable {
 
     int maxFrameLength() { return maxFrameLength; }
 
-    /** Draining or closed: it takes no new peers, and says Goodbye on the connections it dialed that join meanwhile. */
-    boolean isClosing() { return closing; }
+    int maxPendingCalls() { return maxPendingCalls; }
 
-    /** Closed for good: calls fail with RPC_NODE_CLOSED. While it only drains, calls still go out. */
+    /** The time wheel for call timeouts; stopped once the node closes. */
+    Timer timer() { return timer; }
+
+    /** Closed: it takes no new peers, and calls fail. */
     boolean isClosed() { return closed; }
 
     /** The peer node {@code nodeId} joins when it dials in: the one known under its id, or a new one. */
-    RpcPeer dialingIn(int nodeId) { return peers.computeIfAbsent(nodeId, created -> new RpcPeer(this, created, false)); }
+    RpcPeer inboundPeer(int nodeId) { return peers.computeIfAbsent(nodeId, created -> new RpcPeer(this, created, false, 0)); }
 
-    /** Runs {@code task} on the node's timer after {@code nanos}; null once the node has closed. */
-    Timeout newTimeout(TimerTask task, long nanos) {
+    /**
+     * Runs {@code task} soon on the dialing EventLoop {@code key} picks, or, once those have stopped, on a thread of
+     * its own: never inside the caller.
+     */
+    void runOnEventLoop(long key, Runnable task) {
         try {
-            return timer.newTimeout(task, nanos, TimeUnit.NANOSECONDS);
-        } catch (IllegalStateException stopped) {
-            return null;
+            dialingLoops[dialingLoops.length == 1 ? 0 : Math.floorMod(key, dialingLoops.length)].execute(task);
+        } catch (RejectedExecutionException stopped) {
+            Thread.ofVirtual().name("rpc-late-" + nodeId).start(task);
         }
     }
 
-    void settled(RpcPeer peer, RpcRequest request, RpcResponse response, long elapsedNanos) {
-        if (observer == null) return;
-        try {
-            observer.onCallSettled(peer, request, response, elapsedNanos);
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "The RPC observer failed", e);
-        }
-    }
-
-    void connected(RpcPeer peer, boolean restarted) {
+    void fireConnected(RpcPeer peer, boolean restarted) {
         if (listener == null) return;
         try {
             listener.onConnected(peer, restarted);
@@ -363,7 +308,7 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
-    void disconnected(RpcPeer peer) {
+    void fireDisconnected(RpcPeer peer) {
         if (listener == null) return;
         try {
             listener.onDisconnected(peer);
@@ -372,17 +317,7 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
-    void closing(RpcPeer peer) {
-        if (listener == null) return;
-        try {
-            listener.onClosing(peer);
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "The RPC listener failed on " + peer + " closing", e);
-        }
-    }
-
-    private void checkNotOnNodeThread() {
-        if (Thread.currentThread() == timerThread) throw new IllegalStateException("Cannot block on the node's own timer");
+    private void checkNotOnEventLoop() {
         for (EventLoopGroup group : loops)
             for (EventExecutor loop : group)
                 if (loop.inEventLoop()) throw new IllegalStateException("Cannot block on the node's own EventLoop");
@@ -395,17 +330,15 @@ public final class RpcNode implements AutoCloseable {
     public static final class Builder {
         private Integer nodeId;
         private Metadata metadata = Metadata.empty();
-        private SocketAddress listen;
+        private InetSocketAddress listen;
         private RpcHandler handler = NO_HANDLER;
         private RpcListener listener;
         private RpcAuthenticator authenticator;
-        private RpcObserver observer;
-        private SslContext serverSsl, clientSsl;
         private Bootstrap bootstrap = new Bootstrap();
         private ServerBootstrap serverBootstrap = new ServerBootstrap();
-        private Duration timeout = DEFAULT_TIMEOUT, idleTimeout = DEFAULT_IDLE_TIMEOUT;
+        private Duration timeout = DEFAULT_TIMEOUT, heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
         private Duration redialMin = NetworkClient.DEFAULT_MIN_RETRY, redialMax = NetworkClient.DEFAULT_MAX_RETRY;
-        private int maxFrameLength = DEFAULT_MAX_FRAME_LENGTH;
+        private int maxFrameLength = DEFAULT_MAX_FRAME_LENGTH, maxPendingCalls = DEFAULT_MAX_PENDING_CALLS;
 
         private Builder() {}
 
@@ -418,35 +351,18 @@ public final class RpcNode implements AutoCloseable {
         /** Lets other nodes dial this one on {@code port} of all interfaces; a node that only dials need not listen. */
         public Builder listen(int port) { return listen(new InetSocketAddress(port)); }
 
-        /** Any address the server bootstrap's channel type binds, such as Netty's LocalAddress for the local transport. */
-        public Builder listen(SocketAddress address) { listen = Objects.requireNonNull(address, "address"); return this; }
+        /** Lets other nodes dial this one on {@code address}; port 0 binds an ephemeral port, see {@link #port}. */
+        public Builder listen(InetSocketAddress address) { listen = Objects.requireNonNull(address, "address"); return this; }
 
         /** Handles what peers send. Without one, requests fail with HANDLER_NOT_FOUND and notifies are dropped. */
         public Builder handler(RpcHandler handler) { this.handler = Objects.requireNonNull(handler, "handler"); return this; }
 
-        /** Hears peers come, go, restart and close; none by default. */
+        /** Hears peers come, go and restart; none by default. */
         public Builder listener(RpcListener listener) { this.listener = Objects.requireNonNull(listener, "listener"); return this; }
 
         /** Admits the nodes on the other side of each connection; all by default. */
         public Builder authenticator(RpcAuthenticator authenticator) {
             this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
-            return this;
-        }
-
-        /** Sees every call this node made end; none by default. */
-        public Builder observer(RpcObserver observer) { this.observer = Objects.requireNonNull(observer, "observer"); return this; }
-
-        /** TLS for the connections other nodes dial in on; with client authentication it checks their certificates. */
-        public Builder serverSsl(SslContext ssl) {
-            if (!Objects.requireNonNull(ssl, "ssl").isServer()) throw new IllegalArgumentException("Server SslContext required");
-            serverSsl = ssl;
-            return this;
-        }
-
-        /** TLS for the connections this node dials, with this node's certificate when the other side asks for one. */
-        public Builder clientSsl(SslContext ssl) {
-            if (!Objects.requireNonNull(ssl, "ssl").isClient()) throw new IllegalArgumentException("Client SslContext required");
-            clientSsl = ssl;
             return this;
         }
 
@@ -479,7 +395,10 @@ public final class RpcNode implements AutoCloseable {
             return this;
         }
 
-        /** How long a call waits for its answer unless the call says otherwise; 5 seconds by default. */
+        /**
+         * How long a call waits for its answer unless the call says otherwise; 5 seconds by default. Timeouts fire
+         * on the node's time wheel, up to its 10 millisecond tick late.
+         */
         public Builder timeout(Duration timeout) {
             if (timeout.toMillis() < 1) throw new IllegalArgumentException("timeout must be at least one millisecond");
             this.timeout = timeout;
@@ -487,23 +406,33 @@ public final class RpcNode implements AutoCloseable {
         }
 
         /**
-         * How long a connection may receive nothing before it is taken as dead and closed, at most a third longer;
-         * 15 seconds by default. Each side looks every third of it at what passed and sends a Ping when it
-         * wrote nothing since, so every node of the cluster must use the same value.
+         * How often a connection this node dials sends a heartbeat, which the other side answers; 5 seconds by
+         * default. Either side closes a connection on which it received nothing for three of its own intervals, so
+         * the nodes of a cluster use the same interval.
          */
-        public Builder idleTimeout(Duration timeout) {
-            if (timeout.toMillis() < 3) throw new IllegalArgumentException("idleTimeout must be at least 3 milliseconds");
-            idleTimeout = timeout;
+        public Builder heartbeatInterval(Duration interval) {
+            if (interval.toMillis() < 1) throw new IllegalArgumentException("heartbeatInterval must be at least one millisecond");
+            heartbeatInterval = interval;
             return this;
         }
 
         /**
-         * The largest frame, its 4-byte length included; 8 MiB by default. Larger messages are refused before they
-         * are sent. Every node of the cluster must use the same value.
+         * The largest frame this node sends and receives, its 4-byte length included; 8 MiB by default. A frame
+         * larger arriving closes the connection, so the nodes of a cluster use the same value.
          */
         public Builder maxFrameLength(int bytes) {
-            if (bytes < 64) throw new IllegalArgumentException("maxFrameLength must be at least 64");
+            if (bytes < RpcCodec.MIN_FRAME_LENGTH) throw new IllegalArgumentException("maxFrameLength must be at least " + RpcCodec.MIN_FRAME_LENGTH);
             maxFrameLength = bytes;
+            return this;
+        }
+
+        /**
+         * How many calls to one peer may wait for their answer at a time; further calls fail with RPC_UNAVAILABLE
+         * until some end. 4096 by default. Each peer has a table of a reference per call allowed.
+         */
+        public Builder maxPendingCalls(int calls) {
+            if (calls < 1 || calls > 1 << 30) throw new IllegalArgumentException("maxPendingCalls must be 1 to 2^30");
+            maxPendingCalls = calls;
             return this;
         }
 

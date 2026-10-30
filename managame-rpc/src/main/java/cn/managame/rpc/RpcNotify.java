@@ -6,10 +6,9 @@ import io.netty.util.ReferenceCounted;
 import java.util.Objects;
 
 /**
- * A message to another node that expects no answer, as the sender builds it and as the receiver's
- * {@link RpcHandler} gets it. Its fields mean what they mean in {@link RpcRequest}: the application's, carried as
- * is, with {@code routeKey} also picking the connection, so notifies with one key arrive in the order they were
- * sent, also among requests with that key. Reference-counted through its body, like a request.
+ * A one-way message to another node: no answer, no id. The fields are the application's and travel as is, like a
+ * {@link RpcRequest}'s; {@code routeKey} also picks the connection, so messages with one key keep their order.
+ * Reference-counted through its body.
  */
 public record RpcNotify(int command, long routeKey, byte businessType, long businessId, Metadata metadata, ByteBuf body)
         implements ReferenceCounted {
@@ -26,7 +25,12 @@ public record RpcNotify(int command, long routeKey, byte businessType, long busi
         return new RpcNotify(command, routeKey, (byte) 0, 0, Metadata.empty(), body);
     }
 
-    /** The same notify over a retained duplicate of the body, to send it once more. */
+    public static RpcNotify of(int command, long routeKey, byte businessType, long businessId, Metadata metadata,
+                               ByteBuf body) {
+        return new RpcNotify(command, routeKey, businessType, businessId, metadata, body);
+    }
+
+    /** The same notify sharing this body, retained once more; how a broadcast sends one body to many peers. */
     RpcNotify retainedDuplicate() {
         return new RpcNotify(command, routeKey, businessType, businessId, metadata, body.retainedDuplicate());
     }

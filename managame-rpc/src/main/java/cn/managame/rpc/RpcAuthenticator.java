@@ -4,16 +4,21 @@ import cn.managame.Metadata;
 import cn.managame.network.connection.Connection;
 
 /**
- * Decides whether the node on the other side of a connection may join, from what it sent in its Hello, before it
- * joins. Asked on every connection, dialed or dialing in; false, or an exception, closes the connection. A node
- * refused while dialing in leaves no peer behind.
+ * Decides whether the node on the other side of a connection may join, from what it sent in its handshake, before
+ * it can send or receive anything. It sees every connection, dialed by this node or dialing in; refused, the
+ * connection closes, and a node dialing in leaves no peer behind.
  *
- * <p>The Hello's metadata is plain data, so checking a shared secret in it only keeps out mistakes, not attackers
- * who can read the traffic; over TLS ({@link RpcNode.Builder#serverSsl}, {@link RpcNode.Builder#clientSsl}) it is
- * protected, and with client certificates the connection's TLS session names the peer.
+ * <p>The handshake is plain data, so checking a shared secret in its metadata keeps out mistakes, such as a test
+ * server dialing a live cluster, not attackers.
  */
 @FunctionalInterface
 public interface RpcAuthenticator {
-    /** Runs on the connection's EventLoop and must not block. */
+    /**
+     * Runs on the connection's EventLoop and must not block; an exception thrown here refuses the node.
+     *
+     * @param connection the connection, for example to check its remote address
+     * @param nodeId     the id the other node gave
+     * @param metadata   what the other node put in its handshake
+     */
     boolean authenticate(Connection connection, int nodeId, Metadata metadata);
 }
