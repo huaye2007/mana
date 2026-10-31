@@ -12,6 +12,8 @@ depends on it, and its benchmarks of one component never join it with another.
 | `cn.managame.benchmark.network` | `EchoThroughputBenchmark`, `EchoLatencyBenchmark`, and the same as `…ProcessBenchmark` | Length-framed messages echoed over loopback: per second with many in flight, and the round trip of one |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`, `DispatchThroughputBenchmark` | Tasks through `GameRuntime.execute`, and player requests through the `Dispatcher` to an annotated handler, per second |
 | `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`, `CallLatencyBenchmark`, `NotifyThroughputBenchmark`, and the same as `…ProcessBenchmark` | Calls answered and notifies handled per second with many in flight, and the round trip of one call |
+| `cn.managame.benchmark.data` | `RepositoryBenchmark`, `UpdateThroughputBenchmark`, `WriteThroughputBenchmark` | What business threads pay with entities in memory (reading a player or a bag, recording a change; ns/op), changes recorded per second by four threads at once, and changes a round writes per second through a mapper that keeps nothing: managame-data's own cost, without a database |
+| `cn.managame.benchmark.mysql` | `SaveThroughputBenchmark` | Rows written per second through managame-data-mysql into an in-memory H2 database in MySQL mode: updates, and inserts with deletes |
 
 The network echo benchmarks put the same load on the transport as the rpc ones, so the difference between them is
 what RPC adds. Each runs twice: with both sides in one benchmark JVM, and, as its `…ProcessBenchmark`, with the
@@ -33,7 +35,7 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 
 | Argument | Meaning |
 | --- | --- |
-| `common`, `network`, `runtime`, `rpc`, `all` | The components to run |
+| `common`, `network`, `runtime`, `rpc`, `data`, `mysql`, `all` | The components to run (`mysql` is managame-data-mysql) |
 | `--save` | Record the results as the new baseline |
 | `--include=<regex>` | Only the benchmarks whose name matches, such as `--include=CallLatency` |
 | `--threshold=<percent>` | How far a result must move to count as better or worse; 10 by default |
@@ -180,4 +182,4 @@ no baseline from a run taken while the machine was busy.
 mvn -o clean package
 ```
 
-Install managame-common, managame-network, managame-runtime and managame-rpc first.
+Install managame-common, managame-network, managame-runtime, managame-rpc, managame-data and managame-data-mysql first.

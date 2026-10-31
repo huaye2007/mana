@@ -10,6 +10,8 @@
 | `cn.managame.benchmark.network` | `EchoThroughputBenchmark`、`EchoLatencyBenchmark`，以及对应的 `…ProcessBenchmark` | 在回环地址上回显带长度前缀的消息：多个消息在途时的每秒吞吐，以及单条消息的往返时间 |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`、`DispatchThroughputBenchmark` | 每秒经过 `GameRuntime.execute` 执行的任务数，以及每秒经 `Dispatcher` 交给注解处理器的玩家请求数 |
 | `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`、`CallLatencyBenchmark`、`NotifyThroughputBenchmark`，以及对应的 `…ProcessBenchmark` | 多个请求在途时每秒应答的调用数和处理的通知数，以及单个调用的往返时间 |
+| `cn.managame.benchmark.data` | `RepositoryBenchmark`、`UpdateThroughputBenchmark`、`WriteThroughputBenchmark` | 实体都在内存里时业务线程的开销（读取玩家或背包、登记修改；ns/op），四个线程同时登记修改的每秒次数，以及经一个什么都不保存的 Mapper 每秒写出的修改数：不含数据库的 managame-data 自身开销 |
+| `cn.managame.benchmark.mysql` | `SaveThroughputBenchmark` | 经 managame-data-mysql 每秒写入 MySQL 模式的内存 H2 数据库的行数：更新，以及插入加删除 |
 
 network 回显基准给传输层施加的负载和 rpc 基准相同，所以两者的差值就是 RPC 本身带来的开销。每个基准跑两种形态：两端都在同一个基准 JVM 里；以及对应的 `…ProcessBenchmark`，服务端在单独的进程里，见[两个进程](#两个进程)。
 
@@ -29,7 +31,7 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 
 | 参数 | 含义 |
 | --- | --- |
-| `common`、`network`、`runtime`、`rpc`、`all` | 要运行的组件 |
+| `common`、`network`、`runtime`、`rpc`、`data`、`mysql`、`all` | 要运行的组件（`mysql` 即 managame-data-mysql） |
 | `--save` | 把本次结果记录为新的基线 |
 | `--include=<regex>` | 只运行名字匹配的基准，比如 `--include=CallLatency` |
 | `--threshold=<percent>` | 结果变化超过多少才算变好或变差，默认 10 |
@@ -145,4 +147,4 @@ NotifyThroughputBenchmark.notifyPeer   connections=1 payload=64 window=1024   77
 mvn -o clean package
 ```
 
-请先安装 managame-common、managame-network、managame-runtime 和 managame-rpc。
+请先安装 managame-common、managame-network、managame-runtime、managame-rpc、managame-data 和 managame-data-mysql。

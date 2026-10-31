@@ -4,7 +4,7 @@ Guidance for coding agents working in this workspace. Read it before changing an
 
 ## Workspace
 
-Four component projects and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
+Seven component projects and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
 Java 25. The workspace is the git repository https://github.com/huaye2007/mana (branch `main`).
 
 | Project | Depends on | What it is |
@@ -13,12 +13,15 @@ Java 25. The workspace is the git repository https://github.com/huaye2007/mana (
 | `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
-| `managame-benchmark` | all four, JMH 1.37 | JMH benchmarks per component with recorded baselines (`results/*.csv`); a tool nothing depends on |
+| `managame-data` | common | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
+| `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
+| `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
+| `managame-benchmark` | all but data-mongo, JMH 1.37, H2 | JMH benchmarks per component with recorded baselines (`results/*.csv`); a tool nothing depends on |
 
 ## Build and test
 
 - Build each project on its own, in dependency order: common → network → runtime and rpc (which do not depend on
-  each other). A project sees another
+  each other), and common → data → data-mysql and data-mongo. A project sees another
   only through the local Maven repository (`d:\maven_repository`), so after changing a lower project run
   `mvn install` in it before building the projects above it.
 - Tests open real loopback sockets. Run them outside a sandbox, and give the JDK a writable directory for its
@@ -31,8 +34,10 @@ Java 25. The workspace is the git repository https://github.com/huaye2007/mana (
 - Use `clean` after deleting or moving classes: stale classes left in `target/` are otherwise packaged into the
   installed jar.
 - Tests are JUnit 5 under each project's `src/test/java`. Every behavior change comes with tests; network,
-  runtime and rpc tests use real connections rather than mocks.
-- managame-benchmark builds last (`mvn -o clean package`), after the four components are installed.
+  runtime and rpc tests use real connections rather than mocks. data's tests run on an in-memory `EntityMapper` that
+  behaves as a database does; data-mysql's on H2 in MySQL mode, a real database in memory; a real MySQL or MongoDB
+  only when `MysqlIntegrationTest` or `MongoIntegrationTest` is given its address.
+- managame-benchmark builds last (`mvn -o clean package`), after the components are installed.
 
 ## Benchmarks
 
@@ -121,6 +126,16 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   drain protocol, as a node announces going offline itself; callbacks never run on the calling thread; one time
   wheel per node does all its timing (call timeouts, heartbeats); the handshake negotiates nothing, so the nodes
   of a cluster share one protocol version, heartbeat interval and largest frame.
+- data names and decisions the maintainer made: `GameData` with `GameData.builder()`, `SingleRepository<K, E>`
+  (by `@Id`), `GroupRepository<K, E>` (groups by `@GroupKey`, `GroupKeys.of(...)`, a map per group by `@MapKey`,
+  `MapKeys.of(...)` for several), `LogRepository<E>`, repositories as empty subclasses the builder creates, registered
+  as a collection with the `EntityMapper` or `LogWriter` that keeps them (`repositories(mapper, types)`,
+  `logRepositories(writer, types)`). managame-data knows no database: MySQL and MongoDB are projects of their own
+  (`MysqlEntityMapper` with `@Table`, `MongoEntityMapper` with `@Collection`, `MysqlLogWriter`), and where logs go,
+  such as a service over HTTP, is the application's `LogWriter`; each mapper and writer decides what is retryable.
+  Changes are recorded, not copied: the write thread reads the entity when it writes it, so business threads pay no
+  copy and entity collections must be thread-safe. Game data has only these two shapes plus logs; the application owns
+  the schema (no DDL but MySQL log partitions created `LIKE` their base table).
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).

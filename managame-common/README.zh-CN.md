@@ -71,11 +71,13 @@ Metadata received = Metadata.wrap(wire);  // 校验格式，不复制
 | 3005 | `INVALID_ROUTE_KEY` | 处理器所在的 domain 无法为该消息找到路由键 |
 | 3006 | `ROUTE_EXECUTOR_OVERLOADED` | 该 domain 的执行器排队任务过多 |
 | 3009 | `RUNTIME_EXECUTION_ERROR` | 处理器抛出了异常 |
+| 4001 | `DATA_SAVE_FAILED` | 一条修改无法保存，已交给数据错误处理器；或 flush、close 结束时仍有修改没有保存 |
+| 4002 | `DATA_LOG_SAVE_FAILED` | 一条日志无法保存，或因队列已满被拒绝 |
+| 4003 | `DATA_LOAD_FAILED` | 无法从存储加载数据 |
 
-其余错误码（`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、
-`ROUTE_EXECUTOR_CLOSED`、`ROUTE_CALL_EXECUTION_ERROR`、`ROUTE_CALLBACK_DISPATCH_FAILED`、`DATA_SAVE_FAILED`、
-`DATA_LOG_SAVE_FAILED`）已为框架预留，目前不会出现。号段：RPC 2001–2999，runtime 3001–3999，数据 4001–4999；
-业务自己的错误码应避开这些号段。
+其余错误码（`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、`ROUTE_EXECUTOR_CLOSED`、
+`ROUTE_CALL_EXECUTION_ERROR`、`ROUTE_CALLBACK_DISPATCH_FAILED`）已为框架预留，目前不会出现。号段：RPC 2001–2999，
+runtime 3001–3999，数据 4001–4999；业务自己的错误码应避开这些号段。
 
 打日志时，`FrameworkErrorCodes.describe(2003)` 得到 `RPC_TIMEOUT(2003)`，`name(code)` 只得到名称；未知错误码显示为
 `UNKNOWN(<code>)`。不要用名称做程序判断。

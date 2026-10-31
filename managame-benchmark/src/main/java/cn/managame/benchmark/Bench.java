@@ -56,7 +56,7 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
  * unsure.
  */
 public final class Bench {
-    static final List<String> COMPONENTS = List.of("common", "network", "runtime", "rpc");
+    static final List<String> COMPONENTS = List.of("common", "network", "runtime", "rpc", "data", "mysql");
     private static final String PACKAGE = "cn.managame.benchmark.";
     /** How many times each jar runs with {@code --against}. */
     private static final int ROUNDS = 2;

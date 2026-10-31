@@ -30,6 +30,7 @@ public final class FrameworkErrorCodes {
     // Data 4001..4999
     public static final int DATA_SAVE_FAILED = 4001;
     public static final int DATA_LOG_SAVE_FAILED = 4002;
+    public static final int DATA_LOAD_FAILED = 4003;
 
     private static final Map<Integer, String> NAMES = names();
 

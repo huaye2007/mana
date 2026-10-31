@@ -1,0 +1,11 @@
+package cn.managame.data;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+/** The entity's primary key: one integral or String field, assigned by the application and never changed. */
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.FIELD)
+public @interface Id {}

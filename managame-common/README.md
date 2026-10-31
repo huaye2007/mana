@@ -74,11 +74,13 @@ Zero is success and every failure code is positive. The framework uses these:
 | 3005 | `INVALID_ROUTE_KEY` | The handler's domain could not find a routing key for the message |
 | 3006 | `ROUTE_EXECUTOR_OVERLOADED` | The domain's executor has too many tasks waiting |
 | 3009 | `RUNTIME_EXECUTION_ERROR` | The handler threw |
+| 4001 | `DATA_SAVE_FAILED` | A change could not be saved and went to the data error handler, or a flush or close left changes unsaved |
+| 4002 | `DATA_LOG_SAVE_FAILED` | A log could not be saved, or was refused because its queue was full |
+| 4003 | `DATA_LOAD_FAILED` | Data could not be loaded from storage |
 
-The others (`HANDLER_CONTEXT_MISMATCH`, `ROUTE_DOMAIN_MISMATCH`,
-`ROUTE_EXECUTOR_CLOSED`, `ROUTE_CALL_EXECUTION_ERROR`, `ROUTE_CALLBACK_DISPATCH_FAILED`, `DATA_SAVE_FAILED`,
-`DATA_LOG_SAVE_FAILED`) are allocated for the framework and not raised today. Ranges: RPC 2001–2999, runtime
-3001–3999, data 4001–4999; application codes should stay outside them.
+The others (`HANDLER_CONTEXT_MISMATCH`, `ROUTE_DOMAIN_MISMATCH`, `ROUTE_EXECUTOR_CLOSED`,
+`ROUTE_CALL_EXECUTION_ERROR`, `ROUTE_CALLBACK_DISPATCH_FAILED`) are allocated for the framework and not raised
+today. Ranges: RPC 2001–2999, runtime 3001–3999, data 4001–4999; application codes should stay outside them.
 
 For logs, `FrameworkErrorCodes.describe(2003)` gives `RPC_TIMEOUT(2003)` and `name(code)` the bare name; an
 unknown code reads `UNKNOWN(<code>)`. Never base program logic on the names.
