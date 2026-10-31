@@ -37,7 +37,7 @@ public final class RouteKeys {
             } catch (RuntimeException | Error e) {
                 throw e;
             } catch (Throwable e) {
-                throw new IllegalStateException("Cannot read the routing key of " + message.getClass().getName(), e);
+                throw new IllegalStateException("Cannot read the route key of " + message.getClass().getName(), e);
             }
         };
     }

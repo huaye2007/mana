@@ -98,8 +98,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   `ReferenceCounted` through them. What is handed to the framework becomes its own; what the framework hands to a
   callback is released when it returns.
 - **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
-  (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routingKey)` run one at a time in submission order.
-- **Every context has the same fields:** `domain` (int), `routingKey` (long), `businessType` (byte),
+  (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routeKey)` run one at a time in submission order.
+- **Every context has the same fields:** `domain` (int), `routeKey` (long), `businessType` (byte),
   `businessId` (long) and `Metadata`.
 - **The business decides routing per domain.** Each domain has its own `RouteExecutor` and its own
   `RouteKeyResolver`: the key may come from the source context (a player's id) or from the message (a guild id

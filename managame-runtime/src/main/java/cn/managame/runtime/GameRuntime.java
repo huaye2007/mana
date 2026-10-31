@@ -18,7 +18,7 @@ import java.util.function.BiConsumer;
 
 /**
  * The single entry for business logic. {@link #execute} runs a GameTask on its context's route: tasks with the
- * same domain and routing key run one at a time in submission order, tasks of other keys or domains run
+ * same domain and route key run one at a time in submission order, tasks of other keys or domains run
  * independently. Each domain has its own RouteExecutor, which decides the threads:
  *
  * <pre>{@code
@@ -51,14 +51,14 @@ public final class GameRuntime implements AutoCloseable {
 
     /**
      * Where {@code message}, arriving from {@code source}, runs in {@code domain}: the domain's resolver gives the
-     * routing key, and the business identity is the source's, since that is who acts. Entries such as the
+     * route key, and the business identity is the source's, since that is who acts. Entries such as the
      * Dispatcher and the EventBus use this to build the context of a handler. An unregistered domain throws
      * IllegalArgumentException; a resolver's own exception passes through.
      */
     public Route route(int domain, Context source, Object message) {
         RouteKeyResolver resolver = resolvers.get(domain);
         if (resolver == null) throw new IllegalArgumentException("Unknown domain " + domain);
-        return Route.of(domain, resolver.routingKey(source, message), source.businessType(), source.businessId());
+        return Route.of(domain, resolver.routeKey(source, message), source.businessType(), source.businessId());
     }
 
     /**
@@ -79,7 +79,7 @@ public final class GameRuntime implements AutoCloseable {
             throw new GameRuntimeException(RUNTIME_CLOSED, "the runtime is shut down");
         }
         try {
-            executor.execute(context.routingKey(), () -> run(context, task));
+            executor.execute(context.routeKey(), () -> run(context, task));
         } catch (Throwable refused) {
             finished();
             throw refused;
@@ -162,13 +162,13 @@ public final class GameRuntime implements AutoCloseable {
         private final Map<Integer, RouteKeyResolver> resolvers = new HashMap<>();
         private final Map<RouteExecutor, Integer> owners = new IdentityHashMap<>();
         private BiConsumer<? super Context, ? super Throwable> errorHandler = (context, cause) ->
-                LOG.log(Level.ERROR, "Game task failed; domain=" + context.domain() + ", routingKey=" + context.routingKey()
+                LOG.log(Level.ERROR, "Game task failed; domain=" + context.domain() + ", routeKey=" + context.routeKey()
                         + ", businessType=" + context.businessType() + ", businessId=" + context.businessId(), cause);
 
         private Builder() {}
 
         /**
-         * Registers a domain whose routing keys come from the messages' {@code @RouteKey} fields or methods for
+         * Registers a domain whose route keys come from the messages' {@code @RouteKey} fields or methods for
          * it; see {@link #domain(int, RouteExecutor, RouteKeyResolver)}.
          */
         public Builder domain(int domain, RouteExecutor executor) {
@@ -176,7 +176,7 @@ public final class GameRuntime implements AutoCloseable {
         }
 
         /**
-         * Registers a domain, the executor that runs its tasks, and how a message arriving for it finds its routing
+         * Registers a domain, the executor that runs its tasks, and how a message arriving for it finds its route
          * key, which the application decides per domain: a player domain may take the player's id from the source
          * context, a guild domain the guild id from the message. An executor serves one domain only.
          */

@@ -9,7 +9,7 @@
 消息 ────────── Dispatcher ──┐
 事件 ────────── EventBus ────┤
 定时器 ──────── GameTimer ───┼──> GameRuntime.execute(context, task) ──> 该 domain 的 RouteExecutor
-HTTP ────────── HttpRoutes ──┘                                           同一 (domain, routingKey) 逐个执行
+HTTP ────────── HttpRoutes ──┘                                           同一 (domain, routeKey) 逐个执行
 ```
 
 依赖 managame-common 和 managame-network（HTTP 用到）。
@@ -36,7 +36,7 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `domain` | int | 执行域，例如玩家、公会、世界；决定使用哪个执行器和顺序规则 |
-| `routingKey` | long | 同一 domain 内路由键相同的任务逐个执行 |
+| `routeKey` | long | 同一 domain 内路由键相同的任务逐个执行 |
 | `businessType` | byte | `businessId` 的类别，例如角色、公会；没有时为 0 |
 | `businessId` | long | 任务为谁执行，例如当前操作的玩家 |
 | `metadata` | `Metadata` | 随之传递的业务字段，例如 trace id |
@@ -106,7 +106,7 @@ Dispatcher dispatcher = Dispatcher.builder(runtime).register(new Shop(), new Acc
 ```java
 record Session(Connection connection, long roleId) implements Context {
     public int domain() { return 0; }
-    public long routingKey() { return 0; }
+    public long routeKey() { return 0; }
     public byte businessType() { return roleId == 0 ? 0 : ROLE; }
     public long businessId() { return roleId; }
     public Metadata metadata() { return Metadata.empty(); }

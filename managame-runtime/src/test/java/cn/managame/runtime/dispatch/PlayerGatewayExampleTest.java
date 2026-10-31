@@ -48,7 +48,7 @@ class PlayerGatewayExampleTest {
     /** The application's session: the connection and, once logged in, the role it acts for. */
     record Session(Connection connection, long roleId) implements Context {
         @Override public int domain() { return 0; }
-        @Override public long routingKey() { return 0; }
+        @Override public long routeKey() { return 0; }
         @Override public byte businessType() { return roleId == 0 ? 0 : ROLE; }
         @Override public long businessId() { return roleId; }
         @Override public Metadata metadata() { return Metadata.empty(); }
@@ -97,7 +97,7 @@ class PlayerGatewayExampleTest {
     private final GameRuntime runtime = GameRuntime.builder()
             .domain(PLAYER, RouteExecutors.virtualThreads(), (source, message) -> {
                 if (source.businessId() == 0) throw new IllegalArgumentException("Not logged in");
-                return RouteKeys.businessId().routingKey(source, message);
+                return RouteKeys.businessId().routeKey(source, message);
             })
             .domain(LOGIN, RouteExecutors.striped(2)).build();
     private final BlockingQueue<Long> loggedOut = new LinkedBlockingQueue<>();

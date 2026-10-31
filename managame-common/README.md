@@ -71,7 +71,7 @@ Zero is success and every failure code is positive. The framework uses these:
 | 2007 | `RPC_PROTOCOL_ERROR` | The request is larger than the peer receives, or its answer larger than the caller does |
 | 3001 | `RUNTIME_CLOSED` | The runtime is shut down and refuses new tasks |
 | 3002 | `HANDLER_NOT_FOUND` | No handler for the message |
-| 3005 | `INVALID_ROUTE_KEY` | The handler's domain could not find a routing key for the message |
+| 3005 | `INVALID_ROUTE_KEY` | The handler's domain could not find a route key for the message |
 | 3006 | `ROUTE_EXECUTOR_OVERLOADED` | The domain's executor has too many tasks waiting |
 | 3009 | `RUNTIME_EXECUTION_ERROR` | The handler threw |
 | 4001 | `DATA_SAVE_FAILED` | A change could not be saved and went to the data error handler, or a flush or close left changes unsaved |

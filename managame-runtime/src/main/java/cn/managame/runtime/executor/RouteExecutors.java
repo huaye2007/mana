@@ -14,7 +14,7 @@ public final class RouteExecutors {
     private RouteExecutors() {}
 
     /**
-     * One queue per routing key, drained by a virtual thread: a blocking task holds up only its own key. Drained
+     * One queue per route key, drained by a virtual thread: a blocking task holds up only its own key. Drained
      * queues are cached for reuse, see {@link #virtualThreads(int, Duration, int)}, with the defaults
      * {@link #DEFAULT_MAX_PENDING_PER_KEY}, {@link #DEFAULT_IDLE_TIMEOUT} and {@link #DEFAULT_MAX_IDLE_QUEUES}.
      */

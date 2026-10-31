@@ -9,7 +9,7 @@ ones it needs:
 | --- | --- | --- |
 | [managame-common](managame-common/README.md) | nothing | `Metadata`, `MetadataKey` and the shared error codes |
 | [managame-network](managame-network/README.md) | Netty | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
-| [managame-runtime](managame-runtime/README.md) | common, network | Every piece of business logic through one entry, with tasks of one domain and routing key run one at a time: routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |
+| [managame-runtime](managame-runtime/README.md) | common, network | Every piece of business logic through one entry, with tasks of one domain and route key run one at a time: routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |
 | [managame-rpc](managame-rpc/README.md) | common, network | Calls and notifies between server processes: `RpcNode`, `RpcPeer`, symmetric connections over TCP, restart detection, admission |
 | [managame-data](managame-data/README.md) | common, Caffeine | Game data in memory, written behind it in batches wherever the application chooses: entities by id (`SingleRepository`), groups of entities (`GroupRepository`) and logs (`LogRepository`), through an `EntityMapper` and a `LogWriter` |
 | [managame-data-mysql](managame-data-mysql/README.md) | data | `MysqlEntityMapper` and `MysqlLogWriter`: entities and logs in MySQL tables |

@@ -24,7 +24,7 @@ import java.util.Objects;
  * events.publish(new GuildJoined(playerId, guildId));
  * }</pre>
  *
- * A subscriber runs in its domain, on the routing key the domain's resolver finds for the event and the
+ * A subscriber runs in its domain, on the route key the domain's resolver finds for the event and the
  * publishing context, acting for the publisher's business identity with its metadata; outside a game task the
  * publisher is an empty context. Subscribers receive events of exactly their class. Delivery always goes through
  * the runtime, so a subscriber runs after the publishing task, never inside it, and one route receives events in

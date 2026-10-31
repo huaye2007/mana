@@ -54,7 +54,7 @@ class HttpRoutesTest {
     class PlayerAdmin {
         @HttpMethod("/mail") String mail(String text) {
             Context context = Context.current();
-            return "mail " + text + " to " + context.routingKey() + " on domain " + context.domain();
+            return "mail " + text + " to " + context.routeKey() + " on domain " + context.domain();
         }
         @HttpMethod("/rank") String rank(String body) {
             HttpRequestContext context = HttpRequestContext.current();
@@ -150,7 +150,7 @@ class HttpRoutesTest {
 
     @Test void aCodecReadsArgumentsThatRouteAndShapesResults() throws Exception {
         @Domain(GUILD) class GuildAdmin {
-            @HttpMethod("/notice") Posted notice(Notice notice) { return new Posted(Context.current().routingKey(), notice.text()); }
+            @HttpMethod("/notice") Posted notice(Notice notice) { return new Posted(Context.current().routeKey(), notice.text()); }
         }
         HttpCodec json = new HttpCodec() { // a stand-in for a JSON library: "guildId:text" in, JSON out
             @Override public Object decode(FullHttpRequest request, Type type) throws Exception {

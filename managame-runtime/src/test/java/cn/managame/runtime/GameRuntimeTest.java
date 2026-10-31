@@ -74,7 +74,7 @@ class GameRuntimeTest {
     }
 
     @ParameterizedTest(name = "{0}") @MethodSource("executors")
-    void otherRoutingKeysAndDomainsAreNotBlocked(String name, Supplier<RouteExecutor> executor) throws Exception {
+    void otherRouteKeysAndDomainsAreNotBlocked(String name, Supplier<RouteExecutor> executor) throws Exception {
         CountDownLatch release = new CountDownLatch(1), otherKey = new CountDownLatch(1), otherDomain = new CountDownLatch(1);
         try (GameRuntime runtime = runtime(executor)) {
             runtime.execute(GameContext.of(PLAYER, 1), context -> release.await());
@@ -100,7 +100,7 @@ class GameRuntimeTest {
         BlockingQueue<Object> errors = new LinkedBlockingQueue<>();
         CountDownLatch later = new CountDownLatch(1);
         try (GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads())
-                .errorHandler((context, cause) -> errors.add(context.routingKey() + ":" + cause.getMessage())).build()) {
+                .errorHandler((context, cause) -> errors.add(context.routeKey() + ":" + cause.getMessage())).build()) {
             runtime.execute(GameContext.of(PLAYER, 3), context -> { throw new IllegalStateException("boom"); });
             runtime.execute(GameContext.of(PLAYER, 3), context -> later.countDown());
             assertEquals("3:boom", errors.poll(5, TimeUnit.SECONDS));

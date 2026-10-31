@@ -49,7 +49,7 @@ class DispatcherTest {
     class Shop {
         @HandleMethod String buy(Buy buy) {
             Context context = Context.current();
-            return "bought " + buy.item() + " by " + context.businessId() + " on " + context.domain() + ":" + context.routingKey();
+            return "bought " + buy.item() + " by " + context.businessId() + " on " + context.domain() + ":" + context.routeKey();
         }
         @HandleMethod void note(Note note) { notes.add(note.text()); }
         @HandleMethod String boom(Boom boom) { throw new IllegalStateException("boom"); }
@@ -62,7 +62,7 @@ class DispatcherTest {
     @Domain(GUILD)
     class Guild {
         @HandleMethod String donate(Donate donate) {
-            return "donated to " + Context.current().routingKey() + " by " + Context.current().businessId();
+            return "donated to " + Context.current().routeKey() + " by " + Context.current().businessId();
         }
         @HandleMethod String unroutable(Unroutable message) { return "never"; }
     }

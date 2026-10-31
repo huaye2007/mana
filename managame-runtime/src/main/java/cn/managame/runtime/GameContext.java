@@ -7,24 +7,24 @@ import java.util.Objects;
  * The plain immutable Context. New work started from a running task carries that task's metadata along by
  * passing it in, for example {@code new GameContext(GUILD, guildId, GUILD_ID, guildId, context.metadata())}.
  */
-public record GameContext(int domain, long routingKey, byte businessType, long businessId, Metadata metadata)
+public record GameContext(int domain, long routeKey, byte businessType, long businessId, Metadata metadata)
         implements Context {
     public GameContext {
         Objects.requireNonNull(metadata, "metadata");
     }
 
     public GameContext(Route route, Metadata metadata) {
-        this(route.domain(), route.routingKey(), route.businessType(), route.businessId(), metadata);
+        this(route.domain(), route.routeKey(), route.businessType(), route.businessId(), metadata);
     }
 
     /** No business identity and empty metadata. */
-    public static GameContext of(int domain, long routingKey) {
-        return new GameContext(domain, routingKey, (byte) 0, 0, Metadata.empty());
+    public static GameContext of(int domain, long routeKey) {
+        return new GameContext(domain, routeKey, (byte) 0, 0, Metadata.empty());
     }
 
     /** Empty metadata. */
-    public static GameContext of(int domain, long routingKey, byte businessType, long businessId) {
-        return new GameContext(domain, routingKey, businessType, businessId, Metadata.empty());
+    public static GameContext of(int domain, long routeKey, byte businessType, long businessId) {
+        return new GameContext(domain, routeKey, businessType, businessId, Metadata.empty());
     }
 
     /**
@@ -34,7 +34,7 @@ public record GameContext(int domain, long routingKey, byte businessType, long b
      */
     public static GameContext copyOf(Context context) {
         if (context instanceof GameContext plain) return plain;
-        return new GameContext(context.domain(), context.routingKey(), context.businessType(), context.businessId(),
+        return new GameContext(context.domain(), context.routeKey(), context.businessType(), context.businessId(),
                 context.metadata());
     }
 }

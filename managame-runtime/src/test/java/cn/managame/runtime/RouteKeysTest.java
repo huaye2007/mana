@@ -24,12 +24,12 @@ class RouteKeysTest {
     record Boxed(@RouteKey(GUILD) Long guildId) {}
 
     @Test void annotatedFindsComponentsMethodsAndInheritedFields() {
-        assertEquals(7, RouteKeys.annotated(GUILD).routingKey(ANYONE, new Donate(7, 100)));
-        assertEquals(9, RouteKeys.annotated(ROOM).routingKey(ANYONE, new Chat("hi")));
-        assertEquals(5, RouteKeys.annotated(GUILD).routingKey(ANYONE, new Derived()));
-        assertEquals(5, RouteKeys.annotated(ROOM).routingKey(ANYONE, new Derived()), "one member may route several domains");
-        assertEquals(8, RouteKeys.annotated(GUILD).routingKey(ANYONE, new Boxed(8L)));
-        assertThrows(IllegalArgumentException.class, () -> RouteKeys.annotated(PLAYER).routingKey(ANYONE, new Donate(7, 100)));
+        assertEquals(7, RouteKeys.annotated(GUILD).routeKey(ANYONE, new Donate(7, 100)));
+        assertEquals(9, RouteKeys.annotated(ROOM).routeKey(ANYONE, new Chat("hi")));
+        assertEquals(5, RouteKeys.annotated(GUILD).routeKey(ANYONE, new Derived()));
+        assertEquals(5, RouteKeys.annotated(ROOM).routeKey(ANYONE, new Derived()), "one member may route several domains");
+        assertEquals(8, RouteKeys.annotated(GUILD).routeKey(ANYONE, new Boxed(8L)));
+        assertThrows(IllegalArgumentException.class, () -> RouteKeys.annotated(PLAYER).routeKey(ANYONE, new Donate(7, 100)));
     }
 
     @Test void theRuntimeRoutesByTheDomainsResolverActingForTheSource() {

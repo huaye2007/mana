@@ -122,7 +122,7 @@ public final class GameTimer implements AutoCloseable {
                     return;
                 }
                 LOG.log(Level.WARNING, "Timer firing refused; domain=" + context.domain()
-                        + ", routingKey=" + context.routingKey() + (periodNanos > 0 ? "; skipped once" : ""), refused);
+                        + ", routeKey=" + context.routeKey() + (periodNanos > 0 ? "; skipped once" : ""), refused);
             } catch (RuntimeException e) {
                 LOG.log(Level.ERROR, "Timer firing failed; domain=" + context.domain(), e);
             }

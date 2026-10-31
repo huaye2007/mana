@@ -29,7 +29,7 @@ class GameTimerTest {
     private static final byte PLAYER_ID = 1;
     private static final MetadataKey<String> TRACE = MetadataKey.stringKey(1);
 
-    private record Request(int domain, long routingKey, byte businessType, long businessId, Metadata metadata)
+    private record Request(int domain, long routeKey, byte businessType, long businessId, Metadata metadata)
             implements RequestContext {
         @Override public boolean reply(Object result) { return true; }
         @Override public boolean fail(int errorCode) { return true; }

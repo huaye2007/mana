@@ -36,7 +36,7 @@ import java.util.function.IntConsumer;
  *         errorCode -> connection.write(Packet.error(packet.seq(), errorCode)));
  * }</pre>
  *
- * A message runs in its handler's domain, on the routing key the domain's resolver finds for it and the source,
+ * A message runs in its handler's domain, on the route key the domain's resolver finds for it and the source,
  * acting for the source's business identity. Messages are matched by exact class. One with no handler fails with
  * HANDLER_NOT_FOUND, one that cannot be routed with INVALID_ROUTE_KEY, one the runtime refuses with the runtime's
  * code, and a handler that throws with RUNTIME_EXECUTION_ERROR. {@link HandleInterceptor}s run before and after

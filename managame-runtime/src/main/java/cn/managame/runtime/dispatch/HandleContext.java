@@ -29,7 +29,7 @@ public final class HandleContext implements RequestContext {
     }
 
     @Override public int domain() { return route.domain(); }
-    @Override public long routingKey() { return route.routingKey(); }
+    @Override public long routeKey() { return route.routeKey(); }
     @Override public byte businessType() { return route.businessType(); }
     @Override public long businessId() { return route.businessId(); }
     @Override public Metadata metadata() { return source.metadata(); }

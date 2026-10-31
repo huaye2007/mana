@@ -44,7 +44,7 @@ import java.util.stream.Collectors;
  * }</pre>
  *
  * The codec reads an endpoint's argument from the request, normally its body. The request then runs in the
- * endpoint's domain, on the routing key the domain's resolver finds for the argument and the source the
+ * endpoint's domain, on the route key the domain's resolver finds for the argument and the source the
  * application builds from the request. Unknown paths are answered with 404, other methods with 405, an argument
  * the codec cannot read with 400, and so is a source or route that cannot be found because of
  * IllegalArgumentException, such as a missing parameter. The request stays readable until the endpoint returns. A
@@ -167,7 +167,7 @@ public final class HttpRoutes implements HttpHandler {
 
         /**
          * The source context of a request, whose business identity and metadata the endpoint acts with and from
-         * which the domain's resolver may take the routing key; an empty context by default. It runs on the
+         * which the domain's resolver may take the route key; an empty context by default. It runs on the
          * connection's EventLoop and must not block; IllegalArgumentException answers 400.
          */
         public Builder source(Function<? super FullHttpRequest, ? extends Context> source) {

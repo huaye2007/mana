@@ -4,14 +4,14 @@ English | [中文](README.zh-CN.md)
 
 The single entry for a game server's business logic. Whatever starts the work (a player's request, an event, a
 timer, a request from another server, an HTTP call) runs as a `GameTask` through `GameRuntime.execute`, with a
-context that says where and for whom it runs. Tasks with the same domain and routing key run one at a time in
+context that says where and for whom it runs. Tasks with the same domain and route key run one at a time in
 submission order; everything else runs in parallel.
 
 ```
 messages ──────── Dispatcher ──┐
 events ────────── EventBus ────┤
 timers ────────── GameTimer ───┼──> GameRuntime.execute(context, task) ──> the domain's RouteExecutor
-HTTP ──────────── HttpRoutes ──┘                                            one at a time per (domain, routingKey)
+HTTP ──────────── HttpRoutes ──┘                                            one at a time per (domain, routeKey)
 ```
 
 Depends on managame-common and managame-network (for HTTP).
@@ -38,7 +38,7 @@ Every piece of business logic runs with a `Context`:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `domain` | int | The execution domain, such as player, guild or world; it selects the executor and the ordering rule |
-| `routingKey` | long | Tasks of one domain with the same key run one at a time |
+| `routeKey` | long | Tasks of one domain with the same key run one at a time |
 | `businessType` | byte | The kind of `businessId`, such as role or guild; 0 when there is none |
 | `businessId` | long | Whom the task is for, such as the acting player |
 | `metadata` | `Metadata` | Application fields carried along, such as a trace id |
@@ -53,14 +53,14 @@ Every piece of business logic runs with a `Context`:
   counts, and it may come from any thread, also after the task returned. If the task throws, the runtime fails
   the request with `RUNTIME_EXECUTION_ERROR`, so an accepted request is always answered.
 
-## Domains, executors and routing keys
+## Domains, executors and route keys
 
 Each domain is registered once, with the executor that runs its tasks and the `RouteKeyResolver` that finds a
-message's routing key.
+message's route key.
 
 **Executors** (`RouteExecutors`; a new instance per domain):
 
-- `virtualThreads()`: one queue per routing key, drained by a virtual thread, so a blocking task holds up only its
+- `virtualThreads()`: one queue per route key, drained by a virtual thread, so a blocking task holds up only its
   own key. Drained queues are cached so that a busy key does not create and drop a queue for every task:
   `virtualThreads(maxPendingPerKey, idleTimeout, maxIdleQueues)`, by default 4096 waiting tasks per key, 60
   seconds idle and 100 000 cached queues. A key over its limit is refused with `ROUTE_EXECUTOR_OVERLOADED`.
@@ -68,7 +68,7 @@ message's routing key.
   a blocking task holds up every key on its thread. `striped(threads, maxPendingPerThread)`, 65 536 by default.
 - Or your own `RouteExecutor`.
 
-**Routing keys.** The resolver receives the source context and the message, and the application decides per
+**Route keys.** The resolver receives the source context and the message, and the application decides per
 domain where the key comes from:
 
 - `RouteKeys.businessId()`: the acting identity, for a player domain.
@@ -129,7 +129,7 @@ them.
 ```java
 record Session(Connection connection, long roleId) implements Context {
     public int domain() { return 0; }
-    public long routingKey() { return 0; }
+    public long routeKey() { return 0; }
     public byte businessType() { return roleId == 0 ? 0 : ROLE; }
     public long businessId() { return roleId; }
     public Metadata metadata() { return Metadata.empty(); }
@@ -341,5 +341,5 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 Install managame-common and managame-network first. Tests cover ordering and refusal in the runtime and its
-executors, routing keys, the Dispatcher with replies, failures and interceptors, a player gateway over real TCP, events,
+executors, route keys, the Dispatcher with replies, failures and interceptors, a player gateway over real TCP, events,
 timers, and HTTP routes over real connections.

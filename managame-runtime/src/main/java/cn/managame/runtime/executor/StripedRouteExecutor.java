@@ -9,7 +9,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A fixed set of platform threads; a routing key always runs on thread {@code hash(key) % threads}. No state
+ * A fixed set of platform threads; a route key always runs on thread {@code hash(key) % threads}. No state
  * per key, so any number of keys costs nothing, but a task that blocks holds up every key on its thread.
  */
 final class StripedRouteExecutor implements RouteExecutor {
@@ -22,8 +22,8 @@ final class StripedRouteExecutor implements RouteExecutor {
                     new LinkedBlockingQueue<>(maxPendingPerThread), Thread.ofPlatform().name(name + "-" + i).factory());
     }
 
-    @Override public void execute(long routingKey, Runnable task) {
-        int stripe = Math.floorMod(Long.hashCode(routingKey), stripes.length);
+    @Override public void execute(long routeKey, Runnable task) {
+        int stripe = Math.floorMod(Long.hashCode(routeKey), stripes.length);
         try {
             stripes[stripe].execute(task);
         } catch (RejectedExecutionException full) {

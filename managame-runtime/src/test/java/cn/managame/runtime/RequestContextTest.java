@@ -21,7 +21,7 @@ class RequestContextTest {
     private static final byte PLAYER_ID = 1;
 
     /** Stands in for a source's implementation: keeps the first answer. */
-    private record TestRequest(int domain, long routingKey, byte businessType, long businessId, Metadata metadata,
+    private record TestRequest(int domain, long routeKey, byte businessType, long businessId, Metadata metadata,
                                AtomicReference<Object> answer, CountDownLatch answered) implements RequestContext {
         TestRequest(long playerId) {
             this(PLAYER, playerId, PLAYER_ID, playerId, Metadata.empty(), new AtomicReference<>(), new CountDownLatch(1));
@@ -85,7 +85,7 @@ class RequestContextTest {
         TestRequest request = new TestRequest(1001);
         try (GameRuntime runtime = runtime(new LinkedBlockingQueue<>())) {
             runtime.execute(request, context -> Thread.ofVirtual().start(() ->
-                    runtime.execute(context, (RequestContext resumed) -> resumed.reply("rank " + resumed.routingKey()))));
+                    runtime.execute(context, (RequestContext resumed) -> resumed.reply("rank " + resumed.routeKey()))));
             assertEquals("rank 1001", request.awaitAnswer());
         }
     }

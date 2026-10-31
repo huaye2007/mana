@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * One queue per routing key, drained by a virtual thread while it has tasks, so a task that blocks holds up only
+ * One queue per route key, drained by a virtual thread while it has tasks, so a task that blocks holds up only
  * its own key. A drained queue stays cached for its key and is reused when the key gets work again, instead of
  * being created and dropped on every burst. The cache is bounded twice: a sweeper drops queues idle for longer
  * than {@code idleTimeout}, and once {@code maxIdleQueues} are cached, further drained queues are dropped at
@@ -39,14 +39,14 @@ final class KeyedRouteExecutor implements RouteExecutor {
         sweeper = Thread.ofVirtual().name(name + "-sweeper").start(this::sweepUntilClosed);
     }
 
-    @Override public void execute(long routingKey, Runnable task) {
+    @Override public void execute(long routeKey, Runnable task) {
         // Every change to a queue's state happens under the map's lock for its key, so a queue going idle or
         // being dropped never misses a task added at the same moment.
-        KeyQueue queue = queues.compute(routingKey, (key, cached) -> {
+        KeyQueue queue = queues.compute(routeKey, (key, cached) -> {
             KeyQueue target = cached != null ? cached : new KeyQueue(key);
             if (target.waiting.get() >= maxPendingPerKey)
                 throw new GameRuntimeException(ROUTE_EXECUTOR_OVERLOADED,
-                        "routing key " + key + " already has " + maxPendingPerKey + " tasks waiting");
+                        "route key " + key + " already has " + maxPendingPerKey + " tasks waiting");
             target.waiting.incrementAndGet();
             target.tasks.offer(task);
             if (!target.draining) {

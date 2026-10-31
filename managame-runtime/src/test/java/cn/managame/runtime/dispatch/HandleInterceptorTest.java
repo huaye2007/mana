@@ -73,7 +73,7 @@ class HandleInterceptorTest {
 
         @Override public int before(HandleContext context, Method handler, Object message) {
             Context current = Context.current();
-            trace.add(name + " before " + handler.getName() + " on " + current.domain() + ":" + current.routingKey());
+            trace.add(name + " before " + handler.getName() + " on " + current.domain() + ":" + current.routeKey());
             return SUCCESS;
         }
 

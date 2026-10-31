@@ -19,7 +19,7 @@ class ContextTest {
     private static final Metadata TRACED = Metadata.builder().put(TRACE, "trace-42").build();
 
     /** A request from some source; a copy must not carry its ability to answer. */
-    private record Request(int domain, long routingKey, byte businessType, long businessId, Metadata metadata)
+    private record Request(int domain, long routeKey, byte businessType, long businessId, Metadata metadata)
             implements RequestContext {
         @Override public boolean reply(Object result) { return true; }
         @Override public boolean fail(int errorCode) { return true; }

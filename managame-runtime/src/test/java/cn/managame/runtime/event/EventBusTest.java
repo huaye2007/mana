@@ -44,7 +44,7 @@ class EventBusTest {
     class Quests {
         @EventMethod void onLevelUp(LevelUp event) {
             Context context = Context.current();
-            seen.add("player " + context.routingKey() + " level " + event.level() + " by " + context.businessId()
+            seen.add("player " + context.routeKey() + " level " + event.level() + " by " + context.businessId()
                     + " " + context.metadata().get(TRACE));
         }
     }
@@ -52,7 +52,7 @@ class EventBusTest {
     @Domain(GUILD)
     class GuildLog {
         @EventMethod void onLevelUp(GameContext context, LevelUp event) {
-            seen.add("guild " + context.routingKey() + " " + context.metadata().get(TRACE));
+            seen.add("guild " + context.routeKey() + " " + context.metadata().get(TRACE));
         }
     }
 
