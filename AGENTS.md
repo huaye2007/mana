@@ -141,7 +141,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   A table kept whole in memory registers with `preloadedRepositories` (read at build by `loadTable`, never leaves
   memory, listed by `all()`). The framework wraps no database API: the application queries its own `DataSource` or
   `MongoDatabase`, calls `flush()` first to read the newest, and changes the rows repositories hold only through them,
-  so there is no reload or evictAll.
+  so there is no reload or evictAll. Game servers trade strong consistency for speed: data is eventually consistent,
+  with no atomicity across entities or types, by design. Entities are got by id in each task and never kept across
+  tasks; the framework does not guard against a kept instance. `errorHandler` is required, since logging a failure
+  loses it.
 - data's packages split by who uses them: `cn.managame.data` for business code (GameData, repositories, keys,
   failures), `annotation` for the entity annotations (`mysql.annotation`, `mongo.annotation` in the backend projects),
   `spi` for what a backend implements and reads (`EntityMapper`, `LogWriter`, `EntityType`, `EntityField`, read-only

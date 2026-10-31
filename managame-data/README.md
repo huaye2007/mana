@@ -71,6 +71,7 @@ LogWriter logService = (logType, logs) -> http.post("/logs/" + logType.getSimple
 GameData data = GameData.builder()
         .repositories(new MysqlEntityMapper(dataSource, json), List.of(Players.class, Items.class))
         .logRepositories(logService, List.of(ItemLogs.class))
+        .errorHandler(failures::save)                     // required: keeps what could not be written
         .build();
 Players players = data.repository(Players.class);
 
@@ -113,6 +114,9 @@ data.close();                                            // writes what is left
   java.util class, or not initialized.
 - **One entity at a time.** Every method may be called from any thread, but changes to one entity are the application's
   to make one at a time, such as on the entity's Route.
+- **Get entities by id in each task**, and keep none across tasks, in a session object for instance: an entity unused
+  for `cacheExpire` leaves memory, a later `get` loads another instance, and changing the one kept then replaces it,
+  losing what was changed on the other.
 - **Memory knows which rows exist.** `insert` of an id in memory throws `IllegalStateException`; `update` of an id known
   not to exist throws; `delete` of one does nothing. `get` of an id the database does not have remembers that, so asking
   again does not ask the database. Changes of ids not in memory never read the database.
@@ -152,7 +156,8 @@ Every `flushInterval` (1 second) a round writes what changed since the last one:
 
 The `DataErrorHandler` receives a `DataFailure`: the code (`DATA_SAVE_FAILED`, or `DATA_LOG_SAVE_FAILED` for logs),
 the entity type, the operation, the entity (its id for a delete of one never in memory) or log, and the cause. It is
-called one failure at a time; by default it logs an error.
+called one failure at a time. It is required, and `build` throws `IllegalStateException` without it: logging a failure
+loses it, so save it where it can be written again, such as a local file.
 
 ## Logs
 
@@ -226,7 +231,7 @@ missing should fail. `isRetryable` starts from `RetryableFailures.isRetryable`, 
 | `cacheExpire` | 30 min | how long an unused entity or group stays in memory |
 | `shutdownTimeout` | 30 s | how long close keeps trying |
 | `logQueueCapacity` | 100,000 | logs one LogRepository holds waiting |
-| `errorHandler` | logs | receives what is given up on |
+| `errorHandler` | required | receives what is given up on, to save it |
 
 `build` reads every entity class and lets each mapper and writer prepare before anything starts: a class that does not
 fit throws `IllegalArgumentException`, a missing setting `IllegalStateException`, and what a mapper or writer throws

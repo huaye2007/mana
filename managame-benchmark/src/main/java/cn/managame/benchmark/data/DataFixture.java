@@ -116,7 +116,7 @@ final class DataFixture implements AutoCloseable {
     /** A long flush interval leaves writing to the benchmark's own {@code flush()}, or out of it. */
     DataFixture() {
         DiscardingMapper mapper = new DiscardingMapper();
-        data = GameData.builder().repositories(mapper, List.of(Players.class, Items.class))
+        data = GameData.builder().errorHandler(failure -> {}).repositories(mapper, List.of(Players.class, Items.class))
                 .preloadedRepositories(mapper, List.of(Guilds.class)).writeThreads(1)
                 .flushInterval(Duration.ofHours(1)).cacheExpire(Duration.ofHours(2)).build();
     }

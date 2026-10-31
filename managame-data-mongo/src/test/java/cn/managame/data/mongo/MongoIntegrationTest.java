@@ -48,7 +48,7 @@ class MongoIntegrationTest {
     void writesToMongo() {
         try (MongoClient client = MongoClients.create(System.getenv("MANAGAME_DATA_MONGO_URI"))) {
             MongoDatabase database = client.getDatabase("managame_it_" + UUID.randomUUID().toString().replace("-", ""));
-            try (GameData data = GameData.builder().repositories(new MongoEntityMapper(database), List.of(Players.class))
+            try (GameData data = GameData.builder().errorHandler(failure -> {}).repositories(new MongoEntityMapper(database), List.of(Players.class))
                     .flushInterval(Duration.ofMinutes(1)).build()) {
                 Players players = data.repository(Players.class);
                 for (long id = 1; id <= 50; id++) players.insert(new Player(id, "p" + id));
@@ -62,7 +62,7 @@ class MongoIntegrationTest {
                 for (long id = 10; id <= 20; id++) players.evict(id);
                 assertEquals(List.of(10L, 12L, 14L), List.copyOf(players.getAll(List.of(10L, 12L, 99L, 14L)).keySet()));
                 assertEquals(49, database.getCollection("player").countDocuments());
-                try (GameData preloaded = GameData.builder().preloadedRepositories(new MongoEntityMapper(database), Players.class).build()) {
+                try (GameData preloaded = GameData.builder().errorHandler(failure -> {}).preloadedRepositories(new MongoEntityMapper(database), Players.class).build()) {
                     assertEquals(49, preloaded.repository(Players.class).all().size());
                 }
                 database.getCollection("player").deleteMany(new Document());

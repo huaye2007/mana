@@ -2,7 +2,6 @@ package cn.managame.data;
 
 import static cn.managame.FrameworkErrorCodes.DATA_SAVE_FAILED;
 
-import cn.managame.FrameworkErrorCodes;
 import cn.managame.data.internal.ChangeSet;
 import cn.managame.data.internal.ChangeWriter;
 import cn.managame.data.internal.EntityKeys;
@@ -35,6 +34,7 @@ import java.util.concurrent.TimeUnit;
  * GameData data = GameData.builder()
  *         .repositories(new MysqlEntityMapper(dataSource, json), List.of(Players.class, Items.class))
  *         .logRepositories((logType, logs) -> logService.post(logType, logs), List.of(ItemLogs.class))
+ *         .errorHandler(failures::save)
  *         .build();
  * Players players = data.repository(Players.class);
  * }</pre>
@@ -173,9 +173,7 @@ public final class GameData implements AutoCloseable {
         private Duration flushInterval = DEFAULT_FLUSH_INTERVAL, cacheExpire = DEFAULT_CACHE_EXPIRE,
                 shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
         private int batchSize = DEFAULT_BATCH_SIZE, writeThreads = DEFAULT_WRITE_THREADS, logQueueCapacity = DEFAULT_LOG_QUEUE_CAPACITY;
-        private DataErrorHandler errorHandler = failure -> LOG.log(System.Logger.Level.ERROR,
-                FrameworkErrorCodes.describe(failure.errorCode()) + ": " + failure.operation() + " of "
-                        + failure.entityType().getName() + " dropped: " + failure.value(), failure.cause());
+        private DataErrorHandler errorHandler;
 
         private Builder() {}
 
@@ -252,7 +250,10 @@ public final class GameData implements AutoCloseable {
             return this;
         }
 
-        /** Receives every change and log given up on; logs it as an error by default. */
+        /**
+         * Receives every change and log given up on, such as those close could not write while the database was down.
+         * Required: logging them loses them, so save them where they can be written again, such as a local file.
+         */
         public Builder errorHandler(DataErrorHandler handler) {
             errorHandler = Objects.requireNonNull(handler, "handler");
             return this;
@@ -266,6 +267,7 @@ public final class GameData implements AutoCloseable {
          */
         public GameData build() {
             if (registrations.isEmpty()) throw new IllegalStateException("no repositories");
+            if (errorHandler == null) throw new IllegalStateException("no errorHandler: changes given up on would be lost");
             Map<Class<?>, Object> repositories = new LinkedHashMap<>();
             Set<Class<?>> entityClasses = new HashSet<>();
             List<ChangeSet> changeSets = new ArrayList<>();

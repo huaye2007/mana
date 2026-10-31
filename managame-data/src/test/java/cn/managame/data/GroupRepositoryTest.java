@@ -11,6 +11,7 @@ import cn.managame.data.Fixtures.Item;
 import cn.managame.data.Fixtures.Items;
 import cn.managame.data.Fixtures.Quest;
 import cn.managame.data.Fixtures.Quests;
+import cn.managame.data.Fixtures.ReportedFailures;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,7 +26,7 @@ import org.junit.jupiter.api.Test;
 
 class GroupRepositoryTest {
     private final MemoryMapper database = new MemoryMapper();
-    private final GameData data = GameData.builder().repositories(database, List.of(Items.class, Quests.class))
+    private final GameData data = GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(Items.class, Quests.class))
             .flushInterval(Duration.ofMinutes(1)).cacheExpire(Duration.ofMinutes(2)).build();
     private final Items items = data.repository(Items.class);
     private final Quests quests = data.repository(Quests.class);

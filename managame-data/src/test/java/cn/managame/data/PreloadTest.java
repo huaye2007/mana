@@ -10,6 +10,7 @@ import cn.managame.data.Fixtures.Item;
 import cn.managame.data.Fixtures.Items;
 import cn.managame.data.Fixtures.Player;
 import cn.managame.data.Fixtures.Players;
+import cn.managame.data.Fixtures.ReportedFailures;
 import cn.managame.data.spi.Change;
 import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
@@ -31,13 +32,13 @@ class PreloadTest {
     /** Rows a server that ran before this one left: players 1 and 2, the items of player 1. */
     @BeforeEach
     void start() {
-        try (GameData earlier = GameData.builder().repositories(database, List.of(Players.class, Items.class)).build()) {
+        try (GameData earlier = GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(Players.class, Items.class)).build()) {
             earlier.repository(Players.class).insert(new Player(1, "ann"));
             earlier.repository(Players.class).insert(new Player(2, "bob"));
             earlier.repository(Items.class).insert(new Item(11, 1, 0, 5001, 1));
             earlier.repository(Items.class).insert(new Item(12, 1, 1, 5002, 1));
         }
-        data = GameData.builder().preloadedRepositories(database, List.of(Players.class, Items.class))
+        data = GameData.builder().errorHandler(new ReportedFailures()).preloadedRepositories(database, List.of(Players.class, Items.class))
                 .flushInterval(Duration.ofMinutes(1)).build();
         players = data.repository(Players.class);
         items = data.repository(Items.class);
@@ -85,7 +86,7 @@ class PreloadTest {
         assertThrows(IllegalStateException.class, () -> players.evict(1L));
         assertThrows(IllegalStateException.class, () -> items.evict(GroupKeys.of(1L)));
         data.close();
-        data = GameData.builder().repositories(database, List.of(Players.class)).flushInterval(Duration.ofMinutes(1)).build();
+        data = GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(Players.class)).flushInterval(Duration.ofMinutes(1)).build();
         assertThrows(IllegalStateException.class, () -> data.repository(Players.class).all(), "memory holds only some");
     }
 
@@ -100,7 +101,7 @@ class PreloadTest {
 
             @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) {}
         };
-        DataException failure = assertThrows(DataException.class, () -> GameData.builder().preloadedRepositories(noTables, Players.class).build());
+        DataException failure = assertThrows(DataException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).preloadedRepositories(noTables, Players.class).build());
         assertEquals(DATA_LOAD_FAILED, failure.errorCode());
         assertInstanceOf(UnsupportedOperationException.class, failure.getCause());
     }

@@ -104,7 +104,7 @@ class MysqlIntegrationTest {
                 + " amount INT NOT NULL, UNIQUE KEY (player_id, slot))");
         execute(source, "CREATE TABLE managame_it_log (player_id BIGINT, created_at BIGINT)");
         long day = Instant.parse("2026-10-31T08:00:00Z").toEpochMilli();
-        try (GameData data = GameData.builder()
+        try (GameData data = GameData.builder().errorHandler(new Fixtures.ReportedFailures())
                 .repositories(new MysqlEntityMapper(source, new Fixtures.Json()), List.of(Players.class, Items.class))
                 .logRepositories(new MysqlLogWriter(source), List.of(Logs.class))
                 .flushInterval(Duration.ofMinutes(1)).build()) {

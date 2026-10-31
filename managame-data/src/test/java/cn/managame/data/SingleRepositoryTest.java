@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.data.Fixtures.Player;
 import cn.managame.data.Fixtures.Players;
+import cn.managame.data.Fixtures.ReportedFailures;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,7 +34,7 @@ class SingleRepositoryTest {
     void close() { data.close(); }
 
     private GameData start(Duration flushInterval, Duration cacheExpire) {
-        return GameData.builder().repositories(database, List.of(Players.class))
+        return GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(Players.class))
                 .flushInterval(flushInterval).cacheExpire(cacheExpire).build();
     }
 

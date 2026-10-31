@@ -91,7 +91,7 @@ class MysqlEntityMapperTest {
     void preloadsAWholeTable() {
         database.execute("INSERT INTO player VALUES (7, 'bob', 3, 50, '{\"1001\":2}')");
         database.execute("INSERT INTO player VALUES (8, 'cid', 1, 0, '{}')");
-        try (GameData preloaded = GameData.builder().preloadedRepositories(new MysqlEntityMapper(database, new Json()), Players.class).build()) {
+        try (GameData preloaded = GameData.builder().errorHandler(new ReportedFailures()).preloadedRepositories(new MysqlEntityMapper(database, new Json()), Players.class).build()) {
             Players all = preloaded.repository(Players.class);
             assertEquals(Set.of(7L, 8L), all.all().stream().map(player -> player.id).collect(Collectors.toSet()));
             assertEquals(2L, all.get(7L).items.get(1001));
@@ -197,8 +197,8 @@ class MysqlEntityMapperTest {
     void refusesAMappingThatDoesNotFitAtBuild() {
         MysqlEntityMapper withoutCodec = new MysqlEntityMapper(database);
         assertEquals(DATA_LOAD_FAILED, assertThrows(DataException.class,
-                () -> GameData.builder().repositories(withoutCodec, MissingColumns.class).build()).errorCode());
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().repositories(withoutCodec, WithoutTables.class).build());
-        assertThrows(IllegalStateException.class, () -> GameData.builder().repositories(withoutCodec, WithJsons.class).build());
+                () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(withoutCodec, MissingColumns.class).build()).errorCode());
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(withoutCodec, WithoutTables.class).build());
+        assertThrows(IllegalStateException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(withoutCodec, WithJsons.class).build());
     }
 }

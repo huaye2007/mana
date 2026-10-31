@@ -11,6 +11,7 @@ DataSource dataSource = ...;   // jdbc:mysql://host:3306/game?rewriteBatchedStat
 GameData data = GameData.builder()
         .repositories(new MysqlEntityMapper(dataSource, json), List.of(Players.class, Items.class))
         .logRepositories(new MysqlLogWriter(logDataSource, json, ZoneId.of("Asia/Shanghai")), List.of(ItemLogs.class))
+        .errorHandler(failures::save)
         .build();
 ```
 

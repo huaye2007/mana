@@ -68,6 +68,7 @@ LogWriter logService = (logType, logs) -> http.post("/logs/" + logType.getSimple
 GameData data = GameData.builder()
         .repositories(new MysqlEntityMapper(dataSource, json), List.of(Players.class, Items.class))
         .logRepositories(logService, List.of(ItemLogs.class))
+        .errorHandler(failures::save)                     // 必填：保存未能写入的数据
         .build();
 Players players = data.repository(Players.class);
 
@@ -105,6 +106,8 @@ data.close();                                            // 写完剩下的修�
   字段用普通 java.util 类初始化或没有初始化时，`build` 会记一条 WARNING。
 - **同一实体一次只改一处。** 每个方法都可以在任何线程调用，但同一个实体的修改由应用保证串行，例如放在实体所属的 Route 上
   执行。
+- **每个任务都用 id 去 `get` 实体**，不要跨任务持有，例如存在会话对象里：超过 `cacheExpire` 没用到的实体会离开内存，之后的
+  `get` 会加载出另一个实例，这时再改手里那个旧实例，就会把它替换掉，丢失在另一个实例上做的修改。
 - **内存知道哪些行存在。** 对内存中已有的 id 调用 `insert` 会抛 `IllegalStateException`；对已知不存在的 id 调用 `update`
   会抛异常，调用 `delete` 则什么都不做。`get` 一个数据库里没有的 id 时会记住这一点，再次询问不会再查数据库。修改不在内存里的
   id 从不读取数据库。
@@ -134,7 +137,8 @@ data.close();                                            // 写完剩下的修�
 - **崩溃**时最多丢失大约一个 flush 间隔的修改。
 
 `DataErrorHandler` 收到一个 `DataFailure`：错误码（`DATA_SAVE_FAILED`，日志是 `DATA_LOG_SAVE_FAILED`）、实体类型、操作、
-实体（删除一个从未进过内存的实体时是它的 id）或日志，以及原因。它一次只处理一个失败；默认记录一条错误日志。
+实体（删除一个从未进过内存的实体时是它的 id）或日志，以及原因。它一次只处理一个失败。它是必填的，没有设置时 `build` 抛
+`IllegalStateException`：只记日志等于丢掉数据，所以要存到之后还能重写的地方，例如本地文件。
 
 ## 日志
 
@@ -203,7 +207,7 @@ key 字段，并能创建新实例。失败后重写同一批必须无害：一�
 | `cacheExpire` | 30 分钟 | 未使用的实体或组在内存里保留多久 |
 | `shutdownTimeout` | 30 秒 | close 最多尝试多久 |
 | `logQueueCapacity` | 100,000 | 每个 LogRepository 最多等待的日志数 |
-| `errorHandler` | 记日志 | 接收被放弃的数据 |
+| `errorHandler` | 必填 | 接收被放弃的数据，由应用保存 |
 
 `build` 在启动任何东西之前读取所有实体类，并让每个 Mapper 和 Writer 做准备：类不合适抛 `IllegalArgumentException`，缺少
 设置抛 `IllegalStateException`，Mapper 或 Writer 准备时抛出的异常原样抛出。加载失败抛 `DataException`（`DATA_LOAD_FAILED`）。

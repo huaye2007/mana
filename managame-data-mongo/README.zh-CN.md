@@ -9,6 +9,7 @@ GroupRepository。依赖 managame-data 和 MongoDB 同步驱动。日志由应�
 MongoDatabase database = MongoClients.create("mongodb://127.0.0.1:27017").getDatabase("game");
 GameData data = GameData.builder()
         .repositories(new MongoEntityMapper(database), List.of(Players.class, Mails.class))
+        .errorHandler(failures::save)
         .build();
 ```
 

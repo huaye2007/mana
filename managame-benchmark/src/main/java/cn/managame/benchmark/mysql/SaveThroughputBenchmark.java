@@ -82,7 +82,7 @@ public class SaveThroughputBenchmark {
                     + " gold BIGINT NOT NULL, diamond INT NOT NULL, vip INT NOT NULL, last_login BIGINT NOT NULL,"
                     + " power BIGINT NOT NULL, guild_id BIGINT NOT NULL)");
         }
-        data = GameData.builder().repositories(new MysqlEntityMapper(pool), List.of(Players.class)).writeThreads(1)
+        data = GameData.builder().errorHandler(failure -> {}).repositories(new MysqlEntityMapper(pool), List.of(Players.class)).writeThreads(1)
                 .flushInterval(Duration.ofHours(1)).cacheExpire(Duration.ofHours(2)).build();
         players = data.repository(Players.class);
         for (int i = 0; i < ROWS; i++) {
