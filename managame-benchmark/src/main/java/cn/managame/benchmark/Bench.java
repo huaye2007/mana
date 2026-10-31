@@ -56,7 +56,9 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
  * unsure.
  */
 public final class Bench {
-    static final List<String> COMPONENTS = List.of("common", "network", "runtime", "rpc", "data", "mysql");
+    static final List<String> COMPONENTS = List.of("common", "network", "runtime", "rpc", "data", "mysql", "mysqlserver", "mongo");
+    /** Components that need a real database server; {@code all} leaves them out. */
+    static final List<String> SERVER_COMPONENTS = List.of("mysqlserver", "mongo");
     private static final String PACKAGE = "cn.managame.benchmark.";
     /** How many times each jar runs with {@code --against}. */
     private static final int ROUNDS = 2;
@@ -103,7 +105,7 @@ public final class Bench {
             else if (arg.startsWith("--include=")) include = arg.substring(10);
             else if (arg.startsWith("--results=")) results = Path.of(arg.substring(10));
             else if (arg.startsWith("--against=")) against = Path.of(arg.substring(10));
-            else if (arg.equals("all")) components.addAll(COMPONENTS);
+            else if (arg.equals("all")) COMPONENTS.stream().filter(name -> !SERVER_COMPONENTS.contains(name)).forEach(components::add);
             else if (COMPONENTS.contains(arg)) components.add(arg);
             else usage("Unknown argument " + arg);
         }

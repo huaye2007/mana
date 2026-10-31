@@ -14,6 +14,8 @@ depends on it, and its benchmarks of one component never join it with another.
 | `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`, `CallLatencyBenchmark`, `NotifyThroughputBenchmark`, and the same as `…ProcessBenchmark` | Calls answered and notifies handled per second with many in flight, and the round trip of one call |
 | `cn.managame.benchmark.data` | `RepositoryBenchmark`, `UpdateThroughputBenchmark`, `WriteThroughputBenchmark` | What business threads pay with entities in memory (reading a player or a bag, recording a change; ns/op), changes recorded per second by four threads at once, and changes a round writes per second through a mapper that keeps nothing: managame-data's own cost, without a database |
 | `cn.managame.benchmark.mysql` | `SaveThroughputBenchmark` | Rows written per second through managame-data-mysql into an in-memory H2 database in MySQL mode: updates, and inserts with deletes |
+| `cn.managame.benchmark.mysqlserver` | `SaveBenchmark`, `LoadBenchmark` | Against a real MySQL (`MANAGAME_DATA_MYSQL_URL`, `_USER`, `_PASSWORD`): rows written per second (scalar columns, a JSON column, items in groups, inserts with deletes), and entities loaded cold per second by 8 threads (by id, by `getAll` of 100, a group of 20) |
+| `cn.managame.benchmark.mongo` | `SaveBenchmark`, `LoadBenchmark` | The same against a real MongoDB (`MANAGAME_DATA_MONGO_URI`) |
 
 The network echo benchmarks put the same load on the transport as the rpc ones, so the difference between them is
 what RPC adds. Each runs twice: with both sides in one benchmark JVM, and, as its `…ProcessBenchmark`, with the
@@ -35,7 +37,7 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 
 | Argument | Meaning |
 | --- | --- |
-| `common`, `network`, `runtime`, `rpc`, `data`, `mysql`, `all` | The components to run (`mysql` is managame-data-mysql) |
+| `common`, `network`, `runtime`, `rpc`, `data`, `mysql`, `mysqlserver`, `mongo`, `all` | The components to run (`mysql` is managame-data-mysql on H2; `mysqlserver` and `mongo` need a real server, and `all` leaves them out) |
 | `--save` | Record the results as the new baseline |
 | `--include=<regex>` | Only the benchmarks whose name matches, such as `--include=CallLatency` |
 | `--threshold=<percent>` | How far a result must move to count as better or worse; 10 by default |
@@ -182,4 +184,7 @@ no baseline from a run taken while the machine was busy.
 mvn -o clean package
 ```
 
-Install managame-common, managame-network, managame-runtime, managame-rpc, managame-data and managame-data-mysql first.
+Install managame-common, managame-network, managame-runtime, managame-rpc, managame-data, managame-data-mysql and
+managame-data-mongo first. The `mysqlserver` and `mongo` benchmarks make their tables or database afresh in the server
+their environment variables name: give one that can be thrown away. A server on the same machine keeps it busier than
+Bench lets a baseline be saved from, so compare their runs by hand or `--against`.

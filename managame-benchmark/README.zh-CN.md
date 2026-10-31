@@ -12,6 +12,8 @@
 | `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`、`CallLatencyBenchmark`、`NotifyThroughputBenchmark`，以及对应的 `…ProcessBenchmark` | 多个请求在途时每秒应答的调用数和处理的通知数，以及单个调用的往返时间 |
 | `cn.managame.benchmark.data` | `RepositoryBenchmark`、`UpdateThroughputBenchmark`、`WriteThroughputBenchmark` | 实体都在内存里时业务线程的开销（读取玩家或背包、登记修改；ns/op），四个线程同时登记修改的每秒次数，以及经一个什么都不保存的 Mapper 每秒写出的修改数：不含数据库的 managame-data 自身开销 |
 | `cn.managame.benchmark.mysql` | `SaveThroughputBenchmark` | 经 managame-data-mysql 每秒写入 MySQL 模式的内存 H2 数据库的行数：更新，以及插入加删除 |
+| `cn.managame.benchmark.mysqlserver` | `SaveBenchmark`、`LoadBenchmark` | 对真实 MySQL（`MANAGAME_DATA_MYSQL_URL`、`_USER`、`_PASSWORD`）：每秒写入的行数（标量列、JSON 列、分组的道具、插入加删除），以及 8 个线程每秒冷加载的实体数（按 id、`getAll` 100 个、一组 20 个） |
+| `cn.managame.benchmark.mongo` | `SaveBenchmark`、`LoadBenchmark` | 同样的测试，对真实 MongoDB（`MANAGAME_DATA_MONGO_URI`） |
 
 network 回显基准给传输层施加的负载和 rpc 基准相同，所以两者的差值就是 RPC 本身带来的开销。每个基准跑两种形态：两端都在同一个基准 JVM 里；以及对应的 `…ProcessBenchmark`，服务端在单独的进程里，见[两个进程](#两个进程)。
 
@@ -31,7 +33,7 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 
 | 参数 | 含义 |
 | --- | --- |
-| `common`、`network`、`runtime`、`rpc`、`data`、`mysql`、`all` | 要运行的组件（`mysql` 即 managame-data-mysql） |
+| `common`、`network`、`runtime`、`rpc`、`data`、`mysql`、`mysqlserver`、`mongo`、`all` | 要运行的组件（`mysql` 是跑在 H2 上的 managame-data-mysql；`mysqlserver` 和 `mongo` 需要真实服务器，`all` 不包含它们） |
 | `--save` | 把本次结果记录为新的基线 |
 | `--include=<regex>` | 只运行名字匹配的基准，比如 `--include=CallLatency` |
 | `--threshold=<percent>` | 结果变化超过多少才算变好或变差，默认 10 |
@@ -147,4 +149,6 @@ NotifyThroughputBenchmark.notifyPeer   connections=1 payload=64 window=1024   77
 mvn -o clean package
 ```
 
-请先安装 managame-common、managame-network、managame-runtime、managame-rpc、managame-data 和 managame-data-mysql。
+请先安装 managame-common、managame-network、managame-runtime、managame-rpc、managame-data、managame-data-mysql 和
+managame-data-mongo。`mysqlserver` 和 `mongo` 基准会在环境变量指定的服务器里重新建表或建库：请给一个可以丢弃的库。服务器
+和基准在同一台机器上时，机器忙碌度总会超过 Bench 允许保存基线的上限，所以它们的结果要手工对比，或用 `--against`。

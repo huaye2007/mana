@@ -26,7 +26,8 @@ import javax.sql.DataSource;
 /**
  * Keeps entities in one MySQL database, each entity type in its {@link Table}, a column per saved field named after
  * the field in snake case or by {@link Column}. The application owns the tables; {@link #prepare} reads each once to
- * check that every column exists. Add {@code rewriteBatchedStatements=true} to the JDBC URL, and keep the pool larger
+ * check that every column exists. Add {@code rewriteBatchedStatements=true}, {@code cachePrepStmts=true} and
+ * {@code prepStmtCacheSqlLimit=1000000} to the JDBC URL (the README has the measurements), and keep the pool larger
  * than GameData's write threads plus the loads that run at once.
  *
  * <p>Each batch is one transaction, so a batch that failed left nothing behind and can be written again or split into

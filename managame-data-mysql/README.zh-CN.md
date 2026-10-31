@@ -6,7 +6,7 @@
 和 GroupRepository，`MysqlLogWriter` 用于 LogRepository。依赖 managame-data 和 JDK 自带的 JDBC；驱动和连接池由应用提供。
 
 ```java
-DataSource dataSource = ...;   // jdbc:mysql://host:3306/game?rewriteBatchedStatements=true，经连接池
+DataSource dataSource = ...;   // 经连接池，URL 带上"驱动设置"一节的参数
 GameData data = GameData.builder()
         .repositories(new MysqlEntityMapper(dataSource, json), List.of(Players.class, Items.class))
         .logRepositories(new MysqlLogWriter(logDataSource, json, ZoneId.of("Asia/Shanghai")), List.of(ItemLogs.class))
@@ -49,6 +49,26 @@ public class Player {
   丢掉这次修改。拆成单行后，不存在的那一行交给 DataErrorHandler。
 - **DELETE** 以 `WHERE id IN (...)` 发送，每条最多 1,000 个 id。
 - 连接池要大于 GameData 的 `writeThreads` 加上同时进行的加载数。
+
+## 驱动设置
+
+在同一台机器上的 MySQL 9.7 上测得，每轮修改 1,000 行，用的是 managame-benchmark 的 `mysqlserver` 基准：
+
+| URL 参数 | 作用 |
+| --- | --- |
+| `rewriteBatchedStatements=true` | 一批 INSERT 合并成一条多行语句发送 |
+| `cachePrepStmts=true&prepStmtCacheSqlLimit=1000000` | 驱动缓存每条语句的解析结果；多行 UPDATE 远长于默认的 256 个字符上限。更新从每秒 26,000 行提高到 34,000 行，写入线程每行的 CPU 从 11.8 µs 降到 3.6 µs，分配从 7.0 KB 降到 4.1 KB |
+| `prepStmtCacheSize=250` | 给每张表的语句都留出缓存位置 |
+| `useLocalSessionState=true` | 连接已有的设置不再重复发送 |
+| `useAffectedRows=false`（默认值） | UPDATE 统计匹配到的行数，所以能发现缺失的行 |
+| 不开 `useServerPrepStmts` | 服务端预处理语句反而让多行 UPDATE 变慢 |
+
+- **JSON 字段的列类型。** 除非要在数据库里查询 JSON 内部，优先用 `TEXT`（或 `MEDIUMTEXT`），不用 MySQL 的 `JSON` 类型：
+  写入 `JSON` 列的每个值 MySQL 都要解析并转换。更新一个 50 项的文档，`JSON` 列约每秒 21,000 行，`TEXT` 列 30,000 到 38,000 行。
+- **读取**每次一个往返：冷加载一次 `get` 约耗客户端 40 µs CPU、14 KB，和驱动单独执行一条 SELECT 的开销相当。一次读多个
+  用 `getAll`：8 个线程、每次查 100 个，每秒读出 110 万个玩家。
+- **TLS。** 服务器支持时驱动会用 TLS（`sslMode=PREFERRED`），每次查询约多 8 µs；在不需要加密的网络里，`sslMode=DISABLED`
+  可以省掉这部分。
 
 ## 写日志
 

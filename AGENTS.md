@@ -16,7 +16,7 @@ Java 25. The workspace is the git repository https://github.com/huaye2007/mana (
 | `managame-data` | common, Caffeine | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
 | `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
 | `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
-| `managame-benchmark` | all but data-mongo, JMH 1.37, H2 | JMH benchmarks per component with recorded baselines (`results/*.csv`); a tool nothing depends on |
+| `managame-benchmark` | all, JMH 1.37, H2, MySQL driver, HikariCP | JMH benchmarks per component with recorded baselines (`results/*.csv`), plus `mysqlserver` and `mongo` against real servers; a tool nothing depends on |
 
 ## Build and test
 

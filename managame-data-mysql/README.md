@@ -7,7 +7,7 @@ SingleRepository and GroupRepository, `MysqlLogWriter` for LogRepository. Depend
 the application brings the driver and the connection pool.
 
 ```java
-DataSource dataSource = ...;   // jdbc:mysql://host:3306/game?rewriteBatchedStatements=true, through a pool
+DataSource dataSource = ...;   // through a pool, with the URL options under "Driver settings"
 GameData data = GameData.builder()
         .repositories(new MysqlEntityMapper(dataSource, json), List.of(Players.class, Items.class))
         .logRepositories(new MysqlLogWriter(logDataSource, json, ZoneId.of("Asia/Shanghai")), List.of(ItemLogs.class))
@@ -54,6 +54,29 @@ connection; `loadTable`, for a preloaded repository, one SELECT of the whole tab
   Split into single rows, the missing one goes to the DataErrorHandler.
 - **DELETEs** go as `WHERE id IN (...)`, up to 1,000 ids per statement.
 - Keep the pool larger than GameData's `writeThreads` plus the loads that run at once.
+
+## Driver settings
+
+Measured against MySQL 9.7 on the same machine, 1,000 rows changed a round, with managame-benchmark's `mysqlserver`
+benchmarks:
+
+| URL option | Why |
+| --- | --- |
+| `rewriteBatchedStatements=true` | a batch of INSERTs goes as one multi-row statement |
+| `cachePrepStmts=true&prepStmtCacheSqlLimit=1000000` | the driver keeps its parse of each statement; a multi-row UPDATE is far longer than the default limit of 256 characters. Updates went from 26,000 to 34,000 rows a second, the writing thread's CPU from 11.8 to 3.6 µs a row and its allocation from 7.0 to 4.1 KB |
+| `prepStmtCacheSize=250` | room for every table's statements |
+| `useLocalSessionState=true` | settings the connection already has are not sent again |
+| `useAffectedRows=false`, the default | an UPDATE counts the rows it matched, so a missing row is noticed |
+| `useServerPrepStmts` left off | server-side statements made the multi-row UPDATE slower |
+
+- **Columns for JSON fields.** Prefer `TEXT` (or `MEDIUMTEXT`) to MySQL's `JSON` type unless the database queries
+  inside them: MySQL parses and converts every value written to a `JSON` column. Updating a 50-entry document ran at
+  about 21,000 rows a second in `JSON` and 30,000 to 38,000 in `TEXT`.
+- **Reads** are a round trip each: a cold `get` cost about 40 µs of client CPU and 14 KB, about what the driver alone
+  spends on one SELECT. Load many at once with `getAll`, which read 1.1 million players a second from 8 threads in
+  queries of 100.
+- **TLS.** The driver uses TLS when the server offers it (`sslMode=PREFERRED`), which cost about 8 µs a query; on a
+  network that needs no encryption, `sslMode=DISABLED` saves it.
 
 ## Writing logs
 
