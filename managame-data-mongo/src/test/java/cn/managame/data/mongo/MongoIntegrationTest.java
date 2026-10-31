@@ -59,6 +59,8 @@ class MongoIntegrationTest {
                 players.evict(7L);
                 assertEquals(Map.of(5001, 3L), players.get(7L).items);
                 assertNull(players.get(8L));
+                for (long id = 10; id <= 20; id++) players.evict(id);
+                assertEquals(List.of(10L, 12L, 14L), List.copyOf(players.getAll(List.of(10L, 12L, 99L, 14L)).keySet()));
                 assertEquals(49, database.getCollection("player").countDocuments());
                 database.getCollection("player").deleteMany(new Document());
                 players.update(9L, player -> player.level = 2);

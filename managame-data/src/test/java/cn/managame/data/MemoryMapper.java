@@ -32,6 +32,9 @@ class MemoryMapper implements EntityMapper {
     final AtomicInteger loads = new AtomicInteger();
     /** When set, every load waits for it to open, outside this mapper's lock. */
     volatile CountDownLatch loadGate;
+    /** Loads of several ids at once so far, not counted among {@code loads}, and the ids the last one was asked for. */
+    final AtomicInteger bulkLoads = new AtomicInteger();
+    volatile List<Object> lastBulkIds = List.of();
 
     @Override public synchronized void prepare(EntityType type) { tables.put(type, new LinkedHashMap<>()); }
 
@@ -44,6 +47,24 @@ class MemoryMapper implements EntityMapper {
         if (unreachable) throw new ConnectException("the database cannot be reached");
         Map<String, Object> row = tables.get(type).get(id);
         return row == null ? null : entityOf(type, row);
+    }
+
+    @Override public List<Object> loadAll(EntityType type, Collection<?> ids) throws ConnectException, InterruptedException {
+        bulkLoads.incrementAndGet();
+        lastBulkIds = List.copyOf(ids);
+        CountDownLatch gate = loadGate;
+        if (gate != null) gate.await();
+        return loadAllNow(type, ids);
+    }
+
+    private synchronized List<Object> loadAllNow(EntityType type, Collection<?> ids) throws ConnectException {
+        if (unreachable) throw new ConnectException("the database cannot be reached");
+        List<Object> entities = new ArrayList<>();
+        for (Object id : ids) {
+            Map<String, Object> row = tables.get(type).get(id);
+            if (row != null) entities.add(entityOf(type, row));
+        }
+        return entities;
     }
 
     @Override public List<Object> loadGroup(EntityType type, GroupKeys key) throws ConnectException, InterruptedException {

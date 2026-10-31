@@ -118,14 +118,17 @@ public final class ChangeWriter {
             int dropped = 0;
             for (ChangeSet changes : changeSets) {
                 List<PendingChange> waiting = changes.takeAll();
+                changes.dropped.addAndGet(waiting.size());
                 for (PendingChange change : waiting)
                     reportFailure(null, DATA_SAVE_FAILED, changes.type.entityClass(), change.operation, change.entityOrId(), cause);
                 changes.putBack(List.of());
                 dropped += waiting.size();
             }
             for (LogQueue logs : logQueues) {
-                for (Object log; (log = logs.poll()) != null; dropped++)
+                for (Object log; (log = logs.poll()) != null; dropped++) {
+                    logs.dropped.incrementAndGet();
                     reportFailure(null, DATA_LOG_SAVE_FAILED, logs.type, LOG_INSERT, log, cause);
+                }
             }
             return dropped;
         }
@@ -205,9 +208,11 @@ public final class ChangeWriter {
             // After an unexpected failure it is unknown which changes were written: all are written again, which does
             // no harm, as an insert comes back as DELETE_INSERT.
             if (!finished) unwritten = taken;
-            for (PendingChange conflict : changes.putBack(unwritten))
+            for (PendingChange conflict : changes.putBack(unwritten)) {
+                changes.dropped.incrementAndGet();
                 reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), conflict.operation, conflict.entityOrId(),
                         new IllegalStateException("a change that failed to be written conflicts with a later change of its row"));
+            }
         }
         return unwritten.size();
     }
@@ -221,8 +226,10 @@ public final class ChangeWriter {
         try {
             mapper.write(changes.type, operation, batch);
             round.resetFailures(mapper);
+            changes.written.addAndGet(batch.size());
             return;
         } catch (Throwable e) {
+            changes.failures.incrementAndGet();
             if (mapper.isRetryable(e)) {
                 round.countFailure(mapper);
                 unwritten.addAll(batch);
@@ -230,6 +237,7 @@ public final class ChangeWriter {
             }
             round.resetFailures(mapper);   // the database answered, so what failed is the data
             if (batch.size() == 1) {
+                changes.dropped.incrementAndGet();
                 reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), operation, batch.getFirst().entityOrId(), e);
                 return;
             }
@@ -242,12 +250,15 @@ public final class ChangeWriter {
             try {
                 mapper.write(changes.type, operation, List.of(change));
                 round.resetFailures(mapper);
+                changes.written.incrementAndGet();
             } catch (Throwable e) {
+                changes.failures.incrementAndGet();
                 if (mapper.isRetryable(e)) {
                     round.countFailure(mapper);
                     unwritten.add(change);
                 } else {
                     round.resetFailures(mapper);
+                    changes.dropped.incrementAndGet();
                     reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), operation, change.entityOrId(), e);
                 }
             }
@@ -280,8 +291,10 @@ public final class ChangeWriter {
         try {
             writer.write(logs.type, batch);
             round.resetFailures(writer);
+            logs.written.addAndGet(batch.size());
             return;
         } catch (Throwable e) {
+            logs.failures.incrementAndGet();
             if (writer.isRetryable(e)) {
                 round.countFailure(writer);
                 unwritten.addAll(batch);
@@ -289,6 +302,7 @@ public final class ChangeWriter {
             }
             round.resetFailures(writer);
             if (batch.size() == 1) {
+                logs.dropped.incrementAndGet();
                 reportFailure(round, DATA_LOG_SAVE_FAILED, logs.type, LOG_INSERT, batch.getFirst(), e);
                 return;
             }
@@ -301,12 +315,15 @@ public final class ChangeWriter {
             try {
                 writer.write(logs.type, List.of(log));
                 round.resetFailures(writer);
+                logs.written.incrementAndGet();
             } catch (Throwable e) {
+                logs.failures.incrementAndGet();
                 if (writer.isRetryable(e)) {
                     round.countFailure(writer);
                     unwritten.add(log);
                 } else {
                     round.resetFailures(writer);
+                    logs.dropped.incrementAndGet();
                     reportFailure(round, DATA_LOG_SAVE_FAILED, logs.type, LOG_INSERT, log, e);
                 }
             }

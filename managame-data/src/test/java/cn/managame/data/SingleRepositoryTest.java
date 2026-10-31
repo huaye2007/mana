@@ -1,5 +1,6 @@
 package cn.managame.data;
 
+import static cn.managame.FrameworkErrorCodes.DATA_LOAD_FAILED;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -14,6 +15,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -139,6 +141,58 @@ class SingleRepositoryTest {
             for (Future<Player> player : asked) assertSame(first, player.get());
         }
         assertEquals(1, database.loads.get());
+    }
+
+    @Test
+    void getsSeveralIdsReadingThoseNotInMemoryInOneLoad() {
+        for (long id = 1; id <= 3; id++) database.put(Player.class, new Player(id, "p" + id));
+        Player inMemory = players.get(1L);
+        Player unwritten = new Player(4, "dan");
+        players.insert(unwritten);
+        players.evict(4L);
+        database.put(Player.class, new Player(5, "eve"));
+        players.delete(5L);
+        players.evict(5L);
+
+        Map<Long, Player> found = players.getAll(List.of(3L, 1L, 4L, 5L, 2L, 6L));
+        assertEquals(List.of(3L, 1L, 4L, 2L), List.copyOf(found.keySet()), "in the order asked, without the ids that do not exist");
+        assertSame(inMemory, found.get(1L));
+        assertSame(unwritten, found.get(4L));
+        assertEquals("p3", found.get(3L).name);
+        assertEquals(1, database.bulkLoads.get());
+        assertEquals(Set.of(3L, 2L, 6L), Set.copyOf(database.lastBulkIds), "ids in memory or with changes waiting are not read");
+
+        assertSame(found.get(3L), players.get(3L));
+        assertNull(players.get(6L));
+        assertEquals(1, database.loads.get(), "only the first get read the database: the others were loaded or remembered");
+    }
+
+    @Test
+    void aGetWaitsForTheGetAllLoadingItsId() throws Exception {
+        database.put(Player.class, new Player(7, "bob"));
+        database.put(Player.class, new Player(8, "cid"));
+        database.loadGate = new CountDownLatch(1);
+        try (ExecutorService threads = Executors.newFixedThreadPool(2)) {
+            Future<Map<Long, Player>> all = threads.submit(() -> players.getAll(List.of(7L, 8L)));
+            while (database.bulkLoads.get() == 0) Thread.onSpinWait();
+            Future<Player> one = threads.submit(() -> players.get(8L));
+            Thread.sleep(50);   // the get asks while the getAll waits at the gate
+            database.loadGate.countDown();
+            assertSame(all.get().get(8L), one.get());
+        }
+        assertEquals(0, database.loads.get());
+        assertEquals(1, database.bulkLoads.get());
+    }
+
+    @Test
+    void aFailedGetAllKeepsNothingInMemory() {
+        database.put(Player.class, new Player(7, "bob"));
+        database.unreachable = true;
+        DataException failure = assertThrows(DataException.class, () -> players.getAll(List.of(7L, 8L)));
+        assertEquals(DATA_LOAD_FAILED, failure.errorCode());
+        database.unreachable = false;
+        assertEquals(Set.of(7L), players.getAll(List.of(7L, 8L)).keySet());
+        assertEquals(2, database.bulkLoads.get());
     }
 
     @Test

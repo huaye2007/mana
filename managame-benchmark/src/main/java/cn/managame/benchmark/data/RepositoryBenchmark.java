@@ -5,6 +5,8 @@ import cn.managame.benchmark.data.DataFixture.Items;
 import cn.managame.benchmark.data.DataFixture.Player;
 import cn.managame.benchmark.data.DataFixture.Players;
 import cn.managame.data.GroupKeys;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -22,7 +24,8 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * What business code pays on its own thread with every entity in memory: reading a player, reading a player's bag,
- * and recording that a player changed, which merges into the change already waiting for it. No save runs.
+ * reading fifty players at once, and recording that a player changed, which merges into the change already waiting for
+ * it. No save runs.
  */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -31,10 +34,12 @@ import org.openjdk.jmh.annotations.Warmup;
 @Warmup(iterations = 3, time = 1)
 @Measurement(iterations = 5, time = 1)
 public class RepositoryBenchmark {
-    static final int PLAYERS = 1024, SLOTS = 8;
+    static final int PLAYERS = 1024, SLOTS = 8, BATCH = 50, BATCHES = 16;
     private final Long[] ids = new Long[PLAYERS];
     private final GroupKeys[] groupKeys = new GroupKeys[PLAYERS];
     private final Player[] cachedPlayers = new Player[PLAYERS];
+    /** Fifty ids each, spread over the players. */
+    private final List<List<Long>> batches = new ArrayList<>();
     private DataFixture fixture;
     private Players players;
     private Items items;
@@ -52,6 +57,11 @@ public class RepositoryBenchmark {
         }
         fixture.data.flush();
         for (int i = 0; i < PLAYERS; i++) cachedPlayers[i] = players.get(ids[i]);
+        for (int batch = 0; batch < BATCHES; batch++) {
+            List<Long> batchIds = new ArrayList<>(BATCH);
+            for (int i = 0; i < BATCH; i++) batchIds.add(ids[(batch * BATCH + i) & (PLAYERS - 1)]);
+            batches.add(batchIds);
+        }
     }
 
     @TearDown(Level.Trial) public void stop() { fixture.close(); }
@@ -59,6 +69,8 @@ public class RepositoryBenchmark {
     @Benchmark public Player get() { return players.get(ids[next++ & (PLAYERS - 1)]); }
 
     @Benchmark public Map<Integer, Item> getGroup() { return items.getGroup(groupKeys[next++ & (PLAYERS - 1)]); }
+
+    @Benchmark public Map<Long, Player> getAll() { return players.getAll(batches.get(next++ & (BATCHES - 1))); }
 
     @Benchmark public void update() {
         Player player = cachedPlayers[next++ & (PLAYERS - 1)];

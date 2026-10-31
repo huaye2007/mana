@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * One entity type's changes not yet written, at most one per row, and the mapper that writes them. A new change of a
@@ -32,6 +33,10 @@ public final class ChangeSet {
     final EntityMapper mapper;
     private final boolean grouped;
     private final Segment[] segments = new Segment[SEGMENTS];
+    /** What the rounds did since GameData was built, counted by the write thread; read by stats. */
+    final AtomicLong written = new AtomicLong(), failures = new AtomicLong(), dropped = new AtomicLong();
+    /** How many changes the round in progress took, until it puts back what it could not write. */
+    private volatile int writing;
     private volatile boolean closed;
 
     /**
@@ -56,6 +61,22 @@ public final class ChangeSet {
     public EntityType type() { return type; }
 
     public EntityMapper mapper() { return mapper; }
+
+    /** Changes waiting to be written, those the round in progress took included. */
+    public int waiting() {
+        int waiting = writing;
+        for (Segment segment : segments) synchronized (segment) { waiting += segment.size; }
+        return waiting;
+    }
+
+    /** Changes written since GameData was built. */
+    public long written() { return written.get(); }
+
+    /** Writes that failed since GameData was built, a batch or a single change each counting once. */
+    public long failures() { return failures.get(); }
+
+    /** Changes handed to the DataErrorHandler since GameData was built. */
+    public long dropped() { return dropped.get(); }
 
     /**
      * Adds a change of a row, merged into the one waiting. Throws IllegalStateException, changing nothing, when the
@@ -126,6 +147,7 @@ public final class ChangeSet {
                 addAllChanges(changes, taken);
             }
         }
+        writing = taken.size();
         return taken;
     }
 
@@ -146,6 +168,7 @@ public final class ChangeSet {
                 segment.writing.clear();
             }
         }
+        writing = 0;
         return conflicts;
     }
 

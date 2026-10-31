@@ -22,7 +22,9 @@ import cn.managame.data.mysql.Fixtures.ReportedFailures;
 import cn.managame.data.mysql.annotation.Table;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -68,6 +70,19 @@ class MysqlEntityMapperTest {
         players.delete(1L);
         data.flush();
         assertEquals(1, players().size());
+    }
+
+    @Test
+    void getsMoreIdsThanOneSelectNames() {
+        for (long id = 1; id <= 1500; id++) players.insert(new Player(id, "p" + id));
+        data.flush();
+        for (long id = 1; id <= 1500; id++) players.evict(id);
+        List<Long> asked = new ArrayList<>();
+        for (long id = 1600; id >= 1; id--) asked.add(id);
+        Map<Long, Player> found = players.getAll(asked);
+        assertEquals(1500, found.size(), "two SELECTs, without the ids above 1500");
+        assertEquals(1500L, found.keySet().iterator().next());
+        assertEquals("p2", found.get(2L).name);
     }
 
     @Test

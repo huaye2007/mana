@@ -3,6 +3,8 @@ package cn.managame.data.spi;
 import cn.managame.data.DataOperation;
 import cn.managame.data.GameData;
 import cn.managame.data.GroupKeys;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -22,6 +24,19 @@ public interface EntityMapper {
 
     /** The entity with this id, or null when there is none. */
     Object load(EntityType type, Object id) throws Exception;
+
+    /**
+     * The entities with these ids that exist, in any order. By default {@link #load} of each id; a mapper that can read
+     * them in one query overrides it.
+     */
+    default List<Object> loadAll(EntityType type, Collection<?> ids) throws Exception {
+        List<Object> loaded = new ArrayList<>(ids.size());
+        for (Object id : ids) {
+            Object entity = load(type, id);
+            if (entity != null) loaded.add(entity);
+        }
+        return loaded;
+    }
 
     /** Every entity whose {@code @GroupKey} fields equal the key's values, in order. */
     List<Object> loadGroup(EntityType type, GroupKeys key) throws Exception;

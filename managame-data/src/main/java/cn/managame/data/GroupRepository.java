@@ -13,6 +13,8 @@ import cn.managame.data.spi.EntityType;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.github.benmanes.caffeine.cache.Ticker;
+import com.github.benmanes.caffeine.cache.stats.ConcurrentStatsCounter;
+import com.github.benmanes.caffeine.cache.stats.StatsCounter;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -46,6 +48,8 @@ public abstract class GroupRepository<K, E> {
     }
 
     private LoadingCache<GroupKeys, Group<K, E>> groups;
+    /** The cache's counts; hits found by asMap().get are recorded here, as the cache records everything else. */
+    private final StatsCounter cacheStats = new ConcurrentStatsCounter();
     private EntityType entityType;
     private EntityKeys keys;
     private EntityMapper mapper;
@@ -65,7 +69,7 @@ public abstract class GroupRepository<K, E> {
         mapper = changes.mapper();
         this.changes = changes;
         groups = Caffeine.newBuilder().executor(Runnable::run).ticker(ticker).expireAfterAccess(cacheExpire)
-                .maximumSize(maxCacheEntries)
+                .maximumSize(maxCacheEntries).recordStats(() -> cacheStats)
                 .buildAsync((GroupKeys groupKey, Executor executor) ->
                         CompletableFuture.supplyAsync(() -> load(groupKey), loads))
                 .synchronous();
@@ -144,6 +148,11 @@ public abstract class GroupRepository<K, E> {
     /** Drops what expired or overflowed now rather than at the next use; GameData calls it every flush interval. */
     final void cleanUp() { groups.cleanUp(); }
 
+    final EntityStats stats() {
+        return new EntityStats(entityType.entityClass(), groups.estimatedSize(), changes.waiting(), changes.written(),
+                changes.failures(), changes.dropped(), cacheStats.snapshot());
+    }
+
     private void delete(Group<K, E> group, GroupKeys groupKey, K mapKey) {
         group.entities().computeIfPresent(mapKey, (key, existing) -> {
             changes.add(DELETE, keys.idOf(existing), groupKey, key, existing);
@@ -156,8 +165,10 @@ public abstract class GroupRepository<K, E> {
      * loading it, so a group evicted while one is made gets the change from the change set when it is loaded again.
      */
     private Group<K, E> group(GroupKeys groupKey) {
-        Group<K, E> group = groups.getIfPresent(groupKey);   // a hit allocates nothing, unlike get
-        return group != null ? group : groups.get(groupKey);
+        Group<K, E> group = groups.asMap().get(groupKey);   // a hit allocates nothing, unlike get, and waits for no load
+        if (group == null) return groups.get(groupKey);
+        cacheStats.recordHits(1);
+        return group;
     }
 
     /**

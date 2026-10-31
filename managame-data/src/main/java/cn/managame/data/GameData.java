@@ -60,6 +60,7 @@ public final class GameData implements AutoCloseable {
     private final Map<Class<?>, Object> repositories;
     private final List<SingleRepository<?, ?>> singleRepositories;
     private final List<GroupRepository<?, ?>> groupRepositories;
+    private final List<LogRepository<?>> logRepositories;
     private final ChangeWriter writer;
     private final AtomicLong clock;
     private final ScheduledThreadPoolExecutor scheduler;
@@ -70,12 +71,15 @@ public final class GameData implements AutoCloseable {
         this.repositories = Map.copyOf(repositories);
         List<SingleRepository<?, ?>> singles = new ArrayList<>();
         List<GroupRepository<?, ?>> groups = new ArrayList<>();
+        List<LogRepository<?>> logs = new ArrayList<>();
         for (Object repository : repositories.values()) {
             if (repository instanceof SingleRepository<?, ?> single) singles.add(single);
             if (repository instanceof GroupRepository<?, ?> group) groups.add(group);
+            if (repository instanceof LogRepository<?> log) logs.add(log);
         }
         singleRepositories = List.copyOf(singles);
         groupRepositories = List.copyOf(groups);
+        logRepositories = List.copyOf(logs);
         this.writer = writer;
         this.clock = clock;
         flushIntervalNanos = builder.flushInterval.toNanos();
@@ -106,6 +110,21 @@ public final class GameData implements AutoCloseable {
         if (dropped > 0 || unwritten > 0)
             throw new DataException(DATA_SAVE_FAILED, "flush left " + unwritten + " changes for the next round after failures and dropped "
                     + dropped + ", which went to the DataErrorHandler", null);
+    }
+
+    /**
+     * What each repository holds and what the rounds did with it since build, read now: repositories by id, grouped ones
+     * and log repositories, each in the order registered. Any thread may call it, closed or not; each number is read on
+     * its own, so they need not be from the same instant. Counting the changes waiting briefly takes each lock business
+     * threads take to record one.
+     */
+    public DataStats stats() {
+        List<EntityStats> entities = new ArrayList<>(singleRepositories.size() + groupRepositories.size());
+        for (SingleRepository<?, ?> repository : singleRepositories) entities.add(repository.stats());
+        for (GroupRepository<?, ?> repository : groupRepositories) entities.add(repository.stats());
+        List<LogStats> logs = new ArrayList<>(logRepositories.size());
+        for (LogRepository<?> repository : logRepositories) logs.add(repository.stats());
+        return new DataStats(entities, logs);
     }
 
     /**

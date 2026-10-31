@@ -73,6 +73,7 @@ Players players = data.repository(Players.class);
 
 Player player = players.getOrCreate(id, Player::new);    // 数据库里没有时创建并插入
 players.update(id, p -> p.levelUp());                    // 修改和登记一步完成
+Map<Long, Player> friends = players.getAll(friendIds);   // 不在内存的一次加载
 Map<Integer, Item> bag = data.repository(Items.class).getGroup(GroupKeys.of(id));
 data.repository(ItemLogs.class).insert(new ItemLog(id, 5001, -1));
 ...
@@ -94,6 +95,9 @@ data.close();                                            // 写完剩下的修�
 - **读取只碰内存。** 不在内存里的实体或组只加载一次，无论同时有多少线程在要：它们都等这一次加载，拿到同一批实例。请求的线程
   在等待数据库返回时会阻塞：在虚拟线程上没有问题（managame-runtime 的 Route 默认就是虚拟线程），绝不能在 Netty EventLoop
   上调用。一组数据总是整组加载，读和写都一样。`getGroup` 返回实时的只读视图；修改组要通过 Repository。
+- **一次读多个。** `getAll(ids)` 返回这些 id 中存在的实体，按传入顺序以 id 为 key。不在内存的那些通过 Mapper 的一次
+  `loadAll` 读出（MySQL 里每一千个 id 一条 `WHERE id IN (...)`），每个 id 不管多少线程同时要仍只加载一次：这期间对其中某个
+  id 的 `get` 会等这次调用。
 - **修改实体后要登记**：`update(entity)`，或通过 `update(id, change)` / `update(groupKey, mapKey, change)` 修改，这样不会
   忘记登记。写入的是写入那一刻实体的状态，由写入线程在那时读取。
 - **实体的集合字段要线程安全**（ConcurrentHashMap、CopyOnWriteArrayList），因为写入线程可能在业务代码修改它们时读取。集合
@@ -145,10 +149,30 @@ class LogService implements LogWriter {
 }
 ```
 
+## 统计
+
+`data.stats()` 可以在任何线程调用，读出每个 Repository 当前保存了什么、build 以来各轮写入做了什么，开销小到可以每隔几秒读一次，
+交给应用自己的监控：
+
+```java
+for (EntityStats stats : data.stats().entities())
+    if (stats.waiting() > 100_000) alert(stats.entityType().getSimpleName() + ": " + stats.waiting() + " changes waiting");
+```
+
+| `EntityStats` | |
+| --- | --- |
+| `cached` | 内存里的实体数（GroupRepository 为组数），Caffeine 的估计值 |
+| `waiting` | 等待写入的修改，含正在写的这一轮：一直上涨说明数据库跟不上 |
+| `written`、`failures`、`dropped` | build 以来：写入的修改、失败的写入（不论是否重试）、交给 DataErrorHandler 的修改 |
+| `cache` | Caffeine 的 `CacheStats`：命中、未命中、加载、加载失败、加载耗时和淘汰数；`minus` 算出两次读数之间的变化 |
+
+`LogStats` 有 `queued`、`written`、`refused`（队列满被拒）、`failures` 和 `dropped`。每个数各自读取，彼此不保证同一时刻。
+
 ## 自己的 EntityMapper
 
 一个 `EntityMapper`（在 `cn.managame.data.spi` 包里）服务注册给它的所有实体类型：build 时每种类型调用一次
-`prepare(EntityType)`，之后是 `load`、`loadGroup` 和 `write(type, operation, batch)`，批里的每个 `Change` 给出实体的 id 和
+`prepare(EntityType)`，之后是 `load`、`loadAll`（默认逐个 `load`；能一条查询读完的覆盖它）、`loadGroup` 和
+`write(type, operation, batch)`，批里的每个 `Change` 给出实体的 id 和
 要读取的实体。`EntityType` 列出要保存的字段（`EntityField`：名字、类型、`valueType`、读、写，以及用于读注解的 Java 字段）、
 key 字段，并能创建新实例。失败后重写同一批必须无害：一批在一个事务里写，或者每个实体都幂等地写。更新时发现实体不存在应当
 失败。`isRetryable` 的默认规则是 `RetryableFailures.isRetryable`，Mapper 可以在它的基础上扩展。
@@ -191,6 +215,8 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 - 分组：加载、修改、多字段的 key，被淘汰的组带着未写入的修改回来；
 - 多个线程同时要同一个 id 或组时只加载一次；不用的条目和超出 `maxCacheEntries` 的条目离开内存，被淘汰的实体以同一个实例
   带着未写入的修改回来；
+- `getAll`：既不在内存也没有修改的 id 一次加载，`get` 等待正在加载它的 `getAll`，失败的 `getAll` 不在内存留下任何东西；
+- 统计：等待、写入、失败和放弃的修改，缓存的命中、未命中和加载，日志的排队、拒绝和写入；
 - 通过应用自己的 Writer 写日志：按顺序写入，Writer 判为可重试的失败会保留，被拒的日志丢弃而其他照常写入，队列满时拒绝；
 - 失败：坏行丢弃而其他照常写入，连不上数据库期间保留修改，确认丢失的插入重写而不产生重复，更新已不存在的行被报告，close
   交出未能写入的数据；

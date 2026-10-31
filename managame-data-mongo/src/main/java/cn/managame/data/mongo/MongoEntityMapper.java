@@ -66,6 +66,17 @@ public final class MongoEntityMapper implements EntityMapper {
         return mapping.decode(mapping.collection.find(new BsonDocument("_id", mapping.idField.codec.encode(id))).first());
     }
 
+    /** One query by {@code _id $in}. */
+    @Override public List<Object> loadAll(EntityType type, java.util.Collection<?> ids) {
+        CollectionMapping mapping = mappingOf(type);
+        BsonArray encoded = new BsonArray();
+        for (Object id : ids) encoded.add(mapping.idField.codec.encode(id));
+        List<Object> entities = new ArrayList<>(ids.size());
+        for (BsonDocument document : mapping.collection.find(new BsonDocument("_id", new BsonDocument("$in", encoded))))
+            entities.add(mapping.decode(document));
+        return entities;
+    }
+
     @Override public List<Object> loadGroup(EntityType type, GroupKeys key) {
         CollectionMapping mapping = mappingOf(type);
         BsonDocument filter = new BsonDocument();

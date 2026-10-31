@@ -17,6 +17,10 @@ public final class LogQueue {
     private final AtomicInteger size = new AtomicInteger();
     /** Adds in progress in the low bits, and the sign bit once closed, so close can wait for the adds already in. */
     private final AtomicLong addsInProgress = new AtomicLong();
+    /** What the rounds did since GameData was built, counted by the write thread; read by stats. */
+    final AtomicLong written = new AtomicLong(), failures = new AtomicLong(), dropped = new AtomicLong();
+    /** Logs refused because the queue was full. */
+    private final AtomicLong refused = new AtomicLong();
 
     public LogQueue(Class<?> type, LogWriter writer, int capacity) {
         this.type = type;
@@ -28,7 +32,22 @@ public final class LogQueue {
 
     public int capacity() { return capacity; }
 
-    /** Queues a log; false when the queue is full. IllegalStateException once closed. */
+    /** Logs waiting in the queue; those the round in progress took are not among them. */
+    public int queued() { return size.get(); }
+
+    /** Logs written since GameData was built. */
+    public long written() { return written.get(); }
+
+    /** Logs refused since GameData was built because the queue was full. */
+    public long refused() { return refused.get(); }
+
+    /** Writes that failed since GameData was built, a batch or a single log each counting once. */
+    public long failures() { return failures.get(); }
+
+    /** Logs a round handed to the DataErrorHandler since GameData was built; refused ones are not among them. */
+    public long dropped() { return dropped.get(); }
+
+    /** Queues a log; false, counted as refused, when the queue is full. IllegalStateException once closed. */
     public boolean add(Object log) {
         if (addsInProgress.getAndIncrement() < 0) {
             addsInProgress.decrementAndGet();
@@ -41,6 +60,7 @@ public final class LogQueue {
                     return true;
                 }
             }
+            refused.incrementAndGet();
             return false;
         } finally {
             addsInProgress.decrementAndGet();

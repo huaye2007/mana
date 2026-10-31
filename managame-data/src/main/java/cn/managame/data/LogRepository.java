@@ -37,4 +37,8 @@ public abstract class LogRepository<E> {
                 new IllegalStateException(queue.capacity() + " logs are already waiting to be written"));
         return false;
     }
+
+    final LogStats stats() {
+        return new LogStats(queue.type(), queue.queued(), queue.written(), queue.refused(), queue.failures(), queue.dropped());
+    }
 }

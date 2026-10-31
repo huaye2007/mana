@@ -30,6 +30,10 @@ public class Player {
   float、char 分别存为 int32、double 和 string。其他类型来自数据库的 codec registry，应用在那里注册自己的类。
 - 文档里缺少的字段保留构造器给的值，所以加字段不需要迁移数据。
 
+## 读取
+
+`load` 按 `_id` 查文档，`loadGroup` 按分组字段查，`loadAll`（`getAll` 用它）用一条 `_id $in` 查询。
+
 ## 写入
 
 每个写入都是幂等的，所以写到一半失败的批次直接整批重写，不需要记录哪些文档已经写进去：

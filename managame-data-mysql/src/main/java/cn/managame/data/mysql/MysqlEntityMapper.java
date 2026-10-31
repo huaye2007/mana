@@ -13,6 +13,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -35,7 +36,8 @@ import javax.sql.DataSource;
  */
 public final class MysqlEntityMapper implements EntityMapper {
     public static final int MAX_ROWS_PER_UPDATE = 100;
-    private static final int MAX_ROWS_PER_DELETE = 1000;
+    /** Ids one SELECT or DELETE names at most. */
+    private static final int MAX_IDS_PER_STATEMENT = 1000;
     /** MySQL takes 65,535 placeholders in one statement; every statement here stays clear of that. */
     private static final int MAX_PARAMETERS = 60_000;
     private final DataSource dataSource;
@@ -84,6 +86,26 @@ public final class MysqlEntityMapper implements EntityMapper {
         }
     }
 
+    /** One SELECT per thousand ids, on one connection. */
+    @Override public List<Object> loadAll(EntityType type, Collection<?> ids) throws SQLException {
+        TableMapping mapping = mappingOf(type);
+        List<?> idList = List.copyOf(ids);
+        List<Object> entities = new ArrayList<>(idList.size());
+        try (Connection connection = dataSource.getConnection()) {
+            for (int from = 0; from < idList.size(); from += MAX_IDS_PER_STATEMENT) {
+                int count = Math.min(MAX_IDS_PER_STATEMENT, idList.size() - from);
+                String sql = mapping.selectByIdsSqlByCount.computeIfAbsent(count, rows -> mapping.selectFrom + " WHERE " + mapping.idIn(rows));
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    for (int i = 0; i < count; i++) statement.setObject(i + 1, idList.get(from + i));
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        while (resultSet.next()) entities.add(mapping.readEntity(resultSet));
+                    }
+                }
+            }
+        }
+        return entities;
+    }
+
     /** Encodes every row before the transaction starts, so a value that cannot be encoded never touches the table. */
     @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws SQLException {
         TableMapping mapping = mappingOf(type);
@@ -118,11 +140,12 @@ public final class MysqlEntityMapper implements EntityMapper {
     /** One entity type's table: its columns and statements. */
     private final class TableMapping {
         final EntityType type;
-        final String table, selectById, selectByGroup, insert;
+        final String table, selectFrom, selectById, selectByGroup, insert;
         final List<MysqlColumn> columns, updatedColumns;
         final MysqlColumn idColumn;
         final int rowsPerUpdate;
-        final ConcurrentHashMap<Integer, String> updateSqlByRows = new ConcurrentHashMap<>(), deleteSqlByRows = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, String> updateSqlByRows = new ConcurrentHashMap<>(), deleteSqlByRows = new ConcurrentHashMap<>(),
+                selectByIdsSqlByCount = new ConcurrentHashMap<>();
 
         TableMapping(EntityType type) {
             this.type = type;
@@ -135,9 +158,9 @@ public final class MysqlEntityMapper implements EntityMapper {
             keys.addAll(type.mapKeys());
             keys.add(type.id());
             updatedColumns = columns.stream().filter(column -> !keys.contains(column.field)).toList();
-            String columnList = Jdbc.columnList(columns);
-            selectById = "SELECT " + columnList + " FROM " + MysqlColumn.quote(table) + " WHERE " + idColumn.quotedName() + " = ?";
-            selectByGroup = "SELECT " + columnList + " FROM " + MysqlColumn.quote(table) + " WHERE "
+            selectFrom = "SELECT " + Jdbc.columnList(columns) + " FROM " + MysqlColumn.quote(table);
+            selectById = selectFrom + " WHERE " + idColumn.quotedName() + " = ?";
+            selectByGroup = selectFrom + " WHERE "
                     + type.groupKeys().stream().map(field -> columnOf(field).quotedName() + " = ?").collect(Collectors.joining(" AND "));
             insert = Jdbc.insertSql(table, columns);
             rowsPerUpdate = updatedColumns.isEmpty() ? 0
@@ -180,10 +203,9 @@ public final class MysqlEntityMapper implements EntityMapper {
         }
 
         void delete(Connection connection, List<? extends Change> batch) throws SQLException {
-            for (int from = 0; from < batch.size(); from += MAX_ROWS_PER_DELETE) {
-                int count = Math.min(MAX_ROWS_PER_DELETE, batch.size() - from);
-                String sql = deleteSqlByRows.computeIfAbsent(count, rows -> "DELETE FROM " + MysqlColumn.quote(table) + " WHERE "
-                        + idColumn.quotedName() + " IN (" + String.join(", ", Collections.nCopies(rows, "?")) + ")");
+            for (int from = 0; from < batch.size(); from += MAX_IDS_PER_STATEMENT) {
+                int count = Math.min(MAX_IDS_PER_STATEMENT, batch.size() - from);
+                String sql = deleteSqlByRows.computeIfAbsent(count, rows -> "DELETE FROM " + MysqlColumn.quote(table) + " WHERE " + idIn(rows));
                 try (PreparedStatement statement = connection.prepareStatement(sql)) {
                     for (int row = 0; row < count; row++) statement.setObject(row + 1, batch.get(from + row).id());
                     statement.executeUpdate();
@@ -196,8 +218,11 @@ public final class MysqlEntityMapper implements EntityMapper {
             return "UPDATE " + MysqlColumn.quote(table) + " SET "
                     + updatedColumns.stream().map(column -> column.quotedName() + " = CASE " + idColumn.quotedName() + " " + cases + " END")
                             .collect(Collectors.joining(", "))
-                    + " WHERE " + idColumn.quotedName() + " IN (" + String.join(", ", Collections.nCopies(rows, "?")) + ")";
+                    + " WHERE " + idIn(rows);
         }
+
+        /** {@code id IN (?, ...)} with this many placeholders. */
+        String idIn(int ids) { return idColumn.quotedName() + " IN (" + String.join(", ", Collections.nCopies(ids, "?")) + ")"; }
 
         private MysqlColumn columnOf(EntityField field) {
             for (MysqlColumn column : columns) if (column.field == field) return column;

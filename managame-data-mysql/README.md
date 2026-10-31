@@ -37,6 +37,11 @@ public class Player {
   missing table or column fails the build with `DataException` (`DATA_LOAD_FAILED`), a class without `@Table` with
   `IllegalArgumentException`, and a JSON field without a codec with `IllegalStateException`.
 
+## Reading entities
+
+`load` and `loadGroup` are one SELECT each; `loadAll`, behind `getAll`, is one `WHERE id IN (...)` per 1,000 ids, on one
+connection.
+
 ## Writing entities
 
 - **Each batch is one transaction**, so a batch that failed left nothing behind: written again, or split into single
@@ -74,7 +79,8 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 Install managame-common and managame-data first. The tests run against H2 in MySQL mode, a real database in memory,
-through GameData, covering rows with JSON columns, loading JSON into the initialized collection, updates of many rows
+through GameData, covering rows with JSON columns, loading JSON into the initialized collection, `getAll` of more ids
+than one SELECT names, updates of many rows
 in few statements, groups and a unique slot reused through deletes first, a bad row dropped and the others written,
 changes kept while the database refuses connections, an insert whose commit was not acknowledged written again without
 a duplicate, an update of a missing row reported, mappings refused at build, and logs in day partitions cut in the

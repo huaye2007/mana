@@ -33,6 +33,11 @@ public class Player {
   Anything else comes from the database's codec registry, where the application registers its own classes.
 - A field missing from a document keeps the value the constructor gives it, so fields can be added without migrating.
 
+## Reading
+
+`load` finds a document by `_id`, `loadGroup` by the group fields, and `loadAll`, behind `getAll`, with one `_id $in`
+query.
+
 ## Writing
 
 Every write is idempotent, so a batch that failed part way is simply written again, with no record of which documents

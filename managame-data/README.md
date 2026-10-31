@@ -76,6 +76,7 @@ Players players = data.repository(Players.class);
 
 Player player = players.getOrCreate(id, Player::new);    // inserted when the database has none
 players.update(id, p -> p.levelUp());                    // change and record in one call
+Map<Long, Player> friends = players.getAll(friendIds);   // those not in memory read in one load
 Map<Integer, Item> bag = data.repository(Items.class).getGroup(GroupKeys.of(id));
 data.repository(ItemLogs.class).insert(new ItemLog(id, 5001, -1));
 ...
@@ -101,6 +102,9 @@ data.close();                                            // writes what is left
   answers: fine on a virtual thread, as managame-runtime's Routes are by default, never on a Netty EventLoop. A group is
   always loaded whole, by reads and changes alike. `getGroup` returns a live, read-only view; change a group through the
   repository.
+- **Several at once.** `getAll(ids)` returns those of the ids that exist, by id in the order asked. Those not in memory
+  are read with one call of the mapper's `loadAll` (in MySQL a `WHERE id IN (...)` per thousand ids), each still loaded
+  once however many threads ask: a `get` of one of them meanwhile waits for that call.
 - **After changing an entity, record it**: `update(entity)`, or change it through `update(id, change)` /
   `update(groupKey, mapKey, change)`, which cannot forget. A change is written with the state the entity has when its
   round writes it, read then by a write thread.
@@ -164,10 +168,31 @@ class LogService implements LogWriter {
 }
 ```
 
+## Stats
+
+`data.stats()` reads, from any thread, what each repository holds and what the rounds did with it since build, cheap
+enough to read every few seconds and hand to the application's monitoring:
+
+```java
+for (EntityStats stats : data.stats().entities())
+    if (stats.waiting() > 100_000) alert(stats.entityType().getSimpleName() + ": " + stats.waiting() + " changes waiting");
+```
+
+| `EntityStats` | |
+| --- | --- |
+| `cached` | entities in memory, or groups for a GroupRepository, as Caffeine estimates it |
+| `waiting` | changes waiting to be written, the round in progress included: one that keeps growing means the database falls behind |
+| `written`, `failures`, `dropped` | since build: changes written, writes that failed (tried again or not), changes handed to the DataErrorHandler |
+| `cache` | Caffeine's `CacheStats`: hits, misses, loads, failed loads, load time and evictions; `minus` gives what changed between two reads |
+
+`LogStats` has `queued`, `written`, `refused` (by a full queue), `failures` and `dropped`. Each number is read on its
+own, so they need not be from the same instant.
+
 ## Your own EntityMapper
 
 An `EntityMapper` (in `cn.managame.data.spi`) serves the entity types registered with it: `prepare(EntityType)` once
-per type at build, then `load`, `loadGroup` and `write(type, operation, batch)`, each `Change` of the batch giving the
+per type at build, then `load`, `loadAll` (by default a `load` per id; override it to read them in one query),
+`loadGroup` and `write(type, operation, batch)`, each `Change` of the batch giving the
 entity's id and the entity to read. `EntityType` lists the saved fields (`EntityField`: name, type, `valueType`, get,
 set, and the Java field for annotations), the key fields, and makes new instances. Writing a batch again after it
 failed must do no harm: write a batch in one transaction, or every entity idempotently. An UPDATE that finds an entity
@@ -215,6 +240,9 @@ acknowledgement or refuse bad rows. They cover:
 - groups: loading, changing, keys of several fields, an evicted group coming back with its unwritten changes;
 - one load for threads asking for the same id or group at once; unused entries and those beyond `maxCacheEntries`
   leaving memory, and an evicted entity coming back unwritten as the same instance;
+- `getAll`: one load of the ids neither in memory nor changed, a `get` waiting for the `getAll` loading its id, a failed
+  `getAll` keeping nothing;
+- stats: changes waiting, written, failed and dropped, cache hits, misses and loads, logs queued, refused and written;
 - logs through the application's writer: in order, kept when the writer calls a failure retryable, a refused log
   dropped and the others written, a full queue refusing logs;
 - failures: a bad row dropped and the others written, changes kept while the database cannot be reached, an insert whose
