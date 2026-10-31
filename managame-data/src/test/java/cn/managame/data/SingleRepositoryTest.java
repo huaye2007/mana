@@ -11,8 +11,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import cn.managame.data.Fixtures.Player;
 import cn.managame.data.Fixtures.Players;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -118,6 +123,36 @@ class SingleRepositoryTest {
         assertThrows(IllegalArgumentException.class, () -> players.getOrCreate(8L, id -> new Player(9, "x")));
         data.flush();
         assertEquals(30L, database.rows(Player.class).getFirst().get("gold"));
+    }
+
+    @Test
+    void loadsAnIdOnceForThreadsAskingAtOnce() throws Exception {
+        database.put(Player.class, new Player(7, "bob"));
+        database.loadGate = new CountDownLatch(1);
+        List<Future<Player>> asked = new ArrayList<>();
+        try (ExecutorService threads = Executors.newFixedThreadPool(8)) {
+            for (int i = 0; i < 8; i++) asked.add(threads.submit(() -> players.get(7L)));
+            while (database.loads.get() == 0) Thread.onSpinWait();
+            Thread.sleep(50);   // the others ask while the first load waits at the gate
+            database.loadGate.countDown();
+            Player first = asked.getFirst().get();
+            for (Future<Player> player : asked) assertSame(first, player.get());
+        }
+        assertEquals(1, database.loads.get());
+    }
+
+    @Test
+    void keepsAtMostMaxCacheEntries() {
+        data.close();
+        data = GameData.builder().repositories(database, List.of(Players.class)).maxCacheEntries(2)
+                .flushInterval(Duration.ofMinutes(1)).build();
+        players = data.repository(Players.class);
+        for (long id = 1; id <= 10; id++) database.put(Player.class, new Player(id, "p" + id));
+        for (long id = 1; id <= 10; id++) players.get(id);
+        players.cleanUp();
+        int loaded = database.loads.get();
+        for (long id = 1; id <= 10; id++) players.get(id);
+        assertTrue(database.loads.get() - loaded >= 8, "at most two of the ten stayed in memory");
     }
 
     @Test

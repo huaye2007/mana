@@ -10,12 +10,18 @@ import cn.managame.data.internal.EntityKeys;
 import cn.managame.data.internal.PendingChange;
 import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.LoadingCache;
+import com.github.benmanes.caffeine.cache.Ticker;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
 /**
@@ -25,45 +31,53 @@ import java.util.function.Consumer;
  * instance from {@link GameData#repository}. {@code K} is the {@code @MapKey} field's type, or String for several
  * MapKey fields, joined by {@link MapKeys#of}.
  *
- * <p>A group is loaded whole on first use, by reads and changes alike, on the calling thread. Changes go to memory at
- * once, checked against the group, and to the database in the next round, which reads the entities then: after
- * changing an entity call {@link #update(Object)}, and keep its collections thread-safe. A group unused for the
- * builder's {@code cacheExpire} leaves memory, as does one {@link #evict}ed; loaded again, it has its unwritten
- * entities, the very same instances.
+ * <p>A group is loaded whole on first use, by reads and changes alike, once however many threads ask for it, and they
+ * block while the database answers. Changes go to memory at once, checked against the group, and to the database in the
+ * next round, which reads the entities then: after changing an entity call {@link #update(Object)}, and keep its
+ * collections thread-safe. A group unused for the builder's {@code cacheExpire} leaves memory, as do the least used
+ * beyond its {@code maxCacheEntries} and one {@link #evict}ed; loaded again, it has its unwritten entities, the very
+ * same instances.
  */
 public abstract class GroupRepository<K, E> {
-    private static final class Group<K, E> {
-        final ConcurrentHashMap<K, E> entities = new ConcurrentHashMap<>();
-        final Map<K, E> view = Collections.unmodifiableMap(entities);
-        volatile long lastAccess;
+    private record Group<K, E>(ConcurrentHashMap<K, E> entities, Map<K, E> view) {
+        Group() { this(new ConcurrentHashMap<>()); }
 
-        Group(long accessTime) { lastAccess = accessTime; }
+        private Group(ConcurrentHashMap<K, E> entities) { this(entities, Collections.unmodifiableMap(entities)); }
     }
 
-    private final ConcurrentHashMap<GroupKeys, Group<K, E>> cache = new ConcurrentHashMap<>();
+    private LoadingCache<GroupKeys, Group<K, E>> groups;
     private EntityType entityType;
     private EntityKeys keys;
     private EntityMapper mapper;
     private ChangeSet changes;
-    /** What an access marks a group with; GameData sets it every flush interval. */
-    private volatile long accessTime = System.nanoTime();
 
     protected GroupRepository() {}
 
-    final void bind(ChangeSet changes, EntityKeys keys) {
+    /**
+     * The cache tidies itself on the threads that use it, which costs less than waking another thread, and times
+     * accesses by {@code ticker}. Loads run on {@code loads}, one per group however many threads ask for it, outside
+     * the cache's locks; the asking threads wait for it.
+     */
+    final void bind(ChangeSet changes, EntityKeys keys, Duration cacheExpire, long maxCacheEntries, Ticker ticker,
+            Executor loads) {
         entityType = changes.type();
         this.keys = keys;
         mapper = changes.mapper();
         this.changes = changes;
+        groups = Caffeine.newBuilder().executor(Runnable::run).ticker(ticker).expireAfterAccess(cacheExpire)
+                .maximumSize(maxCacheEntries)
+                .buildAsync((GroupKeys groupKey, Executor executor) ->
+                        CompletableFuture.supplyAsync(() -> load(groupKey), loads))
+                .synchronous();
     }
 
-    /** A live, read-only view of the group, loaded on this thread when not in memory; empty when the database has none. */
-    public final Map<K, E> getGroup(GroupKeys groupKey) { return group(keys().checkGroupKey(groupKey)).view; }
+    /** A live, read-only view of the group, loaded first when not in memory; empty when the database has none. */
+    public final Map<K, E> getGroup(GroupKeys groupKey) { return group(keys().checkGroupKey(groupKey)).view(); }
 
     /** The entity at {@code mapKey} in the group, or null. */
     public final E get(GroupKeys groupKey, K mapKey) {
         keys().checkKeyType(mapKey);
-        return group(keys.checkGroupKey(groupKey)).entities.get(mapKey);
+        return group(keys.checkGroupKey(groupKey)).entities().get(mapKey);
     }
 
     /**
@@ -83,8 +97,8 @@ public abstract class GroupRepository<K, E> {
     public final void insert(E entity) {
         Object id = keys().idOf(entity);
         GroupKeys groupKey = keys.groupKeyOf(entity);
-        group(groupKey).entities.compute(mapKeyOf(entity), (key, existing) -> {
-            if (existing != null) throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " already exists in group " + groupKey);
+        group(groupKey).entities().compute(mapKeyOf(entity), (key, existing) -> {
+            if (existing != null) throw new IllegalStateException(entityName() + " " + key + " already exists in group " + groupKey);
             changes.add(INSERT, id, groupKey, key, entity);
             return entity;
         });
@@ -99,14 +113,14 @@ public abstract class GroupRepository<K, E> {
         GroupKeys groupKey = keys.groupKeyOf(entity);
         K mapKey = mapKeyOf(entity);
         Group<K, E> group = group(groupKey);
-        if (group.entities.get(mapKey) == entity) {   // the usual case: the entity in memory changed
+        if (group.entities().get(mapKey) == entity) {   // the usual case: the entity in memory changed
             changes.add(UPDATE, id, groupKey, mapKey, entity);
             return;
         }
-        group.entities.compute(mapKey, (key, existing) -> {
-            if (existing == null) throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " does not exist in group " + groupKey);
+        group.entities().compute(mapKey, (key, existing) -> {
+            if (existing == null) throw new IllegalStateException(entityName() + " " + key + " does not exist in group " + groupKey);
             if (!id.equals(keys.idOf(existing)))
-                throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " of group " + groupKey + " is " + keys.idOf(existing) + ", not " + id);
+                throw new IllegalStateException(entityName() + " " + key + " of group " + groupKey + " is " + keys.idOf(existing) + ", not " + id);
             changes.add(UPDATE, id, groupKey, key, entity);
             return entity;
         });
@@ -121,40 +135,34 @@ public abstract class GroupRepository<K, E> {
     /** Deletes every entity of the group. */
     public final void deleteGroup(GroupKeys groupKey) {
         Group<K, E> group = group(keys().checkGroupKey(groupKey));
-        for (K mapKey : new ArrayList<>(group.entities.keySet())) delete(group, groupKey, mapKey);
+        for (K mapKey : new ArrayList<>(group.entities().keySet())) delete(group, groupKey, mapKey);
     }
 
     /** Drops the group from memory; its changes not yet written are written all the same. */
-    public final void evict(GroupKeys groupKey) { cache.remove(keys().checkGroupKey(groupKey)); }
+    public final void evict(GroupKeys groupKey) { groups.invalidate(keys().checkGroupKey(groupKey)); }
 
-    final void setAccessTime(long time) { accessTime = time; }
-
-    /** Drops groups last accessed before {@code time}; runs on GameData's scheduler thread. */
-    final void evictUnusedSince(long time) {
-        for (var cached : cache.entrySet())
-            if (cached.getValue().lastAccess - time < 0)
-                cache.computeIfPresent(cached.getKey(), (key, group) -> group.lastAccess - time < 0 ? null : group);
-    }
+    /** Drops what expired or overflowed now rather than at the next use; GameData calls it every flush interval. */
+    final void cleanUp() { groups.cleanUp(); }
 
     private void delete(Group<K, E> group, GroupKeys groupKey, K mapKey) {
-        group.entities.computeIfPresent(mapKey, (key, existing) -> {
+        group.entities().computeIfPresent(mapKey, (key, existing) -> {
             changes.add(DELETE, keys.idOf(existing), groupKey, key, existing);
             return null;
         });
     }
 
+    /**
+     * The group, from memory or loaded while this thread waits. Changes are made only to a group in memory, after
+     * loading it, so a group evicted while one is made gets the change from the change set when it is loaded again.
+     */
     private Group<K, E> group(GroupKeys groupKey) {
-        Group<K, E> group = cache.get(groupKey);
-        if (group == null) return load(groupKey);
-        long time = accessTime;
-        if (group.lastAccess != time) group.lastAccess = time;
-        return group;
+        Group<K, E> group = groups.getIfPresent(groupKey);   // a hit allocates nothing, unlike get
+        return group != null ? group : groups.get(groupKey);
     }
 
     /**
-     * Loads outside any lock and lays the group's unwritten changes over what the database returned, deletes first, so
-     * a row deleted and another inserted at the same map key end as the inserted one. Changes always go to the group
-     * in memory and are made only after loading it, so a group another thread put in memory meanwhile wins.
+     * What the database has for the group with its unwritten changes laid over, deletes first, so a row deleted and
+     * another inserted at the same map key end as the inserted one.
      */
     @SuppressWarnings("unchecked")
     private Group<K, E> load(GroupKeys groupKey) {
@@ -163,24 +171,24 @@ public abstract class GroupRepository<K, E> {
         try {
             loaded = mapper.loadGroup(entityType, groupKey);
         } catch (Exception e) {
-            throw new DataException(DATA_LOAD_FAILED, "cannot load " + entityType.entityClass().getSimpleName() + " group " + groupKey, e);
+            throw new DataException(DATA_LOAD_FAILED, "cannot load " + entityName() + " group " + groupKey, e);
         }
-        Group<K, E> group = new Group<>(accessTime);
+        Group<K, E> group = new Group<>();
         for (Object entity : loaded) {
             K mapKey = mapKeyOf((E) entity);
-            if (group.entities.putIfAbsent(mapKey, (E) entity) != null)
-                throw new DataException(DATA_LOAD_FAILED, "group " + groupKey + " of " + entityType.entityClass().getSimpleName()
-                        + " has two rows with map key " + mapKey, null);
+            if (group.entities().putIfAbsent(mapKey, (E) entity) != null)
+                throw new DataException(DATA_LOAD_FAILED, "group " + groupKey + " of " + entityName() + " has two rows with map key " + mapKey, null);
         }
-        for (PendingChange change : unwritten) if (change.operation() == DELETE) group.entities.remove((K) change.mapKey());
+        for (PendingChange change : unwritten) if (change.operation() == DELETE) group.entities().remove((K) change.mapKey());
         for (PendingChange change : unwritten)
-            if (change.operation() != DELETE) group.entities.put((K) change.mapKey(), (E) change.entity());
-        Group<K, E> existing = cache.putIfAbsent(groupKey, group);
-        return existing != null ? existing : group;
+            if (change.operation() != DELETE) group.entities().put((K) change.mapKey(), (E) change.entity());
+        return group;
     }
 
     @SuppressWarnings("unchecked")
     private K mapKeyOf(E entity) { return (K) keys.mapKeyOf(entity); }
+
+    private String entityName() { return entityType.entityClass().getSimpleName(); }
 
     private EntityKeys keys() {
         if (keys == null) throw new IllegalStateException(getClass().getName() + " was not built by GameData");

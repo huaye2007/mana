@@ -23,8 +23,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The repositories of a game server and the threads that write what they change. The application picks where each
@@ -41,8 +44,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Every {@code flushInterval} one thread starts a round that writes what changed since the last one, rows changed
  * several times written once, in batches of {@code batchSize}, each entity or log type on one of {@code writeThreads}
- * threads. A crash loses at most about one interval of changes. The same thread evicts entities and groups unused for
- * {@code cacheExpire}.
+ * threads. A crash loses at most about one interval of changes. Each repository keeps its entities or groups in a
+ * Caffeine cache, which drops those unused for {@code cacheExpire} and the least used beyond {@code maxCacheEntries};
+ * the same thread sets the caches' clock and cleans them up every round. Loads run on virtual threads of their own.
  */
 public final class GameData implements AutoCloseable {
     public static final Duration DEFAULT_FLUSH_INTERVAL = Duration.ofSeconds(1);
@@ -51,18 +55,18 @@ public final class GameData implements AutoCloseable {
     public static final int DEFAULT_BATCH_SIZE = 500;
     public static final int DEFAULT_WRITE_THREADS = 4;
     public static final int DEFAULT_LOG_QUEUE_CAPACITY = 100_000;
+    public static final long DEFAULT_MAX_CACHE_ENTRIES = 1_000_000;
     private static final System.Logger LOG = System.getLogger("cn.managame.data");
     private final Map<Class<?>, Object> repositories;
     private final List<SingleRepository<?, ?>> singleRepositories;
     private final List<GroupRepository<?, ?>> groupRepositories;
     private final ChangeWriter writer;
+    private final AtomicLong clock;
     private final ScheduledThreadPoolExecutor scheduler;
-    private final long flushIntervalNanos, cacheExpireNanos, shutdownTimeoutNanos;
-    /** Read and written only by the scheduler's thread. */
-    private long lastEvictionTime = System.nanoTime();
+    private final long flushIntervalNanos, shutdownTimeoutNanos;
     private volatile boolean closed;
 
-    private GameData(Builder builder, Map<Class<?>, Object> repositories, ChangeWriter writer) {
+    private GameData(Builder builder, Map<Class<?>, Object> repositories, ChangeWriter writer, AtomicLong clock) {
         this.repositories = Map.copyOf(repositories);
         List<SingleRepository<?, ?>> singles = new ArrayList<>();
         List<GroupRepository<?, ?>> groups = new ArrayList<>();
@@ -73,11 +77,11 @@ public final class GameData implements AutoCloseable {
         singleRepositories = List.copyOf(singles);
         groupRepositories = List.copyOf(groups);
         this.writer = writer;
+        this.clock = clock;
         flushIntervalNanos = builder.flushInterval.toNanos();
-        cacheExpireNanos = builder.cacheExpire.toNanos();
         shutdownTimeoutNanos = builder.shutdownTimeout.toNanos();
         scheduler = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("game-data").factory());
-        scheduler.scheduleWithFixedDelay(this::writeAndEvict, flushIntervalNanos, flushIntervalNanos, TimeUnit.NANOSECONDS);
+        scheduler.scheduleWithFixedDelay(this::writeAndCleanUp, flushIntervalNanos, flushIntervalNanos, TimeUnit.NANOSECONDS);
     }
 
     public static Builder builder() { return new Builder(); }
@@ -139,17 +143,12 @@ public final class GameData implements AutoCloseable {
     }
 
     /** Runs every flush interval on the scheduler's thread. */
-    private void writeAndEvict() {
-        long now = System.nanoTime();
+    private void writeAndCleanUp() {
         try {
-            for (SingleRepository<?, ?> repository : singleRepositories) repository.setAccessTime(now);
-            for (GroupRepository<?, ?> repository : groupRepositories) repository.setAccessTime(now);
+            clock.set(System.nanoTime());
             if (!closed) writer.writeAll();
-            if (now - lastEvictionTime >= Math.max(flushIntervalNanos, cacheExpireNanos / 4)) {
-                lastEvictionTime = now;
-                for (SingleRepository<?, ?> repository : singleRepositories) repository.evictUnusedSince(now - cacheExpireNanos);
-                for (GroupRepository<?, ?> repository : groupRepositories) repository.evictUnusedSince(now - cacheExpireNanos);
-            }
+            for (SingleRepository<?, ?> repository : singleRepositories) repository.cleanUp();
+            for (GroupRepository<?, ?> repository : groupRepositories) repository.cleanUp();
         } catch (Throwable e) {
             LOG.log(System.Logger.Level.ERROR, "data write round failed", e);
         }
@@ -161,6 +160,7 @@ public final class GameData implements AutoCloseable {
         private Duration flushInterval = DEFAULT_FLUSH_INTERVAL, cacheExpire = DEFAULT_CACHE_EXPIRE,
                 shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
         private int batchSize = DEFAULT_BATCH_SIZE, writeThreads = DEFAULT_WRITE_THREADS, logQueueCapacity = DEFAULT_LOG_QUEUE_CAPACITY;
+        private long maxCacheEntries = DEFAULT_MAX_CACHE_ENTRIES;
         private DataErrorHandler errorHandler = failure -> LOG.log(System.Logger.Level.ERROR,
                 FrameworkErrorCodes.describe(failure.errorCode()) + ": " + failure.operation() + " of "
                         + failure.entityType().getName() + " dropped: " + failure.value(), failure.cause());
@@ -204,9 +204,22 @@ public final class GameData implements AutoCloseable {
             return this;
         }
 
-        /** How long an entity or group stays in memory unused; longer than the flush interval. 30 minutes by default. */
+        /**
+         * How long an entity or group stays in memory unused; 30 minutes by default. The caches read a clock set every
+         * flush interval, so an entry may stay up to one interval longer.
+         */
         public Builder cacheExpire(Duration expire) {
             cacheExpire = positive(expire, "cacheExpire");
+            return this;
+        }
+
+        /**
+         * Entities, or groups, one repository keeps in memory at most; beyond it the cache drops those least likely to be
+         * used again. 1,000,000 by default. Changes of a dropped entity are written all the same, and a reload sees them.
+         */
+        public Builder maxCacheEntries(long entries) {
+            if (entries <= 0) throw new IllegalArgumentException("maxCacheEntries must be positive");
+            maxCacheEntries = entries;
             return this;
         }
 
@@ -237,11 +250,15 @@ public final class GameData implements AutoCloseable {
          */
         public GameData build() {
             if (registrations.isEmpty()) throw new IllegalStateException("no repositories");
-            if (cacheExpire.compareTo(flushInterval) <= 0) throw new IllegalArgumentException("cacheExpire must be longer than flushInterval");
             Map<Class<?>, Object> repositories = new LinkedHashMap<>();
             Set<Class<?>> entityClasses = new HashSet<>();
             List<ChangeSet> changeSets = new ArrayList<>();
             Map<LogRepository<?>, LogQueue> logRepositories = new LinkedHashMap<>();
+            // Each load on a virtual thread of its own: it blocks while the database answers, outside the caches' locks.
+            Executor loads = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("game-data-load-", 0).factory());
+            // The caches' clock, read on every access and set every flush interval: a volatile read costs less than
+            // System.nanoTime, and expiry needs no finer time.
+            AtomicLong clock = new AtomicLong(System.nanoTime());
             for (Map.Entry<Class<?>, Object> registration : registrations.entrySet()) {
                 Class<?> type = registration.getKey();
                 if (!(type.getGenericSuperclass() instanceof ParameterizedType superclass))
@@ -277,12 +294,12 @@ public final class GameData implements AutoCloseable {
                 mapper.prepare(entityType);
                 ChangeSet changes = new ChangeSet(entityType, mapper);
                 changeSets.add(changes);
-                if (single) ((SingleRepository<?, ?>) repository).bind(changes, keys);
-                else ((GroupRepository<?, ?>) repository).bind(changes, keys);
+                if (single) ((SingleRepository<?, ?>) repository).bind(changes, keys, cacheExpire, maxCacheEntries, clock::get, loads);
+                else ((GroupRepository<?, ?>) repository).bind(changes, keys, cacheExpire, maxCacheEntries, clock::get, loads);
             }
             ChangeWriter writer = new ChangeWriter(changeSets, List.copyOf(logRepositories.values()), batchSize, writeThreads, errorHandler);
             logRepositories.forEach((repository, queue) -> repository.bind(queue, writer));
-            return new GameData(this, repositories, writer);
+            return new GameData(this, repositories, writer, clock);
         }
 
         private Builder register(Object target, Collection<? extends Class<?>> types) {

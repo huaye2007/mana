@@ -12,9 +12,14 @@ import cn.managame.data.Fixtures.Items;
 import cn.managame.data.Fixtures.Quest;
 import cn.managame.data.Fixtures.Quests;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -69,6 +74,22 @@ class GroupRepositoryTest {
         items.insert(new Item(1, 100, 0, 5001, 1));
         assertThrows(IllegalStateException.class, () -> items.update(new Item(2, 100, 0, 5001, 1)));
         assertThrows(IllegalStateException.class, () -> items.update(new Item(3, 100, 5, 5001, 1)));
+    }
+
+    @Test
+    void loadsAGroupOnceForThreadsAskingAtOnce() throws Exception {
+        database.put(Item.class, new Item(1, 100, 0, 5001, 1));
+        database.loadGate = new CountDownLatch(1);
+        List<Future<Map<Integer, Item>>> asked = new ArrayList<>();
+        try (ExecutorService threads = Executors.newFixedThreadPool(8)) {
+            for (int i = 0; i < 8; i++) asked.add(threads.submit(() -> items.getGroup(GroupKeys.of(100L))));
+            while (database.loads.get() == 0) Thread.onSpinWait();
+            Thread.sleep(50);   // the others ask while the first load waits at the gate
+            database.loadGate.countDown();
+            Item first = asked.getFirst().get().get(0);
+            for (Future<Map<Integer, Item>> bag : asked) assertSame(first, bag.get().get(0));
+        }
+        assertEquals(1, database.loads.get());
     }
 
     @Test

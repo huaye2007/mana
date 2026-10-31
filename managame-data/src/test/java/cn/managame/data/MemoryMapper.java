@@ -11,6 +11,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 /**
@@ -26,16 +28,36 @@ class MemoryMapper implements EntityMapper {
     volatile boolean failAfterNextWrite;
     /** Rows this predicate accepts are refused as bad data. */
     volatile Predicate<Object> badRows = entity -> false;
+    /** Loads so far, of single entities and of groups. */
+    final AtomicInteger loads = new AtomicInteger();
+    /** When set, every load waits for it to open, outside this mapper's lock. */
+    volatile CountDownLatch loadGate;
 
     @Override public synchronized void prepare(EntityType type) { tables.put(type, new LinkedHashMap<>()); }
 
-    @Override public synchronized Object load(EntityType type, Object id) throws ConnectException {
+    @Override public Object load(EntityType type, Object id) throws ConnectException, InterruptedException {
+        waitAtGate();
+        return loadNow(type, id);
+    }
+
+    private synchronized Object loadNow(EntityType type, Object id) throws ConnectException {
         if (unreachable) throw new ConnectException("the database cannot be reached");
         Map<String, Object> row = tables.get(type).get(id);
         return row == null ? null : entityOf(type, row);
     }
 
-    @Override public synchronized List<Object> loadGroup(EntityType type, GroupKeys key) throws ConnectException {
+    @Override public List<Object> loadGroup(EntityType type, GroupKeys key) throws ConnectException, InterruptedException {
+        waitAtGate();
+        return loadGroupNow(type, key);
+    }
+
+    private void waitAtGate() throws InterruptedException {
+        loads.incrementAndGet();
+        CountDownLatch gate = loadGate;
+        if (gate != null) gate.await();
+    }
+
+    private synchronized List<Object> loadGroupNow(EntityType type, GroupKeys key) throws ConnectException {
         if (unreachable) throw new ConnectException("the database cannot be reached");
         List<Object> entities = new ArrayList<>();
         for (Map<String, Object> row : tables.get(type).values()) {

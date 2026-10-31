@@ -13,7 +13,7 @@ Java 25. The workspace is the git repository https://github.com/huaye2007/mana (
 | `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
-| `managame-data` | common | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
+| `managame-data` | common, Caffeine | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
 | `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
 | `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
 | `managame-benchmark` | all but data-mongo, JMH 1.37, H2 | JMH benchmarks per component with recorded baselines (`results/*.csv`); a tool nothing depends on |
@@ -134,8 +134,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   (`MysqlEntityMapper` with `@Table`, `MongoEntityMapper` with `@Collection`, `MysqlLogWriter`), and where logs go,
   such as a service over HTTP, is the application's `LogWriter`; each mapper and writer decides what is retryable.
   Changes are recorded, not copied: the write thread reads the entity when it writes it, so business threads pay no
-  copy and entity collections must be thread-safe. Game data has only these two shapes plus logs; the application owns
-  the schema (no DDL but MySQL log partitions created `LIKE` their base table).
+  copy and entity collections must be thread-safe. The caches are Caffeine's, used through its own API with no
+  wrapper: it loads a key once however many threads ask, and expires and bounds entries. Game data has only these two
+  shapes plus logs; the application owns the schema (no DDL but MySQL log partitions created `LIKE` their base table).
 - data's packages split by who uses them: `cn.managame.data` for business code (GameData, repositories, keys,
   failures), `annotation` for the entity annotations (`mysql.annotation`, `mongo.annotation` in the backend projects),
   `spi` for what a backend implements and reads (`EntityMapper`, `LogWriter`, `EntityType`, `EntityField`, read-only
