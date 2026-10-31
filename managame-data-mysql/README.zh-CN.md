@@ -35,7 +35,8 @@ public class Player {
 
 ## 读实体
 
-`load` 和 `loadGroup` 各一条 SELECT；`loadAll`（`getAll` 用它）每 1,000 个 id 一条 `WHERE id IN (...)`，用同一个连接。
+`load` 和 `loadGroup` 各一条 SELECT；`loadAll`（`getAll` 用它）每 1,000 个 id 一条 `WHERE id IN (...)`，用同一个连接；
+`loadTable`（整表常驻的 Repository 用它）一条 SELECT 读整张表。
 
 ## 写实体
 
@@ -73,7 +74,7 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 先安装 managame-common 和 managame-data。测试通过 GameData 运行在 MySQL 模式的 H2 上，这是一个真正的内存数据库，覆盖：带
-JSON 列的行，JSON 加载成初始化时的集合，超过一条 SELECT 上限的 `getAll`，用少量语句更新大量行，分组以及先删后插使唯一的格子
+JSON 列的行，JSON 加载成初始化时的集合，整表常驻，超过一条 SELECT 上限的 `getAll`，用少量语句更新大量行，分组以及先删后插使唯一的格子
 可以复用，坏行丢弃而其他照常写入，
 数据库拒绝连接期间保留修改，提交未确认的插入重写而不产生重复，更新已不存在的行被报告，构建时拒绝不合适的映射，以及按分区
 时区切分的按天分区日志在一批里写入。提供一个可以丢弃的库时，`MysqlIntegrationTest` 会在真实 MySQL 上运行：

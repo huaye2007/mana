@@ -110,6 +110,9 @@ data.close();                                            // 写完剩下的修�
 - **离开内存。** 超过 `cacheExpire`（30 分钟）没有用到的实体或组会离开内存；一个 Repository 保存的超过 `maxCacheEntries`
   （一百万）时，最少用到的会离开；被 `evict` 的也一样。之后再读会重新加载，并把还没写入的修改叠加在数据库返回的结果上：用的
   是同一批实例，所以重新加载永远不会比内存里的数据旧。
+- **整表常驻。** 能放进内存又一直要读的表（例如公会）用 `preloadedRepositories(mapper, types)` 注册：build 时通过 Mapper 的
+  `loadTable` 整表读入，之后什么都不离开内存。内存里没有的 id 或组就是不存在，所以读取从不查库；`all()` 以只读视图列出全部
+  实体（或组）。修改照常写入；`evict` 会抛异常，因为丢掉一个实体会让它看起来像被删除了。
 
 ## 写入
 
@@ -149,6 +152,15 @@ class LogService implements LogWriter {
 }
 ```
 
+## 直接操作数据库
+
+应用保留交给 Mapper 的 `DataSource` 或 `MongoDatabase`，想怎么用就怎么用，例如管理后台的查询和报表；框架不包装其中任何东西。
+Repository 持有的数据以内存为准，数据库落后它一轮：
+
+- **要读到最新状态**，先调用 `flush()`。
+- **Repository 持有的行只通过 Repository 修改**，并且在持有它们的那台服上修改，不要用 SQL 或驱动直接改：下一轮写入会用内存
+  里的版本覆盖数据库里的。没有注册给任何 Repository 的表，应用可以随意修改。
+
 ## 统计
 
 `data.stats()` 可以在任何线程调用，读出每个 Repository 当前保存了什么、build 以来各轮写入做了什么，开销小到可以每隔几秒读一次，
@@ -171,7 +183,8 @@ for (EntityStats stats : data.stats().entities())
 ## 自己的 EntityMapper
 
 一个 `EntityMapper`（在 `cn.managame.data.spi` 包里）服务注册给它的所有实体类型：build 时每种类型调用一次
-`prepare(EntityType)`，之后是 `load`、`loadAll`（默认逐个 `load`；能一条查询读完的覆盖它）、`loadGroup` 和
+`prepare(EntityType)`，之后是 `load`、`loadAll`（默认逐个 `load`；能一条查询读完的覆盖它）、`loadTable`（只用于整表常驻的
+Repository；默认抛异常，让 build 失败）、`loadGroup` 和
 `write(type, operation, batch)`，批里的每个 `Change` 给出实体的 id 和
 要读取的实体。`EntityType` 列出要保存的字段（`EntityField`：名字、类型、`valueType`、读、写，以及用于读注解的 Java 字段）、
 key 字段，并能创建新实例。失败后重写同一批必须无害：一批在一个事务里写，或者每个实体都幂等地写。更新时发现实体不存在应当
@@ -182,6 +195,7 @@ key 字段，并能创建新实例。失败后重写同一批必须无害：一�
 | 设置 | 默认值 | |
 | --- | --- | --- |
 | `repositories(EntityMapper, Collection)` | | 实体 Repository 及保存它们的 Mapper；也可以逐个列出 |
+| `preloadedRepositories(EntityMapper, Collection)` | | 整表常驻内存、build 时读入的实体 Repository；也可以逐个列出 |
 | `logRepositories(LogWriter, Collection)` | | 日志 Repository 及写它们的 Writer；也可以逐个列出 |
 | `flushInterval` | 1 秒 | 多久写一次；崩溃时大约丢失这么多 |
 | `batchSize` | 500 | 每批的修改或日志数 |
@@ -217,6 +231,7 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
   带着未写入的修改回来；
 - `getAll`：既不在内存也没有修改的 id 一次加载，`get` 等待正在加载它的 `getAll`，失败的 `getAll` 不在内存留下任何东西；
 - 统计：等待、写入、失败和放弃的修改，缓存的命中、未命中和加载，日志的排队、拒绝和写入；
+- 整表常驻：build 时读入整表、之后读取从不查库，`all()`，修改照常写入，拒绝 `evict`，没有 `loadTable` 的 Mapper 让 build 失败；
 - 通过应用自己的 Writer 写日志：按顺序写入，Writer 判为可重试的失败会保留，被拒的日志丢弃而其他照常写入，队列满时拒绝；
 - 失败：坏行丢弃而其他照常写入，连不上数据库期间保留修改，确认丢失的插入重写而不产生重复，更新已不存在的行被报告，close
   交出未能写入的数据；

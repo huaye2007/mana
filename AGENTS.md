@@ -137,6 +137,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   copy and entity collections must be thread-safe. The caches are Caffeine's, used through its own API with no
   wrapper: it loads a key once however many threads ask, and expires and bounds entries. Game data has only these two
   shapes plus logs; the application owns the schema (no DDL but MySQL log partitions created `LIKE` their base table).
+  A table kept whole in memory registers with `preloadedRepositories` (read at build by `loadTable`, never leaves
+  memory, listed by `all()`). The framework wraps no database API: the application queries its own `DataSource` or
+  `MongoDatabase`, calls `flush()` first to read the newest, and changes the rows repositories hold only through them,
+  so there is no reload or evictAll.
 - data's packages split by who uses them: `cn.managame.data` for business code (GameData, repositories, keys,
   failures), `annotation` for the entity annotations (`mysql.annotation`, `mongo.annotation` in the backend projects),
   `spi` for what a backend implements and reads (`EntityMapper`, `LogWriter`, `EntityType`, `EntityField`, read-only

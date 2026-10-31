@@ -25,7 +25,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -83,6 +85,17 @@ class MysqlEntityMapperTest {
         assertEquals(1500, found.size(), "two SELECTs, without the ids above 1500");
         assertEquals(1500L, found.keySet().iterator().next());
         assertEquals("p2", found.get(2L).name);
+    }
+
+    @Test
+    void preloadsAWholeTable() {
+        database.execute("INSERT INTO player VALUES (7, 'bob', 3, 50, '{\"1001\":2}')");
+        database.execute("INSERT INTO player VALUES (8, 'cid', 1, 0, '{}')");
+        try (GameData preloaded = GameData.builder().preloadedRepositories(new MysqlEntityMapper(database, new Json()), Players.class).build()) {
+            Players all = preloaded.repository(Players.class);
+            assertEquals(Set.of(7L, 8L), all.all().stream().map(player -> player.id).collect(Collectors.toSet()));
+            assertEquals(2L, all.get(7L).items.get(1001));
+        }
     }
 
     @Test

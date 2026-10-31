@@ -77,6 +77,14 @@ public final class MongoEntityMapper implements EntityMapper {
         return entities;
     }
 
+    /** Every document of the collection. */
+    @Override public List<Object> loadTable(EntityType type) {
+        CollectionMapping mapping = mappingOf(type);
+        List<Object> entities = new ArrayList<>();
+        for (BsonDocument document : mapping.collection.find()) entities.add(mapping.decode(document));
+        return entities;
+    }
+
     @Override public List<Object> loadGroup(EntityType type, GroupKeys key) {
         CollectionMapping mapping = mappingOf(type);
         BsonDocument filter = new BsonDocument();

@@ -35,8 +35,8 @@ public class Player {
 
 ## Reading
 
-`load` finds a document by `_id`, `loadGroup` by the group fields, and `loadAll`, behind `getAll`, with one `_id $in`
-query.
+`load` finds a document by `_id`, `loadGroup` by the group fields, `loadAll`, behind `getAll`, with one `_id $in`
+query, and `loadTable`, for a preloaded repository, reads every document.
 
 ## Writing
 

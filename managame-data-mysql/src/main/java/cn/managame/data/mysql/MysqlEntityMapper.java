@@ -106,6 +106,18 @@ public final class MysqlEntityMapper implements EntityMapper {
         return entities;
     }
 
+    /** One SELECT of the whole table. */
+    @Override public List<Object> loadTable(EntityType type) throws SQLException {
+        TableMapping mapping = mappingOf(type);
+        try (Connection connection = dataSource.getConnection(); PreparedStatement statement = connection.prepareStatement(mapping.selectFrom)) {
+            List<Object> entities = new ArrayList<>();
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) entities.add(mapping.readEntity(resultSet));
+            }
+            return entities;
+        }
+    }
+
     /** Encodes every row before the transaction starts, so a value that cannot be encoded never touches the table. */
     @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws SQLException {
         TableMapping mapping = mappingOf(type);

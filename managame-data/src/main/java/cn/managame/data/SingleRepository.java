@@ -13,10 +13,8 @@ import cn.managame.data.spi.EntityType;
 import com.github.benmanes.caffeine.cache.AsyncCacheLoader;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
-import com.github.benmanes.caffeine.cache.Ticker;
 import com.github.benmanes.caffeine.cache.stats.ConcurrentStatsCounter;
 import com.github.benmanes.caffeine.cache.stats.StatsCounter;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -48,9 +46,13 @@ import java.util.function.Function;
  * entity unused for the builder's {@code cacheExpire} leaves memory, as do the least used beyond its
  * {@code maxCacheEntries} and one {@link #evict}ed; a later {@code get} returns its unwritten state if it has one, the
  * very same instance.
+ *
+ * <p>A repository registered with {@code preloadedRepositories} reads its whole table while GameData is built and
+ * keeps every entity in memory for good: an id not in memory does not exist, so no read asks the database, and
+ * {@link #all()} lists every entity.
  */
 public abstract class SingleRepository<K, E> {
-    /** Kept in memory in place of an entity the database does not have. */
+    /** Kept in memory, by a repository that loads on demand, in place of an entity the database does not have. */
     private static final Object NOT_FOUND = new Object();
 
     /** By id, the entity or NOT_FOUND. */
@@ -61,22 +63,23 @@ public abstract class SingleRepository<K, E> {
     private EntityKeys keys;
     private EntityMapper mapper;
     private ChangeSet changes;
+    /** Whether the whole table is in memory, so an id not in memory does not exist. */
+    private boolean preloaded;
 
     protected SingleRepository() {}
 
     /**
-     * The cache tidies itself on the threads that use it, which costs less than waking another thread, and times
-     * accesses by {@code ticker}. Loads run on {@code loads}, one per id however many threads ask for it and one call
-     * of the mapper's loadAll per getAll, outside the cache's locks; the asking threads wait for them.
+     * {@code cache} carries the expiry and size bound, none for a preloaded repository. Loads run on {@code loads}, one
+     * per id however many threads ask for it and one call of the mapper's loadAll per getAll, outside the cache's
+     * locks; the asking threads wait for them.
      */
-    final void bind(ChangeSet changes, EntityKeys keys, Duration cacheExpire, long maxCacheEntries, Ticker ticker,
-            Executor loads) {
+    final void bind(ChangeSet changes, EntityKeys keys, Caffeine<Object, Object> cache, Executor loads, boolean preloaded) {
         entityType = changes.type();
         this.keys = keys;
         mapper = changes.mapper();
         this.changes = changes;
-        entities = Caffeine.newBuilder().executor(Runnable::run).ticker(ticker).expireAfterAccess(cacheExpire)
-                .maximumSize(maxCacheEntries).recordStats(() -> cacheStats)
+        this.preloaded = preloaded;
+        entities = cache.recordStats(() -> cacheStats)
                 .buildAsync(new AsyncCacheLoader<Object, Object>() {
                     @Override public CompletableFuture<Object> asyncLoad(Object id, Executor executor) {
                         return CompletableFuture.supplyAsync(() -> load(id), loads);
@@ -89,13 +92,22 @@ public abstract class SingleRepository<K, E> {
                 .synchronous();
     }
 
+    /** Reads the whole table into memory; GameData calls it while building a preloaded repository. */
+    final void preload() {
+        for (Object row : loadTable()) entities.asMap().put(keys.idOf(row), row);
+    }
+
     /** The entity, from memory or loaded while this thread waits; null when the database has none. */
     public final E get(K id) {
         Object key = keys().checkKeyType(id);
         Object entity = entities.asMap().get(key);   // a hit allocates nothing, unlike get, and waits for no load
-        if (entity == null) return entityOf(entities.get(key));
-        cacheStats.recordHits(1);
-        return entityOf(entity);
+        if (entity != null) {
+            cacheStats.recordHits(1);
+            return entityOf(entity);
+        }
+        if (!preloaded) return entityOf(entities.get(key));
+        cacheStats.recordMisses(1);
+        return null;
     }
 
     /**
@@ -117,9 +129,21 @@ public abstract class SingleRepository<K, E> {
             if (entity == null) missing.add(key);
         }
         cacheStats.recordHits(found.size() - missing.size());
-        if (!missing.isEmpty()) found.putAll(entities.getAll(missing));
-        found.values().removeIf(entity -> entity == NOT_FOUND);
+        if (preloaded) cacheStats.recordMisses(missing.size());
+        else if (!missing.isEmpty()) found.putAll(entities.getAll(missing));
+        found.values().removeIf(entity -> entity == null || entity == NOT_FOUND);
         return Collections.unmodifiableMap((Map<K, E>) (Map<?, ?>) found);
+    }
+
+    /**
+     * Every entity, as a live read-only view, of a repository registered with {@code preloadedRepositories};
+     * IllegalStateException for one that loads on demand, whose memory holds only some.
+     */
+    @SuppressWarnings("unchecked")
+    public final Collection<E> all() {
+        keys();
+        if (!preloaded) throw new IllegalStateException(getClass().getName() + " loads on demand, so memory holds only some of its entities");
+        return Collections.unmodifiableCollection((Collection<E>) (Collection<?>) entities.asMap().values());
     }
 
     /**
@@ -175,7 +199,7 @@ public abstract class SingleRepository<K, E> {
             return;
         }
         entities.asMap().compute(id, (key, current) -> {
-            if (current == NOT_FOUND) throw new IllegalStateException(entityName() + " " + key + " does not exist");
+            if (current == NOT_FOUND || current == null && preloaded) throw new IllegalStateException(entityName() + " " + key + " does not exist");
             changes.add(UPDATE, key, null, null, entity);
             return entity;
         });
@@ -184,14 +208,21 @@ public abstract class SingleRepository<K, E> {
     /** Deletes the entity with this id, whether or not it is in memory; nothing when it is known not to exist. */
     public final void delete(K id) {
         entities.asMap().compute(keys().checkKeyType(id), (key, current) -> {
-            if (current == NOT_FOUND) return current;
+            if (current == NOT_FOUND || current == null && preloaded) return current;
             changes.add(DELETE, key, null, null, current);
-            return NOT_FOUND;
+            return preloaded ? null : NOT_FOUND;
         });
     }
 
-    /** Drops the entity from memory; its changes not yet written are written all the same. */
-    public final void evict(K id) { entities.invalidate(keys().checkKeyType(id)); }
+    /**
+     * Drops the entity from memory; its changes not yet written are written all the same. IllegalStateException for a
+     * preloaded repository, where an id not in memory does not exist.
+     */
+    public final void evict(K id) {
+        Object key = keys().checkKeyType(id);
+        if (preloaded) throw new IllegalStateException(getClass().getName() + " is preloaded and keeps every entity in memory");
+        entities.invalidate(key);
+    }
 
     /** Drops what expired or overflowed now rather than at the next use; GameData calls it every flush interval. */
     final void cleanUp() { entities.cleanUp(); }
@@ -236,6 +267,14 @@ public abstract class SingleRepository<K, E> {
         for (Object row : rows) loaded.putIfAbsent(keys.idOf(row), row);
         for (Object id : unchanged) loaded.putIfAbsent(id, NOT_FOUND);
         return loaded;
+    }
+
+    private List<Object> loadTable() {
+        try {
+            return mapper.loadTable(entityType);
+        } catch (Exception e) {
+            throw new DataException(DATA_LOAD_FAILED, "cannot load the table of " + entityName(), e);
+        }
     }
 
     @SuppressWarnings("unchecked")

@@ -10,6 +10,7 @@ import cn.managame.data.internal.LogQueue;
 import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
 import cn.managame.data.spi.LogWriter;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.ParameterizedType;
@@ -176,6 +177,8 @@ public final class GameData implements AutoCloseable {
     public static final class Builder {
         /** Each repository class with the EntityMapper or LogWriter registered for it, in registration order. */
         private final Map<Class<?>, Object> registrations = new LinkedHashMap<>();
+        /** The repository classes registered with preloadedRepositories. */
+        private final Set<Class<?>> preloaded = new HashSet<>();
         private Duration flushInterval = DEFAULT_FLUSH_INTERVAL, cacheExpire = DEFAULT_CACHE_EXPIRE,
                 shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
         private int batchSize = DEFAULT_BATCH_SIZE, writeThreads = DEFAULT_WRITE_THREADS, logQueueCapacity = DEFAULT_LOG_QUEUE_CAPACITY;
@@ -196,6 +199,22 @@ public final class GameData implements AutoCloseable {
 
         /** {@link #repositories(EntityMapper, Collection)} for classes listed one by one. */
         public Builder repositories(EntityMapper mapper, Class<?>... types) { return repositories(mapper, List.of(types)); }
+
+        /**
+         * As {@link #repositories(EntityMapper, Collection)}, for tables kept whole in memory, such as guilds: build reads
+         * every row through the mapper's {@code loadTable}, and nothing leaves memory after, neither for
+         * {@code cacheExpire} nor for {@code maxCacheEntries}, so no read asks the database. Only for tables that fit.
+         */
+        public Builder preloadedRepositories(EntityMapper mapper, Collection<? extends Class<?>> types) {
+            repositories(mapper, types);
+            preloaded.addAll(types);
+            return this;
+        }
+
+        /** {@link #preloadedRepositories(EntityMapper, Collection)} for classes listed one by one. */
+        public Builder preloadedRepositories(EntityMapper mapper, Class<?>... types) {
+            return preloadedRepositories(mapper, List.of(types));
+        }
 
         /** Log repository classes whose logs {@code writer} writes, each directly extending LogRepository. */
         public Builder logRepositories(LogWriter writer, Collection<? extends Class<?>> types) {
@@ -263,9 +282,10 @@ public final class GameData implements AutoCloseable {
         }
 
         /**
-         * Reads every entity class, has each mapper and writer prepare for its types, then starts writing. A
-         * class that does not fit throws IllegalArgumentException, a missing setting IllegalStateException, and what a
-         * mapper or writer throws while preparing comes out as it is; nothing is started then.
+         * Reads every entity class, has each mapper and writer prepare for its types, loads the preloaded tables, then
+         * starts writing. A class that does not fit throws IllegalArgumentException, a missing setting
+         * IllegalStateException, what a mapper or writer throws while preparing comes out as it is, and a table that
+         * cannot be loaded throws DataException ({@code DATA_LOAD_FAILED}); nothing is started then.
          */
         public GameData build() {
             if (registrations.isEmpty()) throw new IllegalStateException("no repositories");
@@ -313,8 +333,19 @@ public final class GameData implements AutoCloseable {
                 mapper.prepare(entityType);
                 ChangeSet changes = new ChangeSet(entityType, mapper);
                 changeSets.add(changes);
-                if (single) ((SingleRepository<?, ?>) repository).bind(changes, keys, cacheExpire, maxCacheEntries, clock::get, loads);
-                else ((GroupRepository<?, ?>) repository).bind(changes, keys, cacheExpire, maxCacheEntries, clock::get, loads);
+                boolean preload = preloaded.contains(type);
+                // A preloaded repository keeps everything: with no expiry or bound, Caffeine keeps a plain map.
+                Caffeine<Object, Object> cache = preload ? Caffeine.newBuilder().executor(Runnable::run)
+                        : Caffeine.newBuilder().executor(Runnable::run).ticker(clock::get).expireAfterAccess(cacheExpire).maximumSize(maxCacheEntries);
+                if (single) {
+                    SingleRepository<?, ?> byId = (SingleRepository<?, ?>) repository;
+                    byId.bind(changes, keys, cache, loads, preload);
+                    if (preload) byId.preload();
+                } else {
+                    GroupRepository<?, ?> inGroups = (GroupRepository<?, ?>) repository;
+                    inGroups.bind(changes, keys, cache, loads, preload);
+                    if (preload) inGroups.preload();
+                }
             }
             ChangeWriter writer = new ChangeWriter(changeSets, List.copyOf(logRepositories.values()), batchSize, writeThreads, errorHandler);
             logRepositories.forEach((repository, queue) -> repository.bind(queue, writer));

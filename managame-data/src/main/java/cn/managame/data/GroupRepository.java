@@ -12,12 +12,11 @@ import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
-import com.github.benmanes.caffeine.cache.Ticker;
 import com.github.benmanes.caffeine.cache.stats.ConcurrentStatsCounter;
 import com.github.benmanes.caffeine.cache.stats.StatsCounter;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -39,6 +38,10 @@ import java.util.function.Consumer;
  * collections thread-safe. A group unused for the builder's {@code cacheExpire} leaves memory, as do the least used
  * beyond its {@code maxCacheEntries} and one {@link #evict}ed; loaded again, it has its unwritten entities, the very
  * same instances.
+ *
+ * <p>A repository registered with {@code preloadedRepositories} reads its whole table while GameData is built and
+ * keeps every group in memory for good: a group not in memory has no entities, so no read asks the database, and
+ * {@link #all()} lists every group.
  */
 public abstract class GroupRepository<K, E> {
     private record Group<K, E>(ConcurrentHashMap<K, E> entities, Map<K, E> view) {
@@ -54,34 +57,56 @@ public abstract class GroupRepository<K, E> {
     private EntityKeys keys;
     private EntityMapper mapper;
     private ChangeSet changes;
+    /** Whether the whole table is in memory, so a group not in memory has no entities. */
+    private boolean preloaded;
 
     protected GroupRepository() {}
 
     /**
-     * The cache tidies itself on the threads that use it, which costs less than waking another thread, and times
-     * accesses by {@code ticker}. Loads run on {@code loads}, one per group however many threads ask for it, outside
-     * the cache's locks; the asking threads wait for it.
+     * {@code cache} carries the expiry and size bound, none for a preloaded repository. Loads run on {@code loads}, one
+     * per group however many threads ask for it, outside the cache's locks; the asking threads wait for it.
      */
-    final void bind(ChangeSet changes, EntityKeys keys, Duration cacheExpire, long maxCacheEntries, Ticker ticker,
-            Executor loads) {
+    final void bind(ChangeSet changes, EntityKeys keys, Caffeine<Object, Object> cache, Executor loads, boolean preloaded) {
         entityType = changes.type();
         this.keys = keys;
         mapper = changes.mapper();
         this.changes = changes;
-        groups = Caffeine.newBuilder().executor(Runnable::run).ticker(ticker).expireAfterAccess(cacheExpire)
-                .maximumSize(maxCacheEntries).recordStats(() -> cacheStats)
+        this.preloaded = preloaded;
+        groups = cache.recordStats(() -> cacheStats)
                 .buildAsync((GroupKeys groupKey, Executor executor) ->
                         CompletableFuture.supplyAsync(() -> load(groupKey), loads))
                 .synchronous();
     }
 
+    /** Reads the whole table into memory; GameData calls it while building a preloaded repository. */
+    final void preload() {
+        rowsByGroup(loadTable()).forEach((groupKey, rows) -> groups.asMap().put(groupKey, groupOf(groupKey, rows, List.of())));
+    }
+
     /** A live, read-only view of the group, loaded first when not in memory; empty when the database has none. */
-    public final Map<K, E> getGroup(GroupKeys groupKey) { return group(keys().checkGroupKey(groupKey)).view(); }
+    public final Map<K, E> getGroup(GroupKeys groupKey) {
+        Group<K, E> group = existingGroup(keys().checkGroupKey(groupKey));
+        return group == null ? Map.of() : group.view();
+    }
 
     /** The entity at {@code mapKey} in the group, or null. */
     public final E get(GroupKeys groupKey, K mapKey) {
         keys().checkKeyType(mapKey);
-        return group(keys.checkGroupKey(groupKey)).entities().get(mapKey);
+        Group<K, E> group = existingGroup(keys.checkGroupKey(groupKey));
+        return group == null ? null : group.entities().get(mapKey);
+    }
+
+    /**
+     * Every group with entities, each a live read-only view, of a repository registered with
+     * {@code preloadedRepositories}; which groups there are is read when called. IllegalStateException for one that
+     * loads on demand, whose memory holds only some.
+     */
+    public final Map<GroupKeys, Map<K, E>> all() {
+        keys();
+        if (!preloaded) throw new IllegalStateException(getClass().getName() + " loads on demand, so memory holds only some of its groups");
+        Map<GroupKeys, Map<K, E>> all = new HashMap<>();
+        groups.asMap().forEach((groupKey, group) -> { if (!group.entities().isEmpty()) all.put(groupKey, group.view()); });
+        return Collections.unmodifiableMap(all);
     }
 
     /**
@@ -101,7 +126,8 @@ public abstract class GroupRepository<K, E> {
     public final void insert(E entity) {
         Object id = keys().idOf(entity);
         GroupKeys groupKey = keys.groupKeyOf(entity);
-        group(groupKey).entities().compute(mapKeyOf(entity), (key, existing) -> {
+        Group<K, E> group = preloaded ? groups.asMap().computeIfAbsent(groupKey, key -> new Group<>()) : group(groupKey);
+        group.entities().compute(mapKeyOf(entity), (key, existing) -> {
             if (existing != null) throw new IllegalStateException(entityName() + " " + key + " already exists in group " + groupKey);
             changes.add(INSERT, id, groupKey, key, entity);
             return entity;
@@ -116,7 +142,8 @@ public abstract class GroupRepository<K, E> {
         Object id = keys().idOf(entity);
         GroupKeys groupKey = keys.groupKeyOf(entity);
         K mapKey = mapKeyOf(entity);
-        Group<K, E> group = group(groupKey);
+        Group<K, E> group = existingGroup(groupKey);
+        if (group == null) throw new IllegalStateException(entityName() + " " + mapKey + " does not exist in group " + groupKey);
         if (group.entities().get(mapKey) == entity) {   // the usual case: the entity in memory changed
             changes.add(UPDATE, id, groupKey, mapKey, entity);
             return;
@@ -133,17 +160,26 @@ public abstract class GroupRepository<K, E> {
     /** Deletes the entity at the entity's map key from its group; nothing when there is none. */
     public final void delete(E entity) {
         GroupKeys groupKey = keys().groupKeyOf(entity);
-        delete(group(groupKey), groupKey, mapKeyOf(entity));
+        Group<K, E> group = existingGroup(groupKey);
+        if (group != null) delete(group, groupKey, mapKeyOf(entity));
     }
 
     /** Deletes every entity of the group. */
     public final void deleteGroup(GroupKeys groupKey) {
-        Group<K, E> group = group(keys().checkGroupKey(groupKey));
+        Group<K, E> group = existingGroup(keys().checkGroupKey(groupKey));
+        if (group == null) return;
         for (K mapKey : new ArrayList<>(group.entities().keySet())) delete(group, groupKey, mapKey);
     }
 
-    /** Drops the group from memory; its changes not yet written are written all the same. */
-    public final void evict(GroupKeys groupKey) { groups.invalidate(keys().checkGroupKey(groupKey)); }
+    /**
+     * Drops the group from memory; its changes not yet written are written all the same. IllegalStateException for a
+     * preloaded repository, where a group not in memory has no entities.
+     */
+    public final void evict(GroupKeys groupKey) {
+        GroupKeys checked = keys().checkGroupKey(groupKey);
+        if (preloaded) throw new IllegalStateException(getClass().getName() + " is preloaded and keeps every group in memory");
+        groups.invalidate(checked);
+    }
 
     /** Drops what expired or overflowed now rather than at the next use; GameData calls it every flush interval. */
     final void cleanUp() { groups.cleanUp(); }
@@ -171,21 +207,26 @@ public abstract class GroupRepository<K, E> {
         return group;
     }
 
-    /**
-     * What the database has for the group with its unwritten changes laid over, deletes first, so a row deleted and
-     * another inserted at the same map key end as the inserted one.
-     */
-    @SuppressWarnings("unchecked")
+    /** As {@link #group}, but null for a group a preloaded repository does not have, which is kept nowhere. */
+    private Group<K, E> existingGroup(GroupKeys groupKey) {
+        if (!preloaded) return group(groupKey);
+        Group<K, E> group = groups.asMap().get(groupKey);
+        if (group == null) cacheStats.recordMisses(1);
+        else cacheStats.recordHits(1);
+        return group;
+    }
+
+    /** What the database has for the group with its unwritten changes laid over. */
     private Group<K, E> load(GroupKeys groupKey) {
         List<PendingChange> unwritten = changes.findGroup(groupKey);
-        List<Object> loaded;
-        try {
-            loaded = mapper.loadGroup(entityType, groupKey);
-        } catch (Exception e) {
-            throw new DataException(DATA_LOAD_FAILED, "cannot load " + entityName() + " group " + groupKey, e);
-        }
+        return groupOf(groupKey, loadGroup(groupKey), unwritten);
+    }
+
+    /** A group of these rows with the changes laid over, deletes first, so a row deleted and another inserted at the same map key end as the inserted one. */
+    @SuppressWarnings("unchecked")
+    private Group<K, E> groupOf(GroupKeys groupKey, List<Object> rows, List<PendingChange> unwritten) {
         Group<K, E> group = new Group<>();
-        for (Object entity : loaded) {
+        for (Object entity : rows) {
             K mapKey = mapKeyOf((E) entity);
             if (group.entities().putIfAbsent(mapKey, (E) entity) != null)
                 throw new DataException(DATA_LOAD_FAILED, "group " + groupKey + " of " + entityName() + " has two rows with map key " + mapKey, null);
@@ -194,6 +235,28 @@ public abstract class GroupRepository<K, E> {
         for (PendingChange change : unwritten)
             if (change.operation() != DELETE) group.entities().put((K) change.mapKey(), (E) change.entity());
         return group;
+    }
+
+    private Map<GroupKeys, List<Object>> rowsByGroup(List<Object> rows) {
+        Map<GroupKeys, List<Object>> byGroup = new HashMap<>();
+        for (Object row : rows) byGroup.computeIfAbsent(keys.groupKeyOf(row), key -> new ArrayList<>()).add(row);
+        return byGroup;
+    }
+
+    private List<Object> loadGroup(GroupKeys groupKey) {
+        try {
+            return mapper.loadGroup(entityType, groupKey);
+        } catch (Exception e) {
+            throw new DataException(DATA_LOAD_FAILED, "cannot load " + entityName() + " group " + groupKey, e);
+        }
+    }
+
+    private List<Object> loadTable() {
+        try {
+            return mapper.loadTable(entityType);
+        } catch (Exception e) {
+            throw new DataException(DATA_LOAD_FAILED, "cannot load the table of " + entityName(), e);
+        }
     }
 
     @SuppressWarnings("unchecked")

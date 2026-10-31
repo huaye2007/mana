@@ -32,7 +32,8 @@ public class Player {
 
 ## 读取
 
-`load` 按 `_id` 查文档，`loadGroup` 按分组字段查，`loadAll`（`getAll` 用它）用一条 `_id $in` 查询。
+`load` 按 `_id` 查文档，`loadGroup` 按分组字段查，`loadAll`（`getAll` 用它）用一条 `_id $in` 查询，`loadTable`（整表常驻的
+Repository 用它）读出全部文档。
 
 ## 写入
 

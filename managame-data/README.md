@@ -120,6 +120,11 @@ data.close();                                            // writes what is left
   a repository holds more than `maxCacheEntries` (a million), and one `evict`ed. A later read loads it again, with its
   changes not yet written laid over what the database returns: the very same instances, so a reload never returns
   older data than memory had.
+- **Whole tables.** A table that fits in memory and is read all the time, such as guilds, registers with
+  `preloadedRepositories(mapper, types)`: build reads it whole through the mapper's `loadTable`, and nothing leaves
+  memory after. An id or group not in memory does not exist, so no read asks the database, and `all()` lists every
+  entity, or group, as a read-only view. Changes are written as usual; `evict` throws, since dropping an entity would
+  make it look deleted.
 
 ## Writing
 
@@ -168,6 +173,17 @@ class LogService implements LogWriter {
 }
 ```
 
+## The database directly
+
+The application keeps the `DataSource` or `MongoDatabase` it gave the mapper and uses it as it likes, such as for an
+admin backend's queries and reports; the framework wraps none of it. Memory owns the data the repositories hold, and
+the database follows it a round behind:
+
+- **To read the newest state**, call `flush()` first.
+- **Change the rows repositories hold only through the repositories**, on the server that holds them, never with SQL
+  or a driver call: the next round writes memory's version of a row over whatever the database has. Tables no
+  repository registers are the application's to change as it likes.
+
 ## Stats
 
 `data.stats()` reads, from any thread, what each repository holds and what the rounds did with it since build, cheap
@@ -192,6 +208,7 @@ own, so they need not be from the same instant.
 
 An `EntityMapper` (in `cn.managame.data.spi`) serves the entity types registered with it: `prepare(EntityType)` once
 per type at build, then `load`, `loadAll` (by default a `load` per id; override it to read them in one query),
+`loadTable` (for preloaded repositories only; by default it throws, failing the build),
 `loadGroup` and `write(type, operation, batch)`, each `Change` of the batch giving the
 entity's id and the entity to read. `EntityType` lists the saved fields (`EntityField`: name, type, `valueType`, get,
 set, and the Java field for annotations), the key fields, and makes new instances. Writing a batch again after it
@@ -203,6 +220,7 @@ missing should fail. `isRetryable` starts from `RetryableFailures.isRetryable`, 
 | Setting | Default | |
 | --- | --- | --- |
 | `repositories(EntityMapper, Collection)` | | entity repositories and the mapper that keeps them; also as varargs |
+| `preloadedRepositories(EntityMapper, Collection)` | | entity repositories kept whole in memory, read at build; also as varargs |
 | `logRepositories(LogWriter, Collection)` | | log repositories and the writer that writes them; also as varargs |
 | `flushInterval` | 1 s | how often changes are written; a crash loses about this much |
 | `batchSize` | 500 | changes or logs per batch |
@@ -243,6 +261,8 @@ acknowledgement or refuse bad rows. They cover:
 - `getAll`: one load of the ids neither in memory nor changed, a `get` waiting for the `getAll` loading its id, a failed
   `getAll` keeping nothing;
 - stats: changes waiting, written, failed and dropped, cache hits, misses and loads, logs queued, refused and written;
+- preloaded repositories: the whole table read at build and no read asking the database after, `all()`, changes as
+  usual, `evict` refused, a mapper without `loadTable` failing the build;
 - logs through the application's writer: in order, kept when the writer calls a failure retryable, a refused log
   dropped and the others written, a full queue refusing logs;
 - failures: a bad row dropped and the others written, changes kept while the database cannot be reached, an insert whose

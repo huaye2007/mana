@@ -38,6 +38,14 @@ public interface EntityMapper {
         return loaded;
     }
 
+    /**
+     * Every entity of the type, read once while GameData is built for a repository registered with
+     * {@code preloadedRepositories}. By default UnsupportedOperationException, which fails the build.
+     */
+    default List<Object> loadTable(EntityType type) throws Exception {
+        throw new UnsupportedOperationException(getClass().getName() + " cannot load a whole table");
+    }
+
     /** Every entity whose {@code @GroupKey} fields equal the key's values, in order. */
     List<Object> loadGroup(EntityType type, GroupKeys key) throws Exception;
 

@@ -36,7 +36,28 @@ class MemoryMapper implements EntityMapper {
     final AtomicInteger bulkLoads = new AtomicInteger();
     volatile List<Object> lastBulkIds = List.of();
 
-    @Override public synchronized void prepare(EntityType type) { tables.put(type, new LinkedHashMap<>()); }
+    /** Loads of whole tables so far. */
+    final AtomicInteger tableLoads = new AtomicInteger();
+
+    /** Keeps the rows a GameData built earlier on this mapper left for the class, as a database keeps them for a restart. */
+    @Override public synchronized void prepare(EntityType type) {
+        Map<Object, Map<String, Object>> rows = new LinkedHashMap<>();
+        for (var tableIterator = tables.entrySet().iterator(); tableIterator.hasNext(); ) {
+            var table = tableIterator.next();
+            if (table.getKey().entityClass() != type.entityClass()) continue;
+            rows.putAll(table.getValue());
+            tableIterator.remove();
+        }
+        tables.put(type, rows);
+    }
+
+    @Override public synchronized List<Object> loadTable(EntityType type) throws ConnectException {
+        tableLoads.incrementAndGet();
+        if (unreachable) throw new ConnectException("the database cannot be reached");
+        List<Object> entities = new ArrayList<>();
+        for (Map<String, Object> row : tables.get(type).values()) entities.add(entityOf(type, row));
+        return entities;
+    }
 
     @Override public Object load(EntityType type, Object id) throws ConnectException, InterruptedException {
         waitAtGate();

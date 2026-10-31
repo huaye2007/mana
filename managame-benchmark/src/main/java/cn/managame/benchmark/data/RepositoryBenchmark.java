@@ -1,5 +1,7 @@
 package cn.managame.benchmark.data;
 
+import cn.managame.benchmark.data.DataFixture.Guild;
+import cn.managame.benchmark.data.DataFixture.Guilds;
 import cn.managame.benchmark.data.DataFixture.Item;
 import cn.managame.benchmark.data.DataFixture.Items;
 import cn.managame.benchmark.data.DataFixture.Player;
@@ -24,8 +26,8 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * What business code pays on its own thread with every entity in memory: reading a player, reading a player's bag,
- * reading fifty players at once, and recording that a player changed, which merges into the change already waiting for
- * it. No save runs.
+ * reading fifty players at once, reading a guild of a preloaded table, and recording that a player changed, which
+ * merges into the change already waiting for it. No save runs.
  */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -42,12 +44,14 @@ public class RepositoryBenchmark {
     private final List<List<Long>> batches = new ArrayList<>();
     private DataFixture fixture;
     private Players players;
+    private Guilds guilds;
     private Items items;
     private int next;
 
     @Setup(Level.Trial) public void start() {
         fixture = new DataFixture();
         players = fixture.players();
+        guilds = fixture.guilds();
         items = fixture.items();
         for (int i = 0; i < PLAYERS; i++) {
             ids[i] = (long) i;
@@ -71,6 +75,8 @@ public class RepositoryBenchmark {
     @Benchmark public Map<Integer, Item> getGroup() { return items.getGroup(groupKeys[next++ & (PLAYERS - 1)]); }
 
     @Benchmark public Map<Long, Player> getAll() { return players.getAll(batches.get(next++ & (BATCHES - 1))); }
+
+    @Benchmark public Guild getPreloaded() { return guilds.get(ids[next++ & (PLAYERS - 1)]); }
 
     @Benchmark public void update() {
         Player player = cachedPlayers[next++ & (PLAYERS - 1)];
