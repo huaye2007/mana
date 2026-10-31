@@ -36,6 +36,9 @@ import java.util.function.IntSupplier;
  * failed so twice in a row gets nothing more in the round, which would only wait out the same timeout again. Any other
  * failure splits the batch into single changes or logs; one that still fails goes to the DataErrorHandler and is dropped.
  *
+ * <p>GameData keeps two, one for the entities' change sets and one for the logs' queues, so that the rounds of each
+ * never wait for the other's.
+ *
  * <p>Not API: it may change in any release.
  */
 public final class ChangeWriter {
@@ -50,8 +53,6 @@ public final class ChangeWriter {
     private final ExecutorService writePool;
     /** Held while a round runs, so rounds never overlap. */
     private final Object roundLock = new Object();
-    /** Held while the DataErrorHandler runs, so it is never called twice at once. */
-    private final Object errorHandlerLock = new Object();
 
     /** What one round left: changes kept for a later round, changes dropped, and each target's failures in a row. */
     public static final class Round {
@@ -141,12 +142,10 @@ public final class ChangeWriter {
     /** Hands a change or log given up on to the DataErrorHandler, counted as dropped in {@code round} when there is one. */
     public void reportFailure(Round round, int errorCode, Class<?> type, DataOperation operation, Object value, Throwable cause) {
         if (round != null) round.dropped.incrementAndGet();
-        synchronized (errorHandlerLock) {
-            try {
-                errorHandler.onError(new DataFailure(errorCode, type, operation, value, cause));
-            } catch (Throwable e) {
-                LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", e);
-            }
+        try {
+            errorHandler.onError(new DataFailure(errorCode, type, operation, value, cause));
+        } catch (Throwable e) {
+            LOG.log(System.Logger.Level.ERROR, "DataErrorHandler failed", e);
         }
     }
 

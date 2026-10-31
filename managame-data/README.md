@@ -136,7 +136,7 @@ Every `flushInterval` (1 second) a round writes what changed since the last one:
   is written as one insert, an insert followed by a delete not at all, and a delete followed by an insert as
   `DELETE_INSERT`, a replacement. A change that cannot follow the waiting one, such as an update of a deleted row,
   throws on the calling thread.
-- **Types are written in parallel**, each entity or log type by one of `writeThreads` (4) threads at a time, so the
+- **Types are written in parallel**, each entity type by one of `writeThreads` (4) threads at a time, so the
   changes of a row are written in order. A type's deletes are written first, so a row can take the unique value of one
   deleted in the same round. Changes go to the mapper in batches of `batchSize` (500), one operation per batch.
 - **Failures.** A failure the mapper or writer calls retryable (`isRetryable`: by default a lost or refused connection,
@@ -145,9 +145,9 @@ Every `flushInterval` (1 second) a round writes what changed since the last one:
   round. An insert whose outcome such a failure left unknown is written again as `DELETE_INSERT`, so it never meets its
   own earlier row. Any other failure splits the batch into single changes; each that still fails goes to the
   `DataErrorHandler` and is dropped, and the others are written.
-- **`flush()`** writes everything changed before the call, now, and returns when it is written; it throws
+- **`flush()`** writes every entity change made before the call, now, and returns when it is written; it throws
   `DataException` (`DATA_SAVE_FAILED`) when something failed. Use it before another process reads the data, such as
-  when a player moves to another server: `flush()`, then `evict`.
+  when a player moves to another server: `flush()`, then `evict`. It does not wait for logs.
 - **`close()`** refuses further changes, then writes what is waiting, trying again every flush interval for up to
   `shutdownTimeout` (30 seconds) while writes fail. What is still not written goes, one by one, to the
   `DataErrorHandler`, where the application can keep it elsewhere, and close throws. Close it on shutdown: its threads
@@ -165,6 +165,12 @@ A `LogRepository` queues logs, at most `logQueueCapacity` (100,000), and hands t
 round, in the order they were inserted; with the queue full, as while the destination is down, `insert` returns false
 and hands the log to the `DataErrorHandler`. A log is never read back, so any class will do, records included, and the
 writer decides what it reads. Do not change a log once inserted.
+
+Logs are written apart from entities: in rounds of their own, every `flushInterval`, on a thread of their own named
+`game-data-log`, one log type after another. A log destination that is slow or cannot be reached, such as a log
+service timing out, never delays the entities' rounds, and its failures never fail `flush()`; `flushLogs()` writes the
+logs now and throws `DataException` (`DATA_LOG_SAVE_FAILED`) when some failed. `close()` writes entities and logs at
+once, on threads of their own, so neither takes the other's share of `shutdownTimeout`.
 
 A writer that reports over HTTP is a lambda. To have answers such as 503 tried again in the next round, it throws its
 own exception for them and recognizes it:
@@ -228,7 +234,7 @@ is missing may write the row again (MySQL's mapper does) or fail (MongoDB's does
 | `logRepositories(LogWriter, Collection)` | | log repositories and the writer that writes them; also as varargs |
 | `flushInterval` | 1 s | how often changes are written; a crash loses about this much |
 | `batchSize` | 500 | changes or logs per batch |
-| `writeThreads` | 4 | entity and log types written at once |
+| `writeThreads` | 4 | entity types written at once; logs have a thread of their own |
 | `cacheExpire` | 30 min | how long an unused entity or group stays in memory |
 | `shutdownTimeout` | 30 s | how long close keeps trying |
 | `logQueueCapacity` | 100,000 | logs one LogRepository holds waiting |
@@ -240,9 +246,9 @@ while preparing comes out as it is. A load that fails throws `DataException` (`D
 
 ## Threads
 
-Business threads read, load what is not in memory and record changes; one thread named `game-data` starts the rounds
-and drops expired entries, and `game-data-write-N` write the entity and log types of a round. Recording a change takes
-a lock that covers a
+Business threads read, load what is not in memory and record changes; one thread named `game-data` starts the entities'
+rounds and drops expired entries, `game-data-write-N` write the entity types of a round, and `game-data-log` writes the
+logs in rounds of its own. Recording a change takes a lock that covers a
 sixty-fourth of a type's rows, so business threads rarely wait for each other; nothing a business thread does waits for
 a write.
 
@@ -266,7 +272,8 @@ acknowledgement or refuse bad rows. They cover:
 - preloaded repositories: the whole table read at build and no read asking the database after, `all()`, changes as
   usual, `evict` refused, a mapper without `loadTable` failing the build;
 - logs through the application's writer: in order, kept when the writer calls a failure retryable, a refused log
-  dropped and the others written, a full queue refusing logs;
+  dropped and the others written, a full queue refusing logs, a destination that hangs and then fails never holding up
+  the writing of entities;
 - failures: a bad row dropped and the others written, changes kept while the database cannot be reached, an insert whose
   acknowledgement was lost written again without a duplicate, an update of a missing row reported, close handing over
   what it could not write;

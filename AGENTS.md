@@ -144,7 +144,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   so there is no reload or evictAll. Game servers trade strong consistency for speed: data is eventually consistent,
   with no atomicity across entities or types, by design. Entities are got by id in each task and never kept across
   tasks; the framework does not guard against a kept instance. `errorHandler` is required, since logging a failure
-  loses it.
+  loses it. Entity writes and log writes never affect each other: each has its own writer, rounds and thread
+  (`game-data` with `game-data-write-N`, and `game-data-log`), `flush()` writes entities and `flushLogs()` logs.
 - data's packages split by who uses them: `cn.managame.data` for business code (GameData, repositories, keys,
   failures), `annotation` for the entity annotations (`mysql.annotation`, `mongo.annotation` in the backend projects),
   `spi` for what a backend implements and reads (`EntityMapper`, `LogWriter`, `EntityType`, `EntityField`, read-only

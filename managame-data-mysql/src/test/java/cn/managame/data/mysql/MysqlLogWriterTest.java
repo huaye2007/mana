@@ -33,7 +33,7 @@ class MysqlLogWriterTest {
             logs.insert(new ItemLog(100, 5001, 1, OCT_30));
             logs.insert(new ItemLog(100, 5001, -1, OCT_31));
             logs.insert(new ItemLog(200, 5002, 3, OCT_31));
-            data.flush();
+            data.flushLogs();
         }
         assertEquals(List.of(List.of(100L, 5001, 1, OCT_30)), database.rows("SELECT * FROM item_log_20261030"));
         assertEquals(2, database.rows("SELECT * FROM item_log_20261031").size());
@@ -45,7 +45,7 @@ class MysqlLogWriterTest {
         long lateOnOct30InUtc = Instant.parse("2026-10-30T20:00:00Z").toEpochMilli();   // Oct 31 in Shanghai
         try (GameData data = start(new MysqlLogWriter(database, null, ZoneId.of("Asia/Shanghai")))) {
             data.repository(ItemLogs.class).insert(new ItemLog(100, 5001, 1, lateOnOct30InUtc));
-            data.flush();
+            data.flushLogs();
         }
         assertEquals(1, database.rows("SELECT * FROM item_log_20261031").size());
     }
@@ -57,7 +57,7 @@ class MysqlLogWriterTest {
             ItemLogs logs = data.repository(ItemLogs.class);
             logs.insert(new ItemLog(100, 5001, 1, OCT_30));
             logs.insert(new ItemLog(100, 5001, 2, noTableYet));
-            assertThrows(DataException.class, data::flush);
+            assertThrows(DataException.class, data::flushLogs);
         }
         assertEquals(1, database.rows("SELECT * FROM item_log_20261030").size());
         assertEquals(1, reported.all().size());

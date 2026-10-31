@@ -123,6 +123,7 @@ class MysqlIntegrationTest {
             items.insert(new Item(3, 1, 0, 7));
             data.repository(Logs.class).insert(new Log(1, day));
             data.flush();
+            data.flushLogs();
 
             players.evict(3L);
             assertEquals(Map.of(5001, 9L), players.get(3L).items);

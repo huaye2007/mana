@@ -91,7 +91,7 @@ class StatsTest {
         LogStats queued = data.stats().logs().getFirst();
         assertEquals(2, queued.queued());
         assertEquals(1, queued.refused());
-        data.flush();
+        data.flushLogs();
         LogStats written = data.stats().logs().getFirst();
         assertEquals(0, written.queued());
         assertEquals(2, written.written());

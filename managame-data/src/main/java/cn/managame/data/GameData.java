@@ -1,5 +1,6 @@
 package cn.managame.data;
 
+import static cn.managame.FrameworkErrorCodes.DATA_LOG_SAVE_FAILED;
 import static cn.managame.FrameworkErrorCodes.DATA_SAVE_FAILED;
 
 import cn.managame.data.internal.ChangeSet;
@@ -22,6 +23,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -39,10 +42,12 @@ import java.util.concurrent.TimeUnit;
  * Players players = data.repository(Players.class);
  * }</pre>
  *
- * <p>Every {@code flushInterval} one thread starts a round that writes what changed since the last one, rows changed
- * several times written once, in batches of {@code batchSize}, each entity or log type on one of {@code writeThreads}
- * threads. A crash loses at most about one interval of changes. Each repository keeps its entities or groups in a
- * Caffeine cache, which drops those unused for {@code cacheExpire}; the same thread cleans the caches up every round.
+ * <p>Every {@code flushInterval} one thread starts a round that writes the entity changes made since the last one,
+ * rows changed several times written once, in batches of {@code batchSize}, each entity type on one of
+ * {@code writeThreads} threads. A crash loses at most about one interval of changes. Each repository keeps its entities
+ * or groups in a Caffeine cache, which drops those unused for {@code cacheExpire}; the same thread cleans the caches up
+ * every round. Logs are written apart, in rounds of their own on a thread of their own, one log type after another, so
+ * a log destination that is slow or cannot be reached never delays or fails the writing of entities.
  */
 public final class GameData implements AutoCloseable {
     public static final Duration DEFAULT_FLUSH_INTERVAL = Duration.ofSeconds(1);
@@ -56,12 +61,13 @@ public final class GameData implements AutoCloseable {
     private final List<SingleRepository<?, ?>> singleRepositories;
     private final List<GroupRepository<?, ?>> groupRepositories;
     private final List<LogRepository<?>> logRepositories;
-    private final ChangeWriter writer;
-    private final ScheduledThreadPoolExecutor scheduler;
+    /** Write the entities' changes and the logs, each in rounds of its own, on threads of its own. */
+    private final ChangeWriter writer, logWriter;
+    private final ScheduledThreadPoolExecutor scheduler, logScheduler;
     private final long flushIntervalNanos, shutdownTimeoutNanos;
     private volatile boolean closed;
 
-    private GameData(Builder builder, Map<Class<?>, Object> repositories, ChangeWriter writer) {
+    private GameData(Builder builder, Map<Class<?>, Object> repositories, ChangeWriter writer, ChangeWriter logWriter) {
         this.repositories = Map.copyOf(repositories);
         List<SingleRepository<?, ?>> singles = new ArrayList<>();
         List<GroupRepository<?, ?>> groups = new ArrayList<>();
@@ -75,10 +81,13 @@ public final class GameData implements AutoCloseable {
         groupRepositories = List.copyOf(groups);
         logRepositories = List.copyOf(logs);
         this.writer = writer;
+        this.logWriter = logWriter;
         flushIntervalNanos = builder.flushInterval.toNanos();
         shutdownTimeoutNanos = builder.shutdownTimeout.toNanos();
         scheduler = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("game-data").factory());
         scheduler.scheduleWithFixedDelay(this::writeAndCleanUp, flushIntervalNanos, flushIntervalNanos, TimeUnit.NANOSECONDS);
+        logScheduler = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("game-data-log").factory());
+        logScheduler.scheduleWithFixedDelay(this::writeLogs, flushIntervalNanos, flushIntervalNanos, TimeUnit.NANOSECONDS);
     }
 
     public static Builder builder() { return new Builder(); }
@@ -91,10 +100,10 @@ public final class GameData implements AutoCloseable {
     }
 
     /**
-     * Writes every change and log made before the call, now, on the write threads, and returns when they are written.
-     * Throws {@link DataException} ({@code DATA_SAVE_FAILED}) when some failed: those failing for a retryable reason
-     * wait for the next round, the others went to the DataErrorHandler. Use it before another process reads the data,
-     * such as when a player moves to another server.
+     * Writes every entity change made before the call, now, on the write threads, and returns when they are written;
+     * logs are not waited for. Throws {@link DataException} ({@code DATA_SAVE_FAILED}) when some failed: those failing for
+     * a retryable reason wait for the next round, the others went to the DataErrorHandler. Use it before another process
+     * reads the data, such as when a player moves to another server.
      */
     public void flush() {
         if (closed) throw new IllegalStateException("GameData is closed");
@@ -102,6 +111,20 @@ public final class GameData implements AutoCloseable {
         int dropped = round.dropped(), unwritten = round.unwritten();
         if (dropped > 0 || unwritten > 0)
             throw new DataException(DATA_SAVE_FAILED, "flush left " + unwritten + " changes for the next round after failures and dropped "
+                    + dropped + ", which went to the DataErrorHandler", null);
+    }
+
+    /**
+     * Writes every log inserted before the call, now, on this thread, and returns when they are written. Throws
+     * {@link DataException} ({@code DATA_LOG_SAVE_FAILED}) when some failed: those failing for a retryable reason wait for
+     * the next round, the others went to the DataErrorHandler.
+     */
+    public void flushLogs() {
+        if (closed) throw new IllegalStateException("GameData is closed");
+        ChangeWriter.Round round = logWriter.writeAll();
+        int dropped = round.dropped(), unwritten = round.unwritten();
+        if (dropped > 0 || unwritten > 0)
+            throw new DataException(DATA_LOG_SAVE_FAILED, "flushLogs left " + unwritten + " logs for the next round after failures and dropped "
                     + dropped + ", which went to the DataErrorHandler", null);
     }
 
@@ -122,8 +145,9 @@ public final class GameData implements AutoCloseable {
 
     /**
      * Refuses further changes and logs, then writes what is waiting, trying again every flush interval for up to
-     * {@code shutdownTimeout} while writes fail. What is still not written then goes, one by one, to the
-     * DataErrorHandler, and close throws {@link DataException} ({@code DATA_SAVE_FAILED}). Reads keep working.
+     * {@code shutdownTimeout} while writes fail; entities and logs at once, on threads of their own, so neither takes
+     * the other's time. What is still not written then goes, one by one, to the DataErrorHandler, and close throws
+     * {@link DataException} ({@code DATA_SAVE_FAILED}). Reads keep working.
      */
     @Override public void close() {
         synchronized (this) {
@@ -131,8 +155,35 @@ public final class GameData implements AutoCloseable {
             closed = true;
         }
         writer.refuseChanges();
+        logWriter.refuseChanges();
         scheduler.shutdown();
+        logScheduler.shutdown();
         long deadline = System.nanoTime() + shutdownTimeoutNanos;
+        FutureTask<Integer> logs = new FutureTask<>(() -> finish(logWriter, deadline));
+        Thread.ofPlatform().name("game-data-log").start(logs);
+        int notWritten = finish(writer, deadline);
+        boolean interrupted = false;
+        while (true) {
+            try {
+                notWritten += logs.get();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;   // the logs stop at the deadline in any case
+            } catch (ExecutionException e) {
+                LOG.log(System.Logger.Level.ERROR, "writing logs at close failed", e.getCause());
+                break;
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+        if (notWritten > 0)
+            throw new DataException(DATA_SAVE_FAILED, notWritten + " changes and logs were not written before close; each went to the DataErrorHandler", null);
+    }
+
+    /**
+     * Writes what {@code writer} has waiting, trying again every flush interval until {@code deadline} while writes fail,
+     * then hands what is left to the DataErrorHandler and stops the writer; returns how many it handed over.
+     */
+    private int finish(ChangeWriter writer, long deadline) {
         boolean interrupted = false;
         while (true) {
             ChangeWriter.Round round = writer.writeAllBefore(deadline);
@@ -150,8 +201,7 @@ public final class GameData implements AutoCloseable {
         int notWritten = writer.dropAll(new IllegalStateException("GameData closed before this was written"));
         writer.shutdown();
         if (interrupted) Thread.currentThread().interrupt();
-        if (notWritten > 0)
-            throw new DataException(DATA_SAVE_FAILED, notWritten + " changes were not written before close; each went to the DataErrorHandler", null);
+        return notWritten;
     }
 
     /** Runs every flush interval on the scheduler's thread. */
@@ -162,6 +212,15 @@ public final class GameData implements AutoCloseable {
             for (GroupRepository<?, ?> repository : groupRepositories) repository.cleanUp();
         } catch (Throwable e) {
             LOG.log(System.Logger.Level.ERROR, "data write round failed", e);
+        }
+    }
+
+    /** Runs every flush interval on the log scheduler's thread, apart from the entities' rounds. */
+    private void writeLogs() {
+        try {
+            if (!closed) logWriter.writeAll();
+        } catch (Throwable e) {
+            LOG.log(System.Logger.Level.ERROR, "log write round failed", e);
         }
     }
 
@@ -224,7 +283,7 @@ public final class GameData implements AutoCloseable {
             return this;
         }
 
-        /** Entity and log types written at once; 4 by default. */
+        /** Entity types written at once; 4 by default. Logs are written on a thread of their own, one type after another. */
         public Builder writeThreads(int threads) {
             writeThreads = positive(threads, "writeThreads");
             return this;
@@ -318,9 +377,16 @@ public final class GameData implements AutoCloseable {
                     if (preload) inGroups.preload();
                 }
             }
-            ChangeWriter writer = new ChangeWriter(changeSets, List.copyOf(logRepositories.values()), batchSize, writeThreads, errorHandler);
-            logRepositories.forEach((repository, queue) -> repository.bind(queue, writer));
-            return new GameData(this, repositories, writer);
+            // One failure at a time, whether the entities' writer, the logs' or a business thread reports it.
+            DataErrorHandler handler = errorHandler;
+            DataErrorHandler oneAtATime = new DataErrorHandler() {
+                @Override public synchronized void onError(DataFailure failure) { handler.onError(failure); }
+            };
+            ChangeWriter writer = new ChangeWriter(changeSets, List.of(), batchSize, writeThreads, oneAtATime);
+            // Logs have a writer of their own, on the log scheduler's thread, so their destination never holds up entities.
+            ChangeWriter logWriter = new ChangeWriter(List.of(), List.copyOf(logRepositories.values()), batchSize, 1, oneAtATime);
+            logRepositories.forEach((repository, queue) -> repository.bind(queue, logWriter));
+            return new GameData(this, repositories, writer, logWriter);
         }
 
         private Builder register(Object target, Collection<? extends Class<?>> types) {

@@ -8,11 +8,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.data.Fixtures.ItemLog;
 import cn.managame.data.Fixtures.ItemLogs;
+import cn.managame.data.Fixtures.Player;
+import cn.managame.data.Fixtures.Players;
 import cn.managame.data.Fixtures.ReportedFailures;
 import cn.managame.data.spi.LogWriter;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /** Logs go wherever the application's LogWriter sends them, such as a log service over HTTP. */
@@ -46,7 +50,7 @@ class LogRepositoryTest {
         try (GameData data = start(service, 100)) {
             ItemLogs logs = data.repository(ItemLogs.class);
             for (int i = 0; i < 3; i++) assertTrue(logs.insert(new ItemLog(100, 5001, i)));
-            data.flush();
+            data.flushLogs();
         }
         assertEquals(List.of(new ItemLog(100, 5001, 0), new ItemLog(100, 5001, 1), new ItemLog(100, 5001, 2)), service.received);
     }
@@ -57,9 +61,9 @@ class LogRepositoryTest {
         try (GameData data = start(service, 100)) {
             data.repository(ItemLogs.class).insert(new ItemLog(100, 5001, 1));
             service.busy = true;
-            assertThrows(DataException.class, data::flush);
+            assertThrows(DataException.class, data::flushLogs);
             service.busy = false;
-            data.flush();
+            data.flushLogs();
         }
         assertEquals(List.of(new ItemLog(100, 5001, 1)), service.received);
         assertEquals(List.of(), reported.all());
@@ -77,7 +81,7 @@ class LogRepositoryTest {
             logs.insert(new ItemLog(100, 5001, 1));
             logs.insert(new ItemLog(100, 5001, -1));
             logs.insert(new ItemLog(100, 5001, 2));
-            assertThrows(DataException.class, data::flush);
+            assertThrows(DataException.class, data::flushLogs);
         }
         assertEquals(List.of(new ItemLog(100, 5001, 1), new ItemLog(100, 5001, 2)), written);
         assertEquals(1, reported.all().size());
@@ -97,6 +101,27 @@ class LogRepositoryTest {
             assertEquals(third, reported.all().getFirst().value());
         }
         assertEquals(2, service.received.size());
+    }
+
+    @Test
+    void aLogDestinationThatHangsOrFailsNeverHoldsUpEntities() throws InterruptedException {
+        MemoryMapper database = new MemoryMapper();
+        CountDownLatch writing = new CountDownLatch(1), release = new CountDownLatch(1);
+        LogWriter hanging = (logType, logs) -> {
+            writing.countDown();
+            release.await();
+            throw new IllegalArgumentException("refused");
+        };
+        try (GameData data = GameData.builder().repositories(database, Players.class).logRepositories(hanging, ItemLogs.class)
+                .errorHandler(reported).flushInterval(Duration.ofMillis(20)).build()) {
+            data.repository(ItemLogs.class).insert(new ItemLog(100, 5001, 1));
+            assertTrue(writing.await(5, TimeUnit.SECONDS), "a log round waits in the writer");
+            data.repository(Players.class).insert(new Player(1, "ann"));
+            data.flush();
+            assertEquals(1, database.rows(Player.class).size(), "written while the logs' round waits");
+            release.countDown();
+        }
+        assertEquals(DATA_LOG_SAVE_FAILED, reported.all().getFirst().errorCode());
     }
 
     @Test
