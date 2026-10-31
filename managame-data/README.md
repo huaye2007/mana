@@ -215,8 +215,9 @@ per type at build, then `load`, `loadAll` (by default a `load` per id; override 
 `loadGroup` and `write(type, operation, batch)`, each `Change` of the batch giving the
 entity's id and the entity to read. `EntityType` lists the saved fields (`EntityField`: name, type, `valueType`, get,
 set, and the Java field for annotations), the key fields, and makes new instances. Writing a batch again after it
-failed must do no harm: write a batch in one transaction, or every entity idempotently. An UPDATE that finds an entity
-missing should fail. `isRetryable` starts from `RetryableFailures.isRetryable`, which a mapper can extend.
+failed must do no harm: write a batch in one transaction, or every entity idempotently. An UPDATE of an entity whose row
+is missing may write the row again (MySQL's mapper does) or fail (MongoDB's does). `isRetryable` starts from
+`RetryableFailures.isRetryable`, which a mapper can extend.
 
 ## Configuration
 

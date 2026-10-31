@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import cn.managame.data.DataException;
-import cn.managame.data.DataOperation;
 import cn.managame.data.GameData;
 import cn.managame.data.GroupKeys;
 import cn.managame.data.SingleRepository;
@@ -108,7 +107,7 @@ class MysqlEntityMapperTest {
     }
 
     @Test
-    void updatesManyRowsInFewStatements() {
+    void updatesManyRowsInOneBatch() {
         for (long id = 1; id <= 250; id++) players.insert(new Player(id, "p" + id));
         data.flush();
         for (long id = 1; id <= 250; id++) players.update(id, player -> player.level = (int) player.id);
@@ -161,14 +160,15 @@ class MysqlEntityMapperTest {
     }
 
     @Test
-    void reportsAnUpdateOfARowNoLongerStored() {
+    void writesAgainAnUpdatedRowNoLongerStored() {
         database.execute("INSERT INTO player VALUES (1, 'ann', 1, 0, NULL)");
         Player player = players.get(1L);
         database.execute("DELETE FROM player");
         player.level = 3;
         players.update(player);
-        assertThrows(DataException.class, data::flush);
-        assertEquals(DataOperation.UPDATE, reported.all().getFirst().operation());
+        data.flush();
+        assertEquals(List.of(1L, "ann", 3, 0L), players().getFirst().subList(0, 4));
+        assertEquals(List.of(), reported.all());
     }
 
     @Table(name = "player")

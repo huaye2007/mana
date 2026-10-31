@@ -191,8 +191,9 @@ for (EntityStats stats : data.stats().entities())
 Repository；默认抛异常，让 build 失败）、`loadGroup` 和
 `write(type, operation, batch)`，批里的每个 `Change` 给出实体的 id 和
 要读取的实体。`EntityType` 列出要保存的字段（`EntityField`：名字、类型、`valueType`、读、写，以及用于读注解的 Java 字段）、
-key 字段，并能创建新实例。失败后重写同一批必须无害：一批在一个事务里写，或者每个实体都幂等地写。更新时发现实体不存在应当
-失败。`isRetryable` 的默认规则是 `RetryableFailures.isRetryable`，Mapper 可以在它的基础上扩展。
+key 字段，并能创建新实例。失败后重写同一批必须无害：一批在一个事务里写，或者每个实体都幂等地写。更新一个数据库里已没有的
+实体时，可以把这一行重新写入（MySQL 的 Mapper 是这样），也可以失败（MongoDB 的是这样）。`isRetryable` 的默认规则是
+`RetryableFailures.isRetryable`，Mapper 可以在它的基础上扩展。
 
 ## 配置
 

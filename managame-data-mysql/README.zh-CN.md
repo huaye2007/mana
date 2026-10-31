@@ -43,10 +43,10 @@ public class Player {
 
 - **每批一个事务**，所以失败的批次不会留下任何东西：重写或拆成单行时都不会产生重复。删除后又插入，在同一个事务里先 DELETE
   再 INSERT。
-- **INSERT** 在 URL 带 `rewriteBatchedStatements=true` 时由驱动合并成多行语句。
-- **UPDATE** 以每条最多 100 行的语句发送，每一列通过 `CASE` 按 id 选值，每条语句一次往返，而不是每行一次。语句匹配的行数
-  少于它列出的行数时会失败（保持驱动默认的 `useAffectedRows=false`，统计的才是匹配行数）：说明有一行不存在，若当作成功就会
-  丢掉这次修改。拆成单行后，不存在的那一行交给 DataErrorHandler。
+- **INSERT 和 UPDATE 都是普通的 JDBC 批处理**，URL 带 `rewriteBatchedStatements=true` 时由驱动合并成一条多行语句。
+- **UPDATE 用 `INSERT ... ON DUPLICATE KEY UPDATE`** 更新非 key 列，这是 MySQL 自己的批量保存方式。表里已没有的行会被重新
+  写入，而不是失败：数据以内存为准。表上除主键外还有别的唯一索引时，一行改成另一行仍在用的唯一值，会更新到那一行上，这是
+  MySQL 文档对这条语句的说明；只有两行在同一轮里互换唯一值时才会发生。
 - **DELETE** 以 `WHERE id IN (...)` 发送，每条最多 1,000 个 id。
 - 连接池要大于 GameData 的 `writeThreads` 加上同时进行的加载数。
 
@@ -56,12 +56,13 @@ public class Player {
 
 | URL 参数 | 作用 |
 | --- | --- |
-| `rewriteBatchedStatements=true` | 一批 INSERT 合并成一条多行语句发送 |
-| `cachePrepStmts=true&prepStmtCacheSqlLimit=1000000` | 驱动缓存每条语句的解析结果；多行 UPDATE 远长于默认的 256 个字符上限。更新从每秒 26,000 行提高到 34,000 行，写入线程每行的 CPU 从 11.8 µs 降到 3.6 µs，分配从 7.0 KB 降到 4.1 KB |
+| `rewriteBatchedStatements=true` | 一批 INSERT 或 UPDATE 合并成一条多行语句发送，而不是每行一条；逐行 UPDATE 的批处理只有三分之一的速度 |
+| `cachePrepStmts=true&prepStmtCacheSqlLimit=1000000` | 驱动缓存每条语句的解析结果，列多的表语句会超过默认的 256 个字符上限：写入线程的 CPU 降了三分之二，分配降了 40% |
 | `prepStmtCacheSize=250` | 给每张表的语句都留出缓存位置 |
+| `useServerPrepStmts=true` | 服务器也缓存语句：每秒行数不变，客户端开销更少，例如 JSON 背包每行从 7.0 µs、7.7 KB 降到 3.0 µs、4.9 KB |
 | `useLocalSessionState=true` | 连接已有的设置不再重复发送 |
-| `useAffectedRows=false`（默认值） | UPDATE 统计匹配到的行数，所以能发现缺失的行 |
-| 不开 `useServerPrepStmts` | 服务端预处理语句反而让多行 UPDATE 变慢 |
+
+全部打开后，每轮每秒写入 40,000 个修改过的玩家（10 列）、50,000 个道具或插入加删除、21,000 个带 50 项 JSON 列的背包。
 
 - **JSON 字段的列类型。** 除非要在数据库里查询 JSON 内部，优先用 `TEXT`（或 `MEDIUMTEXT`），不用 MySQL 的 `JSON` 类型：
   写入 `JSON` 列的每个值 MySQL 都要解析并转换。更新一个 50 项的文档，`JSON` 列约每秒 21,000 行，`TEXT` 列 30,000 到 38,000 行。
@@ -95,9 +96,9 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 先安装 managame-common 和 managame-data。测试通过 GameData 运行在 MySQL 模式的 H2 上，这是一个真正的内存数据库，覆盖：带
-JSON 列的行，JSON 加载成初始化时的集合，整表常驻，超过一条 SELECT 上限的 `getAll`，用少量语句更新大量行，分组以及先删后插使唯一的格子
+JSON 列的行，JSON 加载成初始化时的集合，整表常驻，超过一条 SELECT 上限的 `getAll`，在一批里更新大量行，分组以及先删后插使唯一的格子
 可以复用，坏行丢弃而其他照常写入，
-数据库拒绝连接期间保留修改，提交未确认的插入重写而不产生重复，更新已不存在的行被报告，构建时拒绝不合适的映射，以及按分区
+数据库拒绝连接期间保留修改，提交未确认的插入重写而不产生重复，更新已不存在的行时把它重新写入，构建时拒绝不合适的映射，以及按分区
 时区切分的按天分区日志在一批里写入。提供一个可以丢弃的库时，`MysqlIntegrationTest` 会在真实 MySQL 上运行：
 
 ```bash

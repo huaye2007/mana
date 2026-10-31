@@ -29,8 +29,9 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * Rows saved per second through {@code MysqlEntityMapper} into an in-memory H2 database in MySQL mode behind a
- * connection pool: {@value #ROWS} changed players per {@code flush()}. {@code update} sends UPDATEs of up to 100 rows
- * each; {@code insertDelete} inserts the rows in batches and deletes them again, in two rounds. The database's own work
+ * connection pool: {@value #ROWS} changed players per {@code flush()}. {@code update} saves them as batches of
+ * {@code INSERT ... ON DUPLICATE KEY UPDATE}; {@code insertDelete} inserts the rows in batches and deletes them again,
+ * in two rounds. The database's own work
  * is in the score; the framework's share shows in the CPU of the calling thread, which runs the round.
  */
 @State(Scope.Thread)

@@ -50,9 +50,10 @@ public interface EntityMapper {
     List<Object> loadGroup(EntityType type, GroupKeys key) throws Exception;
 
     /**
-     * Writes one batch of changes with the same operation. An UPDATE that finds an entity missing fails. Writing a batch
-     * again after it failed must do no harm, because a failure that {@link #isRetryable} allows is written again in the
-     * next round: write a batch in one transaction, or write every entity idempotently.
+     * Writes one batch of changes with the same operation. An UPDATE of an entity whose row is missing may write the row
+     * again, as MySQL's mapper does, or fail, as MongoDB's does. Writing a batch again after it failed must do no harm,
+     * because a failure that {@link #isRetryable} allows is written again in the next round: write a batch in one
+     * transaction, or write every entity idempotently.
      */
     void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws Exception;
 

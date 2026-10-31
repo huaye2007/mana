@@ -47,11 +47,12 @@ connection; `loadTable`, for a preloaded repository, one SELECT of the whole tab
 
 - **Each batch is one transaction**, so a batch that failed left nothing behind: written again, or split into single
   rows, it cannot leave duplicates. A delete followed by an insert is a DELETE and an INSERT in one transaction.
-- **INSERTs** are folded by the driver into multi-row statements when the URL has `rewriteBatchedStatements=true`.
-- **UPDATEs** are sent as statements of up to 100 rows, each column taking its value by id through `CASE`, one round
-  trip per statement instead of one per row. A statement that matches fewer rows than it names fails (keep the driver's
-  default `useAffectedRows=false`, so matched rows are counted): a row is missing, and succeeding would lose its change.
-  Split into single rows, the missing one goes to the DataErrorHandler.
+- **INSERTs and UPDATEs are plain JDBC batches**, which the driver folds into one multi-row statement when the URL has
+  `rewriteBatchedStatements=true`.
+- **An UPDATE is `INSERT ... ON DUPLICATE KEY UPDATE`** of the columns that are not keys, MySQL's own way of saving
+  rows in bulk. A row missing from the table is written again rather than failing: memory owns the data. On a table with
+  another unique key, a row taking a unique value another row still holds updates that other row instead, as MySQL
+  documents for this statement; that happens only when two rows swap a unique value within one round.
 - **DELETEs** go as `WHERE id IN (...)`, up to 1,000 ids per statement.
 - Keep the pool larger than GameData's `writeThreads` plus the loads that run at once.
 
@@ -62,12 +63,14 @@ benchmarks:
 
 | URL option | Why |
 | --- | --- |
-| `rewriteBatchedStatements=true` | a batch of INSERTs goes as one multi-row statement |
-| `cachePrepStmts=true&prepStmtCacheSqlLimit=1000000` | the driver keeps its parse of each statement; a multi-row UPDATE is far longer than the default limit of 256 characters. Updates went from 26,000 to 34,000 rows a second, the writing thread's CPU from 11.8 to 3.6 µs a row and its allocation from 7.0 to 4.1 KB |
+| `rewriteBatchedStatements=true` | a batch of INSERTs or UPDATEs goes as one multi-row statement, not a statement a row; a batch of plain single-row UPDATEs ran at a third of the speed |
+| `cachePrepStmts=true&prepStmtCacheSqlLimit=1000000` | the driver keeps its parse of each statement, which for a wide table is longer than the default limit of 256 characters: the writing thread's CPU fell by two thirds and its allocation by 40% |
 | `prepStmtCacheSize=250` | room for every table's statements |
+| `useServerPrepStmts=true` | the server keeps the statements too: as many rows a second with less client work, such as 3.0 instead of 7.0 µs and 4.9 instead of 7.7 KB a row for bags of JSON |
 | `useLocalSessionState=true` | settings the connection already has are not sent again |
-| `useAffectedRows=false`, the default | an UPDATE counts the rows it matched, so a missing row is noticed |
-| `useServerPrepStmts` left off | server-side statements made the multi-row UPDATE slower |
+
+With all of them, a round wrote 40,000 changed players (ten columns) a second, 50,000 items or inserts and deletes,
+and 21,000 bags of a 50-entry JSON column.
 
 - **Columns for JSON fields.** Prefer `TEXT` (or `MEDIUMTEXT`) to MySQL's `JSON` type unless the database queries
   inside them: MySQL parses and converts every value written to a `JSON` column. Updating a 50-entry document ran at
@@ -106,9 +109,9 @@ Install managame-common and managame-data first. The tests run against H2 in MyS
 through GameData, covering rows with JSON columns, loading JSON into the initialized collection, a preloaded table,
 `getAll` of more ids
 than one SELECT names, updates of many rows
-in few statements, groups and a unique slot reused through deletes first, a bad row dropped and the others written,
+in one batch, groups and a unique slot reused through deletes first, a bad row dropped and the others written,
 changes kept while the database refuses connections, an insert whose commit was not acknowledged written again without
-a duplicate, an update of a missing row reported, mappings refused at build, and logs in day partitions cut in the
+a duplicate, an updated row no longer stored written again, mappings refused at build, and logs in day partitions cut in the
 partition zone, in one batch. `MysqlIntegrationTest` runs against a real MySQL when given a database that can be
 thrown away:
 

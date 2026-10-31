@@ -31,16 +31,14 @@ import javax.sql.DataSource;
  * than GameData's write threads plus the loads that run at once.
  *
  * <p>Each batch is one transaction, so a batch that failed left nothing behind and can be written again or split into
- * single rows. INSERTs are folded into multi-row statements by the driver; UPDATEs are sent as statements of up to
- * {@value #MAX_ROWS_PER_UPDATE} rows, each column taking its value by id through CASE, one round trip per statement
- * instead of per row. An UPDATE that matches fewer rows than it names fails, rather than lose a change silently.
+ * single rows. INSERTs and UPDATEs are plain JDBC batches, which the driver folds into one multi-row statement: an
+ * UPDATE is {@code INSERT ... ON DUPLICATE KEY UPDATE} of the columns that are not keys, so a row missing from the
+ * table is written again rather than failing. On a table with another unique key, a row taking a unique value another
+ * row still holds updates that other row instead, as MySQL documents for this statement.
  */
 public final class MysqlEntityMapper implements EntityMapper {
-    public static final int MAX_ROWS_PER_UPDATE = 100;
     /** Ids one SELECT or DELETE names at most. */
     private static final int MAX_IDS_PER_STATEMENT = 1000;
-    /** MySQL takes 65,535 placeholders in one statement; every statement here stays clear of that. */
-    private static final int MAX_PARAMETERS = 60_000;
     private final DataSource dataSource;
     private final JsonCodec jsonCodec;
     private final ConcurrentHashMap<EntityType, TableMapping> tables = new ConcurrentHashMap<>();
@@ -128,9 +126,9 @@ public final class MysqlEntityMapper implements EntityMapper {
                 Jdbc.inTransaction(dataSource, connection -> Jdbc.executeBatch(connection, mapping.insert, rows));
             }
             case UPDATE -> {
-                if (mapping.updatedColumns.isEmpty()) return;
-                List<Object[]> rows = mapping.encodeRows(mapping.updatedColumns, batch);
-                Jdbc.inTransaction(dataSource, connection -> mapping.update(connection, batch, rows));
+                if (mapping.upsert == null) return;   // nothing but keys, which never change
+                List<Object[]> rows = mapping.encodeRows(mapping.columns, batch);
+                Jdbc.inTransaction(dataSource, connection -> Jdbc.executeBatch(connection, mapping.upsert, rows));
             }
             case DELETE -> Jdbc.inTransaction(dataSource, connection -> mapping.delete(connection, batch));
             case DELETE_INSERT -> {
@@ -154,11 +152,11 @@ public final class MysqlEntityMapper implements EntityMapper {
     private final class TableMapping {
         final EntityType type;
         final String table, selectFrom, selectById, selectByGroup, insert;
-        final List<MysqlColumn> columns, updatedColumns;
+        /** The INSERT, updating the columns that are not keys when the row exists; null when every column is a key. */
+        final String upsert;
+        final List<MysqlColumn> columns;
         final MysqlColumn idColumn;
-        final int rowsPerUpdate;
-        final ConcurrentHashMap<Integer, String> updateSqlByRows = new ConcurrentHashMap<>(), deleteSqlByRows = new ConcurrentHashMap<>(),
-                selectByIdsSqlByCount = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, String> deleteSqlByRows = new ConcurrentHashMap<>(), selectByIdsSqlByCount = new ConcurrentHashMap<>();
 
         TableMapping(EntityType type) {
             this.type = type;
@@ -170,14 +168,14 @@ public final class MysqlEntityMapper implements EntityMapper {
             Set<EntityField> keys = new HashSet<>(type.groupKeys());
             keys.addAll(type.mapKeys());
             keys.add(type.id());
-            updatedColumns = columns.stream().filter(column -> !keys.contains(column.field)).toList();
+            List<MysqlColumn> updated = columns.stream().filter(column -> !keys.contains(column.field)).toList();
             selectFrom = "SELECT " + Jdbc.columnList(columns) + " FROM " + MysqlColumn.quote(table);
             selectById = selectFrom + " WHERE " + idColumn.quotedName() + " = ?";
             selectByGroup = selectFrom + " WHERE "
                     + type.groupKeys().stream().map(field -> columnOf(field).quotedName() + " = ?").collect(Collectors.joining(" AND "));
             insert = Jdbc.insertSql(table, columns);
-            rowsPerUpdate = updatedColumns.isEmpty() ? 0
-                    : Math.max(1, Math.min(MAX_ROWS_PER_UPDATE, MAX_PARAMETERS / (2 * updatedColumns.size() + 1)));
+            upsert = updated.isEmpty() ? null : insert + " ON DUPLICATE KEY UPDATE "
+                    + updated.stream().map(column -> column.quotedName() + " = VALUES(" + column.quotedName() + ")").collect(Collectors.joining(", "));
         }
 
         Object readEntity(ResultSet resultSet) throws SQLException {
@@ -192,29 +190,6 @@ public final class MysqlEntityMapper implements EntityMapper {
             return rows;
         }
 
-        /**
-         * Statements of up to {@code rowsPerUpdate} rows. One that matches fewer rows than it names fails the batch: a
-         * row is missing, and succeeding would lose its change. Split into single rows, the missing one is reported.
-         */
-        void update(Connection connection, List<? extends Change> batch, List<Object[]> rows) throws SQLException {
-            for (int from = 0; from < batch.size(); from += rowsPerUpdate) {
-                int count = Math.min(rowsPerUpdate, batch.size() - from);
-                String sql = updateSqlByRows.computeIfAbsent(count, this::updateSql);
-                try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                    int index = 1;
-                    for (int column = 0; column < updatedColumns.size(); column++)
-                        for (int row = from; row < from + count; row++) {
-                            statement.setObject(index++, batch.get(row).id());
-                            statement.setObject(index++, rows.get(row)[column]);
-                        }
-                    for (int row = from; row < from + count; row++) statement.setObject(index++, batch.get(row).id());
-                    int matched = statement.executeUpdate();
-                    if (matched != count)
-                        throw new SQLException("UPDATE of " + table + " matched " + matched + " of " + count + " rows", "02000");
-                }
-            }
-        }
-
         void delete(Connection connection, List<? extends Change> batch) throws SQLException {
             for (int from = 0; from < batch.size(); from += MAX_IDS_PER_STATEMENT) {
                 int count = Math.min(MAX_IDS_PER_STATEMENT, batch.size() - from);
@@ -224,14 +199,6 @@ public final class MysqlEntityMapper implements EntityMapper {
                     statement.executeUpdate();
                 }
             }
-        }
-
-        private String updateSql(int rows) {
-            String cases = String.join(" ", Collections.nCopies(rows, "WHEN ? THEN ?"));
-            return "UPDATE " + MysqlColumn.quote(table) + " SET "
-                    + updatedColumns.stream().map(column -> column.quotedName() + " = CASE " + idColumn.quotedName() + " " + cases + " END")
-                            .collect(Collectors.joining(", "))
-                    + " WHERE " + idIn(rows);
         }
 
         /** {@code id IN (?, ...)} with this many placeholders. */
