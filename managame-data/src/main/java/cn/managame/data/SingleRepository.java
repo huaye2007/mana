@@ -10,22 +10,18 @@ import cn.managame.data.internal.EntityKeys;
 import cn.managame.data.internal.PendingChange;
 import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
-import com.github.benmanes.caffeine.cache.AsyncCacheLoader;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
-import com.github.benmanes.caffeine.cache.stats.ConcurrentStatsCounter;
-import com.github.benmanes.caffeine.cache.stats.StatsCounter;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -34,18 +30,17 @@ import java.util.function.Function;
  * {@code class Players extends SingleRepository<Long, Player> {}}, and get the instance from
  * {@link GameData#repository}.
  *
- * <p>Reads come from memory; an entity not in memory is loaded once however many threads ask for it, and they block
- * while the database answers (fine on a virtual thread, never on a Netty EventLoop). Changes go to memory at once and
- * to the database in the next round, which reads the entity then: after changing an entity, call
+ * <p>Reads come from memory; an entity not in memory is loaded on the asking thread, once however many threads ask for
+ * it, and they block while the database answers (fine on a virtual thread, never on a Netty EventLoop). Changes go to
+ * memory at once and to the database in the next round, which reads the entity then: after changing an entity, call
  * {@link #update(Object)} (or change it through {@link #update(Object, Consumer)}), and keep its collections
- * thread-safe. Every method may be called from any thread; changes to one entity are the application's to
- * make one at a time.
+ * thread-safe. Every method may be called from any thread; changes to one entity are the application's to make one at
+ * a time.
  *
  * <p>Memory knows which ids exist: {@code insert} of an id in memory throws, {@code update} of an id known not to
  * exist throws, and {@code delete} of one does nothing. Changes of ids not in memory never read the database. An
- * entity unused for the builder's {@code cacheExpire} leaves memory, as do the least used beyond its
- * {@code maxCacheEntries} and one {@link #evict}ed; a later {@code get} returns its unwritten state if it has one, the
- * very same instance.
+ * entity unused for the builder's {@code cacheExpire} leaves memory, as does one {@link #evict}ed; a later {@code get}
+ * returns its unwritten state if it has one, the very same instance.
  *
  * <p>A repository registered with {@code preloadedRepositories} reads its whole table while GameData is built and
  * keeps every entity in memory for good: an id not in memory does not exist, so no read asks the database, and
@@ -57,8 +52,6 @@ public abstract class SingleRepository<K, E> {
 
     /** By id, the entity or NOT_FOUND. */
     private LoadingCache<Object, Object> entities;
-    /** The cache's counts; hits found by asMap().get are recorded here, as the cache records everything else. */
-    private final StatsCounter cacheStats = new ConcurrentStatsCounter();
     private EntityType entityType;
     private EntityKeys keys;
     private EntityMapper mapper;
@@ -68,28 +61,15 @@ public abstract class SingleRepository<K, E> {
 
     protected SingleRepository() {}
 
-    /**
-     * {@code cache} carries the expiry and size bound, none for a preloaded repository. Loads run on {@code loads}, one
-     * per id however many threads ask for it and one call of the mapper's loadAll per getAll, outside the cache's
-     * locks; the asking threads wait for them.
-     */
-    final void bind(ChangeSet changes, EntityKeys keys, Caffeine<Object, Object> cache, Executor loads, boolean preloaded) {
+    /** A preloaded repository's cache never expires. */
+    final void bind(ChangeSet changes, EntityKeys keys, Duration cacheExpire, boolean preloaded) {
         entityType = changes.type();
         this.keys = keys;
         mapper = changes.mapper();
         this.changes = changes;
         this.preloaded = preloaded;
-        entities = cache.recordStats(() -> cacheStats)
-                .buildAsync(new AsyncCacheLoader<Object, Object>() {
-                    @Override public CompletableFuture<Object> asyncLoad(Object id, Executor executor) {
-                        return CompletableFuture.supplyAsync(() -> load(id), loads);
-                    }
-
-                    @Override public CompletableFuture<Map<Object, Object>> asyncLoadAll(Set<?> ids, Executor executor) {
-                        return CompletableFuture.supplyAsync(() -> loadAll(ids), loads);
-                    }
-                })
-                .synchronous();
+        Caffeine<Object, Object> cache = preloaded ? Caffeine.newBuilder() : Caffeine.newBuilder().expireAfterAccess(cacheExpire);
+        entities = cache.recordStats().build(this::load);
     }
 
     /** Reads the whole table into memory; GameData calls it while building a preloaded repository. */
@@ -100,50 +80,45 @@ public abstract class SingleRepository<K, E> {
     /** The entity, from memory or loaded while this thread waits; null when the database has none. */
     public final E get(K id) {
         Object key = keys().checkKeyType(id);
-        Object entity = entities.asMap().get(key);   // a hit allocates nothing, unlike get, and waits for no load
-        if (entity != null) {
-            cacheStats.recordHits(1);
-            return entityOf(entity);
-        }
-        if (!preloaded) return entityOf(entities.get(key));
-        cacheStats.recordMisses(1);
-        return null;
+        return entityOf(preloaded ? entities.getIfPresent(key) : entities.get(key));
     }
 
     /**
-     * The entities of these ids that the database has, by id in the order given. Those not in memory are loaded with
-     * one call of the mapper's {@code loadAll} while this thread waits, each once however many threads ask for it: a
-     * {@code get} of one of them meanwhile waits for that call. Ids the database has not are left out, and remembered as
-     * {@code get} remembers them.
+     * The entities of these ids that the database has, by id in the order given, for reading. Those not in memory are
+     * read with one call of the mapper's {@code loadAll} on this thread; one another thread loads meanwhile keeps the
+     * instance that thread stored first. Ids the database has not are left out, and remembered as {@code get}
+     * remembers them.
      */
     @SuppressWarnings("unchecked")
     public final Map<K, E> getAll(Collection<? extends K> ids) {
-        // Those in memory are found as get finds them; Caffeine's getAll, which allocates for every key, gets the rest.
         Map<Object, Object> found = new LinkedHashMap<>();   // in the order asked, null until loaded
-        List<Object> missing = new ArrayList<>(0);
+        Set<Object> missing = new HashSet<>();
         for (K id : ids) {
             Object key = keys().checkKeyType(id);
             if (found.containsKey(key)) continue;
-            Object entity = entities.asMap().get(key);
+            Object entity = entities.getIfPresent(key);
             found.put(key, entity);
             if (entity == null) missing.add(key);
         }
-        cacheStats.recordHits(found.size() - missing.size());
-        if (preloaded) cacheStats.recordMisses(missing.size());
-        else if (!missing.isEmpty()) found.putAll(entities.getAll(missing));
+        // Not Caffeine's getAll, which puts what it loads over what other threads stored meanwhile.
+        if (!preloaded && !missing.isEmpty())
+            loadAll(missing).forEach((id, loaded) -> {
+                Object stored = entities.asMap().putIfAbsent(id, loaded);
+                found.put(id, stored != null ? stored : loaded);
+            });
         found.values().removeIf(entity -> entity == null || entity == NOT_FOUND);
-        return Collections.unmodifiableMap((Map<K, E>) (Map<?, ?>) found);
+        return (Map<K, E>) (Map<?, ?>) found;
     }
 
     /**
-     * Every entity, as a live read-only view, of a repository registered with {@code preloadedRepositories};
+     * Every entity, live and for reading, of a repository registered with {@code preloadedRepositories};
      * IllegalStateException for one that loads on demand, whose memory holds only some.
      */
     @SuppressWarnings("unchecked")
     public final Collection<E> all() {
         keys();
         if (!preloaded) throw new IllegalStateException(getClass().getName() + " loads on demand, so memory holds only some of its entities");
-        return Collections.unmodifiableCollection((Collection<E>) (Collection<?>) entities.asMap().values());
+        return (Collection<E>) (Collection<?>) entities.asMap().values();
     }
 
     /**
@@ -229,12 +204,12 @@ public abstract class SingleRepository<K, E> {
 
     final EntityStats stats() {
         return new EntityStats(entityType.entityClass(), entities.estimatedSize(), changes.waiting(), changes.written(),
-                changes.failures(), changes.dropped(), cacheStats.snapshot());
+                changes.failures(), changes.dropped(), entities.stats());
     }
 
     /**
-     * The entity's newest state: its change not yet written, or else what the database has. A change of the id made by
-     * another thread while this loads waits for the load and then applies to its result.
+     * The entity's newest state: its change not yet written, or else what the database has. Runs inside the cache, so
+     * a change of the id made by another thread meanwhile waits for the load and then applies to its result.
      */
     private Object load(Object id) {
         PendingChange change = changes.find(id);
@@ -249,7 +224,7 @@ public abstract class SingleRepository<K, E> {
     }
 
     /** Each id's newest state as {@link #load} gives it, those without a change not yet written read in one call. */
-    private Map<Object, Object> loadAll(Set<?> ids) {
+    private Map<Object, Object> loadAll(Set<Object> ids) {
         Map<Object, Object> loaded = new HashMap<>();
         List<Object> unchanged = new ArrayList<>(ids.size());
         for (Object id : ids) {

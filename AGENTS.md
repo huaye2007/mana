@@ -134,8 +134,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   (`MysqlEntityMapper` with `@Table`, `MongoEntityMapper` with `@Collection`, `MysqlLogWriter`), and where logs go,
   such as a service over HTTP, is the application's `LogWriter`; each mapper and writer decides what is retryable.
   Changes are recorded, not copied: the write thread reads the entity when it writes it, so business threads pay no
-  copy and entity collections must be thread-safe. The caches are Caffeine's, used through its own API with no
-  wrapper: it loads a key once however many threads ask, and expires and bounds entries. Game data has only these two
+  copy and entity collections must be thread-safe. The caches are plain Caffeine, `Caffeine.newBuilder()
+  .expireAfterAccess(cacheExpire)` with no further tuning or wrapper: it loads a key once however many threads ask.
+  What reads return is handed over as is, without unmodifiable wrappers: it is for reading. Game data has only these two
   shapes plus logs; the application owns the schema (no DDL but MySQL log partitions created `LIKE` their base table).
   A table kept whole in memory registers with `preloadedRepositories` (read at build by `loadTable`, never leaves
   memory, listed by `all()`). The framework wraps no database API: the application queries its own `DataSource` or

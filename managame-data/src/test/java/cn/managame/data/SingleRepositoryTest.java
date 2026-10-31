@@ -168,7 +168,7 @@ class SingleRepositoryTest {
     }
 
     @Test
-    void aGetWaitsForTheGetAllLoadingItsId() throws Exception {
+    void aGetAndAGetAllLoadingOneIdAtOnceEndWithOneInstance() throws Exception {
         database.put(Player.class, new Player(7, "bob"));
         database.put(Player.class, new Player(8, "cid"));
         database.loadGate = new CountDownLatch(1);
@@ -176,12 +176,11 @@ class SingleRepositoryTest {
             Future<Map<Long, Player>> all = threads.submit(() -> players.getAll(List.of(7L, 8L)));
             while (database.bulkLoads.get() == 0) Thread.onSpinWait();
             Future<Player> one = threads.submit(() -> players.get(8L));
-            Thread.sleep(50);   // the get asks while the getAll waits at the gate
-            database.loadGate.countDown();
+            while (database.loads.get() == 0) Thread.onSpinWait();
+            database.loadGate.countDown();   // both read the row; the one stored first is kept
             assertSame(all.get().get(8L), one.get());
+            assertSame(one.get(), players.get(8L));
         }
-        assertEquals(0, database.loads.get());
-        assertEquals(1, database.bulkLoads.get());
     }
 
     @Test
@@ -193,20 +192,6 @@ class SingleRepositoryTest {
         database.unreachable = false;
         assertEquals(Set.of(7L), players.getAll(List.of(7L, 8L)).keySet());
         assertEquals(2, database.bulkLoads.get());
-    }
-
-    @Test
-    void keepsAtMostMaxCacheEntries() {
-        data.close();
-        data = GameData.builder().repositories(database, List.of(Players.class)).maxCacheEntries(2)
-                .flushInterval(Duration.ofMinutes(1)).build();
-        players = data.repository(Players.class);
-        for (long id = 1; id <= 10; id++) database.put(Player.class, new Player(id, "p" + id));
-        for (long id = 1; id <= 10; id++) players.get(id);
-        players.cleanUp();
-        int loaded = database.loads.get();
-        for (long id = 1; id <= 10; id++) players.get(id);
-        assertTrue(database.loads.get() - loaded >= 8, "at most two of the ten stayed in memory");
     }
 
     @Test

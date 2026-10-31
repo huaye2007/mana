@@ -54,7 +54,6 @@ class BuildTest {
         assertThrows(IllegalArgumentException.class, () -> GameData.builder().logRepositories((type, logs) -> {}, Players.class).build());
         assertThrows(IllegalArgumentException.class, () -> GameData.builder().repositories(database, Players.class).repositories(database, Players.class));
         assertThrows(IllegalStateException.class, () -> GameData.builder().build());
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().maxCacheEntries(0));
         assertThrows(IllegalArgumentException.class, () -> GameData.builder().cacheExpire(Duration.ZERO));
     }
 

@@ -97,14 +97,14 @@ data.close();                                            // writes what is left
 
 ## Reading and changing
 
-- **Reads come from memory.** An entity or group not in memory is loaded once, however many threads ask for it at the
-  same time: they all wait for that load and get the same instances. The asking threads block while the database
-  answers: fine on a virtual thread, as managame-runtime's Routes are by default, never on a Netty EventLoop. A group is
-  always loaded whole, by reads and changes alike. `getGroup` returns a live, read-only view; change a group through the
-  repository.
+- **Reads come from memory.** An entity or group not in memory is loaded on the asking thread, once however many
+  threads ask for it at the same time: they all wait for that load and get the same instances. The asking threads block
+  while the database answers: fine on a virtual thread, as managame-runtime's Routes are by default, never on a Netty
+  EventLoop. A group is always loaded whole, by reads and changes alike. What reads return is live and for reading:
+  change entities and groups through the repository.
 - **Several at once.** `getAll(ids)` returns those of the ids that exist, by id in the order asked. Those not in memory
-  are read with one call of the mapper's `loadAll` (in MySQL a `WHERE id IN (...)` per thousand ids), each still loaded
-  once however many threads ask: a `get` of one of them meanwhile waits for that call.
+  are read with one call of the mapper's `loadAll` (in MySQL a `WHERE id IN (...)` per thousand ids). A `get` of one of
+  them meanwhile may read it too; whichever stores it first is the instance both return.
 - **After changing an entity, record it**: `update(entity)`, or change it through `update(id, change)` /
   `update(groupKey, mapKey, change)`, which cannot forget. A change is written with the state the entity has when its
   round writes it, read then by a write thread.
@@ -116,15 +116,13 @@ data.close();                                            // writes what is left
 - **Memory knows which rows exist.** `insert` of an id in memory throws `IllegalStateException`; `update` of an id known
   not to exist throws; `delete` of one does nothing. `get` of an id the database does not have remembers that, so asking
   again does not ask the database. Changes of ids not in memory never read the database.
-- **Leaving memory.** An entity or group unused for `cacheExpire` (30 minutes) leaves memory, as do the least used once
-  a repository holds more than `maxCacheEntries` (a million), and one `evict`ed. A later read loads it again, with its
-  changes not yet written laid over what the database returns: the very same instances, so a reload never returns
-  older data than memory had.
+- **Leaving memory.** An entity or group unused for `cacheExpire` (30 minutes) leaves memory, as does one `evict`ed. A
+  later read loads it again, with its changes not yet written laid over what the database returns: the very same
+  instances, so a reload never returns older data than memory had.
 - **Whole tables.** A table that fits in memory and is read all the time, such as guilds, registers with
   `preloadedRepositories(mapper, types)`: build reads it whole through the mapper's `loadTable`, and nothing leaves
   memory after. An id or group not in memory does not exist, so no read asks the database, and `all()` lists every
-  entity, or group, as a read-only view. Changes are written as usual; `evict` throws, since dropping an entity would
-  make it look deleted.
+  entity, or group. Changes are written as usual; `evict` throws, since dropping an entity would make it look deleted.
 
 ## Writing
 
@@ -225,8 +223,7 @@ missing should fail. `isRetryable` starts from `RetryableFailures.isRetryable`, 
 | `flushInterval` | 1 s | how often changes are written; a crash loses about this much |
 | `batchSize` | 500 | changes or logs per batch |
 | `writeThreads` | 4 | entity and log types written at once |
-| `cacheExpire` | 30 min | how long an unused entity or group stays in memory, give or take a flush interval |
-| `maxCacheEntries` | 1,000,000 | entities, or groups, one repository keeps in memory; the least used beyond it leave |
+| `cacheExpire` | 30 min | how long an unused entity or group stays in memory |
 | `shutdownTimeout` | 30 s | how long close keeps trying |
 | `logQueueCapacity` | 100,000 | logs one LogRepository holds waiting |
 | `errorHandler` | logs | receives what is given up on |
@@ -237,10 +234,9 @@ while preparing comes out as it is. A load that fails throws `DataException` (`D
 
 ## Threads
 
-Business threads read and record changes. A load runs on a virtual thread of its own, `game-data-load-N`, while the
-threads that asked for it wait; one thread named `game-data` starts the rounds, sets the clock the caches time accesses
-by (cheaper to read than the system's) and drops expired entries, and `game-data-write-N` write the entity and log
-types of a round. Recording a change takes a lock that covers a
+Business threads read, load what is not in memory and record changes; one thread named `game-data` starts the rounds
+and drops expired entries, and `game-data-write-N` write the entity and log types of a round. Recording a change takes
+a lock that covers a
 sixty-fourth of a type's rows, so business threads rarely wait for each other; nothing a business thread does waits for
 a write.
 
@@ -256,10 +252,10 @@ acknowledgement or refuse bad rows. They cover:
 - writing inserts, updates and deletes; loading once and keeping the entity; remembering ids that do not exist;
 - a row changed many times written once, inserted and deleted written not at all, deleted and inserted replaced;
 - groups: loading, changing, keys of several fields, an evicted group coming back with its unwritten changes;
-- one load for threads asking for the same id or group at once; unused entries and those beyond `maxCacheEntries`
-  leaving memory, and an evicted entity coming back unwritten as the same instance;
-- `getAll`: one load of the ids neither in memory nor changed, a `get` waiting for the `getAll` loading its id, a failed
-  `getAll` keeping nothing;
+- one load for threads asking for the same id or group at once; unused entries leaving memory, and an evicted entity
+  coming back unwritten as the same instance;
+- `getAll`: one load of the ids neither in memory nor changed, a `get` and a `getAll` loading one id at once ending with
+  one instance, a failed `getAll` keeping nothing;
 - stats: changes waiting, written, failed and dropped, cache hits, misses and loads, logs queued, refused and written;
 - preloaded repositories: the whole table read at build and no read asking the database after, `all()`, changes as
   usual, `evict` refused, a mapper without `loadTable` failing the build;

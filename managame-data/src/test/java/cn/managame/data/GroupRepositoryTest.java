@@ -48,7 +48,6 @@ class GroupRepositoryTest {
         assertEquals(3, bag.get(1).amount);
         assertSame(bag.get(0), items.get(GroupKeys.of(100L), 0));
         assertTrue(items.getGroup(GroupKeys.of(300L)).isEmpty());
-        assertThrows(UnsupportedOperationException.class, () -> bag.remove(0));
     }
 
     @Test

@@ -9,7 +9,7 @@ import com.github.benmanes.caffeine.cache.stats.CacheStats;
  * {@code written} changes were written, {@code failures} writes failed (a batch, or a single change once a batch is
  * split, each counting once, whether tried again or dropped) and {@code dropped} changes were handed to the
  * DataErrorHandler. {@code cache} is the cache's own count of hits, misses, loads, failed loads, load time and
- * evictions; {@code CacheStats.minus} gives what changed between two reads.
+ * evictions, getAll's reads not among the loads; {@code CacheStats.minus} gives what changed between two reads.
  */
 public record EntityStats(Class<?> entityType, long cached, int waiting, long written, long failures, long dropped,
         CacheStats cache) {}

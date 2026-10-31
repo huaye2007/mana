@@ -81,7 +81,7 @@ class StatsTest {
         var cache = players().cache();
         assertEquals(2, cache.hitCount(), "7 the second time, then in getAll");
         assertEquals(3, cache.missCount(), "7 the first time, 8, then 9 in getAll");
-        assertEquals(3, cache.loadSuccessCount(), "two loads and one loadAll");
+        assertEquals(2, cache.loadSuccessCount(), "7 and 8; getAll reads 9 itself");
     }
 
     @Test
