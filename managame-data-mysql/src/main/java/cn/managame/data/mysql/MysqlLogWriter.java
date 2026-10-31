@@ -1,8 +1,11 @@
 package cn.managame.data.mysql;
 
-import cn.managame.data.EntityField;
-import cn.managame.data.EntityType;
-import cn.managame.data.LogWriter;
+import cn.managame.data.mysql.annotation.PartitionKey;
+import cn.managame.data.mysql.annotation.PartitionType;
+import cn.managame.data.mysql.annotation.Table;
+import cn.managame.data.spi.EntityField;
+import cn.managame.data.spi.EntityType;
+import cn.managame.data.spi.LogWriter;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;

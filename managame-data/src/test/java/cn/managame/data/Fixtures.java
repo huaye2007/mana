@@ -1,5 +1,8 @@
 package cn.managame.data;
 
+import cn.managame.data.annotation.GroupKey;
+import cn.managame.data.annotation.Id;
+import cn.managame.data.annotation.MapKey;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;

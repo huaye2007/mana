@@ -1,4 +1,4 @@
-package cn.managame.data;
+package cn.managame.data.internal;
 
 import static cn.managame.FrameworkErrorCodes.DATA_LOG_SAVE_FAILED;
 import static cn.managame.FrameworkErrorCodes.DATA_SAVE_FAILED;
@@ -8,6 +8,11 @@ import static cn.managame.data.DataOperation.INSERT;
 import static cn.managame.data.DataOperation.LOG_INSERT;
 import static cn.managame.data.DataOperation.UPDATE;
 
+import cn.managame.data.DataErrorHandler;
+import cn.managame.data.DataFailure;
+import cn.managame.data.DataOperation;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.LogWriter;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -30,8 +35,10 @@ import java.util.function.IntSupplier;
  * <p>A failure the mapper or writer calls retryable leaves the batch for the next round, and a mapper or writer that
  * failed so twice in a row gets nothing more in the round, which would only wait out the same timeout again. Any other
  * failure splits the batch into single changes or logs; one that still fails goes to the DataErrorHandler and is dropped.
+ *
+ * <p>Not API: it may change in any release.
  */
-final class ChangeWriter {
+public final class ChangeWriter {
     private static final System.Logger LOG = System.getLogger("cn.managame.data");
     private static final List<DataOperation> WRITE_ORDER = List.of(DELETE, DELETE_INSERT, INSERT, UPDATE);
     private static final int MAX_FAILURES_IN_A_ROW = 2;
@@ -47,17 +54,23 @@ final class ChangeWriter {
     private final Object errorHandlerLock = new Object();
 
     /** What one round left: changes kept for a later round, changes dropped, and each target's failures in a row. */
-    static final class Round {
+    public static final class Round {
         private final boolean hasDeadline;
         private final long deadline;
         /** By mapper or writer, each standing for the database or service it writes to. */
         private final ConcurrentHashMap<Object, AtomicInteger> failuresInARow = new ConcurrentHashMap<>();
-        final AtomicInteger unwritten = new AtomicInteger(), dropped = new AtomicInteger();
+        private final AtomicInteger unwritten = new AtomicInteger(), dropped = new AtomicInteger();
 
         private Round(boolean hasDeadline, long deadline) {
             this.hasDeadline = hasDeadline;
             this.deadline = deadline;
         }
+
+        /** Changes and logs kept for a later round after retryable failures. */
+        public int unwritten() { return unwritten.get(); }
+
+        /** Changes and logs handed to the DataErrorHandler. */
+        public int dropped() { return dropped.get(); }
 
         private boolean shouldStop(Object target) {
             return hasDeadline && System.nanoTime() - deadline >= 0 || failuresOf(target).get() >= MAX_FAILURES_IN_A_ROW;
@@ -72,7 +85,7 @@ final class ChangeWriter {
         }
     }
 
-    ChangeWriter(List<ChangeSet> changeSets, List<LogQueue> logQueues, int batchSize, int writeThreads, DataErrorHandler errorHandler) {
+    public ChangeWriter(List<ChangeSet> changeSets, List<LogQueue> logQueues, int batchSize, int writeThreads, DataErrorHandler errorHandler) {
         this.changeSets = List.copyOf(changeSets);
         this.logQueues = List.copyOf(logQueues);
         this.batchSize = batchSize;
@@ -82,30 +95,30 @@ final class ChangeWriter {
     }
 
     /** Writes everything waiting, and returns when done. */
-    Round writeAll() { return writeAll(false, 0); }
+    public Round writeAll() { return writeAll(false, 0); }
 
     /** Writes everything waiting, starting no write after {@code deadline}, a {@link System#nanoTime()}. */
-    Round writeAllBefore(long deadline) { return writeAll(true, deadline); }
+    public Round writeAllBefore(long deadline) { return writeAll(true, deadline); }
 
-    boolean isEmpty() {
+    public boolean isEmpty() {
         for (ChangeSet changes : changeSets) if (!changes.isEmpty()) return false;
         for (LogQueue logs : logQueues) if (!logs.isEmpty()) return false;
         return true;
     }
 
     /** Makes every change set and log queue refuse changes from now on. */
-    void refuseChanges() {
+    public void refuseChanges() {
         changeSets.forEach(ChangeSet::close);
         logQueues.forEach(LogQueue::close);
     }
 
     /** Hands everything still waiting to the DataErrorHandler, as not written for {@code cause}; returns how many. */
-    int dropAll(Throwable cause) {
+    public int dropAll(Throwable cause) {
         synchronized (roundLock) {
             int dropped = 0;
             for (ChangeSet changes : changeSets) {
-                List<Change> waiting = changes.takeAll();
-                for (Change change : waiting)
+                List<PendingChange> waiting = changes.takeAll();
+                for (PendingChange change : waiting)
                     reportFailure(null, DATA_SAVE_FAILED, changes.type.entityClass(), change.operation, change.entityOrId(), cause);
                 changes.putBack(List.of());
                 dropped += waiting.size();
@@ -118,12 +131,12 @@ final class ChangeWriter {
         }
     }
 
-    void shutdown() {
+    public void shutdown() {
         if (writePool != null) writePool.shutdown();
     }
 
     /** Hands a change or log given up on to the DataErrorHandler, counted as dropped in {@code round} when there is one. */
-    void reportFailure(Round round, int errorCode, Class<?> type, DataOperation operation, Object value, Throwable cause) {
+    public void reportFailure(Round round, int errorCode, Class<?> type, DataOperation operation, Object value, Throwable cause) {
         if (round != null) round.dropped.incrementAndGet();
         synchronized (errorHandlerLock) {
             try {
@@ -177,13 +190,13 @@ final class ChangeWriter {
 
     /** Writes one entity type's changes; returns how many it put back for a later round. */
     private int writeChanges(ChangeSet changes, Round round) {
-        List<Change> taken = changes.takeAll(), unwritten = new ArrayList<>();
+        List<PendingChange> taken = changes.takeAll(), unwritten = new ArrayList<>();
         boolean finished = false;
         try {
-            Map<DataOperation, List<Change>> byOperation = new EnumMap<>(DataOperation.class);
-            for (Change change : taken) byOperation.computeIfAbsent(change.operation, key -> new ArrayList<>()).add(change);
+            Map<DataOperation, List<PendingChange>> byOperation = new EnumMap<>(DataOperation.class);
+            for (PendingChange change : taken) byOperation.computeIfAbsent(change.operation, key -> new ArrayList<>()).add(change);
             for (DataOperation operation : WRITE_ORDER) {
-                List<Change> batch = byOperation.getOrDefault(operation, List.of());
+                List<PendingChange> batch = byOperation.getOrDefault(operation, List.of());
                 for (int from = 0; from < batch.size(); from += batchSize)
                     writeBatch(changes, round, operation, batch.subList(from, Math.min(batch.size(), from + batchSize)), unwritten);
             }
@@ -192,14 +205,14 @@ final class ChangeWriter {
             // After an unexpected failure it is unknown which changes were written: all are written again, which does
             // no harm, as an insert comes back as DELETE_INSERT.
             if (!finished) unwritten = taken;
-            for (Change conflict : changes.putBack(unwritten))
+            for (PendingChange conflict : changes.putBack(unwritten))
                 reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), conflict.operation, conflict.entityOrId(),
                         new IllegalStateException("a change that failed to be written conflicts with a later change of its row"));
         }
         return unwritten.size();
     }
 
-    private void writeBatch(ChangeSet changes, Round round, DataOperation operation, List<Change> batch, List<Change> unwritten) {
+    private void writeBatch(ChangeSet changes, Round round, DataOperation operation, List<PendingChange> batch, List<PendingChange> unwritten) {
         EntityMapper mapper = changes.mapper;
         if (round.shouldStop(mapper)) {
             unwritten.addAll(batch);
@@ -221,7 +234,7 @@ final class ChangeWriter {
                 return;
             }
         }
-        for (Change change : batch) {
+        for (PendingChange change : batch) {
             if (round.shouldStop(mapper)) {
                 unwritten.add(change);
                 continue;

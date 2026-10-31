@@ -1,5 +1,8 @@
-package cn.managame.data;
+package cn.managame.data.spi;
 
+import cn.managame.data.annotation.GroupKey;
+import cn.managame.data.annotation.Id;
+import cn.managame.data.annotation.MapKey;
 import java.lang.annotation.Annotation;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -8,29 +11,24 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.ToIntFunction;
 
 /**
- * What an entity or log class saves, read once: every instance field that is neither static nor transient, superclass
- * fields first, and the fields marked {@link Id}, {@link GroupKey} and {@link MapKey}. An {@link EntityMapper} builds
- * its statements from it.
+ * What an entity class saves, read once: every instance field that is neither static nor transient, superclass fields
+ * first, and the fields marked {@link Id}, {@link GroupKey} and {@link MapKey}. An {@link EntityMapper} builds its
+ * statements from it.
  */
 public final class EntityType {
-    private static final System.Logger LOG = System.getLogger("cn.managame.data");
     private final Class<?> entityClass;
     private final List<EntityField> fields;
     private final EntityField id;
     private final List<EntityField> groupKeys, mapKeys;
     private final MethodHandle constructor;
-    /** What a SingleRepository's ids or a GroupRepository's map keys are: the boxed key type, String, or null. */
-    final Class<?> keyType;
 
     private EntityType(Class<?> entityClass) {
         this.entityClass = entityClass;
@@ -59,8 +57,6 @@ public final class EntityType {
         for (EntityField key : keys)
             if (!isKeyType(boxed(key.type())))
                 throw new IllegalArgumentException("key field must be integral or String: " + key.field());
-        keyType = !mapKeys.isEmpty() ? (mapKeys.size() == 1 ? boxed(mapKeys.getFirst().type()) : String.class)
-                : id != null ? boxed(id.type()) : null;
     }
 
     /**
@@ -75,7 +71,7 @@ public final class EntityType {
     /** The saved fields, superclass fields first. */
     public List<EntityField> fields() { return fields; }
 
-    /** The {@code @Id} field, or null for a log. */
+    /** The {@code @Id} field, or null when there is none. */
     public EntityField id() { return id; }
 
     /** The {@code @GroupKey} fields in their order; empty unless the entity is kept in groups. */
@@ -94,62 +90,6 @@ public final class EntityType {
     }
 
     @Override public String toString() { return entityClass.getName(); }
-
-    Object idOf(Object entity) {
-        return Objects.requireNonNull(id.get(Objects.requireNonNull(entity, "entity")), "@Id");
-    }
-
-    GroupKeys groupKeyOf(Object entity) {
-        Object[] values = new Object[groupKeys.size()];
-        for (int i = 0; i < values.length; i++) values[i] = Objects.requireNonNull(groupKeys.get(i).get(entity), "@GroupKey");
-        return GroupKeys.of(values);
-    }
-
-    Object mapKeyOf(Object entity) {
-        if (mapKeys.size() == 1) return Objects.requireNonNull(mapKeys.getFirst().get(entity), "@MapKey");
-        Object[] values = new Object[mapKeys.size()];
-        for (int i = 0; i < values.length; i++) values[i] = mapKeys.get(i).get(entity);
-        return MapKeys.of(values);
-    }
-
-    /** Throws IllegalArgumentException unless {@code key} has a value of the right type for each GroupKey field. */
-    GroupKeys checkGroupKey(GroupKeys key) {
-        Objects.requireNonNull(key, "group key");
-        if (key.size() != groupKeys.size())
-            throw new IllegalArgumentException(entityClass.getSimpleName() + " groups have " + groupKeys.size() + " key values, not " + key.size());
-        for (int i = 0; i < key.size(); i++)
-            if (key.valueAt(i).getClass() != boxed(groupKeys.get(i).type()))
-                throw new IllegalArgumentException("group key value " + i + " of " + entityClass.getSimpleName() + " must be "
-                        + boxed(groupKeys.get(i).type()).getSimpleName() + ", not " + key.valueAt(i).getClass().getSimpleName());
-        return key;
-    }
-
-    /** Throws IllegalArgumentException unless {@code key} is an id or map key of this entity's type. */
-    Object checkKeyType(Object key) {
-        if (Objects.requireNonNull(key, "key").getClass() != keyType)
-            throw new IllegalArgumentException(entityClass.getSimpleName() + " keys are " + keyType.getSimpleName()
-                    + ", not " + key.getClass().getSimpleName());
-        return key;
-    }
-
-    /**
-     * Write threads read entities while business threads change them, so a collection a write thread iterates must be
-     * thread-safe. A field initialized with a plain java.util collection, or not initialized (a load then fills it with
-     * whatever the decoder makes), is named here instead of failing under load.
-     */
-    void warnNonThreadSafeCollections() {
-        Object newInstance = newInstance();
-        for (EntityField field : fields) {
-            boolean map = Map.class.isAssignableFrom(field.type());
-            if (!map && !Collection.class.isAssignableFrom(field.type())) continue;
-            Object value = field.get(newInstance);
-            if (value != null && isThreadSafe(value.getClass())) continue;
-            LOG.log(System.Logger.Level.WARNING, entityClass.getSimpleName() + "." + field.name()
-                    + (value == null ? " is not initialized" : " is a " + value.getClass().getName())
-                    + ", which a write thread may read while it is changed; initialize it with a thread-safe collection such as "
-                    + (map ? "ConcurrentHashMap" : "CopyOnWriteArrayList"));
-        }
-    }
 
     /** The boxed class of a primitive, or the class itself. */
     public static Class<?> boxed(Class<?> type) {
@@ -198,11 +138,5 @@ public final class EntityType {
                 throw new IllegalArgumentException("several @" + annotation.getSimpleName() + " fields need distinct orders: " + field.field());
         }
         return annotated.stream().sorted(Comparator.comparingInt(field -> orderOf.applyAsInt(field.field().getAnnotation(annotation)))).toList();
-    }
-
-    private static boolean isThreadSafe(Class<?> type) {
-        String name = type.getName();
-        return name.startsWith("java.util.concurrent.") || name.startsWith("java.util.Collections$Synchronized")
-                || name.startsWith("java.util.Collections$Unmodifiable") || name.startsWith("java.util.ImmutableCollections$");
     }
 }

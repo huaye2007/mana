@@ -136,6 +136,11 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   Changes are recorded, not copied: the write thread reads the entity when it writes it, so business threads pay no
   copy and entity collections must be thread-safe. Game data has only these two shapes plus logs; the application owns
   the schema (no DDL but MySQL log partitions created `LIKE` their base table).
+- data's packages split by who uses them: `cn.managame.data` for business code (GameData, repositories, keys,
+  failures), `annotation` for the entity annotations (`mysql.annotation`, `mongo.annotation` in the backend projects),
+  `spi` for what a backend implements and reads (`EntityMapper`, `LogWriter`, `EntityType`, `EntityField`, read-only
+  `Change`, `RetryableFailures`), and `internal` for the implementation: public only to be reachable across packages,
+  marked not API, with no `module-info.java`. A helper used by one package stays package-private there.
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).

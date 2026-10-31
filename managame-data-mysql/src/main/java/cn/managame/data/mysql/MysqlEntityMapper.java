@@ -1,11 +1,13 @@
 package cn.managame.data.mysql;
 
-import cn.managame.data.Change;
 import cn.managame.data.DataOperation;
-import cn.managame.data.EntityField;
-import cn.managame.data.EntityMapper;
-import cn.managame.data.EntityType;
 import cn.managame.data.GroupKeys;
+import cn.managame.data.mysql.annotation.Column;
+import cn.managame.data.mysql.annotation.Table;
+import cn.managame.data.spi.Change;
+import cn.managame.data.spi.EntityField;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -83,7 +85,7 @@ public final class MysqlEntityMapper implements EntityMapper {
     }
 
     /** Encodes every row before the transaction starts, so a value that cannot be encoded never touches the table. */
-    @Override public void write(EntityType type, DataOperation operation, List<Change> batch) throws SQLException {
+    @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws SQLException {
         TableMapping mapping = mappingOf(type);
         switch (operation) {
             case INSERT -> {
@@ -148,7 +150,7 @@ public final class MysqlEntityMapper implements EntityMapper {
             return entity;
         }
 
-        List<Object[]> encodeRows(List<MysqlColumn> encoded, List<Change> batch) {
+        List<Object[]> encodeRows(List<MysqlColumn> encoded, List<? extends Change> batch) {
             List<Object[]> rows = new ArrayList<>(batch.size());
             for (Change change : batch) rows.add(Jdbc.encodeRow(encoded, change.entity()));
             return rows;
@@ -158,7 +160,7 @@ public final class MysqlEntityMapper implements EntityMapper {
          * Statements of up to {@code rowsPerUpdate} rows. One that matches fewer rows than it names fails the batch: a
          * row is missing, and succeeding would lose its change. Split into single rows, the missing one is reported.
          */
-        void update(Connection connection, List<Change> batch, List<Object[]> rows) throws SQLException {
+        void update(Connection connection, List<? extends Change> batch, List<Object[]> rows) throws SQLException {
             for (int from = 0; from < batch.size(); from += rowsPerUpdate) {
                 int count = Math.min(rowsPerUpdate, batch.size() - from);
                 String sql = updateSqlByRows.computeIfAbsent(count, this::updateSql);
@@ -177,7 +179,7 @@ public final class MysqlEntityMapper implements EntityMapper {
             }
         }
 
-        void delete(Connection connection, List<Change> batch) throws SQLException {
+        void delete(Connection connection, List<? extends Change> batch) throws SQLException {
             for (int from = 0; from < batch.size(); from += MAX_ROWS_PER_DELETE) {
                 int count = Math.min(MAX_ROWS_PER_DELETE, batch.size() - from);
                 String sql = deleteSqlByRows.computeIfAbsent(count, rows -> "DELETE FROM " + MysqlColumn.quote(table) + " WHERE "

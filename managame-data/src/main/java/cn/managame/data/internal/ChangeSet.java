@@ -1,10 +1,14 @@
-package cn.managame.data;
+package cn.managame.data.internal;
 
 import static cn.managame.data.DataOperation.DELETE;
 import static cn.managame.data.DataOperation.DELETE_INSERT;
 import static cn.managame.data.DataOperation.INSERT;
 import static cn.managame.data.DataOperation.UPDATE;
 
+import cn.managame.data.DataOperation;
+import cn.managame.data.GroupKeys;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -19,8 +23,10 @@ import java.util.Map;
  *
  * <p>Rows are spread over segments by id, or by group for a grouped type, each with its own lock, so business threads
  * adding changes rarely wait for each other. Only the one thread writing the type takes and puts back.
+ *
+ * <p>Not API: it may change in any release.
  */
-final class ChangeSet {
+public final class ChangeSet {
     private static final int SEGMENTS = 64;
     final EntityType type;
     final EntityMapper mapper;
@@ -40,26 +46,30 @@ final class ChangeSet {
         long p1, p2, p3, p4, p5, p6, p7;
     }
 
-    ChangeSet(EntityType type, EntityMapper mapper) {
+    public ChangeSet(EntityType type, EntityMapper mapper) {
         this.type = type;
         this.mapper = mapper;
         grouped = !type.groupKeys().isEmpty();
         for (int i = 0; i < SEGMENTS; i++) segments[i] = new Segment();
     }
 
+    public EntityType type() { return type; }
+
+    public EntityMapper mapper() { return mapper; }
+
     /**
      * Adds a change of a row, merged into the one waiting. Throws IllegalStateException, changing nothing, when the
      * sequence is invalid (an insert of a row waiting to be inserted or updated, an update of a deleted row) or the
      * change set is closed.
      */
-    void add(DataOperation operation, Object id, GroupKeys group, Object mapKey, Object entity) {
+    public void add(DataOperation operation, Object id, GroupKeys group, Object mapKey, Object entity) {
         Segment segment = segmentOf(grouped ? group : id);
         synchronized (segment) {
             if (closed) throw new IllegalStateException("GameData is closed");
-            Map<Object, Change> changes = changesOf(segment.waiting, group, true);
-            Change waiting = changes.get(id);
+            Map<Object, PendingChange> changes = changesOf(segment.waiting, group, true);
+            PendingChange waiting = changes.get(id);
             if (waiting == null) {
-                changes.put(id, new Change(operation, id, group, mapKey, entity));
+                changes.put(id, new PendingChange(operation, id, group, mapKey, entity));
                 segment.size++;
                 return;
             }
@@ -74,26 +84,26 @@ final class ChangeSet {
     }
 
     /** A copy of the newest change of an ungrouped row, waiting or being written, or null when it has none. */
-    Change find(Object id) {
+    public PendingChange find(Object id) {
         Segment segment = segmentOf(id);
         synchronized (segment) {
-            Change change = (Change) segment.waiting.get(id);
-            if (change == null) change = (Change) segment.writing.get(id);
+            PendingChange change = (PendingChange) segment.waiting.get(id);
+            if (change == null) change = (PendingChange) segment.writing.get(id);
             return change == null ? null : change.copy();
         }
     }
 
     /** Copies of the newest change of each row of a group that has one, waiting or being written. */
-    List<Change> findGroup(GroupKeys group) {
+    public List<PendingChange> findGroup(GroupKeys group) {
         Segment segment = segmentOf(group);
         synchronized (segment) {
-            Map<Object, Change> writing = changesOf(segment.writing, group, false), waiting = changesOf(segment.waiting, group, false);
+            Map<Object, PendingChange> writing = changesOf(segment.writing, group, false), waiting = changesOf(segment.waiting, group, false);
             if (writing == null && waiting == null) return List.of();
-            Map<Object, Change> newest = new HashMap<>();
+            Map<Object, PendingChange> newest = new HashMap<>();
             if (writing != null) newest.putAll(writing);
             if (waiting != null) newest.putAll(waiting);
-            List<Change> copies = new ArrayList<>(newest.size());
-            for (Change change : newest.values()) copies.add(change.copy());
+            List<PendingChange> copies = new ArrayList<>(newest.size());
+            for (PendingChange change : newest.values()) copies.add(change.copy());
             return copies;
         }
     }
@@ -104,8 +114,8 @@ final class ChangeSet {
     }
 
     /** Takes everything waiting. The caller hands the result back with {@link #putBack} before taking again. */
-    List<Change> takeAll() {
-        List<Change> taken = new ArrayList<>();
+    List<PendingChange> takeAll() {
+        List<PendingChange> taken = new ArrayList<>();
         for (Segment segment : segments) {
             synchronized (segment) {
                 if (segment.size == 0) continue;
@@ -124,15 +134,15 @@ final class ChangeSet {
      * got meanwhile; an insert among them comes back as DELETE_INSERT, since the failure may have left it written.
      * Returns those that cannot merge (the row was inserted again meanwhile), which are lost.
      */
-    List<Change> putBack(List<Change> unwritten) {
-        List<Change> conflicts = new ArrayList<>(0);
-        List<List<Change>> bySegment = new ArrayList<>(SEGMENTS);
+    List<PendingChange> putBack(List<PendingChange> unwritten) {
+        List<PendingChange> conflicts = new ArrayList<>(0);
+        List<List<PendingChange>> bySegment = new ArrayList<>(SEGMENTS);
         for (int i = 0; i < SEGMENTS; i++) bySegment.add(new ArrayList<>(0));
-        for (Change change : unwritten) bySegment.get(segmentIndex(grouped ? change.group : change.id)).add(change);
+        for (PendingChange change : unwritten) bySegment.get(segmentIndex(grouped ? change.group : change.id)).add(change);
         for (int i = 0; i < SEGMENTS; i++) {
             Segment segment = segments[i];
             synchronized (segment) {
-                for (Change change : bySegment.get(i)) if (!putBackOne(segment, change)) conflicts.add(change);
+                for (PendingChange change : bySegment.get(i)) if (!putBackOne(segment, change)) conflicts.add(change);
                 segment.writing.clear();
             }
         }
@@ -176,10 +186,10 @@ final class ChangeSet {
     }
 
     /** Puts back one unwritten change under the row's later one, if any; false when the two cannot be merged. */
-    private boolean putBackOne(Segment segment, Change unwritten) {
+    private boolean putBackOne(Segment segment, PendingChange unwritten) {
         DataOperation unwrittenOperation = unwritten.operation == INSERT ? DELETE_INSERT : unwritten.operation;
-        Map<Object, Change> changes = changesOf(segment.waiting, unwritten.group, true);
-        Change later = changes.get(unwritten.id);
+        Map<Object, PendingChange> changes = changesOf(segment.waiting, unwritten.group, true);
+        PendingChange later = changes.get(unwritten.id);
         if (later == null) {
             unwritten.operation = unwrittenOperation;
             changes.put(unwritten.id, unwritten);
@@ -198,27 +208,27 @@ final class ChangeSet {
         return true;
     }
 
-    private void removeChange(Segment segment, Map<Object, Change> changes, GroupKeys group, Object id) {
+    private void removeChange(Segment segment, Map<Object, PendingChange> changes, GroupKeys group, Object id) {
         changes.remove(id);
         segment.size--;
         if (grouped && changes.isEmpty()) segment.waiting.remove(group);
     }
 
     @SuppressWarnings("unchecked")
-    private Map<Object, Change> changesOf(HashMap<Object, Object> map, GroupKeys group, boolean create) {
-        if (!grouped) return (Map<Object, Change>) (Map<?, ?>) map;
-        Map<Object, Change> changes = (Map<Object, Change>) map.get(group);
+    private Map<Object, PendingChange> changesOf(HashMap<Object, Object> map, GroupKeys group, boolean create) {
+        if (!grouped) return (Map<Object, PendingChange>) (Map<?, ?>) map;
+        Map<Object, PendingChange> changes = (Map<Object, PendingChange>) map.get(group);
         if (changes == null && create) map.put(group, changes = new HashMap<>());
         return changes;
     }
 
     @SuppressWarnings("unchecked")
-    private void addAllChanges(HashMap<Object, Object> map, List<Change> into) {
+    private void addAllChanges(HashMap<Object, Object> map, List<PendingChange> into) {
         if (!grouped) {
-            for (Object change : map.values()) into.add((Change) change);
+            for (Object change : map.values()) into.add((PendingChange) change);
             return;
         }
-        for (Object changes : map.values()) into.addAll(((Map<Object, Change>) changes).values());
+        for (Object changes : map.values()) into.addAll(((Map<Object, PendingChange>) changes).values());
     }
 
     private Segment segmentOf(Object key) { return segments[segmentIndex(key)]; }

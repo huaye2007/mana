@@ -3,7 +3,7 @@ package cn.managame.data.mysql;
 import static cn.managame.FrameworkErrorCodes.DATA_LOAD_FAILED;
 
 import cn.managame.data.DataException;
-import cn.managame.data.EntityType;
+import cn.managame.data.spi.EntityType;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;

@@ -25,7 +25,7 @@ public class Player {
 ```
 
 - 实体需要 `@Collection(name)`；没有时 `prepare` 抛 `IllegalArgumentException`。`@Id` 存为 `_id`，其他要保存的字段名是字段名
-  的下划线形式，或由 `@Field(name)` 指定。
+  的下划线形式，或由 `@Field(name)` 指定。注解在 `cn.managame.data.mongo.annotation` 包里，Mapper 在 `cn.managame.data.mongo`。
 - 集合和 Map（key 为 String、Integer 或 Long）存为由元素组成的数组和文档，加载时创建成字段初始化时的那个类。byte、short、
   float、char 分别存为 int32、double 和 string。其他类型来自数据库的 codec registry，应用在那里注册自己的类。
 - 文档里缺少的字段保留构造器给的值，所以加字段不需要迁移数据。

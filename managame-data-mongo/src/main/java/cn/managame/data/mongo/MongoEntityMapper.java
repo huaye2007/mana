@@ -1,11 +1,13 @@
 package cn.managame.data.mongo;
 
-import cn.managame.data.Change;
 import cn.managame.data.DataOperation;
-import cn.managame.data.EntityField;
-import cn.managame.data.EntityMapper;
-import cn.managame.data.EntityType;
 import cn.managame.data.GroupKeys;
+import cn.managame.data.mongo.annotation.Collection;
+import cn.managame.data.mongo.annotation.Field;
+import cn.managame.data.spi.Change;
+import cn.managame.data.spi.EntityField;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
@@ -77,7 +79,7 @@ public final class MongoEntityMapper implements EntityMapper {
     }
 
     /** An update that finds fewer documents than it replaces fails as a whole; split into single writes, the missing one is reported. */
-    @Override public void write(EntityType type, DataOperation operation, List<Change> batch) {
+    @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) {
         CollectionMapping mapping = mappingOf(type);
         switch (operation) {
             case INSERT, DELETE_INSERT -> mapping.collection.bulkWrite(mapping.replaces(batch, REPLACE_OR_CREATE));
@@ -171,7 +173,7 @@ public final class MongoEntityMapper implements EntityMapper {
             return entity;
         }
 
-        List<WriteModel<BsonDocument>> replaces(List<Change> batch, ReplaceOptions options) {
+        List<WriteModel<BsonDocument>> replaces(List<? extends Change> batch, ReplaceOptions options) {
             List<WriteModel<BsonDocument>> models = new ArrayList<>(batch.size());
             for (Change change : batch) {
                 BsonDocument document = encode(change.entity());

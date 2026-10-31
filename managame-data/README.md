@@ -21,6 +21,13 @@ Depends on managame-common only. This project knows no database: an `EntityMappe
 | [managame-data-mongo](../managame-data-mongo/README.md) | `MongoEntityMapper` |
 | the application | any `LogWriter`, such as one that reports logs over HTTP, or its own `EntityMapper` |
 
+| Package | Holds |
+| --- | --- |
+| `cn.managame.data` | what business code uses: `GameData`, the repositories, `GroupKeys`, `MapKeys`, `DataException`, `DataFailure`, `DataErrorHandler`, `DataOperation` |
+| `cn.managame.data.annotation` | `@Id`, `@GroupKey`, `@MapKey` |
+| `cn.managame.data.spi` | what a database or log destination implements: `EntityMapper`, `LogWriter`, and what they read, `EntityType`, `EntityField`, `Change`, with `RetryableFailures`, the default retry rule |
+| `cn.managame.data.internal` | the implementation; public only so the other packages can reach it, not API, and it may change in any release |
+
 ## Quick start
 
 An entity is a plain class: every field that is neither static nor transient is saved.
@@ -156,11 +163,12 @@ class LogService implements LogWriter {
 
 ## Your own EntityMapper
 
-An `EntityMapper` serves the entity types registered with it: `prepare(EntityType)` once per type at build, then
-`load`, `loadGroup` and `write(type, operation, batch)`. `EntityType` lists the saved fields (`EntityField`: name,
-type, `valueType`, get, set, and the Java field for annotations), the key fields, and makes new instances. Writing a
-batch again after it failed must do no harm: write a batch in one transaction, or every entity idempotently. An UPDATE
-that finds an entity missing should fail.
+An `EntityMapper` (in `cn.managame.data.spi`) serves the entity types registered with it: `prepare(EntityType)` once
+per type at build, then `load`, `loadGroup` and `write(type, operation, batch)`, each `Change` of the batch giving the
+entity's id and the entity to read. `EntityType` lists the saved fields (`EntityField`: name, type, `valueType`, get,
+set, and the Java field for annotations), the key fields, and makes new instances. Writing a batch again after it
+failed must do no harm: write a batch in one transaction, or every entity idempotently. An UPDATE that finds an entity
+missing should fail. `isRetryable` starts from `RetryableFailures.isRetryable`, which a mapper can extend.
 
 ## Configuration
 

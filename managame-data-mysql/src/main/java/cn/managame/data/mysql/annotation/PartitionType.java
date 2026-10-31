@@ -1,4 +1,4 @@
-package cn.managame.data.mysql;
+package cn.managame.data.mysql.annotation;
 
 /**
  * How a {@link PartitionKey} makes a table suffix: VALUE uses an integral or String field as it is; DAY, MONTH

@@ -5,6 +5,11 @@ import static cn.managame.data.DataOperation.DELETE;
 import static cn.managame.data.DataOperation.INSERT;
 import static cn.managame.data.DataOperation.UPDATE;
 
+import cn.managame.data.internal.ChangeSet;
+import cn.managame.data.internal.EntityKeys;
+import cn.managame.data.internal.PendingChange;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -42,6 +47,7 @@ public abstract class SingleRepository<K, E> {
 
     private final ConcurrentHashMap<Object, Entry> cache = new ConcurrentHashMap<>();
     private EntityType entityType;
+    private EntityKeys keys;
     private EntityMapper mapper;
     private ChangeSet changes;
     /** What an access marks an entry with; GameData sets it every flush interval. */
@@ -49,15 +55,16 @@ public abstract class SingleRepository<K, E> {
 
     protected SingleRepository() {}
 
-    final void bind(ChangeSet changes) {
-        entityType = changes.type;
-        mapper = changes.mapper;
+    final void bind(ChangeSet changes, EntityKeys keys) {
+        entityType = changes.type();
+        this.keys = keys;
+        mapper = changes.mapper();
         this.changes = changes;
     }
 
     /** The entity, from memory or loaded on this thread; null when the database has none. */
     public final E get(K id) {
-        Object key = entityType().checkKeyType(id);
+        Object key = keys().checkKeyType(id);
         Entry entry = cache.get(key);
         if (entry != null) {
             markAccessed(entry);
@@ -76,8 +83,8 @@ public abstract class SingleRepository<K, E> {
         E existing = get(id);
         if (existing != null) return existing;
         E created = Objects.requireNonNull(factory.apply(id), "factory returned null");
-        if (!id.equals(entityType.idOf(created)))
-            throw new IllegalArgumentException("factory made " + entityType.entityClass().getSimpleName() + " " + entityType.idOf(created) + " for " + id);
+        if (!id.equals(keys.idOf(created)))
+            throw new IllegalArgumentException("factory made " + entityType.entityClass().getSimpleName() + " " + keys.idOf(created) + " for " + id);
         return entityOf(cache.compute(id, (key, entry) -> {
             if (entry != null && entry.entity != NOT_FOUND) return entry;
             changes.add(INSERT, key, null, null, created);
@@ -100,7 +107,7 @@ public abstract class SingleRepository<K, E> {
 
     /** Adds a new entity; IllegalStateException when one with its id is in memory. */
     public final void insert(E entity) {
-        Object id = entityType().idOf(entity);
+        Object id = keys().idOf(entity);
         cache.compute(id, (key, entry) -> {
             if (entry != null && entry.entity != NOT_FOUND)
                 throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " already exists");
@@ -114,7 +121,7 @@ public abstract class SingleRepository<K, E> {
      * becomes the one in memory for its id. IllegalStateException when the id is known not to exist.
      */
     public final void update(E entity) {
-        Object id = entityType().idOf(entity);
+        Object id = keys().idOf(entity);
         Entry cached = cache.get(id);
         if (cached != null && cached.entity == entity) {   // the usual case: the entity in memory changed
             changes.add(UPDATE, id, null, null, entity);
@@ -131,7 +138,7 @@ public abstract class SingleRepository<K, E> {
 
     /** Deletes the entity with this id, whether or not it is in memory; nothing when it is known not to exist. */
     public final void delete(K id) {
-        cache.compute(entityType().checkKeyType(id), (key, entry) -> {
+        cache.compute(keys().checkKeyType(id), (key, entry) -> {
             if (entry != null && entry.entity == NOT_FOUND) return entry;
             changes.add(DELETE, key, null, null, entry == null ? null : entry.entity);
             return new Entry(NOT_FOUND, accessTime);
@@ -139,7 +146,7 @@ public abstract class SingleRepository<K, E> {
     }
 
     /** Drops the entity from memory; its changes not yet written are written all the same. */
-    public final void evict(K id) { cache.remove(entityType().checkKeyType(id)); }
+    public final void evict(K id) { cache.remove(keys().checkKeyType(id)); }
 
     final void setAccessTime(long time) { accessTime = time; }
 
@@ -155,10 +162,10 @@ public abstract class SingleRepository<K, E> {
      * one (the entity, or NOT_FOUND for a delete), and a load only fills an empty slot.
      */
     private Entry load(Object id) {
-        Change change = changes.find(id);
+        PendingChange change = changes.find(id);
         Object entity;
         if (change != null) {
-            entity = change.operation == DELETE ? NOT_FOUND : change.entity;
+            entity = change.operation() == DELETE ? NOT_FOUND : change.entity();
         } else {
             Object loaded;
             try {
@@ -181,8 +188,8 @@ public abstract class SingleRepository<K, E> {
     @SuppressWarnings("unchecked")
     private E entityOf(Entry entry) { return entry.entity == NOT_FOUND ? null : (E) entry.entity; }
 
-    private EntityType entityType() {
-        if (entityType == null) throw new IllegalStateException(getClass().getName() + " was not built by GameData");
-        return entityType;
+    private EntityKeys keys() {
+        if (keys == null) throw new IllegalStateException(getClass().getName() + " was not built by GameData");
+        return keys;
     }
 }

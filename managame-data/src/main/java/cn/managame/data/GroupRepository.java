@@ -5,6 +5,11 @@ import static cn.managame.data.DataOperation.DELETE;
 import static cn.managame.data.DataOperation.INSERT;
 import static cn.managame.data.DataOperation.UPDATE;
 
+import cn.managame.data.internal.ChangeSet;
+import cn.managame.data.internal.EntityKeys;
+import cn.managame.data.internal.PendingChange;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -37,6 +42,7 @@ public abstract class GroupRepository<K, E> {
 
     private final ConcurrentHashMap<GroupKeys, Group<K, E>> cache = new ConcurrentHashMap<>();
     private EntityType entityType;
+    private EntityKeys keys;
     private EntityMapper mapper;
     private ChangeSet changes;
     /** What an access marks a group with; GameData sets it every flush interval. */
@@ -44,19 +50,20 @@ public abstract class GroupRepository<K, E> {
 
     protected GroupRepository() {}
 
-    final void bind(ChangeSet changes) {
-        entityType = changes.type;
-        mapper = changes.mapper;
+    final void bind(ChangeSet changes, EntityKeys keys) {
+        entityType = changes.type();
+        this.keys = keys;
+        mapper = changes.mapper();
         this.changes = changes;
     }
 
     /** A live, read-only view of the group, loaded on this thread when not in memory; empty when the database has none. */
-    public final Map<K, E> getGroup(GroupKeys groupKey) { return group(entityType().checkGroupKey(groupKey)).view; }
+    public final Map<K, E> getGroup(GroupKeys groupKey) { return group(keys().checkGroupKey(groupKey)).view; }
 
     /** The entity at {@code mapKey} in the group, or null. */
     public final E get(GroupKeys groupKey, K mapKey) {
-        entityType().checkKeyType(mapKey);
-        return group(entityType.checkGroupKey(groupKey)).entities.get(mapKey);
+        keys().checkKeyType(mapKey);
+        return group(keys.checkGroupKey(groupKey)).entities.get(mapKey);
     }
 
     /**
@@ -74,8 +81,8 @@ public abstract class GroupRepository<K, E> {
 
     /** Adds an entity to its group; IllegalStateException when the group has one at its map key. */
     public final void insert(E entity) {
-        Object id = entityType().idOf(entity);
-        GroupKeys groupKey = entityType.groupKeyOf(entity);
+        Object id = keys().idOf(entity);
+        GroupKeys groupKey = keys.groupKeyOf(entity);
         group(groupKey).entities.compute(mapKeyOf(entity), (key, existing) -> {
             if (existing != null) throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " already exists in group " + groupKey);
             changes.add(INSERT, id, groupKey, key, entity);
@@ -88,8 +95,8 @@ public abstract class GroupRepository<K, E> {
      * IllegalStateException when its group has no entity at its map key, or another one.
      */
     public final void update(E entity) {
-        Object id = entityType().idOf(entity);
-        GroupKeys groupKey = entityType.groupKeyOf(entity);
+        Object id = keys().idOf(entity);
+        GroupKeys groupKey = keys.groupKeyOf(entity);
         K mapKey = mapKeyOf(entity);
         Group<K, E> group = group(groupKey);
         if (group.entities.get(mapKey) == entity) {   // the usual case: the entity in memory changed
@@ -98,8 +105,8 @@ public abstract class GroupRepository<K, E> {
         }
         group.entities.compute(mapKey, (key, existing) -> {
             if (existing == null) throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " does not exist in group " + groupKey);
-            if (!id.equals(entityType.idOf(existing)))
-                throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " of group " + groupKey + " is " + entityType.idOf(existing) + ", not " + id);
+            if (!id.equals(keys.idOf(existing)))
+                throw new IllegalStateException(entityType.entityClass().getSimpleName() + " " + key + " of group " + groupKey + " is " + keys.idOf(existing) + ", not " + id);
             changes.add(UPDATE, id, groupKey, key, entity);
             return entity;
         });
@@ -107,18 +114,18 @@ public abstract class GroupRepository<K, E> {
 
     /** Deletes the entity at the entity's map key from its group; nothing when there is none. */
     public final void delete(E entity) {
-        GroupKeys groupKey = entityType().groupKeyOf(entity);
+        GroupKeys groupKey = keys().groupKeyOf(entity);
         delete(group(groupKey), groupKey, mapKeyOf(entity));
     }
 
     /** Deletes every entity of the group. */
     public final void deleteGroup(GroupKeys groupKey) {
-        Group<K, E> group = group(entityType().checkGroupKey(groupKey));
+        Group<K, E> group = group(keys().checkGroupKey(groupKey));
         for (K mapKey : new ArrayList<>(group.entities.keySet())) delete(group, groupKey, mapKey);
     }
 
     /** Drops the group from memory; its changes not yet written are written all the same. */
-    public final void evict(GroupKeys groupKey) { cache.remove(entityType().checkGroupKey(groupKey)); }
+    public final void evict(GroupKeys groupKey) { cache.remove(keys().checkGroupKey(groupKey)); }
 
     final void setAccessTime(long time) { accessTime = time; }
 
@@ -131,7 +138,7 @@ public abstract class GroupRepository<K, E> {
 
     private void delete(Group<K, E> group, GroupKeys groupKey, K mapKey) {
         group.entities.computeIfPresent(mapKey, (key, existing) -> {
-            changes.add(DELETE, entityType.idOf(existing), groupKey, key, existing);
+            changes.add(DELETE, keys.idOf(existing), groupKey, key, existing);
             return null;
         });
     }
@@ -151,7 +158,7 @@ public abstract class GroupRepository<K, E> {
      */
     @SuppressWarnings("unchecked")
     private Group<K, E> load(GroupKeys groupKey) {
-        List<Change> unwritten = changes.findGroup(groupKey);
+        List<PendingChange> unwritten = changes.findGroup(groupKey);
         List<Object> loaded;
         try {
             loaded = mapper.loadGroup(entityType, groupKey);
@@ -165,18 +172,18 @@ public abstract class GroupRepository<K, E> {
                 throw new DataException(DATA_LOAD_FAILED, "group " + groupKey + " of " + entityType.entityClass().getSimpleName()
                         + " has two rows with map key " + mapKey, null);
         }
-        for (Change change : unwritten) if (change.operation == DELETE) group.entities.remove((K) change.mapKey);
-        for (Change change : unwritten)
-            if (change.operation != DELETE) group.entities.put((K) change.mapKey, (E) change.entity);
+        for (PendingChange change : unwritten) if (change.operation() == DELETE) group.entities.remove((K) change.mapKey());
+        for (PendingChange change : unwritten)
+            if (change.operation() != DELETE) group.entities.put((K) change.mapKey(), (E) change.entity());
         Group<K, E> existing = cache.putIfAbsent(groupKey, group);
         return existing != null ? existing : group;
     }
 
     @SuppressWarnings("unchecked")
-    private K mapKeyOf(E entity) { return (K) entityType.mapKeyOf(entity); }
+    private K mapKeyOf(E entity) { return (K) keys.mapKeyOf(entity); }
 
-    private EntityType entityType() {
-        if (entityType == null) throw new IllegalStateException(getClass().getName() + " was not built by GameData");
-        return entityType;
+    private EntityKeys keys() {
+        if (keys == null) throw new IllegalStateException(getClass().getName() + " was not built by GameData");
+        return keys;
     }
 }

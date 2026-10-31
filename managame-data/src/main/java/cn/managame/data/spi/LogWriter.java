@@ -1,5 +1,6 @@
-package cn.managame.data;
+package cn.managame.data.spi;
 
+import cn.managame.data.GameData;
 import java.util.List;
 
 /**

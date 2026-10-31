@@ -26,7 +26,8 @@ public class Player {
 ```
 
 - An entity needs `@Collection(name)`; `prepare` refuses a class without it with `IllegalArgumentException`. Its `@Id`
-  is `_id`, and every other saved field is named after the field in snake case, or by `@Field(name)`.
+  is `_id`, and every other saved field is named after the field in snake case, or by `@Field(name)`. The annotations
+  are in `cn.managame.data.mongo.annotation`; the mapper in `cn.managame.data.mongo`.
 - Collections and maps (with String, Integer or Long keys) are arrays and documents of their elements, created again
   as the class the field is initialized with. byte, short, float and char are saved as int32, double and string.
   Anything else comes from the database's codec registry, where the application registers its own classes.

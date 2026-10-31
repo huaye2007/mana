@@ -2,12 +2,15 @@ package cn.managame.data.mysql;
 
 import cn.managame.data.DataErrorHandler;
 import cn.managame.data.DataFailure;
-import cn.managame.data.GroupKey;
 import cn.managame.data.GroupRepository;
-import cn.managame.data.Id;
 import cn.managame.data.LogRepository;
-import cn.managame.data.MapKey;
 import cn.managame.data.SingleRepository;
+import cn.managame.data.annotation.GroupKey;
+import cn.managame.data.annotation.Id;
+import cn.managame.data.annotation.MapKey;
+import cn.managame.data.mysql.annotation.PartitionKey;
+import cn.managame.data.mysql.annotation.PartitionType;
+import cn.managame.data.mysql.annotation.Table;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.PrintWriter;

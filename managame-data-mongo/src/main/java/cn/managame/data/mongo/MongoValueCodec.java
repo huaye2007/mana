@@ -1,6 +1,6 @@
 package cn.managame.data.mongo;
 
-import cn.managame.data.EntityType;
+import cn.managame.data.spi.EntityType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;

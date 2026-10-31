@@ -2,12 +2,15 @@ package cn.managame.data;
 
 import static cn.managame.FrameworkErrorCodes.DATA_LOG_SAVE_FAILED;
 
+import cn.managame.data.internal.ChangeWriter;
+import cn.managame.data.internal.LogQueue;
 import java.util.Objects;
 
 /**
- * Logs appended to a MySQL table and never read back, such as item flows. Extend it with the log type and nothing
- * else, {@code class ItemLogs extends LogRepository<ItemLog> {}}, and get the instance from
- * {@link GameData#repository}. Logs wait in a queue of the builder's {@code logQueueCapacity} and are inserted in
+ * Logs that are never read back, such as item flows, handed to the {@link cn.managame.data.spi.LogWriter} registered
+ * for them: a MySQL table, a log service over HTTP, wherever the application keeps them. Extend it with the log type
+ * and nothing else, {@code class ItemLogs extends LogRepository<ItemLog> {}}, and get the instance from
+ * {@link GameData#repository}. Logs wait in a queue of the builder's {@code logQueueCapacity} and are written in
  * batches in the next round, which reads them then: do not change a log once inserted.
  */
 public abstract class LogRepository<E> {
@@ -30,8 +33,8 @@ public abstract class LogRepository<E> {
         Objects.requireNonNull(log, "log");
         if (queue == null) throw new IllegalStateException(getClass().getName() + " was not built by GameData");
         if (queue.add(log)) return true;
-        writer.reportFailure(null, DATA_LOG_SAVE_FAILED, queue.type, DataOperation.LOG_INSERT, log,
-                new IllegalStateException(queue.capacity + " logs are already waiting to be written"));
+        writer.reportFailure(null, DATA_LOG_SAVE_FAILED, queue.type(), DataOperation.LOG_INSERT, log,
+                new IllegalStateException(queue.capacity() + " logs are already waiting to be written"));
         return false;
     }
 }

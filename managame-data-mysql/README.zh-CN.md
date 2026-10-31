@@ -27,7 +27,7 @@ public class Player {
 ```
 
 - 实体或日志需要 `@Table(name)`。每个要保存的字段是一列，列名是字段名的下划线形式（`configId` 是 `config_id`），或由
-  `@Column(name)` 指定。
+  `@Column(name)` 指定。注解在 `cn.managame.data.mysql.annotation` 包里，Mapper 和 `JsonCodec` 在 `cn.managame.data.mysql`。
 - 基本类型及其包装类、String、char、byte[] 各占一列。其他类型（集合、Map、对象、枚举）通过交给 Mapper 或 Writer 的
   `JsonCodec` 存成 JSON 列，`JsonCodec` 由应用提供，例如用 Jackson 实现；JSON 列会解码成字段初始化时的那个类。
 - 表属于应用，由应用创建和迁移；`prepare` 在构建时把每张表读一次：表或列不存在时构建失败并抛 `DataException`

@@ -1,5 +1,8 @@
-package cn.managame.data;
+package cn.managame.data.spi;
 
+import cn.managame.data.DataOperation;
+import cn.managame.data.GameData;
+import cn.managame.data.GroupKeys;
 import java.util.List;
 
 /**
@@ -28,7 +31,7 @@ public interface EntityMapper {
      * again after it failed must do no harm, because a failure that {@link #isRetryable} allows is written again in the
      * next round: write a batch in one transaction, or write every entity idempotently.
      */
-    void write(EntityType type, DataOperation operation, List<Change> batch) throws Exception;
+    void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws Exception;
 
     /**
      * Whether a failure of {@link #write} may succeed when tried again, in the next round, without a change to code or

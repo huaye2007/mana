@@ -28,7 +28,8 @@ public class Player {
 ```
 
 - An entity or log needs `@Table(name)`. Each saved field is a column named after the field in snake case
-  (`configId` is `config_id`), or by `@Column(name)`.
+  (`configId` is `config_id`), or by `@Column(name)`. The annotations are in `cn.managame.data.mysql.annotation`; the
+  mappers and `JsonCodec` in `cn.managame.data.mysql`.
 - The primitives, their boxes, String, char and byte[] are columns of their own. Anything else (collections, maps,
   objects, enums) is a JSON column through the `JsonCodec` given to the mapper or writer, which the application
   provides, for example over Jackson; a JSON column decodes into the class its field is initialized with.

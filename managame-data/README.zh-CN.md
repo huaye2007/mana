@@ -20,6 +20,13 @@
 | [managame-data-mongo](../managame-data-mongo/README.zh-CN.md) | `MongoEntityMapper` |
 | 应用自己 | 任意 `LogWriter`，例如通过 HTTP 上报日志；或自己的 `EntityMapper` |
 
+| 包 | 内容 |
+| --- | --- |
+| `cn.managame.data` | 业务代码使用的：`GameData`、各 Repository、`GroupKeys`、`MapKeys`、`DataException`、`DataFailure`、`DataErrorHandler`、`DataOperation` |
+| `cn.managame.data.annotation` | `@Id`、`@GroupKey`、`@MapKey` |
+| `cn.managame.data.spi` | 数据库或日志去处要实现的：`EntityMapper`、`LogWriter`，以及它们读取的 `EntityType`、`EntityField`、`Change`，还有默认的重试规则 `RetryableFailures` |
+| `cn.managame.data.internal` | 内部实现；只是为了让其他包能调用才是 public，不是 API，任何版本都可能变 |
+
 ## 快速上手
 
 实体是普通的类：既不是 static 也不是 transient 的字段都会保存。
@@ -139,10 +146,11 @@ class LogService implements LogWriter {
 
 ## 自己的 EntityMapper
 
-一个 `EntityMapper` 服务注册给它的所有实体类型：build 时每种类型调用一次 `prepare(EntityType)`，之后是 `load`、`loadGroup`
-和 `write(type, operation, batch)`。`EntityType` 列出要保存的字段（`EntityField`：名字、类型、`valueType`、读、写，以及用于
-读注解的 Java 字段）、key 字段，并能创建新实例。失败后重写同一批必须无害：一批在一个事务里写，或者每个实体都幂等地写。更新
-时发现实体不存在应当失败。
+一个 `EntityMapper`（在 `cn.managame.data.spi` 包里）服务注册给它的所有实体类型：build 时每种类型调用一次
+`prepare(EntityType)`，之后是 `load`、`loadGroup` 和 `write(type, operation, batch)`，批里的每个 `Change` 给出实体的 id 和
+要读取的实体。`EntityType` 列出要保存的字段（`EntityField`：名字、类型、`valueType`、读、写，以及用于读注解的 Java 字段）、
+key 字段，并能创建新实例。失败后重写同一批必须无害：一批在一个事务里写，或者每个实体都幂等地写。更新时发现实体不存在应当
+失败。`isRetryable` 的默认规则是 `RetryableFailures.isRetryable`，Mapper 可以在它的基础上扩展。
 
 ## 配置
 

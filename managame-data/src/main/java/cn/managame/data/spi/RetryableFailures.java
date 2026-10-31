@@ -1,4 +1,4 @@
-package cn.managame.data;
+package cn.managame.data.spi;
 
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
@@ -15,8 +15,8 @@ import java.util.IdentityHashMap;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
 
-/** The default of {@link EntityMapper#isRetryable} and {@link LogWriter#isRetryable}. */
-final class RetryableFailures {
+/** The default of {@link EntityMapper#isRetryable} and {@link LogWriter#isRetryable}, for a mapper or writer to build on. */
+public final class RetryableFailures {
     private RetryableFailures() {}
 
     /**
@@ -24,7 +24,7 @@ final class RetryableFailures {
      * lock wait, or a collection changed while it was read. Constraint violations, values too large, SQL errors and
      * values that cannot be encoded are the data's, which writing again does not fix.
      */
-    static boolean isRetryable(Throwable failure) {
+    public static boolean isRetryable(Throwable failure) {
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         Deque<Throwable> causes = new ArrayDeque<>();
         causes.add(failure);

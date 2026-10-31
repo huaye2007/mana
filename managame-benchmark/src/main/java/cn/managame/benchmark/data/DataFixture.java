@@ -1,16 +1,16 @@
 package cn.managame.benchmark.data;
 
-import cn.managame.data.Change;
 import cn.managame.data.DataOperation;
-import cn.managame.data.EntityMapper;
-import cn.managame.data.EntityType;
 import cn.managame.data.GameData;
-import cn.managame.data.GroupKey;
 import cn.managame.data.GroupKeys;
 import cn.managame.data.GroupRepository;
-import cn.managame.data.Id;
-import cn.managame.data.MapKey;
 import cn.managame.data.SingleRepository;
+import cn.managame.data.annotation.GroupKey;
+import cn.managame.data.annotation.Id;
+import cn.managame.data.annotation.MapKey;
+import cn.managame.data.spi.Change;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.LongAdder;
@@ -73,7 +73,7 @@ final class DataFixture implements AutoCloseable {
 
         @Override public List<Object> loadGroup(EntityType type, GroupKeys key) { return List.of(); }
 
-        @Override public void write(EntityType type, DataOperation operation, List<Change> batch) {
+        @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) {
             int read = 0;
             for (Change change : batch) {
                 if (change.entity() == null) continue;

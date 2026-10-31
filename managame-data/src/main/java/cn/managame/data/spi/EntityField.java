@@ -1,4 +1,4 @@
-package cn.managame.data;
+package cn.managame.data.spi;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;

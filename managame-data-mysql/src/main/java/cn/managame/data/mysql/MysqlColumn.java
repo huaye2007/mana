@@ -1,7 +1,8 @@
 package cn.managame.data.mysql;
 
-import cn.managame.data.EntityField;
-import cn.managame.data.EntityType;
+import cn.managame.data.mysql.annotation.Column;
+import cn.managame.data.spi.EntityField;
+import cn.managame.data.spi.EntityType;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Locale;

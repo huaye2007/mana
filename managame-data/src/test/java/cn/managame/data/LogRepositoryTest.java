@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import cn.managame.data.Fixtures.ItemLog;
 import cn.managame.data.Fixtures.ItemLogs;
 import cn.managame.data.Fixtures.ReportedFailures;
+import cn.managame.data.spi.LogWriter;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;

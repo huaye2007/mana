@@ -6,8 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import cn.managame.data.DataException;
 import cn.managame.data.GameData;
-import cn.managame.data.Id;
 import cn.managame.data.SingleRepository;
+import cn.managame.data.annotation.Id;
+import cn.managame.data.mongo.annotation.Collection;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;

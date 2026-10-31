@@ -1,4 +1,4 @@
-package cn.managame.data.mongo;
+package cn.managame.data.mongo.annotation;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

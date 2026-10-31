@@ -1,10 +1,10 @@
 package cn.managame.benchmark.mysql;
 
 import cn.managame.data.GameData;
-import cn.managame.data.Id;
 import cn.managame.data.SingleRepository;
+import cn.managame.data.annotation.Id;
 import cn.managame.data.mysql.MysqlEntityMapper;
-import cn.managame.data.mysql.Table;
+import cn.managame.data.mysql.annotation.Table;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;

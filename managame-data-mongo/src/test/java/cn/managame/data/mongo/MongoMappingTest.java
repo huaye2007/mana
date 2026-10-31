@@ -5,8 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import cn.managame.data.EntityType;
-import cn.managame.data.Id;
+import cn.managame.data.annotation.Id;
+import cn.managame.data.mongo.annotation.Collection;
+import cn.managame.data.mongo.annotation.Field;
+import cn.managame.data.spi.EntityType;
 import com.mongodb.MongoClientSettings;
 import java.util.List;
 import java.util.Map;

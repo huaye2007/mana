@@ -1,5 +1,9 @@
 package cn.managame.data;
 
+import cn.managame.data.spi.Change;
+import cn.managame.data.spi.EntityField;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
 import java.net.ConnectException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -42,7 +46,7 @@ class MemoryMapper implements EntityMapper {
         return entities;
     }
 
-    @Override public synchronized void write(EntityType type, DataOperation operation, List<Change> batch) throws ConnectException {
+    @Override public synchronized void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws ConnectException {
         if (unreachable) throw new ConnectException("the database cannot be reached");
         Map<Object, Map<String, Object>> rows = tables.get(type);
         for (Change change : batch) {
@@ -71,7 +75,7 @@ class MemoryMapper implements EntityMapper {
     /** Stores a row as the application would have written it before this process started. */
     synchronized void put(Class<?> entityClass, Object entity) {
         for (Map.Entry<EntityType, Map<Object, Map<String, Object>>> table : tables.entrySet())
-            if (table.getKey().entityClass() == entityClass) table.getValue().put(table.getKey().idOf(entity), rowOf(table.getKey(), entity));
+            if (table.getKey().entityClass() == entityClass) table.getValue().put(table.getKey().id().get(entity), rowOf(table.getKey(), entity));
     }
 
     /** Removes a row as another process would. */

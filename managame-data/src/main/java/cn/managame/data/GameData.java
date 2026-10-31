@@ -3,6 +3,13 @@ package cn.managame.data;
 import static cn.managame.FrameworkErrorCodes.DATA_SAVE_FAILED;
 
 import cn.managame.FrameworkErrorCodes;
+import cn.managame.data.internal.ChangeSet;
+import cn.managame.data.internal.ChangeWriter;
+import cn.managame.data.internal.EntityKeys;
+import cn.managame.data.internal.LogQueue;
+import cn.managame.data.spi.EntityMapper;
+import cn.managame.data.spi.EntityType;
+import cn.managame.data.spi.LogWriter;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.ParameterizedType;
@@ -91,7 +98,7 @@ public final class GameData implements AutoCloseable {
     public void flush() {
         if (closed) throw new IllegalStateException("GameData is closed");
         ChangeWriter.Round round = writer.writeAll();
-        int dropped = round.dropped.get(), unwritten = round.unwritten.get();
+        int dropped = round.dropped(), unwritten = round.unwritten();
         if (dropped > 0 || unwritten > 0)
             throw new DataException(DATA_SAVE_FAILED, "flush left " + unwritten + " changes for the next round after failures and dropped "
                     + dropped + ", which went to the DataErrorHandler", null);
@@ -116,7 +123,7 @@ public final class GameData implements AutoCloseable {
             if (writer.isEmpty()) break;
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0) break;
-            if (round.unwritten.get() == 0) continue;
+            if (round.unwritten() == 0) continue;
             try {
                 TimeUnit.NANOSECONDS.sleep(Math.min(flushIntervalNanos, remaining));
             } catch (InterruptedException e) {
@@ -254,6 +261,7 @@ public final class GameData implements AutoCloseable {
                     continue;
                 }
                 EntityType entityType = EntityType.of(entityClass);
+                EntityKeys keys = new EntityKeys(entityType);
                 EntityMapper mapper = (EntityMapper) registration.getValue();
                 boolean single = base == SingleRepository.class, group = base == GroupRepository.class;
                 if (!single && !group)
@@ -263,14 +271,14 @@ public final class GameData implements AutoCloseable {
                 if (entityType.id() == null || (single ? !keyedById : !keyedInGroups))
                     throw new IllegalArgumentException(entityClass.getName() + (single ? " needs one @Id and no @GroupKey or @MapKey"
                             : " needs one @Id, a @GroupKey and a @MapKey"));
-                if (arguments[0] != entityType.keyType)
-                    throw new IllegalArgumentException(type.getName() + " must be keyed by " + entityType.keyType.getSimpleName() + ", not " + arguments[0].getTypeName());
-                entityType.warnNonThreadSafeCollections();
+                if (arguments[0] != keys.keyType())
+                    throw new IllegalArgumentException(type.getName() + " must be keyed by " + keys.keyType().getSimpleName() + ", not " + arguments[0].getTypeName());
+                keys.warnNonThreadSafeCollections();
                 mapper.prepare(entityType);
                 ChangeSet changes = new ChangeSet(entityType, mapper);
                 changeSets.add(changes);
-                if (single) ((SingleRepository<?, ?>) repository).bind(changes);
-                else ((GroupRepository<?, ?>) repository).bind(changes);
+                if (single) ((SingleRepository<?, ?>) repository).bind(changes, keys);
+                else ((GroupRepository<?, ?>) repository).bind(changes, keys);
             }
             ChangeWriter writer = new ChangeWriter(changeSets, List.copyOf(logRepositories.values()), batchSize, writeThreads, errorHandler);
             logRepositories.forEach((repository, queue) -> repository.bind(queue, writer));

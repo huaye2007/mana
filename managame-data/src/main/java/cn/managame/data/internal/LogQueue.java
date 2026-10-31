@@ -1,13 +1,14 @@
-package cn.managame.data;
+package cn.managame.data.internal;
 
+import cn.managame.data.spi.LogWriter;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
-/** One log type's logs not yet written, at most {@code capacity} of them, and the writer that writes them. */
-final class LogQueue {
+/** One log type's logs not yet written, at most {@code capacity} of them, and the writer that writes them. Not API. */
+public final class LogQueue {
     final Class<?> type;
     final LogWriter writer;
     final int capacity;
@@ -17,14 +18,18 @@ final class LogQueue {
     /** Adds in progress in the low bits, and the sign bit once closed, so close can wait for the adds already in. */
     private final AtomicLong addsInProgress = new AtomicLong();
 
-    LogQueue(Class<?> type, LogWriter writer, int capacity) {
+    public LogQueue(Class<?> type, LogWriter writer, int capacity) {
         this.type = type;
         this.writer = writer;
         this.capacity = capacity;
     }
 
+    public Class<?> type() { return type; }
+
+    public int capacity() { return capacity; }
+
     /** Queues a log; false when the queue is full. IllegalStateException once closed. */
-    boolean add(Object log) {
+    public boolean add(Object log) {
         if (addsInProgress.getAndIncrement() < 0) {
             addsInProgress.decrementAndGet();
             throw new IllegalStateException("GameData is closed");
