@@ -5,18 +5,20 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.LockSupport;
 
 /** One log type's logs not yet written, at most {@code capacity} of them, and the writer that writes them. Not API. */
 public final class LogQueue {
+    /** The bit of {@link #size} set once closed, which refuses every later add. */
+    private static final int CLOSED = Integer.MIN_VALUE;
     final Class<?> type;
     final LogWriter writer;
     final int capacity;
     private final ConcurrentLinkedQueue<Object> logs = new ConcurrentLinkedQueue<>();
-    /** The number of queued logs, which ConcurrentLinkedQueue would count by walking it. */
+    /**
+     * Logs counted in and not yet taken, which ConcurrentLinkedQueue would count by walking it, and CLOSED once closed.
+     * An add counts its log in before queueing it, so a log counted in may still be on its way into the queue.
+     */
     private final AtomicInteger size = new AtomicInteger();
-    /** Adds in progress in the low bits, and the sign bit once closed, so close can wait for the adds already in. */
-    private final AtomicLong addsInProgress = new AtomicLong();
     /** What the rounds did since GameData was built, counted by the write thread; read by stats. */
     final AtomicLong written = new AtomicLong(), failures = new AtomicLong(), dropped = new AtomicLong();
     /** Logs refused because the queue was full. */
@@ -33,7 +35,7 @@ public final class LogQueue {
     public int capacity() { return capacity; }
 
     /** Logs waiting in the queue; those the round in progress took are not among them. */
-    public int queued() { return size.get(); }
+    public int queued() { return size(); }
 
     /** Logs written since GameData was built. */
     public long written() { return written.get(); }
@@ -49,31 +51,25 @@ public final class LogQueue {
 
     /** Queues a log; false, counted as refused, when the queue is full. IllegalStateException once closed. */
     public boolean add(Object log) {
-        if (addsInProgress.getAndIncrement() < 0) {
-            addsInProgress.decrementAndGet();
-            throw new IllegalStateException("GameData is closed");
-        }
-        try {
-            for (int current = size.get(); current < capacity; current = size.get()) {
-                if (size.compareAndSet(current, current + 1)) {
-                    logs.add(log);
-                    return true;
-                }
-            }
+        int before = size.getAndIncrement();   // one atomic add, which unlike a compare-and-set never retries
+        if ((before & CLOSED) != 0 || before >= capacity) {
+            size.decrementAndGet();
+            if ((before & CLOSED) != 0) throw new IllegalStateException("GameData is closed");
             refused.incrementAndGet();
             return false;
-        } finally {
-            addsInProgress.decrementAndGet();
         }
+        logs.add(log);
+        return true;
     }
 
-    boolean isEmpty() { return size.get() == 0; }
+    boolean isEmpty() { return size() == 0; }
 
-    int size() { return size.get(); }
+    int size() { return size.get() & ~CLOSED; }
 
-    /** The oldest queued log, or null. */
-    Object poll() {
-        Object log = logs.poll();
+    /** The oldest log, waiting a moment for one counted in but still on its way into the queue; null when none is. */
+    Object take() {
+        Object log;
+        while ((log = logs.poll()) == null && size() > 0) Thread.onSpinWait();
         if (log != null) size.decrementAndGet();
         return log;
     }
@@ -84,9 +80,6 @@ public final class LogQueue {
         size.addAndGet(unwritten.size());
     }
 
-    /** Refuses every later log, and returns once the adds already in progress have finished. */
-    void close() {
-        addsInProgress.getAndUpdate(value -> value | Long.MIN_VALUE);
-        while ((addsInProgress.get() & Long.MAX_VALUE) != 0) LockSupport.parkNanos(10_000);
-    }
+    /** Refuses every later log; one already counted in still arrives, and {@link #take} waits for it. */
+    void close() { size.getAndUpdate(value -> value | CLOSED); }
 }

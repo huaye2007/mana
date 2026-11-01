@@ -126,7 +126,7 @@ public final class ChangeWriter {
                 dropped += waiting.size();
             }
             for (LogQueue logs : logQueues) {
-                for (Object log; (log = logs.poll()) != null; dropped++) {
+                for (Object log; (log = logs.take()) != null; dropped++) {
                     logs.dropped.incrementAndGet();
                     reportFailure(null, DATA_LOG_SAVE_FAILED, logs.type, LOG_INSERT, log, cause);
                 }
@@ -272,7 +272,7 @@ public final class ChangeWriter {
         int remaining = logs.size();
         while (remaining > 0 && !round.shouldStop(logs.writer)) {
             List<Object> batch = new ArrayList<>(Math.min(batchSize, remaining));
-            for (Object log; batch.size() < batchSize && remaining > 0 && (log = logs.poll()) != null; remaining--) batch.add(log);
+            for (Object log; batch.size() < batchSize && remaining > 0 && (log = logs.take()) != null; remaining--) batch.add(log);
             if (batch.isEmpty()) break;
             writeLogBatch(logs, round, batch, unwritten);
         }
