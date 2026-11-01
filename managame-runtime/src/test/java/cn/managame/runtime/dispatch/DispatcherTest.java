@@ -18,7 +18,10 @@ import cn.managame.runtime.annotation.HandleMethod;
 import cn.managame.runtime.executor.RouteExecutors;
 import cn.managame.runtime.http.HttpRequestContext;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +31,7 @@ import org.junit.jupiter.api.Test;
 class DispatcherTest {
     private static final int PLAYER = 1, GUILD = 2;
     private static final byte ROLE = 1;
+    private static final int NOT_ENOUGH = 10_001;   // the game's own code
 
     record Buy(int item) {}
     record Donate(long guildId) {}
@@ -36,6 +40,7 @@ class DispatcherTest {
     record Later(String text) {}
     record Note(String text) {}
     record Unknown() {}
+    record Trade(long with, int item) {}
 
     private final GameRuntime runtime = GameRuntime.builder()
             .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId())
@@ -43,6 +48,8 @@ class DispatcherTest {
     private final List<String> notes = new CopyOnWriteArrayList<>();
     private final BlockingQueue<String> answers = new LinkedBlockingQueue<>();
     private final GameContext role = new GameContext(0, 0, ROLE, 1001, Metadata.empty());
+    private final Map<Long, Set<Integer>> bags = Map.of(1001L, ConcurrentHashMap.newKeySet(), 2002L, ConcurrentHashMap.newKeySet());
+    private final List<Long> routes = new CopyOnWriteArrayList<>();
 
     @Domain(PLAYER)
     class Shop {
@@ -55,6 +62,18 @@ class DispatcherTest {
         @HandleMethod String later(HandleContext context, Later later) {
             Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later " + later.text())));
             return null;
+        }
+        @HandleMethod void trade(HandleContext request, Trade trade) {
+            runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // on the other player's route
+                routes.add(Context.current().routeKey());
+                boolean taken = bags.get(trade.with()).remove(trade.item());
+                runtime.execute(request, _ -> {                               // back on this player's route
+                    routes.add(Context.current().routeKey());
+                    if (!taken) { request.fail(NOT_ENOUGH); return; }
+                    bags.get(request.businessId()).add(trade.item());
+                    request.reply("traded");
+                });
+            });
         }
     }
 
@@ -82,6 +101,17 @@ class DispatcherTest {
         assertEquals("ok:bought 5 by 1001 on " + PLAYER + ":1001", answer(), "the player domain keys by the acting role");
         dispatch(dispatcher, new Donate(7));
         assertEquals("ok:donated to 7 by 1001", answer(), "the guild domain keys by the message");
+    }
+
+    @Test void aTradeTakesOnTheOtherPlayersRouteAndGivesBackOnItsOwn() throws Exception {
+        bags.get(2002L).add(9);
+        Dispatcher dispatcher = dispatcher();
+        dispatch(dispatcher, new Trade(2002, 9));
+        assertEquals("ok:traded", answer());
+        assertEquals(List.of(2002L, 1001L), routes, "taken on the other player's route, given on the trader's");
+        assertEquals(Set.of(9), bags.get(1001L));
+        dispatch(dispatcher, new Trade(2002, 9));
+        assertEquals("fail:" + NOT_ENOUGH, answer(), "the other player has none left");
     }
 
     @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {

@@ -64,21 +64,30 @@ the task's own or its request.
 
 ```java
 // A call to another server: the answer arrives on the RPC thread, the rest runs on the player's route
-peer.call(rpcRequest, (call, response) -> runtime.execute(context, task -> rank.update(response)));
+peer.call(rpcRequest, (call, response) -> runtime.execute(context, _ -> rank.update(response)));
 
-// A trade: the other player's route takes its part, then the request's route goes on
-runtime.execute(player(with), other -> {
-    boolean taken = bags.get(with).take(want);
-    runtime.execute(request, back -> {
-        if (!taken) { request.fail(NOT_ENOUGH); return; }
-        mine.add(want);
-        request.reply("traded");
+// A trade: take from the other player on their route, then give to this player back on its own
+@HandleMethod void trade(HandleContext request, Trade trade) {
+    runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // on the other player's route
+        boolean taken = bags.get(trade.with()).take(trade.item());
+        runtime.execute(request, _ -> {                               // back on this player's route
+            if (!taken) { request.fail(NOT_ENOUGH); return; }
+            bags.get(request.businessId()).add(trade.item());
+            request.reply("traded");
+        });
     });
-});
+}
+
+// Only reading another player: an answer may come from any thread, so there is no way back to take
+runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(target)));
 ```
 
-The continued task sees `Context.current()` as that context, answers its request once, and, if it throws or is
-refused, fails the request with a code: nothing more to remember. On a virtual-thread route, a blocking call such as a
+The framework's part is `runtime.execute`, `GameContext.of` and the request's `reply` and `fail`; `Trade`, `bags`,
+`profiles` and `NOT_ENOUGH` are the game's own, and a task that does not use its context names it `_`. The continued
+task sees `Context.current()` as that context, answers its request once, and, if it throws or is refused, fails the
+request with a code: nothing more to remember. Steps on two routes are not one transaction: if the way back is refused,
+the request fails with the refusal's code and putting back what the first step took is the game's. On a virtual-thread
+route, a blocking call such as a
 database query needs no callback at all, as it holds up only its own key; a callback is for waiting on another route,
 where waiting in place could leave two routes waiting on each other, or on an API that is asynchronous anyway.
 

@@ -56,21 +56,28 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 
 ```java
 // 调用另一台服务器：应答在 RPC 线程上到达，剩下的回到玩家的路由执行
-peer.call(rpcRequest, (call, response) -> runtime.execute(context, task -> rank.update(response)));
+peer.call(rpcRequest, (call, response) -> runtime.execute(context, _ -> rank.update(response)));
 
-// 交易：对方的路由先做完它那部分，再回到请求所在的路由继续
-runtime.execute(player(with), other -> {
-    boolean taken = bags.get(with).take(want);
-    runtime.execute(request, back -> {
-        if (!taken) { request.fail(NOT_ENOUGH); return; }
-        mine.add(want);
-        request.reply("traded");
+// 交易：先在对方的路由上扣对方的物品，再回到自己的路由上加给自己
+@HandleMethod void trade(HandleContext request, Trade trade) {
+    runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // 在对方的路由上
+        boolean taken = bags.get(trade.with()).take(trade.item());
+        runtime.execute(request, _ -> {                               // 回到自己的路由上
+            if (!taken) { request.fail(NOT_ENOUGH); return; }
+            bags.get(request.businessId()).add(trade.item());
+            request.reply("traded");
+        });
     });
-});
+}
+
+// 只读别的玩家：应答可以在任意线程上发出，不用再回来
+runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(target)));
 ```
 
-继续执行的任务里 `Context.current()` 就是这个 context，请求只应答一次，任务抛异常或被拒绝时请求会以错误码失败：不需要再记
-别的。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
+框架提供的只有 `runtime.execute`、`GameContext.of` 和请求的 `reply`、`fail`；`Trade`、`bags`、`profiles`、`NOT_ENOUGH`
+都是游戏自己的，任务用不到的 context 写成 `_`。继续执行的任务里 `Context.current()` 就是这个 context，请求只应答一次，任务
+抛异常或被拒绝时请求会以错误码失败：不需要再记别的。两条路由上的两步不是一个事务：回来的那一步被拒绝时，请求以拒绝的错误码
+失败，把第一步扣掉的东西还回去是游戏自己的事。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
 互相等待），或者本来就是异步的 API。
 
 ## Domain、执行器与路由键
