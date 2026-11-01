@@ -118,6 +118,7 @@ record Donate(long guildId, int gold) {}   // 在 GUILD 里处理，按 RouteKey
 | `@HandleMethod` | 消息 | `Dispatcher` |
 | `@EventMethod` | 事件 | `EventBus` |
 | `@HttpMethod(path)` | HTTP 请求，默认 POST，可用 `method` 指定 | `HttpRoutes` |
+| `@Cron(domain, value)` | 日历时间，见[定时任务](#定时任务)；domain 和路由键写在注解里，方法不带消息 | `GameTimer` |
 
 处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、同一个消息有两个处理器、上下文类型入口给不了。
 
@@ -244,6 +245,25 @@ timer.close();
 - 延迟使用单调时钟，不受 `GameTime` 影响。
 - `every` 按固定频率执行，第一次在一个周期之后。被 runtime 拒绝（路由已满）的那一次会记录日志并跳过；runtime 关闭后定时器停止。
 
+### 定时任务
+
+```java
+class DailyJobs {
+    @Cron(domain = WORLD, value = "0 0 5 * * *")                                  // 每天 05:00:00，routeKey 默认 0
+    void resetDaily() { world.resetDaily(); }
+
+    @Cron(domain = GUILD, routeKey = 0, value = "0 0 20 * * SAT")
+    void openWar(GameContext context) { war.open(); }
+}
+
+List<Scheduled> jobs = timer.register(List.of(new DailyJobs()));                 // 排上每个 @Cron 方法
+timer.cron(GameContext.of(WORLD, 0), activity.cron(), context -> activity.open()); // 代码里的同等写法，比如表达式来自配置
+```
+
+- 表达式 6 段：秒、分、时、日、月、周。每段是 `*`、一个值、范围 `a-b`、列表 `a,b` 或步长（`*/15`、`5/20`、`9-17/2`）；月可写 `JAN`–`DEC`，周可写 `SUN`–`SAT` 或 `0`–`7`（0 和 7 都是周日）；`?` 等同于 `*`。日和周都写了具体值时，满足其一就触发，与 Unix cron 相同。不支持 `L`、`W`、`#`。
+- 方法不带参数，或带一个 `GameContext`（即 `GameContext.of(domain, routeKey)`），返回值忽略。方法签名、表达式不对或 domain 未注册时，`register` 抛 `IllegalArgumentException`，一个也不排。
+- 时间按 `GameTime` 的时钟和时区读取，见[游戏时间](#游戏时间)。定时任务至少每秒看一次 `GameTime`：到点就触发，再在"现在"和"刚到点的时刻"中较晚者之后找下一次；发现时钟或时区换了，就在新的上面重新找，所以 `setClock`、`setZone`、`resetClock` 之后一秒内自动重排，不用取消再注册。夏令时跳过的本地时刻不触发，重复的只触发一次。晚了的那次只补一次，停机期间错过的不补，被 runtime 拒绝的那次记录日志并跳过。
+
 ## HTTP
 
 ```java
@@ -313,7 +333,15 @@ class JsonCodec implements HttpCodec {
 
 ## 游戏时间
 
-`GameTime.currentTimeMillis()` 和 `GameTime.now(zone)` 读取进程级的业务时钟。`setClock(Clock)` 可以调整它，用于测试或限时活动，`resetClock()` 恢复系统时钟。它不影响定时器、延迟和超时。
+`GameTime` 是整个进程统一的业务时钟和时区，业务代码都从这里取时间：`currentTimeMillis()`、`now()`（游戏时区下的日期时间）、`zone()`、`clock()`。时区只在这里设一次，默认系统时区：
+
+```java
+GameTime.setZone(ZoneId.of("Asia/Shanghai"));   // 启动时设一次，日期和 cron 都按它读
+GameTime.setClock(Clock.offset(Clock.system(GameTime.zone()), Duration.ofDays(1)));   // 测试或活动：拨快一天
+GameTime.resetClock();                           // 回到系统时钟，保留时区
+```
+
+`setClock` 换掉时钟，时钟带的时区成为游戏时区。定时任务（`@Cron`、`timer.cron`）一秒内按新的时钟或时区重排；延迟、周期定时器和超时用单调时钟，不受影响。
 
 ## 构建与测试
 

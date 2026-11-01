@@ -140,6 +140,7 @@ registrations do not change afterwards.
 | `@HandleMethod` | Messages | `Dispatcher` |
 | `@EventMethod` | Events | `EventBus` |
 | `@HttpMethod(path)` | HTTP requests, POST unless `method` says otherwise | `HttpRoutes` |
+| `@Cron(domain, value)` | Calendar times, see [Cron](#cron); domain and route key in the annotation, no message | `GameTimer` |
 
 A handler takes one parameter, the message, matched by its exact class, and may take its context before it.
 Methods are compiled to method handles at registration, so calls use no reflection. Registration throws
@@ -287,6 +288,35 @@ timer.close();
 - `every` keeps a fixed rate and fires first after one period. A firing the runtime refuses (a full route) is
   logged and skipped; once the runtime shuts down, the timer stops.
 
+### Cron
+
+```java
+class DailyJobs {
+    @Cron(domain = WORLD, value = "0 0 5 * * *")                                  // 05:00:00 every day, route key 0
+    void resetDaily() { world.resetDaily(); }
+
+    @Cron(domain = GUILD, routeKey = 0, value = "0 0 20 * * SAT")
+    void openWar(GameContext context) { war.open(); }
+}
+
+List<Scheduled> jobs = timer.register(List.of(new DailyJobs()));                 // schedules every @Cron method
+timer.cron(GameContext.of(WORLD, 0), activity.cron(), context -> activity.open()); // the same from code, e.g. from config
+```
+
+- Six fields: second, minute, hour, day of month, month, day of week. Each is `*`, a value, a range `a-b`, a list
+  `a,b` or a step (`*/15`, `5/20`, `9-17/2`); months may be `JAN`–`DEC` and days of week `SUN`–`SAT` or `0`–`7`
+  (0 and 7 are both Sunday); `?` is the same as `*`. When both day fields name days, a day matching either fires, as
+  in Unix cron. `L`, `W` and `#` are not supported.
+- The method takes nothing or its `GameContext`, `GameContext.of(domain, routeKey)`, and what it returns is ignored.
+  A wrong method, a bad expression or an unregistered domain makes `register` throw
+  `IllegalArgumentException`, and nothing is scheduled.
+- Times are read on `GameTime`'s clock and zone, see [Game time](#game-time). A cron timer looks at `GameTime` at
+  least once a second: it fires when its time has come and finds the next one after the later of now and the time
+  just due; when the clock or zone has changed, it finds its next time again on the new one, so `setClock`, `setZone`
+  and `resetClock` reschedule it within a second, with nothing to cancel or register again. A local time daylight
+  saving skips does not fire and one it repeats fires once. A late firing runs once, times while the process was down
+  are not made up, and a firing the runtime refuses is logged and skipped.
+
 ## HTTP
 
 ```java
@@ -373,9 +403,19 @@ shape error bodies.
 
 ## Game time
 
-`GameTime.currentTimeMillis()` and `GameTime.now(zone)` read the process-wide business clock. `setClock(Clock)`
-shifts it, for tests or time-limited events, and `resetClock()` restores the system clock. It never affects
-timers, delays or timeouts.
+`GameTime` is the process's one business clock and time zone, where business code reads the time:
+`currentTimeMillis()`, `now()` (the date and time in the game's zone), `zone()` and `clock()`. The zone is set here
+once, the system's by default:
+
+```java
+GameTime.setZone(ZoneId.of("Asia/Shanghai"));   // once at startup: dates and cron times are read in it
+GameTime.setClock(Clock.offset(Clock.system(GameTime.zone()), Duration.ofDays(1)));   // tests or events: a day ahead
+GameTime.resetClock();                           // back to the system clock, keeping the zone
+```
+
+`setClock` replaces the clock, and the clock's zone becomes the game's. Cron timers (`@Cron`, `timer.cron`)
+reschedule on a new clock or zone within a second; delays, periodic timers and timeouts use the monotonic clock and
+do not move.
 
 ## Build and tests
 

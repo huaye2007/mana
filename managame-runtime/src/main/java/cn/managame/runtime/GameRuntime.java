@@ -67,9 +67,13 @@ public final class GameRuntime implements AutoCloseable {
      * resolver can never route such messages, such as {@link RouteKeys#field} for a class without that member.
      */
     public void checkRoute(int domain, Class<?> messageType) {
-        RouteKeyResolver resolver = resolvers.get(domain);
-        if (resolver == null) throw new IllegalArgumentException("Unknown domain " + domain);
-        resolver.check(messageType);
+        checkDomain(domain);
+        resolvers.get(domain).check(messageType);
+    }
+
+    /** IllegalArgumentException for an unregistered domain; lets an entry that routes by a fixed key fail at startup. */
+    public void checkDomain(int domain) {
+        if (!resolvers.containsKey(domain)) throw new IllegalArgumentException("Unknown domain " + domain);
     }
 
     /**

@@ -43,18 +43,27 @@ public final class AnnotatedMethod {
      * other parameters, or one without a domain.
      */
     public static List<AnnotatedMethod> scan(Object target, Class<? extends Annotation> annotation) {
-        Objects.requireNonNull(target, "target");
         List<AnnotatedMethod> found = new ArrayList<>();
+        for (Method method : methods(target, annotation)) found.add(compile(target, method));
+        return List.copyOf(found);
+    }
+
+    /**
+     * The methods of {@code target} and its superclasses carrying {@code annotation}, in name order, unchecked; a
+     * method overridden in a subclass counts once. For entries whose methods take no message, such as cron jobs.
+     */
+    public static List<Method> methods(Object target, Class<? extends Annotation> annotation) {
+        Objects.requireNonNull(target, "target");
+        List<Method> found = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (Class<?> type = target.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
             for (Method method : type.getDeclaredMethods()) {
                 if (method.isSynthetic() || method.isBridge() || !method.isAnnotationPresent(annotation)) continue;
-                if (seen.add(method.getName() + List.of(method.getParameterTypes())))
-                    found.add(compile(target, method));
+                if (seen.add(method.getName() + List.of(method.getParameterTypes()))) found.add(method);
             }
         }
-        found.sort(Comparator.comparing(m -> m.method.getName()));
-        return List.copyOf(found);
+        found.sort(Comparator.comparing(Method::getName));
+        return found;
     }
 
     private static AnnotatedMethod compile(Object target, Method method) {

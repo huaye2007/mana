@@ -14,7 +14,16 @@ import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RequestContext;
 import cn.managame.runtime.executor.RouteExecutors;
+import cn.managame.runtime.time.GameTime;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -133,5 +142,72 @@ class GameTimerTest {
         TimeUnit.MILLISECONDS.sleep(200);
         assertEquals(0, fired.get());
         assertTrue(scheduled.isDone());
+    }
+
+    class DailyJobs {
+        final BlockingQueue<String> ran = new LinkedBlockingQueue<>();
+
+        @Cron(domain = WORLD, routeKey = 7, value = "* * * * * *")
+        void tick(GameContext context) { ran.add("tick on " + Context.current().routeKey() + " as " + context.routeKey()); }
+
+        @Cron(domain = WORLD, value = "* * * * * *")
+        String report() { return ran.add("report") ? "ignored" : null; }
+    }
+
+    @Test void cronTimersFireWhenTheirExpressionMatchesOnTheirRoute() throws Exception {
+        BlockingQueue<Object> seen = new LinkedBlockingQueue<>();
+        GameContext world = GameContext.of(WORLD, 0);
+        Scheduled everySecond = timer.cron(world, "* * * * * *", context -> seen.add(Context.current()));
+        assertSame(world, seen.poll(3, TimeUnit.SECONDS));
+        assertSame(world, seen.poll(3, TimeUnit.SECONDS), "and again the next second");
+        assertTrue(everySecond.cancel());
+        assertTrue(everySecond.isDone());
+        assertThrows(IllegalArgumentException.class, () -> timer.cron(world, "0 0 5 * *", context -> {}));
+        assertThrows(IllegalArgumentException.class, () -> timer.cron(GameContext.of(99, 0), "* * * * * *", context -> {}));
+    }
+
+    /** A running clock that now shows {@code time} in Shanghai, in {@code zone}. */
+    private static Clock clockAt(String time, ZoneId zone) {
+        Instant then = LocalDateTime.parse(time).atZone(ZoneId.of("Asia/Shanghai")).toInstant();
+        return Clock.offset(Clock.system(zone), Duration.between(Instant.now(), then));
+    }
+
+    @Test void cronTimersFollowGameTimesClockAndZone() throws Exception {
+        Clock original = GameTime.clock();
+        BlockingQueue<String> fired = new LinkedBlockingQueue<>();
+        try {
+            GameTime.setClock(clockAt("2026-11-01T04:59:58", ZoneOffset.UTC));   // 20:59:58 in the game's zone
+            timer.cron(GameContext.of(WORLD, 0), "0 0 5 * * *", context -> fired.add("five"));
+            GameTime.setZone(ZoneId.of("Asia/Shanghai"));
+            assertEquals("five", fired.poll(4, TimeUnit.SECONDS), "rescheduled for five in Shanghai, two seconds away");
+            GameTime.setClock(clockAt("2026-11-01T04:59:58", ZoneId.of("Asia/Shanghai")));
+            assertEquals("five", fired.poll(4, TimeUnit.SECONDS), "the clock set back before five: five again");
+        } finally {
+            GameTime.setClock(original);
+        }
+    }
+
+    @Test void registerSchedulesEveryCronMethod() throws Exception {
+        DailyJobs jobs = new DailyJobs();
+        List<Scheduled> scheduled = timer.register(List.of(jobs));
+        assertEquals(2, scheduled.size());
+        Set<String> ran = new HashSet<>();
+        while (ran.size() < 2) ran.add(jobs.ran.poll(3, TimeUnit.SECONDS));
+        assertEquals(Set.of("tick on 7 as 7", "report"), ran);
+        for (Scheduled job : scheduled) assertTrue(job.cancel());
+    }
+
+    @Test void registerRefusesBadCronMethodsAndThenSchedulesNothing() throws Exception {
+        AtomicInteger good = new AtomicInteger();
+        class Broken {
+            @Cron(domain = WORLD, value = "* * * * * *") void aGoodOne() { good.incrementAndGet(); }
+            @Cron(domain = WORLD, value = "* * * * *") void zBadExpression() {}
+        }
+        class TakesAMessage { @Cron(domain = WORLD, value = "* * * * * *") void run(String message) {} }
+        class UnknownDomain { @Cron(domain = 99, value = "* * * * * *") void run() {} }
+        for (Object bad : List.of(new Broken(), new TakesAMessage(), new UnknownDomain()))
+            assertThrows(IllegalArgumentException.class, () -> timer.register(List.of(bad)), bad.getClass().getSimpleName());
+        TimeUnit.MILLISECONDS.sleep(1500);
+        assertEquals(0, good.get(), "the good method of a refused object was not scheduled");
     }
 }

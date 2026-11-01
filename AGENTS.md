@@ -110,7 +110,12 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   routing of their own.
 - **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
   `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
-  Registrations are immutable once built.
+  Registrations are immutable once built. `@Cron` methods (registered with `GameTimer.register`) are the exception:
+  they run at calendar times on a fixed route, so the annotation carries `domain` and `routeKey`, and they take no
+  message, only optionally their `GameContext`.
+- **One clock and time zone for the game.** Business code reads dates and times from `GameTime`, whose zone is set
+  once (`GameTime.setZone`), never per annotation or call. Cron timers read their times on it and reschedule within
+  a second when its clock or zone changes; delays, periodic timers and timeouts use the monotonic clock.
 
 ## Names and API conventions
 
