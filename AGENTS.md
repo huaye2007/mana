@@ -86,6 +86,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   maintain and cost speed. Document what happens instead: an answer written while a peer's only connection is
   being dialed again is lost, rather than held for the connection to come back. Name methods plainly for what
   they do (`call.fail(code)`, `pending.failAll(code)`).
+- **Correctness comes from structure and order, not bookkeeping.** Do not keep counters of operations in flight (adds
+  in progress, tasks pending) to make close or shutdown correct: a design that needs one lets things race that the
+  lifecycle should order. GameData closes last, after the business threads have stopped, so no insert races with it;
+  waiting for work to finish reads the state the structure already has (an executor's own queues).
 - **The network layer never stores connections.** The application creates, maps, keeps and closes them
   (`ConnectionMapper`). RPC is the deliberate exception: an `RpcPeer` holds its connections because calls travel
   over them.
