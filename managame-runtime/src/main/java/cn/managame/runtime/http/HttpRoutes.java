@@ -118,8 +118,7 @@ public final class HttpRoutes implements HttpHandler {
                 }
             });
         } catch (GameRuntimeException refused) {
-            request.release();
-            context.fail(refused.errorCode());
+            request.release();   // execute answered the request with the refusal's code
         } catch (RuntimeException e) {
             request.release();
             LOG.log(Level.ERROR, "Cannot run HTTP request " + request.uri(), e);

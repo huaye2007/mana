@@ -74,9 +74,11 @@ public final class GameRuntime implements AutoCloseable {
 
     /**
      * Queues {@code task} on the route of {@code context} and returns; the task later runs with the context as
-     * {@link Context#current()}. Throws GameRuntimeException with RUNTIME_CLOSED after shutdown or
-     * ROUTE_EXECUTOR_OVERLOADED when the domain's executor is full; the task then never runs. An unregistered
-     * domain throws IllegalArgumentException.
+     * {@link Context#current()}. It is also how work comes back from another thread or route, such as an RPC callback
+     * or a visit to another player's route: execute with the context to continue on, the task's own or its request.
+     * Throws GameRuntimeException with RUNTIME_CLOSED after shutdown or ROUTE_EXECUTOR_OVERLOADED when the domain's
+     * executor is full; the task then never runs, and a RequestContext is first failed with that code, so a request is
+     * answered whether its task was accepted or not. An unregistered domain throws IllegalArgumentException.
      */
     public <C extends Context> void execute(C context, GameTask<? super C> task) {
         Objects.requireNonNull(context, "context");
@@ -87,14 +89,29 @@ public final class GameRuntime implements AutoCloseable {
         pending.incrementAndGet();
         if (shutdown) {
             finished();
-            throw new GameRuntimeException(RUNTIME_CLOSED, "the runtime is shut down");
+            throw refuse(context, new GameRuntimeException(RUNTIME_CLOSED, "the runtime is shut down"));
         }
         try {
             executor.execute(context.routeKey(), () -> run(context, task));
-        } catch (Throwable refused) {
+        } catch (GameRuntimeException refused) {
             finished();
-            throw refused;
+            throw refuse(context, refused);
+        } catch (Throwable unexpected) {
+            finished();
+            throw unexpected;
         }
+    }
+
+    /** Fails a refused request with the refusal's code, which is then thrown. */
+    private static GameRuntimeException refuse(Context context, GameRuntimeException refusal) {
+        if (context instanceof RequestContext request) {
+            try {
+                request.fail(refusal.errorCode());
+            } catch (RuntimeException e) {
+                refusal.addSuppressed(e);
+            }
+        }
+        return refusal;
     }
 
     private <C extends Context> void run(C context, GameTask<? super C> task) {

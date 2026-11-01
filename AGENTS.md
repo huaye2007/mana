@@ -99,6 +99,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   callback is released when it returns.
 - **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
   (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routeKey)` run one at a time in submission order.
+  Work that comes back from another thread or route (an RPC callback, a visit to another player's route) goes on
+  through `GameRuntime.execute(context, task)` with the context to continue on, with no API of its own; a request is
+  answered whether its task is accepted or refused.
 - **Every context has the same fields:** `domain` (int), `routeKey` (long), `businessType` (byte),
   `businessId` (long) and `Metadata`.
 - **The business decides routing per domain.** Each domain has its own `RouteExecutor` and its own

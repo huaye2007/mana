@@ -6,9 +6,8 @@ package cn.managame.runtime;
  * implementation encodes and delivers it. Only the first answer counts, and it may come from any thread, also
  * after the task returned, for example from the callback of a call to another server.
  *
- * <p>Once the runtime has accepted a task for a request, the request is answered even if the task throws: the
- * runtime then fails it with RUNTIME_EXECUTION_ERROR. A task refused by {@link GameRuntime#execute} was never
- * accepted; whoever submitted it answers it.
+ * <p>A request is always answered: when its task throws, the runtime fails it with RUNTIME_EXECUTION_ERROR, and when
+ * {@link GameRuntime#execute} refuses its task, with the refusal's code.
  */
 public interface RequestContext extends Context {
     /** Answers with {@code result}; false when the request was already answered. */

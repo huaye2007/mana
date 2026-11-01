@@ -50,8 +50,36 @@ Every piece of business logic runs with a `Context`:
 - `GameContext.copyOf(context)` is a plain copy for new work about the same subject, keeping route and metadata.
   A copy of a request cannot answer that request.
 - `RequestContext` adds `reply(result)` and `fail(errorCode)` for work someone waits on. Only the first answer
-  counts, and it may come from any thread, also after the task returned. If the task throws, the runtime fails
-  the request with `RUNTIME_EXECUTION_ERROR`, so an accepted request is always answered.
+  counts, and it may come from any thread, also after the task returned. A request is always answered: if its task
+  throws, the runtime fails it with `RUNTIME_EXECUTION_ERROR`, and if `execute` refuses its task, with the refusal's
+  code.
+
+### Continuing on a route
+
+A callback runs on whatever thread delivers it, not on the route of the task that started the work, so touching a
+player's state there would break the one-at-a-time rule. One rule covers every case: **when a result comes back from
+another thread or another route, hand the rest to `runtime.execute(context, task)` with the context to continue on**,
+the task's own or its request.
+
+```java
+// A call to another server: the answer arrives on the RPC thread, the rest runs on the player's route
+peer.call(rpcRequest, (call, response) -> runtime.execute(context, task -> rank.update(response)));
+
+// A trade: the other player's route takes its part, then the request's route goes on
+runtime.execute(player(with), other -> {
+    boolean taken = bags.get(with).take(want);
+    runtime.execute(request, back -> {
+        if (!taken) { request.fail(NOT_ENOUGH); return; }
+        mine.add(want);
+        request.reply("traded");
+    });
+});
+```
+
+The continued task sees `Context.current()` as that context, answers its request once, and, if it throws or is
+refused, fails the request with a code: nothing more to remember. On a virtual-thread route, a blocking call such as a
+database query needs no callback at all, as it holds up only its own key; a callback is for waiting on another route,
+where waiting in place could leave two routes waiting on each other, or on an API that is asynchronous anyway.
 
 ## Domains, executors and route keys
 
@@ -325,8 +353,8 @@ shape error bodies.
 ## Errors and shutdown
 
 - `execute` throws `GameRuntimeException` with `RUNTIME_CLOSED` after shutdown or `ROUTE_EXECUTOR_OVERLOADED` when
-  the domain's executor is full, and the task never runs. An unregistered domain throws
-  `IllegalArgumentException`.
+  the domain's executor is full, and the task never runs; a request is first failed with that code. An unregistered
+  domain throws `IllegalArgumentException`.
 - What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
 - `shutdown()` refuses new tasks while accepted ones still run; `awaitTermination(timeout)` waits for them;
   `close()` does both and must not be called from a task. Close the entries (servers, timers and the like) before the

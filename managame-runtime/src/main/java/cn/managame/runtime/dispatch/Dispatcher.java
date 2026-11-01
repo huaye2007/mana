@@ -87,7 +87,7 @@ public final class Dispatcher {
         try {
             runtime.execute(context, task -> run(handler, task, message));
         } catch (GameRuntimeException refused) {
-            context.fail(refused.errorCode());
+            // execute answered the request with the refusal's code
         } catch (RuntimeException e) {
             LOG.log(Level.ERROR, "Cannot run " + handler, e);
             context.fail(RUNTIME_EXECUTION_ERROR);

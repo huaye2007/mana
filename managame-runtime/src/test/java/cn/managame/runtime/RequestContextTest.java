@@ -1,15 +1,18 @@
 package cn.managame.runtime;
 
+import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.Metadata;
 import cn.managame.runtime.executor.RouteExecutors;
+import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -90,13 +93,47 @@ class RequestContextTest {
         }
     }
 
-    @Test void aRefusedRequestIsLeftToItsSubmitter() {
+    @Test void workGoesToAnotherRouteAndComesBackToTheRequestsRoute() throws Exception {
+        // As in a trade: the other player's route does its part, then the request's route goes on, both through
+        // execute, with the context to continue on.
+        TestRequest request = new TestRequest(1001);
+        List<Long> routes = new CopyOnWriteArrayList<>();
+        try (GameRuntime runtime = runtime(new LinkedBlockingQueue<>())) {
+            runtime.execute(request, context -> runtime.execute(GameContext.of(PLAYER, 2002, PLAYER_ID, 2002), other -> {
+                routes.add(Context.current().routeKey());
+                runtime.execute(request, back -> {
+                    routes.add(Context.current().routeKey());
+                    back.reply(Context.current() == request ? "back" : "lost");
+                });
+            }));
+            assertEquals("back", request.awaitAnswer());
+            assertEquals(List.of(2002L, 1001L), routes);
+        }
+    }
+
+    @Test void aRequestTheShutDownRuntimeRefusesIsAnswered() throws Exception {
         TestRequest request = new TestRequest(1001);
         GameRuntime runtime = runtime(new LinkedBlockingQueue<>());
         runtime.close();
         GameRuntimeException refused = assertThrows(GameRuntimeException.class,
                 () -> runtime.execute(request, context -> context.reply("never")));
         assertEquals(RUNTIME_CLOSED, refused.errorCode());
-        assertNull(request.answer().get(), "the runtime answers only what it accepted");
+        assertEquals("fail:" + RUNTIME_CLOSED, request.awaitAnswer());
+    }
+
+    @Test void aRequestItsFullRouteRefusesIsAnswered() throws Exception {
+        CountDownLatch running = new CountDownLatch(1), release = new CountDownLatch(1);
+        try (GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads(1, Duration.ofSeconds(60), 100)).build()) {
+            runtime.execute(GameContext.of(PLAYER, 1001), context -> {
+                running.countDown();
+                release.await();
+            });
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+            runtime.execute(GameContext.of(PLAYER, 1001), context -> {});   // the one task the route may have waiting
+            TestRequest request = new TestRequest(1001);
+            assertThrows(GameRuntimeException.class, () -> runtime.execute(request, context -> context.reply("never")));
+            assertEquals("fail:" + ROUTE_EXECUTOR_OVERLOADED, request.awaitAnswer());
+            release.countDown();
+        }
     }
 }

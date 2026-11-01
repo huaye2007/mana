@@ -45,7 +45,32 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
   `new GameContext(domain, key, type, id, metadata)`。
 - 任务内部用 `Context.current()` 取得当前任务的上下文；`Context.hasCurrent()` 判断当前线程是否在执行任务。
 - `GameContext.copyOf(context)` 得到一份普通副本，用于针对同一对象的新工作，保留路由和 metadata。请求的副本不能应答该请求。
-- `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。任务抛异常时 runtime 会以 `RUNTIME_EXECUTION_ERROR` 应答该请求，因此被接受的请求一定会得到应答。
+- `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。请求一定会得到应答：任务抛异常时 runtime 以 `RUNTIME_EXECUTION_ERROR` 应答，`execute` 拒绝任务时以拒绝的错误码应答。
+
+### 回到原路由继续执行
+
+回调在投递它的那个线程上运行，而不是在发起工作的任务所在的路由上，在回调里直接改玩家状态会破坏"同一路由串行"的保证。所有
+情况都是同一条规则：**结果从别的线程或别的路由回来时，把剩下的工作交给 `runtime.execute(context, task)`，传入想继续执行的
+那个 context**，也就是任务自己的或它的请求。
+
+```java
+// 调用另一台服务器：应答在 RPC 线程上到达，剩下的回到玩家的路由执行
+peer.call(rpcRequest, (call, response) -> runtime.execute(context, task -> rank.update(response)));
+
+// 交易：对方的路由先做完它那部分，再回到请求所在的路由继续
+runtime.execute(player(with), other -> {
+    boolean taken = bags.get(with).take(want);
+    runtime.execute(request, back -> {
+        if (!taken) { request.fail(NOT_ENOUGH); return; }
+        mine.add(want);
+        request.reply("traded");
+    });
+});
+```
+
+继续执行的任务里 `Context.current()` 就是这个 context，请求只应答一次，任务抛异常或被拒绝时请求会以错误码失败：不需要再记
+别的。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
+互相等待），或者本来就是异步的 API。
 
 ## Domain、执行器与路由键
 
@@ -274,7 +299,7 @@ class JsonCodec implements HttpCodec {
 
 ## 错误与关闭
 
-- `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行。未注册的 domain 抛 `IllegalArgumentException`。
+- `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
 - 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
 - `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、定时器等），再关闭 runtime。
 
