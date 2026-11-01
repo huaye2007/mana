@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -163,18 +164,17 @@ public final class GameData implements AutoCloseable {
         Thread.ofPlatform().name("game-data-log").start(logs);
         int notWritten = finish(writer, deadline);
         boolean interrupted = false;
-        while (true) {
+        while (!logs.isDone()) {
             try {
-                notWritten += logs.get();
-                break;
+                logs.get();
             } catch (InterruptedException e) {
                 interrupted = true;   // the logs stop at the deadline in any case
             } catch (ExecutionException e) {
                 LOG.log(System.Logger.Level.ERROR, "writing logs at close failed", e.getCause());
-                break;
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
+        if (logs.state() == Future.State.SUCCESS) notWritten += logs.resultNow();
         if (notWritten > 0)
             throw new DataException(DATA_SAVE_FAILED, notWritten + " changes and logs were not written before close; each went to the DataErrorHandler", null);
     }
@@ -185,17 +185,12 @@ public final class GameData implements AutoCloseable {
      */
     private int finish(ChangeWriter writer, long deadline) {
         boolean interrupted = false;
-        while (true) {
-            ChangeWriter.Round round = writer.writeAllBefore(deadline);
-            if (writer.isEmpty()) break;
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) break;
-            if (round.unwritten() == 0) continue;
+        while (!interrupted && !writer.isEmpty() && System.nanoTime() < deadline) {
+            if (writer.writeAllBefore(deadline).unwritten() == 0) continue;
             try {
-                TimeUnit.NANOSECONDS.sleep(Math.min(flushIntervalNanos, remaining));
+                TimeUnit.NANOSECONDS.sleep(Math.min(flushIntervalNanos, deadline - System.nanoTime()));
             } catch (InterruptedException e) {
                 interrupted = true;
-                break;
             }
         }
         int notWritten = writer.dropAll(new IllegalStateException("GameData closed before this was written"));

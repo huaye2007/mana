@@ -79,7 +79,7 @@ runtime.execute(player(with), other -> {
 
 **执行器**（`RouteExecutors`，每个 domain 用一个新实例）：
 
-- `virtualThreads()`：每个路由键一个队列，由虚拟线程消费，阻塞的任务只会卡住自己的键。处理完的队列会被缓存，繁忙的键不会每个任务都新建、丢弃一次队列：`virtualThreads(maxPendingPerKey, idleTimeout, maxIdleQueues)`，默认每个键最多 4096 个等待任务、空闲 60 秒、最多缓存 100 000 个队列。超过上限的键以 `ROUTE_EXECUTOR_OVERLOADED` 拒绝。
+- `virtualThreads()`：每个路由键一个队列，由虚拟线程消费，阻塞的任务只会卡住自己的键。任务加入键的队列不加锁。处理完的队列会留给它的键，繁忙的键不会每个任务都新建、丢弃一次队列；空闲超过空闲时间的队列由清理线程回收，内存只跟最近用到的键相关：`virtualThreads(maxPendingPerKey, idleTimeout)`，默认每个键除正在执行的任务外最多 4096 个等待任务、空闲 60 秒。超过上限的键以 `ROUTE_EXECUTOR_OVERLOADED` 拒绝。
 - `striped(threads)`：固定数量的平台线程，一个键总在 `hash(key) % threads` 号线程上。不保存键的状态，但一个阻塞的任务会卡住同一线程上的所有键。`striped(threads, maxPendingPerThread)`，默认 65 536。
 - 也可以自己实现 `RouteExecutor`。
 

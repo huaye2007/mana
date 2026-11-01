@@ -165,14 +165,13 @@ public final class ChangeWriter {
             // a type this one is still writing.
             boolean interrupted = false;
             for (Future<?> future : futures) {
-                while (true) {
+                while (!future.isDone()) {
                     try {
                         future.get();
-                        break;
                     } catch (InterruptedException e) {
                         interrupted = true;
                     } catch (ExecutionException e) {
-                        break;
+                        // run() has logged it
                     }
                 }
             }

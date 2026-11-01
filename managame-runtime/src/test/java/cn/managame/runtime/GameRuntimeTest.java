@@ -110,7 +110,7 @@ class GameRuntimeTest {
 
     @Test void aFullKeyRefusesTasks() throws Exception {
         CountDownLatch release = new CountDownLatch(1), started = new CountDownLatch(1);
-        try (GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads(2, Duration.ofSeconds(60), 1000)).build()) {
+        try (GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads(2, Duration.ofSeconds(60))).build()) {
             runtime.execute(GameContext.of(PLAYER, 5), context -> { started.countDown(); release.await(); });
             assertTrue(started.await(5, TimeUnit.SECONDS));
             runtime.execute(GameContext.of(PLAYER, 5), context -> {});

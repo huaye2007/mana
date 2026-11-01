@@ -123,7 +123,7 @@ class RequestContextTest {
 
     @Test void aRequestItsFullRouteRefusesIsAnswered() throws Exception {
         CountDownLatch running = new CountDownLatch(1), release = new CountDownLatch(1);
-        try (GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads(1, Duration.ofSeconds(60), 100)).build()) {
+        try (GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads(1, Duration.ofSeconds(60))).build()) {
             runtime.execute(GameContext.of(PLAYER, 1001), context -> {
                 running.countDown();
                 release.await();

@@ -1,22 +1,25 @@
 package cn.managame.runtime.executor;
 
+import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import cn.managame.runtime.GameRuntimeException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 
 class KeyedRouteExecutorTest {
-    private static final int SLACK = Runtime.getRuntime().availableProcessors() * 2;
-
     private static void eventually(BooleanSupplier condition, String message) throws InterruptedException {
         for (int i = 0; i < 250 && !condition.getAsBoolean(); i++) TimeUnit.MILLISECONDS.sleep(20);
         assertTrue(condition.getAsBoolean(), message);
@@ -28,66 +31,73 @@ class KeyedRouteExecutorTest {
         assertTrue(done.await(5, TimeUnit.SECONDS));
     }
 
-    @Test void aDrainedQueueIsCachedAndReusedByItsKey() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60), 100);
+    @Test void aDrainedQueueStaysAndIsReusedByItsKey() throws Exception {
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60));
         try {
             runAndWait(executor, 1);
-            eventually(() -> executor.idleQueueCount() == 1, "the drained queue stays cached");
             KeyedRouteExecutor.KeyQueue first = executor.queue(1);
+            eventually(first::isIdle, "the drained queue stays, idle");
 
             runAndWait(executor, 1);
-            eventually(() -> executor.idleQueueCount() == 1, "the queue is idle again");
+            eventually(first::isIdle, "the queue is idle again");
             assertSame(first, executor.queue(1), "the key's queue is reused, not created again");
         } finally {
             executor.close();
         }
     }
 
-    @Test void idleQueuesExpire() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(100), 100);
+    @Test void queuesIdlePastTheTimeoutAreDroppedAndKeysGetNewOnes() throws Exception {
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(100));
         try {
-            for (long key = 0; key < 10; key++) runAndWait(executor, key);
-            eventually(() -> executor.queueCount() == 0 && executor.idleQueueCount() == 0,
-                    "queues idle past the timeout are dropped");
-            runAndWait(executor, 1); // an expired key simply gets a new queue
+            for (long key = 0; key < 1000; key++) runAndWait(executor, key);
+            eventually(() -> executor.queueCount() == 0, "queues idle past the timeout are dropped");
+            runAndWait(executor, 1); // a dropped key simply gets a new queue
         } finally {
             executor.close();
         }
     }
 
-    @Test void theIdleCacheIsBoundedSoMemoryFollowsBusyKeys() throws Exception {
-        int cap = 1000, keys = 100_000, busy = 10;
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60), cap);
+    @Test void aBusyQueueIsNeverDropped() throws Exception {
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(20));
         try {
-            CountDownLatch release = new CountDownLatch(1), done = new CountDownLatch(keys);
-            for (long key = 0; key < busy; key++) executor.execute(key, () -> await(release));
-            for (long key = busy; key < busy + keys; key++) executor.execute(key, done::countDown);
-            assertTrue(done.await(30, TimeUnit.SECONDS));
+            CountDownLatch release = new CountDownLatch(1), ran = new CountDownLatch(2);
+            executor.execute(1, () -> await(release));
+            executor.execute(1, ran::countDown);
+            TimeUnit.MILLISECONDS.sleep(200);   // many sweeps
+            KeyedRouteExecutor.KeyQueue busy = executor.queue(1);
+            executor.execute(1, ran::countDown);
+            assertSame(busy, executor.queue(1), "the busy queue stayed, and took the task");
+            release.countDown();
+            assertTrue(ran.await(5, TimeUnit.SECONDS));
+        } finally {
+            executor.close();
+        }
+    }
 
-            eventually(() -> executor.queueCount() <= busy + cap + SLACK,
-                    "100 000 keys ran, yet only the busy keys and about " + cap + " cached queues remain: " + executor.queueCount());
-            assertTrue(executor.idleQueueCount() <= cap + SLACK);
+    @Test void aKeyRefusesTasksBeyondItsWaitingLimit() throws Exception {
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 2, Duration.ofSeconds(60));
+        try {
+            CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
+            executor.execute(1, () -> {
+                started.countDown();
+                await(release);
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            executor.execute(1, () -> {});
+            executor.execute(1, () -> {});
+            GameRuntimeException full = assertThrows(GameRuntimeException.class, () -> executor.execute(1, () -> {}));
+            assertEquals(ROUTE_EXECUTOR_OVERLOADED, full.errorCode());
+            runAndWait(executor, 2); // other keys are not held up
             release.countDown();
         } finally {
             executor.close();
         }
     }
 
-    @Test void withoutACacheDrainedQueuesAreDroppedAtOnce() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60), 0);
-        try {
-            CountDownLatch done = new CountDownLatch(1000);
-            for (long key = 0; key < 1000; key++) executor.execute(key, done::countDown);
-            assertTrue(done.await(10, TimeUnit.SECONDS));
-            eventually(() -> executor.queueCount() == 0, "nothing stays cached");
-        } finally {
-            executor.close();
-        }
-    }
-
     @Test void aKeyThatKeepsGoingIdleAndBusyKeepsItsOrder() throws Exception {
-        // Tiny tasks submitted one by one make the queue go idle and restart over and over.
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 1 << 20, Duration.ofSeconds(60), 100);
+        // Tiny tasks submitted one by one make the queue go idle and restart over and over, while a short timeout
+        // has the sweeper retire it now and then.
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 1 << 20, Duration.ofMillis(1));
         try {
             int tasks = 50_000;
             List<Integer> ran = new CopyOnWriteArrayList<>();
@@ -108,6 +118,28 @@ class KeyedRouteExecutorTest {
             List<Integer> expected = new ArrayList<>(tasks);
             for (int i = 0; i < tasks; i++) expected.add(i);
             assertEquals(expected, ran);
+        } finally {
+            executor.close();
+        }
+    }
+
+    @Test void manyThreadsOnOneKeyNeverRunTwoTasksAtOnceNorLoseOne() throws Exception {
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 1 << 20, Duration.ofMillis(1));
+        int threads = 8, perThread = 20_000;
+        AtomicInteger running = new AtomicInteger(), overlaps = new AtomicInteger();
+        CountDownLatch done = new CountDownLatch(threads * perThread);
+        try (ExecutorService submitters = Executors.newFixedThreadPool(threads)) {
+            for (int t = 0; t < threads; t++)
+                submitters.execute(() -> {
+                    for (int i = 0; i < perThread; i++)
+                        executor.execute(7, () -> {
+                            if (running.incrementAndGet() != 1) overlaps.incrementAndGet();
+                            running.decrementAndGet();
+                            done.countDown();
+                        });
+                });
+            assertTrue(done.await(30, TimeUnit.SECONDS), "every task ran");
+            assertEquals(0, overlaps.get());
         } finally {
             executor.close();
         }

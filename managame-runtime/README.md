@@ -90,9 +90,10 @@ message's route key.
 **Executors** (`RouteExecutors`; a new instance per domain):
 
 - `virtualThreads()`: one queue per route key, drained by a virtual thread, so a blocking task holds up only its
-  own key. Drained queues are cached so that a busy key does not create and drop a queue for every task:
-  `virtualThreads(maxPendingPerKey, idleTimeout, maxIdleQueues)`, by default 4096 waiting tasks per key, 60
-  seconds idle and 100 000 cached queues. A key over its limit is refused with `ROUTE_EXECUTOR_OVERLOADED`.
+  own key. A task joins its key's queue without a lock. A drained queue stays for its key, so a busy key does not
+  create and drop a queue for every task, and a sweeper drops queues idle longer than the idle timeout, so memory
+  follows the keys used lately: `virtualThreads(maxPendingPerKey, idleTimeout)`, by default 4096 tasks waiting per
+  key besides the running one and 60 seconds idle. A key over its limit is refused with `ROUTE_EXECUTOR_OVERLOADED`.
 - `striped(threads)`: fixed platform threads, a key always on thread `hash(key) % threads`. No state per key, but
   a blocking task holds up every key on its thread. `striped(threads, maxPendingPerThread)`, 65 536 by default.
 - Or your own `RouteExecutor`.

@@ -174,10 +174,9 @@ public final class GameRuntime implements AutoCloseable {
         if (CURRENT.isBound()) throw new IllegalStateException("Cannot close the runtime from one of its tasks");
         shutdown();
         boolean interrupted = false;
-        while (true) {
+        while (terminated.getCount() > 0) {
             try {
                 terminated.await();
-                break;
             } catch (InterruptedException e) {
                 interrupted = true;
             }

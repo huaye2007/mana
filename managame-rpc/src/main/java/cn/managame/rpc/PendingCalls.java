@@ -32,12 +32,15 @@ final class PendingCalls {
             size.decrementAndGet();
             return false;
         }
-        for (;;) {
-            int id = lastId.incrementAndGet();
-            if (id == 0) continue;
-            call.id = id;
-            if (slots.compareAndSet(id & mask, null, call)) return true;
-        }
+        do {
+            call.id = nextId();
+        } while (!slots.compareAndSet(call.id & mask, null, call));
+        return true;
+    }
+
+    private int nextId() {
+        int id = lastId.incrementAndGet();
+        return id != 0 ? id : lastId.incrementAndGet();
     }
 
     /** Takes out the call waiting under {@code id}; null when none does, as it ended or the id is unknown. */

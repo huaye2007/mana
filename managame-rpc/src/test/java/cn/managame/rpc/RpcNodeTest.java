@@ -515,7 +515,7 @@ class RpcNodeTest {
         AtomicInteger accepted = new AtomicInteger();
         try (ServerSocket silentNode = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
             Thread.ofVirtual().start(() -> { // shakes hands as node 1, then reads and never answers
-                while (true) {
+                while (!silentNode.isClosed()) {
                     try {
                         Socket connection = silentNode.accept();
                         accepted.incrementAndGet();
@@ -548,7 +548,7 @@ class RpcNodeTest {
             DataInputStream in = new DataInputStream(socket.getInputStream());
             assertEquals(0, readFrame(in)[0]);
             long start = System.nanoTime();
-            assertThrows(IOException.class, () -> { while (true) readFrame(in); });
+            assertThrows(IOException.class, () -> readFrame(in)); // the world sends nothing more, then closes
             assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(2), "closed after three of the world's intervals of 100 ms");
         }
     }

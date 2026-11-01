@@ -7,31 +7,29 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class RouteExecutors {
     public static final int DEFAULT_MAX_PENDING_PER_KEY = 4096;
     public static final Duration DEFAULT_IDLE_TIMEOUT = Duration.ofSeconds(60);
-    public static final int DEFAULT_MAX_IDLE_QUEUES = 100_000;
     public static final int DEFAULT_MAX_PENDING_PER_THREAD = 65536;
     private static final AtomicInteger INSTANCES = new AtomicInteger();
 
     private RouteExecutors() {}
 
     /**
-     * One queue per route key, drained by a virtual thread: a blocking task holds up only its own key. Drained
-     * queues are cached for reuse, see {@link #virtualThreads(int, Duration, int)}, with the defaults
-     * {@link #DEFAULT_MAX_PENDING_PER_KEY}, {@link #DEFAULT_IDLE_TIMEOUT} and {@link #DEFAULT_MAX_IDLE_QUEUES}.
+     * One queue per route key, drained by a virtual thread: a blocking task holds up only its own key. Tasks join a
+     * queue without a lock, and a drained queue stays for its key until idle for long; see
+     * {@link #virtualThreads(int, Duration)}, here with {@link #DEFAULT_MAX_PENDING_PER_KEY} and
+     * {@link #DEFAULT_IDLE_TIMEOUT}.
      */
     public static RouteExecutor virtualThreads() {
-        return virtualThreads(DEFAULT_MAX_PENDING_PER_KEY, DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_IDLE_QUEUES);
+        return virtualThreads(DEFAULT_MAX_PENDING_PER_KEY, DEFAULT_IDLE_TIMEOUT);
     }
 
     /**
-     * @param maxPendingPerKey tasks one key may have waiting; more are refused
-     * @param idleTimeout how long a drained queue stays cached for its key before it is dropped
-     * @param maxIdleQueues cached queues kept at most; zero drops every queue as soon as it is drained
+     * @param maxPendingPerKey tasks one key may have waiting besides the running one; more are refused
+     * @param idleTimeout how long a drained queue stays for its key before it is dropped, so memory follows the keys
+     *                    used within it
      */
-    public static RouteExecutor virtualThreads(int maxPendingPerKey, Duration idleTimeout, int maxIdleQueues) {
+    public static RouteExecutor virtualThreads(int maxPendingPerKey, Duration idleTimeout) {
         if (idleTimeout.toMillis() <= 0) throw new IllegalArgumentException("idleTimeout must be at least one millisecond");
-        if (maxIdleQueues < 0) throw new IllegalArgumentException("maxIdleQueues must not be negative");
-        return new KeyedRouteExecutor("game-route-" + INSTANCES.incrementAndGet(),
-                positive(maxPendingPerKey, "maxPendingPerKey"), idleTimeout, maxIdleQueues);
+        return new KeyedRouteExecutor("game-route-" + INSTANCES.incrementAndGet(), positive(maxPendingPerKey, "maxPendingPerKey"), idleTimeout);
     }
 
     /**
