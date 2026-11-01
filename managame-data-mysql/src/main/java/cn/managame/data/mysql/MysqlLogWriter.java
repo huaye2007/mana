@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.lang.System.Logger.Level;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +30,7 @@ import javax.sql.DataSource;
  * cannot be created ahead. A batch is one transaction, whatever tables its logs go to.
  */
 public final class MysqlLogWriter implements LogWriter {
+    private static final System.Logger LOG = System.getLogger("cn.managame.data.mysql");
     private final DataSource dataSource;
     private final JsonCodec jsonCodec;
     private final ZoneId partitionZone;
@@ -66,8 +68,10 @@ public final class MysqlLogWriter implements LogWriter {
             // DDL commits in MySQL, so the partitions are created outside the transaction, which then runs again.
             try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
                 for (String name : rowsByTable.keySet())
-                    if (!name.equals(table.baseTable))
+                    if (!name.equals(table.baseTable)) {
                         statement.execute("CREATE TABLE IF NOT EXISTS " + MysqlColumn.quote(name) + " LIKE " + MysqlColumn.quote(table.baseTable));
+                        LOG.log(Level.INFO, () -> "Created log table " + name + " like " + table.baseTable);
+                    }
             }
             insert(table, rowsByTable);
         }

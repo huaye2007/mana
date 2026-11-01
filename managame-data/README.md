@@ -254,6 +254,14 @@ logs in rounds of its own. Recording a change takes a lock that covers a
 sixty-fourth of a type's rows, so business threads rarely wait for each other; nothing a business thread does waits for
 a write.
 
+## Logging
+
+Through `System.Logger`, so any backend can take it; see the workspace README.
+
+| Logger | Logs |
+| --- | --- |
+| `cn.managame.data` | INFO: GameData started (its repositories, interval and write threads), each table preloaded with its rows and time, and closed. DEBUG: each repository, each write round that had something to do (written, kept for later, dropped, time). WARNING: an entity collection that is not thread-safe. ERROR: a round or a DataErrorHandler that failed. |
+
 ## Build and test
 
 ```bash

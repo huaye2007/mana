@@ -34,7 +34,9 @@ final class Call implements ReferenceCounted, TimerTask {
 
     /** The time wheel: no answer in time. */
     @Override public void run(Timeout timeout) {
-        if (calls.remove(this)) fail(RPC_TIMEOUT);
+        if (!calls.remove(this)) return;
+        LOG.log(Level.DEBUG, () -> this + " timed out");
+        fail(RPC_TIMEOUT);
     }
 
     /** Ends the call with {@code response}, which the caller releases afterwards. */

@@ -331,6 +331,15 @@ without a socket. HTTP tests use the JDK's `HttpClient` and raw sockets for sync
 500, 413, pipelining order, a front handler answering itself, and HTTPS. Client tests cover a server that starts
 late, reconnecting after the connection drops, and closing a client that never connected.
 
+## Logging
+
+Through `System.Logger`, so any backend can take it; see the workspace README.
+
+| Logger | Logs |
+| --- | --- |
+| `cn.managame.network` | INFO: a server listening and stopped, a client connected and its connection closed. DEBUG: each connection established and closed, each failed connection attempt, unestablished connections closed. ERROR: a `ConnectionMapper` or handler that failed. |
+| `cn.managame.network.http` | DEBUG: HTTP connections closed on errors. ERROR: an `HttpHandler` that failed. |
+
 ## Build
 
 It depends on the Netty modules it uses, never `netty-all`: common, buffer, transport, handler, codec-base,

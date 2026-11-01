@@ -34,6 +34,8 @@ final class StripedRouteExecutor implements RouteExecutor {
         }
     }
 
+    @Override public String toString() { return "striped(" + stripes.length + (stripes.length == 1 ? " thread)" : " threads)"); }
+
     @Override public void shutdown() {
         for (ThreadPoolExecutor stripe : stripes) stripe.shutdown();
     }

@@ -91,6 +91,11 @@ public class ItemLog {
   提交事务。
 - 一批日志一个事务，不管它们分到几张分区表。
 
+## 日志
+
+`cn.managame.data.mysql`，经 `System.Logger` 输出：INFO 记录每张新建的日志分表。写入轮次与失败由 managame-data 的
+`cn.managame.data` 记录。
+
 ## 构建与测试
 
 ```bash

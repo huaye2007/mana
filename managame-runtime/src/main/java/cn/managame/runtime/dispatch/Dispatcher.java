@@ -53,6 +53,8 @@ public final class Dispatcher {
         runtime = b.runtime;
         handlers = Map.copyOf(b.handlers);
         interceptors = b.interceptors.toArray(HandleInterceptor[]::new);
+        LOG.log(Level.INFO, () -> "Dispatcher with " + handlers.size() + " handlers and " + interceptors.length + " interceptors");
+        handlers.forEach((type, handler) -> LOG.log(Level.DEBUG, () -> type.getName() + " handled by " + handler + " in domain " + handler.domain()));
     }
 
     public static Builder builder(GameRuntime runtime) { return new Builder(runtime); }

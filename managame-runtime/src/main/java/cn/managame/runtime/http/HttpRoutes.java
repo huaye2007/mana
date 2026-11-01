@@ -70,6 +70,9 @@ public final class HttpRoutes implements HttpHandler {
                 entry -> String.join(", ", entry.getValue().keySet())));
         source = b.source;
         codec = b.codec;
+        LOG.log(Level.INFO, () -> "HTTP routes with " + endpoints.values().stream().mapToInt(Map::size).sum() + " endpoints");
+        endpoints.forEach((path, methods) -> methods.forEach((verb, endpoint) ->
+                LOG.log(Level.DEBUG, () -> verb + " " + path + " handled by " + endpoint.method() + " in domain " + endpoint.method().domain())));
     }
 
     public static Builder builder(GameRuntime runtime) { return new Builder(runtime); }

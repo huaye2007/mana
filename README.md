@@ -25,6 +25,53 @@ runtime and rpc know nothing of each other. An application that uses both joins 
 `RpcHandler` hands peers' requests to its `Dispatcher`, and its `RpcCallback`s run their work through its
 `GameRuntime`.
 
+## Logging
+
+Every component logs through `System.Logger`, the JDK's own logging facade, and depends on no logging library. By
+default it goes to java.util.logging; to send it to Logback or another SLF4J backend, or to Log4j 2, add one bridge to
+the application, without changing a line of the framework:
+
+```xml
+<!-- Logback, or any SLF4J 2 backend -->
+<dependency>
+  <groupId>org.slf4j</groupId>
+  <artifactId>slf4j-jdk-platform-logging</artifactId>
+  <version>${slf4j.version}</version>
+</dependency>
+
+<!-- Log4j 2 -->
+<dependency>
+  <groupId>org.apache.logging.log4j</groupId>
+  <artifactId>log4j-jpl</artifactId>
+  <version>${log4j.version}</version>
+</dependency>
+```
+
+Loggers are named `cn.managame.<component>`, and below it by area, so one setting turns a component up or down:
+
+| Logger | Component |
+| --- | --- |
+| `cn.managame.network`, `.network.http` | network |
+| `cn.managame.runtime`, `.runtime.dispatch`, `.runtime.event`, `.runtime.http`, `.runtime.timer` | runtime |
+| `cn.managame.rpc` | rpc |
+| `cn.managame.data`, `cn.managame.data.mysql` | data, data-mysql |
+
+Each component's README lists what its loggers say. Levels mean the same everywhere:
+
+| Level | When |
+| --- | --- |
+| ERROR | Something is lost, or handed to an error handler |
+| WARNING | Work refused, skipped or tried again |
+| INFO | Lifecycle: a server listening or stopped, a peer joining or leaving, a component started or closed, what was registered |
+| DEBUG | Detail per connection, call or write round; nothing per message at INFO, and DEBUG costs nothing while off |
+
+For example with Logback, INFO for the framework and DEBUG for rpc:
+
+```xml
+<logger name="cn.managame" level="INFO"/>
+<logger name="cn.managame.rpc" level="DEBUG"/>
+```
+
 ## Build
 
 One command at the root builds every project in dependency order, the benchmarks' jar last:

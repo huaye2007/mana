@@ -102,6 +102,11 @@ public class ItemLog {
   arrive is created with `CREATE TABLE IF NOT EXISTS ... LIKE` the base table, outside the transaction, since DDL commits.
 - A batch is one transaction, whatever partition tables its logs go to.
 
+## Logging
+
+`cn.managame.data.mysql`, through `System.Logger`: INFO for each log partition table created. Rounds and failures are
+logged by managame-data's `cn.managame.data`.
+
 ## Build and test
 
 ```bash

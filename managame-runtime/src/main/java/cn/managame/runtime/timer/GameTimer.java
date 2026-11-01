@@ -114,6 +114,7 @@ public final class GameTimer implements AutoCloseable {
         runtime.checkDomain(context.domain());
         Firing<C> firing = new Firing<>(context, task, 0, CronExpression.parse(expression));
         firing.wakeCron();
+        LOG.log(Level.DEBUG, () -> "Scheduled a task at '" + expression + "' in domain " + context.domain() + ", route key " + context.routeKey());
         return firing;
     }
 
@@ -132,6 +133,8 @@ public final class GameTimer implements AutoCloseable {
             Firing<GameContext> firing = new Firing<>(job.context(), job.task(), 0, job.cron());
             firing.wakeCron();
             scheduled.add(firing);
+            LOG.log(Level.INFO, () -> "Scheduled " + job.name() + " at '" + job.cron() + "' in domain " + job.context().domain()
+                    + ", route key " + job.context().routeKey());
         }
         return scheduled;
     }
@@ -142,7 +145,7 @@ public final class GameTimer implements AutoCloseable {
     }
 
     /** A checked {@link Cron} method, ready to schedule. */
-    private record CronJob(GameContext context, CronExpression cron, GameTask<GameContext> task) {
+    private record CronJob(String name, GameContext context, CronExpression cron, GameTask<GameContext> task) {
         static CronJob of(GameRuntime runtime, Object target, Method method) {
             String name = method.getDeclaringClass().getName() + "#" + method.getName();
             Cron cron = method.getAnnotation(Cron.class);
@@ -170,7 +173,7 @@ public final class GameTimer implements AutoCloseable {
                     throw new UndeclaredThrowableException(e);
                 }
             };
-            return new CronJob(GameContext.of(cron.domain(), cron.routeKey()), CronExpression.parse(cron.value()), task);
+            return new CronJob(name, GameContext.of(cron.domain(), cron.routeKey()), CronExpression.parse(cron.value()), task);
         }
     }
 

@@ -5,6 +5,7 @@ import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.annotation.AnnotatedMethod;
 import cn.managame.runtime.annotation.EventMethod;
+import java.lang.System.Logger.Level;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -33,6 +34,7 @@ import java.util.Objects;
  */
 public final class EventBus {
     private static final GameContext NO_PUBLISHER = GameContext.of(0, 0);
+    private static final System.Logger LOG = System.getLogger("cn.managame.runtime.event");
     private final GameRuntime runtime;
     private final Map<Class<?>, AnnotatedMethod[]> subscribers;
 
@@ -41,6 +43,9 @@ public final class EventBus {
         Map<Class<?>, AnnotatedMethod[]> frozen = new HashMap<>();
         b.subscribers.forEach((type, list) -> frozen.put(type, list.toArray(AnnotatedMethod[]::new)));
         subscribers = Map.copyOf(frozen);
+        LOG.log(Level.INFO, () -> "Event bus with " + subscribers.values().stream().mapToInt(targets -> targets.length).sum()
+                + " subscribers of " + subscribers.size() + " events");
+        subscribers.forEach((type, targets) -> LOG.log(Level.DEBUG, () -> type.getName() + " goes to " + List.of(targets)));
     }
 
     public static Builder builder(GameRuntime runtime) { return new Builder(runtime); }

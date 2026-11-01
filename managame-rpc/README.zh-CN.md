@@ -288,6 +288,16 @@ metadata 的格式是：先用 unsigned short 写长度，再写字节。握手�
 
 每条连接有一个编解码器，位于 flush 合并之后，负责双向分帧：发出的消息是一个包含长度的头部缓冲区，后面紧跟原样的 body；收到的 body 是读到的数据的一个切片。
 
+## 日志
+
+经 `System.Logger` 输出，可以接任意日志实现，见工作区 README。
+
+| Logger | 内容 |
+| --- | --- |
+| `cn.managame.rpc` | INFO：节点启动与关闭、拨号或移除节点、节点连上（或换成新实例）与断开。DEBUG：每个超时的调用、每个失败的连接。WARNING：因静默或协议错误关闭的连接、被替换的实例、抛异常的监听器或回调。ERROR：认证器或处理器出错。 |
+
+底层监听的 socket 和每个拨出的连接由 network 的 `cn.managame.network` 记录。
+
 ## 构建与测试
 
 ```bash

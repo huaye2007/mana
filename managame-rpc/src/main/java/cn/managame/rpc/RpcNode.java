@@ -202,6 +202,7 @@ public final class RpcNode implements AutoCloseable {
             for (int slot = 0; slot < connections; slot++)
                 clients.add(NetworkClient.connect(bootstrap.clone().attr(RpcConnectionHandler.SLOT, slot), address, redialMin, redialMax));
             peer.dial(clients);
+            LOG.log(Level.INFO, () -> "Dialing node " + nodeId + " at " + address + " over " + connections + (connections == 1 ? " connection" : " connections"));
             return peer;
         }
     }
@@ -217,6 +218,7 @@ public final class RpcNode implements AutoCloseable {
         RpcPeer peer = peers.remove(nodeId);
         if (peer == null) return false;
         peer.remove();
+        LOG.log(Level.INFO, () -> "Removed node " + nodeId);
         return true;
     }
 
@@ -266,6 +268,7 @@ public final class RpcNode implements AutoCloseable {
             channels.close().awaitUninterruptibly();
             ownedGroups.forEach(RpcNode::shutdown);
         }
+        LOG.log(Level.INFO, () -> "RPC node " + nodeId + " closed");
     }
 
     @Override public String toString() { return "RpcNode[" + nodeId + "]"; }
@@ -298,6 +301,7 @@ public final class RpcNode implements AutoCloseable {
     }
 
     void fireConnected(RpcPeer peer, boolean restarted) {
+        LOG.log(Level.INFO, () -> "Node " + peer.nodeId() + " connected" + (restarted ? ", a new instance of it" : ""));
         if (listener == null) return;
         try {
             listener.onConnected(peer, restarted);
@@ -307,6 +311,7 @@ public final class RpcNode implements AutoCloseable {
     }
 
     void fireDisconnected(RpcPeer peer) {
+        LOG.log(Level.INFO, () -> "Node " + peer.nodeId() + " disconnected");
         if (listener == null) return;
         try {
             listener.onDisconnected(peer);
@@ -437,7 +442,9 @@ public final class RpcNode implements AutoCloseable {
         /** Listens, when asked to, and returns the running node. A bind failure throws NetworkException. */
         public RpcNode start() {
             if (nodeId == null) throw new IllegalStateException("nodeId is required");
-            return new RpcNode(this);
+            RpcNode node = new RpcNode(this);
+            LOG.log(Level.INFO, () -> "RPC node " + node.nodeId + " started" + (node.server == null ? "" : ", listening on port " + node.server.port()));
+            return node;
         }
     }
 }

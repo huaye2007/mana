@@ -346,6 +346,18 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 
 `setClock` 换掉时钟，时钟带的时区成为游戏时区。定时任务（`@Cron`、`timer.cron`）一秒内按新的时钟或时区重排；延迟、周期定时器和超时用单调时钟，不受影响。
 
+## 日志
+
+经 `System.Logger` 输出，可以接任意日志实现，见工作区 README。
+
+| Logger | 内容 |
+| --- | --- |
+| `cn.managame.runtime` | INFO：runtime 启动（每个 domain 及其执行器）、开始关闭、关闭完成。DEBUG：每个被拒绝的任务、回收的空闲路由队列。ERROR：默认错误处理器记录的失败任务。 |
+| `cn.managame.runtime.dispatch` | INFO：Dispatcher 的处理器与拦截器数量。DEBUG：每种消息对应的处理器、每条被拒绝的消息。ERROR：无法执行的处理器。 |
+| `cn.managame.runtime.event` | INFO：事件总线的订阅者数量。DEBUG：每种事件的订阅者。 |
+| `cn.managame.runtime.http` | INFO：HTTP 接口数量。DEBUG：每个接口、每个错误请求。ERROR：无法执行或无法应答的请求。 |
+| `cn.managame.runtime.timer` | INFO：每个排上的 `@Cron` 方法。DEBUG：每个 `timer.cron`。WARNING：被拒绝的触发。ERROR：执行失败的触发。 |
+
 ## 构建与测试
 
 ```bash

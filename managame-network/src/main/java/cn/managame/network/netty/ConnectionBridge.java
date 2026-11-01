@@ -69,6 +69,7 @@ final class ConnectionBridge extends ChannelInboundHandlerAdapter {
             ctx.close();
             return;
         }
+        LOG.log(Level.DEBUG, () -> "Connection established; peer=" + ctx.channel().remoteAddress());
         try { handler.onActive(connection); }
         catch (Throwable cause) { report(ctx, cause); }
     }
@@ -98,6 +99,7 @@ final class ConnectionBridge extends ChannelInboundHandlerAdapter {
     @Override public void channelInactive(ChannelHandlerContext ctx) {
         Connection connection = mapper.get(ctx.channel());
         if (connection != null) {
+            LOG.log(Level.DEBUG, () -> "Connection closed; peer=" + ctx.channel().remoteAddress());
             try {
                 handler.onInActive(connection);
             } catch (Throwable cause) {

@@ -9,6 +9,7 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.util.concurrent.EventExecutor;
+import java.lang.System.Logger.Level;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.List;
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
  * The client keeps its current channel only to close it. {@link #close} stops reconnecting and closes it.
  */
 public final class NetworkClient implements AutoCloseable {
+    private static final System.Logger LOG = System.getLogger("cn.managame.network");
     public static final Duration DEFAULT_MIN_RETRY = Duration.ofMillis(100);
     public static final Duration DEFAULT_MAX_RETRY = Duration.ofSeconds(10);
     private final Bootstrap bootstrap;
@@ -87,6 +89,8 @@ public final class NetworkClient implements AutoCloseable {
         if (closed) return;
         bootstrap.connect(remote).addListener((ChannelFuture connected) -> {
             if (!connected.isSuccess()) {
+                LOG.log(Level.DEBUG, () -> "Cannot connect to " + remote + "; trying again in " + TimeUnit.NANOSECONDS.toMillis(retryNanos)
+                        + " ms: " + connected.cause());
                 retryLater();
                 return;
             }
@@ -97,7 +101,11 @@ public final class NetworkClient implements AutoCloseable {
             }
             channel = current;
             retryNanos = minRetryNanos;
-            current.closeFuture().addListener(gone -> retryLater());
+            LOG.log(Level.INFO, () -> "Connected to " + remote);
+            current.closeFuture().addListener(gone -> {
+                if (!closed) LOG.log(Level.INFO, () -> "Connection to " + remote + " closed; connecting again");
+                retryLater();
+            });
         });
     }
 

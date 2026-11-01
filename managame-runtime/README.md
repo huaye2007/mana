@@ -423,6 +423,18 @@ GameTime.resetClock();                           // back to the system clock, ke
 reschedule on a new clock or zone within a second; delays, periodic timers and timeouts use the monotonic clock and
 do not move.
 
+## Logging
+
+Through `System.Logger`, so any backend can take it; see the workspace README.
+
+| Logger | Logs |
+| --- | --- |
+| `cn.managame.runtime` | INFO: the runtime started (each domain and its executor), shutting down and closed. DEBUG: each refused task, idle route queues retired. ERROR: a task that failed, from the default error handler. |
+| `cn.managame.runtime.dispatch` | INFO: the Dispatcher's handlers and interceptors. DEBUG: each message's handler, each rejected message. ERROR: a handler that could not run. |
+| `cn.managame.runtime.event` | INFO: the event bus's subscribers. DEBUG: each event's subscribers. |
+| `cn.managame.runtime.http` | INFO: the HTTP endpoints. DEBUG: each endpoint, each bad request. ERROR: a request that could not run or be answered. |
+| `cn.managame.runtime.timer` | INFO: each `@Cron` method scheduled. DEBUG: each `timer.cron`. WARNING: a firing refused. ERROR: a firing that failed. |
+
 ## Build and tests
 
 ```bash

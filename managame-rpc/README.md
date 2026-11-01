@@ -395,6 +395,16 @@ cut short of its fields close the connection. This node speaks protocol version 
 One codec per connection, after flush consolidation, does the framing both ways: an outgoing message is a header
 buffer with the length followed by the body as it is; an incoming body is a slice of what was read.
 
+## Logging
+
+Through `System.Logger`, so any backend can take it; see the workspace README.
+
+| Logger | Logs |
+| --- | --- |
+| `cn.managame.rpc` | INFO: the node started and closed, a peer dialed or removed, a peer connected (or a new instance of it) and disconnected. DEBUG: each call that timed out, each connection that failed. WARNING: connections closed for silence or a broken protocol, a replaced instance, a listener or callback that threw. ERROR: an authenticator or handler that failed. |
+
+network's `cn.managame.network` logs the listening socket and each dialed connection underneath.
+
 ## Build and test
 
 ```bash

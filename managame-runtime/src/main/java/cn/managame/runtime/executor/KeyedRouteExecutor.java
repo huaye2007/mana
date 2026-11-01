@@ -5,6 +5,8 @@ import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
 
 import cn.managame.runtime.GameRuntimeException;
 import java.time.Duration;
+import java.lang.System.Logger.Level;
+import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -25,6 +27,7 @@ final class KeyedRouteExecutor implements RouteExecutor {
     private static final int YIELD_EVERY = 64;
     /** The count of a retired queue, idle too long or drained after shutdown, which takes no more tasks. */
     private static final int RETIRED = -1;
+    private static final System.Logger LOG = System.getLogger("cn.managame.runtime");
     private final ConcurrentHashMap<Long, KeyQueue> queues = new ConcurrentHashMap<>();
     private final ThreadFactory threads;
     private final int maxPendingPerKey;
@@ -86,10 +89,16 @@ final class KeyedRouteExecutor implements RouteExecutor {
                 return;
             }
             long now = System.nanoTime();
-            queues.forEach((key, queue) -> {
-                if (queue.isIdle() && now - queue.idleSince >= idleTimeoutNanos && queue.pending.compareAndSet(0, RETIRED))
-                    queues.remove(key, queue);
-            });
+            int retired = 0;
+            for (Map.Entry<Long, KeyQueue> entry : queues.entrySet()) {
+                KeyQueue queue = entry.getValue();
+                if (queue.isIdle() && now - queue.idleSince >= idleTimeoutNanos && queue.pending.compareAndSet(0, RETIRED)) {
+                    queues.remove(entry.getKey(), queue);
+                    retired++;
+                }
+            }
+            int count = retired;
+            if (count > 0) LOG.log(Level.DEBUG, () -> "Retired " + count + " idle route queues; " + queues.size() + " remain");
         }
     }
 
@@ -115,6 +124,10 @@ final class KeyedRouteExecutor implements RouteExecutor {
             if (queue.pending.compareAndSet(0, RETIRED)) queues.remove(key, queue);
         });
         return queues.isEmpty();
+    }
+
+    @Override public String toString() {
+        return "virtualThreads(maxPendingPerKey=" + maxPendingPerKey + ", idleTimeout=" + Duration.ofNanos(idleTimeoutNanos) + ")";
     }
 
     /** Queues in the map, busy or idle. */

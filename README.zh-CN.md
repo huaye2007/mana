@@ -20,6 +20,52 @@
 
 runtime 和 rpc 互不知道对方。同时使用两者的业务在自己的代码里把它们连起来：自己的 `RpcHandler` 把对端请求交给自己的 `Dispatcher`，自己的 `RpcCallback` 把后续工作交给自己的 `GameRuntime` 执行。
 
+## 日志
+
+所有组件都通过 JDK 自带的日志门面 `System.Logger` 输出，不依赖任何日志库。默认输出到 java.util.logging；要输出到
+Logback 等 SLF4J 实现或 Log4j 2，只需在业务里加一个桥接依赖，框架代码一行不用改：
+
+```xml
+<!-- Logback，或任意 SLF4J 2 实现 -->
+<dependency>
+  <groupId>org.slf4j</groupId>
+  <artifactId>slf4j-jdk-platform-logging</artifactId>
+  <version>${slf4j.version}</version>
+</dependency>
+
+<!-- Log4j 2 -->
+<dependency>
+  <groupId>org.apache.logging.log4j</groupId>
+  <artifactId>log4j-jpl</artifactId>
+  <version>${log4j.version}</version>
+</dependency>
+```
+
+Logger 按 `cn.managame.<组件>` 命名，下面再按领域细分，一个配置就能调高或调低一个组件的日志：
+
+| Logger | 组件 |
+| --- | --- |
+| `cn.managame.network`、`.network.http` | network |
+| `cn.managame.runtime`、`.runtime.dispatch`、`.runtime.event`、`.runtime.http`、`.runtime.timer` | runtime |
+| `cn.managame.rpc` | rpc |
+| `cn.managame.data`、`cn.managame.data.mysql` | data、data-mysql |
+
+各组件的 README 列出了自己的 logger 会记录什么。各级别在所有组件里含义相同：
+
+| 级别 | 何时 |
+| --- | --- |
+| ERROR | 有东西丢失，或交给了错误处理器 |
+| WARNING | 工作被拒绝、跳过或重试 |
+| INFO | 生命周期：服务开始监听或停止、节点加入或离开、组件启动或关闭、注册了什么 |
+| DEBUG | 按连接、按调用、按写入轮次的细节；不会按消息打 INFO，DEBUG 关闭时几乎没有开销 |
+
+例如用 Logback，框架整体 INFO、rpc 打开 DEBUG：
+
+```xml
+<logger name="cn.managame" level="INFO"/>
+<logger name="cn.managame.rpc" level="DEBUG"/>
+```
+
 ## 构建
 
 在根目录一条命令按依赖顺序构建全部项目，最后打出基准测试的 jar：

@@ -248,6 +248,15 @@ client.close();         // 停止重连并关闭当前连接
 
 测试位于 `src/test/java/cn/managame/network`，使用真实回环连接覆盖回显、生命周期顺序、握手超时、路径 404、错误帧类型、超长消息、TLS 失败、handler 复用与校验、自定义 Connection 映射，并用 `EmbeddedChannel` 验证 `ConnectionInitializer` 可脱离 socket 使用；HTTP 测试用 JDK 自带的 `HttpClient` 和原始 socket 覆盖同步/异步应答、500、413、流水线顺序、前置 handler 自行应答和 HTTPS；客户端测试覆盖服务端晚启动、连接断开后的重连，以及关闭从未连上的客户端。
 
+## 日志
+
+经 `System.Logger` 输出，可以接任意日志实现，见工作区 README。
+
+| Logger | 内容 |
+| --- | --- |
+| `cn.managame.network` | INFO：服务开始监听与停止，客户端连上与断开。DEBUG：每个连接的建立与关闭、每次连接失败、未建立就被关闭的连接。ERROR：`ConnectionMapper` 或 handler 出错。 |
+| `cn.managame.network.http` | DEBUG：因错误关闭的 HTTP 连接。ERROR：`HttpHandler` 出错。 |
+
 ## 构建
 
 只依赖用到的 Netty 模块，不用 `netty-all`：common、buffer、transport、handler、codec-base、codec-http 和 epoll 的类，运行时

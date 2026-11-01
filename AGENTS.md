@@ -184,7 +184,13 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 
 - Match the surrounding code: compact methods, Javadoc on public API that states behavior, threading and
   failure modes, few inline comments, records for values, sealed interfaces for closed sets.
-- Log with `System.Logger`.
+- Log with `System.Logger`, the JDK's own facade, never a logging library: an application routes it to Logback, Log4j 2
+  or java.util.logging with a bridge, changing nothing here. Loggers are named `cn.managame.<component>`, and below it
+  by area (`cn.managame.runtime.timer`), so one setting turns a component's logs up or down. Levels: ERROR when
+  something is lost or handed to an error handler; WARNING when work is refused, skipped or retried; INFO for
+  lifecycle (a server listening or closed, a peer joining or leaving, a component started or shut down, what was
+  registered); DEBUG for detail per connection, call or round. Never log per message at INFO, and build DEBUG messages
+  in a Supplier, so a level that is off costs nothing.
 - Keep test fixtures small and readable; tests double as usage examples (for instance
   `PlayerGatewayExampleTest` shows an application-defined player gateway).
 

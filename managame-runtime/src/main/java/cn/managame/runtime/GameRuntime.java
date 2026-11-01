@@ -3,6 +3,8 @@ package cn.managame.runtime;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 
+import cn.managame.FrameworkErrorCodes;
+
 import cn.managame.runtime.executor.RouteExecutor;
 import java.lang.System.Logger.Level;
 import java.time.Duration;
@@ -10,6 +12,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
@@ -38,6 +41,7 @@ public final class GameRuntime implements AutoCloseable {
         executors = Map.copyOf(b.executors);
         resolvers = Map.copyOf(b.resolvers);
         errorHandler = b.errorHandler;
+        LOG.log(Level.INFO, () -> "Game runtime started; domains " + new TreeMap<>(executors));
     }
 
     public static Builder builder() { return new Builder(); }
@@ -96,6 +100,8 @@ public final class GameRuntime implements AutoCloseable {
 
     /** Fails a refused request with the refusal's code, which is then thrown. */
     private static GameRuntimeException refuse(Context context, GameRuntimeException refusal) {
+        LOG.log(Level.DEBUG, () -> "Refused a task of domain " + context.domain() + ", route key " + context.routeKey() + ": "
+                + FrameworkErrorCodes.describe(refusal.errorCode()));
         if (context instanceof RequestContext request) {
             try {
                 request.fail(refusal.errorCode());
@@ -132,8 +138,10 @@ public final class GameRuntime implements AutoCloseable {
 
     /** Refuses new tasks; accepted ones still run. Idempotent. */
     public void shutdown() {
+        boolean first = !shutdown;
         shutdown = true;
         executors.values().forEach(RouteExecutor::shutdown);
+        if (first) LOG.log(Level.INFO, "Game runtime shutting down; accepted tasks still run");
     }
 
     public boolean isShutdown() { return shutdown; }
@@ -179,6 +187,7 @@ public final class GameRuntime implements AutoCloseable {
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
+        LOG.log(Level.INFO, "Game runtime closed; every accepted task finished");
     }
 
     public static final class Builder {

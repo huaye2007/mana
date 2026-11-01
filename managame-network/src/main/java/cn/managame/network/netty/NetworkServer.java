@@ -9,6 +9,7 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.util.concurrent.EventExecutor;
+import java.lang.System.Logger.Level;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.List;
@@ -42,6 +43,7 @@ import java.util.concurrent.TimeUnit;
  * application's EventLoops connections stay open.
  */
 public final class NetworkServer implements AutoCloseable {
+    private static final System.Logger LOG = System.getLogger("cn.managame.network");
     private final Channel listener;
     private final List<EventLoopGroup> ownedGroups;
 
@@ -85,7 +87,9 @@ public final class NetworkServer implements AutoCloseable {
                 completed.channelFactory(NetworkTransports.serverChannelFactory(completed.config().group()));
             if (!config.childOptions().containsKey(ChannelOption.TCP_NODELAY))
                 completed.childOption(ChannelOption.TCP_NODELAY, true);
-            return new NetworkServer(bind(completed, address), owned);
+            NetworkServer server = new NetworkServer(bind(completed, address), owned);
+            LOG.log(Level.INFO, () -> "Listening on " + server.localAddress() + " (" + config.childHandler() + ")");
+            return server;
         } catch (Throwable cause) {
             owned.forEach(NetworkServer::shutdown);
             throw cause;
@@ -113,11 +117,13 @@ public final class NetworkServer implements AutoCloseable {
         for (EventLoopGroup group : ownedGroups)
             for (EventExecutor executor : group)
                 if (executor.inEventLoop()) throw new IllegalStateException("Cannot close a server on its own EventLoop");
+        boolean open = listener.isOpen();
         try {
             listener.close().awaitUninterruptibly();
         } finally {
             ownedGroups.forEach(NetworkServer::shutdown);
         }
+        if (open) LOG.log(Level.INFO, () -> "Stopped listening on " + listener.localAddress());
     }
 
     private static void shutdown(EventLoopGroup group) {

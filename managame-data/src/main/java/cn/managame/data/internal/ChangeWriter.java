@@ -23,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 
 /**
@@ -60,7 +61,7 @@ public final class ChangeWriter {
         private final long deadline;
         /** By mapper or writer, each standing for the database or service it writes to. */
         private final ConcurrentHashMap<Object, AtomicInteger> failuresInARow = new ConcurrentHashMap<>();
-        private final AtomicInteger unwritten = new AtomicInteger(), dropped = new AtomicInteger();
+        private final AtomicInteger written = new AtomicInteger(), unwritten = new AtomicInteger(), dropped = new AtomicInteger();
 
         private Round(boolean hasDeadline, long deadline) {
             this.hasDeadline = hasDeadline;
@@ -151,13 +152,14 @@ public final class ChangeWriter {
 
     private Round writeAll(boolean hasDeadline, long deadline) {
         synchronized (roundLock) {
+            long start = System.nanoTime();
             Round round = new Round(hasDeadline, deadline);
             List<IntSupplier> writes = new ArrayList<>();
             for (ChangeSet changes : changeSets) if (!changes.isEmpty()) writes.add(() -> writeChanges(changes, round));
             for (LogQueue logs : logQueues) if (!logs.isEmpty()) writes.add(() -> writeLogs(logs, round));
             if (writePool == null || writes.size() < 2) {
                 for (IntSupplier write : writes) run(write, round);
-                return round;
+                return report(round, start);
             }
             List<Future<?>> futures = new ArrayList<>(writes.size());
             for (IntSupplier write : writes) futures.add(writePool.submit(() -> run(write, round)));
@@ -176,8 +178,17 @@ public final class ChangeWriter {
                 }
             }
             if (interrupted) Thread.currentThread().interrupt();
-            return round;
+            return report(round, start);
         }
+    }
+
+    /** Logs at DEBUG what a round that had something to do did. */
+    private Round report(Round round, long start) {
+        int written = round.written.get(), unwritten = round.unwritten(), dropped = round.dropped();
+        if (written + unwritten + dropped > 0)
+            LOG.log(System.Logger.Level.DEBUG, () -> "Wrote " + written + (changeSets.isEmpty() ? " logs" : " changes") + " in "
+                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + " ms; " + unwritten + " kept for a later round, " + dropped + " dropped");
+        return round;
     }
 
     private static void run(IntSupplier write, Round round) {
@@ -225,6 +236,7 @@ public final class ChangeWriter {
             mapper.write(changes.type, operation, batch);
             round.resetFailures(mapper);
             changes.written.addAndGet(batch.size());
+            round.written.addAndGet(batch.size());
             return;
         } catch (Throwable e) {
             changes.failures.incrementAndGet();
@@ -249,6 +261,7 @@ public final class ChangeWriter {
                 mapper.write(changes.type, operation, List.of(change));
                 round.resetFailures(mapper);
                 changes.written.incrementAndGet();
+                round.written.incrementAndGet();
             } catch (Throwable e) {
                 changes.failures.incrementAndGet();
                 if (mapper.isRetryable(e)) {
@@ -290,6 +303,7 @@ public final class ChangeWriter {
             writer.write(logs.type, batch);
             round.resetFailures(writer);
             logs.written.addAndGet(batch.size());
+            round.written.addAndGet(batch.size());
             return;
         } catch (Throwable e) {
             logs.failures.incrementAndGet();
@@ -314,6 +328,7 @@ public final class ChangeWriter {
                 writer.write(logs.type, List.of(log));
                 round.resetFailures(writer);
                 logs.written.incrementAndGet();
+                round.written.incrementAndGet();
             } catch (Throwable e) {
                 logs.failures.incrementAndGet();
                 if (writer.isRetryable(e)) {

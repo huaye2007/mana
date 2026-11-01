@@ -28,6 +28,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntSupplier;
 
 /**
  * The repositories of a game server and the threads that write what they change. The application picks where each
@@ -89,6 +90,9 @@ public final class GameData implements AutoCloseable {
         scheduler.scheduleWithFixedDelay(this::writeAndCleanUp, flushIntervalNanos, flushIntervalNanos, TimeUnit.NANOSECONDS);
         logScheduler = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("game-data-log").factory());
         logScheduler.scheduleWithFixedDelay(this::writeLogs, flushIntervalNanos, flushIntervalNanos, TimeUnit.NANOSECONDS);
+        LOG.log(System.Logger.Level.INFO, () -> "Game data started; " + (singles.size() + groups.size()) + " entity and " + logs.size()
+                + " log repositories, written every " + builder.flushInterval + " on " + builder.writeThreads + " threads");
+        repositories.forEach((type, repository) -> LOG.log(System.Logger.Level.DEBUG, () -> "Repository " + type.getName()));
     }
 
     public static Builder builder() { return new Builder(); }
@@ -180,6 +184,7 @@ public final class GameData implements AutoCloseable {
         if (logs.state() == Future.State.SUCCESS) notWritten += logs.resultNow();
         if (notWritten > 0)
             throw new DataException(DATA_SAVE_FAILED, notWritten + " changes and logs were not written before close; each went to the DataErrorHandler", null);
+        LOG.log(System.Logger.Level.INFO, "Game data closed; every change and log written");
     }
 
     /**
@@ -357,11 +362,11 @@ public final class GameData implements AutoCloseable {
                 if (single) {
                     SingleRepository<?, ?> byId = (SingleRepository<?, ?>) repository;
                     byId.bind(changes, keys, cacheExpire, preload);
-                    if (preload) byId.preload();
+                    if (preload) preload(byId::preload, () -> byId.all().size(), entityClass);
                 } else {
                     GroupRepository<?, ?> inGroups = (GroupRepository<?, ?>) repository;
                     inGroups.bind(changes, keys, cacheExpire, preload);
-                    if (preload) inGroups.preload();
+                    if (preload) preload(inGroups::preload, () -> inGroups.all().values().stream().mapToInt(Map::size).sum(), entityClass);
                 }
             }
             // One failure at a time, whether the entities' writer, the logs' or a business thread reports it.
@@ -374,6 +379,13 @@ public final class GameData implements AutoCloseable {
             ChangeWriter logWriter = new ChangeWriter(List.of(), List.copyOf(logRepositories.values()), batchSize, 1, oneAtATime);
             logRepositories.forEach((repository, queue) -> repository.bind(queue, logWriter));
             return new GameData(this, repositories, writer, logWriter);
+        }
+
+        private static void preload(Runnable load, IntSupplier count, Class<?> entityClass) {
+            long start = System.nanoTime();
+            load.run();
+            LOG.log(System.Logger.Level.INFO, () -> "Preloaded " + count.getAsInt() + " " + entityClass.getSimpleName() + " in "
+                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + " ms");
         }
 
         private Builder register(Object target, Collection<? extends Class<?>> types) {
