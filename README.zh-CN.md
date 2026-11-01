@@ -16,8 +16,6 @@
 
 同时使用多个组件时，导入 [managame-bom](managame-bom/README.zh-CN.md) 统一版本：它只有版本号，包括各组件和它们共用的 Netty 模块。
 
-[managame-example](managame-example/README.zh-CN.md) 是一个可以直接运行的小游戏：世界服加游戏服，用纯 Spring 在自己的代码里把所有组件连起来、用 protobuf 加自定义编解码通信，包括启动与关闭的顺序；新项目可以照着它开始。
-
 [managame-benchmark](managame-benchmark/README.zh-CN.md) 为每个组件提供 JMH 基准测试，并各自记录基线，改动让组件变快或变慢都能立刻看出来。
 
 runtime 和 rpc 互不知道对方。同时使用两者的业务在自己的代码里把它们连起来：自己的 `RpcHandler` 把对端请求交给自己的 `Dispatcher`，自己的 `RpcCallback` 把后续工作交给自己的 `GameRuntime` 执行。
@@ -28,7 +26,6 @@ runtime 和 rpc 互不知道对方。同时使用两者的业务在自己的代�
 
 ```bash
 mvn install
-java -jar managame-example/target/example.jar          # 运行示例游戏，用 ExampleClient 玩，见它的 README
 java -jar managame-benchmark/target/benchmarks.jar all
 ```
 

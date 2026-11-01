@@ -4,7 +4,7 @@ Guidance for coding agents working in this workspace. Read it before changing an
 
 ## Workspace
 
-Seven component projects, a BOM, an example and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
+Seven component projects, a BOM and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
 Java 25. The root `pom.xml` only aggregates them, to build all in one command; no project inherits from it. The workspace is the git repository https://github.com/huaye2007/mana (branch `main`).
 
 | Project | Depends on | What it is |
@@ -17,7 +17,6 @@ Java 25. The root `pom.xml` only aggregates them, to build all in one command; n
 | `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
 | `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
 | `managame-bom` | nothing | Versions only: every component and the Netty modules they share, for applications importing several |
-| `managame-example` | the components but data-mongo, through the BOM, plain Spring (spring-context), protobuf and H2 | A small game, a world server and a game server, built as a real one: protobuf in frames of its own codec, every component a Spring bean, shutdown order from their dependencies: what an application copies, run with `java -jar`; nothing depends on it |
 | `managame-benchmark` | all, JMH 1.37, H2, MySQL driver, HikariCP | JMH benchmarks per component with recorded baselines (`results/*.csv`), plus `mysqlserver` and `mongo` against real servers; a tool nothing depends on |
 
 ## Build and test
@@ -187,8 +186,7 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   failure modes, few inline comments, records for values, sealed interfaces for closed sets.
 - Log with `System.Logger`.
 - Keep test fixtures small and readable; tests double as usage examples (for instance
-  `PlayerGatewayExampleTest` shows an application-defined player gateway). managame-example is the whole-application
-  example: when public API changes, keep it compiling and its README in line, as the components' own READMEs.
+  `PlayerGatewayExampleTest` shows an application-defined player gateway).
 
 ## Documentation
 

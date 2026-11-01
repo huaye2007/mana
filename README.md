@@ -18,10 +18,6 @@ ones it needs:
 An application that takes several components imports [managame-bom](managame-bom/README.md) for one version of
 all: it holds versions only, of the components and the Netty modules they share.
 
-[managame-example](managame-example/README.md) is a small game to run, a world server and a game server joining every
-component in its own code with plain Spring and speaking protobuf in frames of its own codec, startup and shutdown
-order included: where a new project starts from.
-
 [managame-benchmark](managame-benchmark/README.md) holds JMH benchmarks for every component, with a recorded
 baseline each, so that a change that makes a component faster or slower shows at once.
 
@@ -35,7 +31,6 @@ One command at the root builds every project in dependency order, the benchmarks
 
 ```bash
 mvn install
-java -jar managame-example/target/example.jar          # the example game; play it with ExampleClient, see its README
 java -jar managame-benchmark/target/benchmarks.jar all
 ```
 

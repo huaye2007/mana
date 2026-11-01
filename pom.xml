@@ -18,7 +18,6 @@
     <module>managame-data</module>
     <module>managame-data-mysql</module>
     <module>managame-data-mongo</module>
-    <module>managame-example</module>
     <module>managame-benchmark</module>
   </modules>
 
