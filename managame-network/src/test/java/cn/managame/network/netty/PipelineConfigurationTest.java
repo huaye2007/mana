@@ -8,11 +8,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.network.connection.Connection;
+import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.netty.TestSupport.RecordingHandler;
 import cn.managame.network.netty.TestSupport.TestClient;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -20,7 +24,10 @@ import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.logging.LoggingHandler;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class PipelineConfigurationTest {
@@ -42,6 +49,46 @@ class PipelineConfigurationTest {
         assertThrows(IllegalArgumentException.class, () -> ConnectionInitializer.tcp()
                 .addLast(NetworkHandlers.lengthFieldFraming(64)).addLast(NetworkHandlers.lengthFieldFraming(64)));
         assertThrows(IllegalStateException.class, () -> ConnectionInitializer.tcp().build());
+    }
+
+    @Sharable private static final class FlushCounter extends ChannelOutboundHandlerAdapter {
+        final AtomicInteger flushes = new AtomicInteger();
+        @Override public void flush(ChannelHandlerContext ctx) {
+            flushes.incrementAndGet();
+            ctx.flush();
+        }
+    }
+
+    @Test void writesOfOneTurnLeaveInOneFlushUnlessThePipelineDropsIt() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        FlushCounter counter = new FlushCounter();
+        NetworkServer server = serve(ConnectionInitializer.tcp().addFront("count", counter).addLast("log", new LoggingHandler()).handler(handler));
+        try (TestClient client = new TestClient(server.port(), pipeline -> {})) {
+            assertEquals("active", handler.next());
+            Connection connection = handler.connections.take();
+            Channel channel = ((NettyConnection) connection).channel();
+            List<String> names = channel.pipeline().names();
+            assertTrue(names.indexOf(PipelineNames.FLUSH) < names.indexOf("log"), "after the transport, before the application");
+            // A business thread writes while the EventLoop is busy: the writes and their flushes wait in its queue.
+            CountDownLatch busy = new CountDownLatch(1);
+            channel.eventLoop().execute(() -> {
+                try { busy.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            });
+            int before = counter.flushes.get();
+            for (int i = 0; i < 100; i++) assertEquals(WriteStatus.ACCEPTED, connection.write(Unpooled.copiedBuffer("x", UTF_8)));
+            busy.countDown();
+            int bytes = 0;
+            while (bytes < 100) bytes += ((String) client.next()).length();
+            assertEquals(1, counter.flushes.get() - before, "a hundred writes, one flush");
+        } finally {
+            server.close();
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> ConnectionInitializer.tcp().addLast(PipelineNames.FLUSH, new LoggingHandler()));
+        EmbeddedChannel plain = new EmbeddedChannel(ConnectionInitializer.tcp()
+                .customize(pipeline -> pipeline.remove(PipelineNames.FLUSH)).handler(new RecordingHandler()).build());
+        assertFalse(plain.pipeline().names().contains(PipelineNames.FLUSH));
+        plain.finishAndReleaseAll();
     }
 
     @Test void anInitializerWorksWithoutASocket() throws Exception {

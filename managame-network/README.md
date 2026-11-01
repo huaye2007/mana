@@ -55,8 +55,13 @@ Each connection's pipeline has this fixed order (names in `PipelineNames`):
 
 ```
 addFront… | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
-ws-messages | addLast… | customize | connection → ConnectionHandler
+ws-messages | flush | addLast… | customize | connection → ConnectionHandler
 ```
+
+`flush` is Netty's `FlushConsolidationHandler`. Every `connection.write` flushes, and it gathers those flushes: the
+writes of one read, or of one EventLoop turn when business threads write, leave in one system call. Without it every
+message costs a system call of its own, which measured at a quarter to a fifth of the echo throughput. Remove it with
+`customize(p -> p.remove(PipelineNames.FLUSH))` to flush every write on its own.
 
 | Method | Position | For |
 | --- | --- | --- |

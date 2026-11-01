@@ -48,8 +48,10 @@ wssServer.close();
 
 ```
 addFront… | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
-ws-messages | addLast… | customize | connection → ConnectionHandler
+ws-messages | flush | addLast… | customize | connection → ConnectionHandler
 ```
+
+`flush` 是 Netty 的 `FlushConsolidationHandler`。每次 `connection.write` 都会 flush，它把这些 flush 合并：一次读里的写，或者业务线程在 EventLoop 一轮里的写，用一次系统调用发出去。没有它时每条消息单独一次系统调用，实测 echo 吞吐只有有它时的四分之一到五分之一。需要每条单独 flush 时，用 `customize(p -> p.remove(PipelineNames.FLUSH))` 去掉它。
 
 | 方式 | 位置 | 适用 |
 | --- | --- | --- |

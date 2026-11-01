@@ -16,7 +16,6 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
-import io.netty.handler.flush.FlushConsolidationHandler;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
@@ -26,7 +25,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * A server that echoes every length-framed message and clients holding {@code connections} connections to it over
- * loopback, with flush consolidation as RPC has it; the server runs in this process or, with {@code otherProcess},
+ * loopback, on network's default pipeline, which consolidates flushes; the server runs in this process or, with {@code otherProcess},
  * in an {@link EchoPeer} of its own. Each echo runs {@code onEcho}. Frames are duplicates of one payload, so the
  * benchmarks measure the transport, not the making of messages. The clients' channels count the bytes on the wire.
  */
@@ -76,7 +75,6 @@ final class EchoFixture implements AutoCloseable {
 
     private static ConnectionInitializer pipeline(ConnectionHandler handler) {
         return ConnectionInitializer.tcp()
-                .addLast("flush", () -> new FlushConsolidationHandler(FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES, true))
                 .addLast(NetworkHandlers.lengthFieldFraming(MAX_FRAME))
                 .handler(handler)
                 .build();

@@ -15,7 +15,6 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
-import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.util.HashedWheelTimer;
 import io.netty.util.Timer;
 import io.netty.util.concurrent.EventExecutor;
@@ -145,10 +144,9 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
-    /** Every connection's pipeline: flush consolidation, then the codec. */
+    /** Every connection's pipeline: network's flush consolidation, then the codec. */
     private ConnectionInitializer initializer(boolean accepting, long heartbeatMillis, RpcConnectionHandler connections) {
         return ConnectionInitializer.tcp()
-                .addLast("rpc-flush", () -> new FlushConsolidationHandler(FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES, true))
                 .addLast("rpc-codec", () -> new RpcCodec(maxFrameLength, timer, heartbeatMillis, !accepting))
                 .customize(created -> channels.add(created.channel()))
                 .handler(connections)

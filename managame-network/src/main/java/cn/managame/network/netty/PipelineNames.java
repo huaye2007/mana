@@ -8,7 +8,7 @@ import java.util.Set;
  *
  * <pre>
  * front handlers | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
- * ws-messages | application handlers | customizers | connection
+ * ws-messages | flush | application handlers | customizers | connection
  * </pre>
  *
  * TLS and WebSocket sections are present only when configured. {@code ws-path} removes itself once the path
@@ -30,6 +30,11 @@ public final class PipelineNames {
     public static final String WEBSOCKET_AGGREGATOR = "ws-aggregator";
     /** Converts between WebSocket frames and payloads according to {@link WebSocketMessages}. */
     public static final String WEBSOCKET_MESSAGES = "ws-messages";
+    /**
+     * Netty's FlushConsolidationHandler: the flushes of one read, or of one EventLoop turn for writes from other
+     * threads, leave in one system call. A customizer removes it to flush every write on its own.
+     */
+    public static final String FLUSH = "flush";
     /** The terminal handler that drives the ConnectionHandler. */
     public static final String CONNECTION = "connection";
     /** Holds input that arrives while an HTTP request is being answered. */
@@ -42,7 +47,7 @@ public final class PipelineNames {
 
     /** Includes the frame codec names Netty installs during the WebSocket handshake. */
     static final Set<String> RESERVED = Set.of(SSL, HTTP_CODEC, HTTP_AGGREGATOR, WEBSOCKET_PATH, WEBSOCKET_COMPRESSION,
-            WEBSOCKET_PROTOCOL, WEBSOCKET_AGGREGATOR, WEBSOCKET_MESSAGES, CONNECTION,
+            WEBSOCKET_PROTOCOL, WEBSOCKET_AGGREGATOR, WEBSOCKET_MESSAGES, FLUSH, CONNECTION,
             HTTP_FLOW, HTTP_EXCHANGE, HTTP_KEEP_ALIVE, HTTP_HANDLER, "wsencoder", "wsdecoder");
 
     private PipelineNames() {}

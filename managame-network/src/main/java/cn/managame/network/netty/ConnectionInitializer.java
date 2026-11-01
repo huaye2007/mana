@@ -5,6 +5,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
 import java.time.Duration;
@@ -17,8 +18,8 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
- * Builds the pipeline of every accepted connection: the transport (TCP, TLS, WebSocket), the application's
- * handlers and, last, the handler that drives the ConnectionHandler. It is a plain Netty child handler, holds
+ * Builds the pipeline of every accepted connection: the transport (TCP, TLS, WebSocket), flush consolidation, the
+ * application's handlers and, last, the handler that drives the ConnectionHandler. It is a plain Netty child handler, holds
  * only configuration, and serves any number of listeners, a {@link NetworkServer} or an application's own
  * ServerBootstrap:
  *
@@ -30,7 +31,9 @@ import java.util.function.Supplier;
  * NetworkServer server = NetworkServer.start(9001, game);
  * }</pre>
  *
- * The pipeline layout is described in {@link PipelineNames}.
+ * The pipeline layout is described in {@link PipelineNames}. Every {@code connection.write} flushes, and the
+ * {@link PipelineNames#FLUSH} handler gathers those flushes: the writes of one read, or of one EventLoop turn when they
+ * come from business threads, leave together in one system call rather than one each.
  */
 public final class ConnectionInitializer extends ChannelInitializer<Channel> {
     public static final Duration DEFAULT_HANDSHAKE_TIMEOUT = Duration.ofSeconds(10);
@@ -73,6 +76,7 @@ public final class ConnectionInitializer extends ChannelInitializer<Channel> {
             pipeline.addLast(PipelineNames.SSL, tls);
         }
         if (webSocket != null) webSocket.install(pipeline);
+        pipeline.addLast(PipelineNames.FLUSH, new FlushConsolidationHandler(FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES, true));
         application.addTo(pipeline);
         for (Consumer<ChannelPipeline> customizer : customizers) customizer.accept(pipeline);
         pipeline.addLast(PipelineNames.CONNECTION, bridge);
