@@ -178,6 +178,23 @@ class HttpRoutesTest {
         assertEquals("{\"error\":" + RUNTIME_EXECUTION_ERROR + "}", send("POST", "/boom", "x").body());
     }
 
+    @Test void aRequestTakenOrResponseGivenAsIsSkipsTheCodec() throws Exception {
+        @Domain(WORLD) class Raw {
+            @HttpMethod(value = "/raw", method = "GET") FullHttpResponse raw(FullHttpRequest request) {
+                return new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.CREATED,
+                        Unpooled.copiedBuffer("for " + HttpRequests.query(request, "who"), StandardCharsets.UTF_8));
+            }
+        }
+        HttpCodec jsonOnly = new HttpCodec() {   // knows its own objects only
+            @Override public Object decode(FullHttpRequest request, Type type) { throw new IllegalArgumentException("not JSON"); }
+            @Override public FullHttpResponse encode(Object result) { throw new IllegalArgumentException("not JSON"); }
+        };
+        serve(HttpRoutes.builder(runtime).codec(jsonOnly).register(List.of(new Raw())).build());
+        HttpResponse<String> response = send("GET", "/raw?who=gm", null);
+        assertEquals(201, response.statusCode());
+        assertEquals("for gm", response.body());
+    }
+
     @Domain(WORLD) static class Duplicate { @HttpMethod(value = "/boom", method = "post") String again(String body) { return ""; } }
     @Domain(WORLD) static class NoSlash { @HttpMethod("boom") String boom(String body) { return ""; } }
     @Domain(WORLD) static class WrongContext { @HttpMethod("/x") String x(HandleContext context, String body) { return ""; } }

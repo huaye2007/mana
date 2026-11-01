@@ -365,11 +365,11 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
   endpoint that throws 500.
 - Helpers: `HttpRequests.query`, `longQuery`, `text`.
 
-**Codec.** An `HttpCodec` reads arguments and writes results and failures. `HttpCodec.basic()`, the default, reads
-a `String` parameter as the UTF-8 body, `byte[]` as its bytes and `FullHttpRequest` as the request itself, and
-writes a `FullHttpResponse` as is, text as UTF-8 `text/plain` and `byte[]` / `ByteBuf` as
-`application/octet-stream`; `build()` rejects endpoints taking anything else. For JSON, implement it with your
-library:
+**Codec.** An `HttpCodec` reads arguments and writes results and failures. An endpoint taking a `FullHttpRequest`
+gets the request itself and a `FullHttpResponse` result is sent as is: neither goes through the codec, whichever it
+is. `HttpCodec.basic()`, the default, reads a `String` parameter as the UTF-8 body and `byte[]` as its bytes, and
+writes text as UTF-8 `text/plain` and `byte[]` / `ByteBuf` as `application/octet-stream`; `build()` rejects
+endpoints taking anything else. For JSON, implement it with your library:
 
 ```java
 class JsonCodec implements HttpCodec {
@@ -380,6 +380,8 @@ class JsonCodec implements HttpCodec {
     }
 
     public FullHttpResponse encode(Object result) throws IOException {
+        // Strings and numbers are JSON too ("ok" as the quoted "ok"), so clients always parse JSON; for plain text:
+        // if (result instanceof CharSequence || result instanceof byte[]) return HttpCodec.basic().encode(result);
         FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
                 Unpooled.wrappedBuffer(mapper.writeValueAsBytes(result)));
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");

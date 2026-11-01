@@ -18,18 +18,16 @@ final class BasicHttpCodec implements HttpCodec {
 
     private BasicHttpCodec() {}
 
-    static boolean decodes(Type type) { return type == String.class || type == byte[].class || type == FullHttpRequest.class; }
+    static boolean decodes(Type type) { return type == String.class || type == byte[].class; }
 
     @Override public Object decode(FullHttpRequest request, Type type) {
         if (type == String.class) return request.content().toString(StandardCharsets.UTF_8);
         if (type == byte[].class) return ByteBufUtil.getBytes(request.content());
-        if (type == FullHttpRequest.class) return request;
         throw new IllegalArgumentException("No HTTP decoding for " + type.getTypeName() + "; configure an HttpCodec");
     }
 
     @Override public FullHttpResponse encode(Object result) {
         return switch (result) {
-            case FullHttpResponse response -> response;
             case CharSequence text -> text(HttpResponseStatus.OK, text.toString());
             case byte[] bytes -> bytes(Unpooled.wrappedBuffer(bytes));
             case ByteBuf bytes -> bytes(bytes);

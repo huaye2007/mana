@@ -48,8 +48,12 @@ public final class HttpRequestContext implements RequestContext {
     /** The requesting peer, for example to restrict an endpoint to known addresses. */
     public SocketAddress remoteAddress() { return exchange.remoteAddress(); }
 
-    /** A result the codec cannot encode is answered with the failure for RUNTIME_EXECUTION_ERROR, and logged. */
+    /**
+     * A FullHttpResponse is sent as is; anything else goes through the codec, and a result it cannot encode is answered
+     * with the failure for RUNTIME_EXECUTION_ERROR, and logged.
+     */
     @Override public boolean reply(Object result) {
+        if (result instanceof FullHttpResponse ready) return exchange.respond(ready);
         FullHttpResponse response;
         try {
             response = codec.encode(result);

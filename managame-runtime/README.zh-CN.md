@@ -304,7 +304,7 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 - 状态码：未知路径 404；方法不对 405 并带 `Allow`；编解码器读不出参数 400，source 或路由抛 `IllegalArgumentException` 也是 400；任务被拒绝（已关闭、过载）503；接口抛异常 500。
 - 辅助方法：`HttpRequests.query`、`longQuery`、`text`。
 
-**编解码器**：`HttpCodec` 负责读取参数、写出结果和失败响应。默认的 `HttpCodec.basic()` 把 `String` 参数读成 UTF-8 请求体，`byte[]` 读成请求体字节，`FullHttpRequest` 就是请求本身；写出时 `FullHttpResponse` 原样发送，文本按 UTF-8 `text/plain`，`byte[]` / `ByteBuf` 按 `application/octet-stream`；接口参数是其它类型时 `build()` 直接报错。需要 JSON 时用自己的库实现：
+**编解码器**：`HttpCodec` 负责读取参数、写出结果和失败响应。参数是 `FullHttpRequest` 的接口直接拿到请求本身，返回 `FullHttpResponse` 的原样发送，这两种都不经过编解码器，不管配的是哪个。默认的 `HttpCodec.basic()` 把 `String` 参数读成 UTF-8 请求体，`byte[]` 读成请求体字节；写出时文本按 UTF-8 `text/plain`，`byte[]` / `ByteBuf` 按 `application/octet-stream`；接口参数是其它类型时 `build()` 直接报错。需要 JSON 时用自己的库实现：
 
 ```java
 class JsonCodec implements HttpCodec {
@@ -315,6 +315,8 @@ class JsonCodec implements HttpCodec {
     }
 
     public FullHttpResponse encode(Object result) throws IOException {
+        // 字符串、数字也按 JSON 写（"ok" 写成带引号的 "ok"），客户端始终按 JSON 解析；想让文本按纯文本返回，加上：
+        // if (result instanceof CharSequence || result instanceof byte[]) return HttpCodec.basic().encode(result);
         FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
                 Unpooled.wrappedBuffer(mapper.writeValueAsBytes(result)));
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");

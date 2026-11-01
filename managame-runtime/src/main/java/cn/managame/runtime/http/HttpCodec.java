@@ -23,8 +23,10 @@ import java.lang.reflect.Type;
  * }
  * }</pre>
  *
- * {@link #basic()} reads text and bytes and writes responses, text and bytes. Decoding runs on the connection's
- * EventLoop before the endpoint is called, encoding on whichever thread answers; a codec must be thread-safe.
+ * An endpoint taking a FullHttpRequest gets the request itself, and a FullHttpResponse result is sent as is: neither
+ * goes through the codec, which only turns other objects into requests' arguments and responses. {@link #basic()}
+ * reads and writes text and bytes. Decoding runs on the connection's EventLoop before the endpoint is called,
+ * encoding on whichever thread answers; a codec must be thread-safe.
  */
 public interface HttpCodec {
     /**
@@ -33,7 +35,10 @@ public interface HttpCodec {
      */
     Object decode(FullHttpRequest request, Type type) throws Exception;
 
-    /** The response for an endpoint's result. An exception answers with the failure for RUNTIME_EXECUTION_ERROR. */
+    /**
+     * The response for an endpoint's result, any but a FullHttpResponse. An exception answers with the failure for
+     * RUNTIME_EXECUTION_ERROR.
+     */
     FullHttpResponse encode(Object result) throws Exception;
 
     /**
@@ -47,9 +52,9 @@ public interface HttpCodec {
     }
 
     /**
-     * Reads a parameter of type String as the UTF-8 body, byte[] as the body's bytes and FullHttpRequest as the
-     * request itself. Writes a FullHttpResponse as is, text as UTF-8 text/plain, byte[] and ByteBuf as
-     * application/octet-stream. HttpRoutes using it reject endpoints taking other types when built.
+     * Reads a parameter of type String as the UTF-8 body and byte[] as the body's bytes. Writes text as UTF-8
+     * text/plain, byte[] and ByteBuf as application/octet-stream. HttpRoutes using it reject endpoints taking other
+     * types when built.
      */
     static HttpCodec basic() { return BasicHttpCodec.INSTANCE; }
 }

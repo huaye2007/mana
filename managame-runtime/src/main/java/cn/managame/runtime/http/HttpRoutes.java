@@ -44,7 +44,8 @@ import java.util.stream.Collectors;
  * NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(routes).build());
  * }</pre>
  *
- * The codec reads an endpoint's argument from the request, normally its body. The request then runs in the
+ * The codec reads an endpoint's argument from the request, normally its body; an endpoint taking a FullHttpRequest
+ * gets the request itself, without the codec. The request then runs in the
  * endpoint's domain, on the route key the domain's resolver finds for the argument and the source the
  * application builds from the request. Unknown paths are answered with 404, other methods with 405, an argument
  * the codec cannot read with 400, and so is a source or route that cannot be found because of
@@ -89,7 +90,8 @@ public final class HttpRoutes implements HttpHandler {
         }
         Object argument;
         try {
-            argument = Objects.requireNonNull(codec.decode(request, endpoint.argument()), "The codec read nothing");
+            argument = endpoint.argument() == FullHttpRequest.class ? request
+                    : Objects.requireNonNull(codec.decode(request, endpoint.argument()), "The codec read nothing");
         } catch (Exception unreadable) {
             badRequest(exchange, unreadable);
             return;
@@ -187,7 +189,7 @@ public final class HttpRoutes implements HttpHandler {
             if (codec == BasicHttpCodec.INSTANCE)
                 for (Map<String, Endpoint> methods : endpoints.values())
                     for (Endpoint endpoint : methods.values())
-                        if (!BasicHttpCodec.decodes(endpoint.argument()))
+                        if (endpoint.argument() != FullHttpRequest.class && !BasicHttpCodec.decodes(endpoint.argument()))
                             throw new IllegalArgumentException(endpoint.method() + " takes " + endpoint.argument().getTypeName()
                                     + ", which the basic codec cannot read; configure an HttpCodec");
             return new HttpRoutes(this);
