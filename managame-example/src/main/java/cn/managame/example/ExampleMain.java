@@ -1,37 +1,27 @@
 package cn.managame.example;
 
 import cn.managame.runtime.time.GameTime;
-import java.net.InetSocketAddress;
 import java.time.ZoneId;
-import org.h2.jdbcx.JdbcDataSource;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.core.env.Environment;
 
 /**
- * Runs a world server and a game server in one process, on an in-memory database in MySQL mode, until the process is
- * stopped. Play over telnet: {@code telnet 127.0.0.1 9001}, then {@code 1 login 1001 ann}, {@code 2 buy 5001},
- * {@code 3 bag}, {@code 4 rank}.
+ * Starts the game server's Spring context, its world server included, on an in-memory database in MySQL mode, and
+ * keeps it until the process is stopped. Clients speak protobuf in the game's frames; {@link ExampleClient} plays a few
+ * requests.
  */
 public final class ExampleMain {
     private ExampleMain() {}
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
         GameTime.setZone(ZoneId.systemDefault());   // the game's one time zone, set once
-        JdbcDataSource database = new JdbcDataSource();
-        database.setURL("jdbc:h2:mem:example;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1");
-        Schema.create(database);
-
-        WorldServer world = new WorldServer(7001);
-        GameServer game = new GameServer(database, new InetSocketAddress("127.0.0.1", 7001), 9001);
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            game.close();    // the game server stops before the world it calls
-            world.close();
-        }));
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(GameConfig.class);
+        context.registerShutdownHook();             // Ctrl+C closes every bean before the beans it depends on
+        Environment settings = context.getEnvironment();
         System.out.println("""
-                The game server listens on port 9001 and its world server on 7001.
-                Play with: telnet 127.0.0.1 9001
-                  1 login 1001 ann
-                  2 buy 5001
-                  3 bag
-                  4 rank
-                Stop with Ctrl+C: the servers close in order and every change is written.""");
+                The game server listens on port %s and its world server on %s.
+                Play from another terminal: java -cp managame-example/target/example.jar cn.managame.example.ExampleClient 1001 ann
+                Stop with Ctrl+C: the servers close in order and every change is written."""
+                .formatted(settings.getProperty("example.gateway-port"), settings.getProperty("example.world-port")));
     }
 }

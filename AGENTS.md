@@ -17,7 +17,7 @@ Java 25. The root `pom.xml` only aggregates them, to build all in one command; n
 | `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
 | `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
 | `managame-bom` | nothing | Versions only: every component and the Netty modules they share, for applications importing several |
-| `managame-example` | the components but data-mongo, through the BOM, and H2 | A small game, a world server and a game server, joining every component in its own code: what an application copies, run with `java -jar`; nothing depends on it |
+| `managame-example` | the components but data-mongo, through the BOM, plain Spring (spring-context), protobuf and H2 | A small game, a world server and a game server, built as a real one: protobuf in frames of its own codec, every component a Spring bean, shutdown order from their dependencies: what an application copies, run with `java -jar`; nothing depends on it |
 | `managame-benchmark` | all, JMH 1.37, H2, MySQL driver, HikariCP | JMH benchmarks per component with recorded baselines (`results/*.csv`), plus `mysqlserver` and `mongo` against real servers; a tool nothing depends on |
 
 ## Build and test

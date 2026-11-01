@@ -4,8 +4,8 @@
   <artifactId>managame-example</artifactId>
   <version>1.0.0-SNAPSHOT</version>
   <description>
-    A small game, a world server and a game server, joining every component in its own code. An example to copy from:
-    nothing depends on it, and it is never installed.
+    A small game, a world server and a game server, joining every component in its own code with plain Spring. An
+    example to copy from: nothing depends on it, and it is never installed.
   </description>
 
   <properties>
@@ -14,6 +14,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.install.skip>true</maven.install.skip>
     <maven.deploy.skip>true</maven.deploy.skip>
+    <protobuf.version>4.35.0</protobuf.version>
   </properties>
 
   <!-- As an application takes several components: one version from the BOM, none per component. -->
@@ -36,6 +37,18 @@
     <dependency><groupId>cn.managame</groupId><artifactId>managame-rpc</artifactId></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>managame-data</artifactId></dependency>
     <dependency><groupId>cn.managame</groupId><artifactId>managame-data-mysql</artifactId></dependency>
+    <!-- Plain Spring for the wiring: beans, injection, and shutdown in dependency order. No Spring Boot, no web. -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-context</artifactId>
+      <version>7.0.9</version>
+    </dependency>
+    <!-- The game's messages: protobuf, in frames of the game's own codec. -->
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+      <version>${protobuf.version}</version>
+    </dependency>
     <!-- The example's database: H2 in MySQL mode, in memory. A real game uses MySQL's driver and a pool. -->
     <dependency>
       <groupId>com.h2database</groupId>
@@ -51,7 +64,27 @@
   </dependencies>
 
   <build>
+    <!-- Tells the protobuf plugin which protoc build this machine runs. -->
+    <extensions>
+      <extension>
+        <groupId>kr.motd.maven</groupId>
+        <artifactId>os-maven-plugin</artifactId>
+        <version>1.7.1</version>
+      </extension>
+    </extensions>
     <plugins>
+      <!-- Java classes from src/main/proto, generated on every build. -->
+      <plugin>
+        <groupId>org.xolstice.maven.plugins</groupId>
+        <artifactId>protobuf-maven-plugin</artifactId>
+        <version>0.6.1</version>
+        <configuration>
+          <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
+        </configuration>
+        <executions>
+          <execution><goals><goal>compile</goal></goals></execution>
+        </executions>
+      </plugin>
       <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.0</version></plugin>
       <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.4</version></plugin>
       <plugin>

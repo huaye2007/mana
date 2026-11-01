@@ -2,6 +2,8 @@ package cn.managame.example;
 
 import static cn.managame.FrameworkErrorCodes.HANDLER_NOT_FOUND;
 
+import cn.managame.example.proto.RankAnswer;
+import cn.managame.example.proto.RankQuery;
 import cn.managame.network.connection.Connection;
 import cn.managame.rpc.RpcNode;
 import cn.managame.rpc.RpcPeer;
@@ -11,14 +13,13 @@ import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.executor.RouteExecutors;
-import io.netty.buffer.Unpooled;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * A world server: game servers dial it over RPC and ask a player's rank by gold. It joins rpc and runtime in its own
- * code, as every application does: the RpcHandler, on the connection's EventLoop, reads the request and hands the work
- * to the runtime, whose one world route keeps the board without locks.
+ * A world server: game servers dial it over RPC and ask a player's rank by gold, in protobuf. It joins rpc and runtime
+ * in its own code, as every application does: the RpcHandler, on the connection's EventLoop, reads the request and
+ * hands the work to the runtime, whose one world route keeps the board without locks.
  */
 final class WorldServer implements AutoCloseable {
     static final int NODE_ID = 1, RANK = 1;
@@ -41,12 +42,13 @@ final class WorldServer implements AutoCloseable {
             RpcResponse.failure(request.requestId(), HANDLER_NOT_FOUND).writeTo(connection);
             return;
         }
-        long playerId = request.routeKey(), gold = request.body().readLong();   // read now: the body is released after
+        long playerId = request.routeKey(), gold = Protocol.read(RankQuery.parser(), request.body()).getGold();   // read now: the body is released after
         int requestId = request.requestId();
         runtime.execute(BOARD, _ -> {
             goldByPlayer.put(playerId, gold);
             long rank = 1 + goldByPlayer.values().stream().filter(other -> other > gold).count();
-            RpcResponse.of(requestId, Unpooled.buffer(16).writeLong(rank).writeLong(goldByPlayer.size())).writeTo(connection);
+            RankAnswer answer = RankAnswer.newBuilder().setRank(rank).setRanked(goldByPlayer.size()).build();
+            RpcResponse.of(requestId, Protocol.body(answer)).writeTo(connection);
         });
     }
 
