@@ -2,14 +2,15 @@
 
 # managame-runtime
 
-游戏服务器业务逻辑的统一入口。不管工作由什么触发（玩家请求、事件、定时器、其它服务器的请求、HTTP 调用），都以
+游戏服务器业务逻辑的统一入口。不管工作由什么触发（玩家请求、事件、定时器、其它服务器的请求、HTTP 调用、带回结果的回调），都以
 `GameTask` 的形式经 `GameRuntime.execute` 执行，并带着一个说明"在哪执行、为谁执行"的上下文。domain 和路由键都相同的任务按提交顺序逐个执行，其余的并行执行。
 
 ```
 消息 ────────── Dispatcher ──┐
 事件 ────────── EventBus ────┤
 定时器 ──────── GameTimer ───┼──> GameRuntime.execute(context, task) ──> 该 domain 的 RouteExecutor
-HTTP ────────── HttpRoutes ──┘                                           同一 (domain, routeKey) 逐个执行
+HTTP ────────── HttpRoutes ──┤                                           同一 (domain, routeKey) 逐个执行
+回调 ────────────────────────┘
 ```
 
 依赖 managame-common 和 managame-network（HTTP 用到）。

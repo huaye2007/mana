@@ -3,15 +3,16 @@ English | [中文](README.zh-CN.md)
 # managame-runtime
 
 The single entry for a game server's business logic. Whatever starts the work (a player's request, an event, a
-timer, a request from another server, an HTTP call) runs as a `GameTask` through `GameRuntime.execute`, with a
-context that says where and for whom it runs. Tasks with the same domain and route key run one at a time in
-submission order; everything else runs in parallel.
+timer, a request from another server, an HTTP call, a callback bringing a result back) runs as a `GameTask` through
+`GameRuntime.execute`, with a context that says where and for whom it runs. Tasks with the same domain and route key
+run one at a time in submission order; everything else runs in parallel.
 
 ```
 messages ──────── Dispatcher ──┐
 events ────────── EventBus ────┤
 timers ────────── GameTimer ───┼──> GameRuntime.execute(context, task) ──> the domain's RouteExecutor
-HTTP ──────────── HttpRoutes ──┘                                            one at a time per (domain, routeKey)
+HTTP ──────────── HttpRoutes ──┤                                            one at a time per (domain, routeKey)
+callbacks ─────────────────────┘
 ```
 
 Depends on managame-common and managame-network (for HTTP).
