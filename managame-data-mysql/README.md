@@ -40,8 +40,11 @@ public class Player {
 
 ## Reading entities
 
-`load` and `loadGroup` are one SELECT each; `loadAll`, behind `getAll`, is one `WHERE id IN (...)` per 1,000 ids, on one
-connection; `loadTable`, for a preloaded repository, one SELECT of the whole table.
+Each table's statements are built once, when it is prepared, and no other SQL is sent: an INSERT, an upsert, a DELETE
+by id, SELECTs by id, by group and of the whole table, and a batch SELECT of a hundred ids, so a connection's statement
+cache holds seven a table. `load` and `loadGroup` are one SELECT each; `loadAll`, behind `getAll`, runs the batch
+SELECT once per hundred ids on one connection, filling the last hundred by repeating an id, whose row comes back once;
+`loadTable`, for a preloaded repository, is one SELECT of the whole table.
 
 ## Writing entities
 
@@ -53,7 +56,7 @@ connection; `loadTable`, for a preloaded repository, one SELECT of the whole tab
   rows in bulk. A row missing from the table is written again rather than failing: memory owns the data. On a table with
   another unique key, a row taking a unique value another row still holds updates that other row instead, as MySQL
   documents for this statement; that happens only when two rows swap a unique value within one round.
-- **DELETEs** go as `WHERE id IN (...)`, up to 1,000 ids per statement.
+- **DELETEs** are a JDBC batch of the DELETE by id.
 - Keep the pool larger than GameData's `writeThreads` plus the loads that run at once.
 
 ## Driver settings

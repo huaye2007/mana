@@ -28,6 +28,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
@@ -150,6 +151,8 @@ final class Fixtures {
         private final JdbcDataSource h2;
         volatile boolean refuseConnections;
         volatile boolean failAfterNextCommit;
+        /** Every SQL text a connection prepared. */
+        final Set<String> prepared = ConcurrentHashMap.newKeySet();
 
         Database(JdbcDataSource h2) { this.h2 = h2; }
 
@@ -186,6 +189,7 @@ final class Fixtures {
                     connection.commit();
                     throw new SQLRecoverableException("connection lost before the commit was acknowledged");
                 }
+                if (method.getName().equals("prepareStatement")) prepared.add((String) arguments[0]);
                 try {
                     return method.invoke(connection, arguments);
                 } catch (InvocationTargetException e) {

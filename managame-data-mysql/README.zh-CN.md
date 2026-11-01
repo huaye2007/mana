@@ -36,8 +36,10 @@ public class Player {
 
 ## 读实体
 
-`load` 和 `loadGroup` 各一条 SELECT；`loadAll`（`getAll` 用它）每 1,000 个 id 一条 `WHERE id IN (...)`，用同一个连接；
-`loadTable`（整表常驻的 Repository 用它）一条 SELECT 读整张表。
+每张表的语句在 prepare 时一次建好，之后不会发送别的 SQL：INSERT、upsert、按 id 的 DELETE、按 id / 按组 / 整表的 SELECT，以及一条
+固定 100 个 id 的批量 SELECT，所以连接的语句缓存每张表只占七条。`load` 和 `loadGroup` 各一条 SELECT；`loadAll`（`getAll`
+用它）每 100 个 id 执行一次批量 SELECT，不足 100 个时重复最后一个 id 补齐（重复的 id 只查出一行），用同一个连接；`loadTable`
+（整表常驻的 Repository 用它）一条 SELECT 读整张表。
 
 ## 写实体
 
@@ -47,7 +49,7 @@ public class Player {
 - **UPDATE 用 `INSERT ... ON DUPLICATE KEY UPDATE`** 更新非 key 列，这是 MySQL 自己的批量保存方式。表里已没有的行会被重新
   写入，而不是失败：数据以内存为准。表上除主键外还有别的唯一索引时，一行改成另一行仍在用的唯一值，会更新到那一行上，这是
   MySQL 文档对这条语句的说明；只有两行在同一轮里互换唯一值时才会发生。
-- **DELETE** 以 `WHERE id IN (...)` 发送，每条最多 1,000 个 id。
+- **DELETE** 是按 id 删除那一条语句的 JDBC 批处理。
 - 连接池要大于 GameData 的 `writeThreads` 加上同时进行的加载数。
 
 ## 驱动设置

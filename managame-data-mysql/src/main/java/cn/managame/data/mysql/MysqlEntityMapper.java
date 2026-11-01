@@ -30,6 +30,11 @@ import javax.sql.DataSource;
  * {@code prepStmtCacheSqlLimit=1000000} to the JDBC URL (the README has the measurements), and keep the pool larger
  * than GameData's write threads plus the loads that run at once.
  *
+ * <p>Each table's statements are built once, when it is prepared: an INSERT, an upsert, a DELETE by id, a SELECT by
+ * id, by group, of the whole table and of a hundred ids. Batches of INSERTs, UPDATEs and DELETEs are JDBC batches of
+ * the single statements, and a batch SELECT fills its last hundred by repeating an id, so no other SQL is ever sent and
+ * a connection's statement cache holds seven statements a table.
+ *
  * <p>Each batch is one transaction, so a batch that failed left nothing behind and can be written again or split into
  * single rows. INSERTs and UPDATEs are plain JDBC batches, which the driver folds into one multi-row statement: an
  * UPDATE is {@code INSERT ... ON DUPLICATE KEY UPDATE} of the columns that are not keys, so a row missing from the
@@ -37,8 +42,8 @@ import javax.sql.DataSource;
  * row still holds updates that other row instead, as MySQL documents for this statement.
  */
 public final class MysqlEntityMapper implements EntityMapper {
-    /** Ids one SELECT or DELETE names at most. */
-    private static final int MAX_IDS_PER_STATEMENT = 1000;
+    /** Ids the batch SELECT names: always this many, the last of a load repeated to fill them. */
+    private static final int IDS_PER_SELECT = 100;
     private final DataSource dataSource;
     private final JsonCodec jsonCodec;
     private final ConcurrentHashMap<EntityType, TableMapping> tables = new ConcurrentHashMap<>();
@@ -85,20 +90,17 @@ public final class MysqlEntityMapper implements EntityMapper {
         }
     }
 
-    /** One SELECT per thousand ids, on one connection. */
+    /** The batch SELECT once per hundred ids, on one connection; a repeated id finds its row once. */
     @Override public List<Object> loadAll(EntityType type, Collection<?> ids) throws SQLException {
         TableMapping mapping = mappingOf(type);
         List<?> idList = List.copyOf(ids);
         List<Object> entities = new ArrayList<>(idList.size());
-        try (Connection connection = dataSource.getConnection()) {
-            for (int from = 0; from < idList.size(); from += MAX_IDS_PER_STATEMENT) {
-                int count = Math.min(MAX_IDS_PER_STATEMENT, idList.size() - from);
-                String sql = mapping.selectByIdsSqlByCount.computeIfAbsent(count, rows -> mapping.selectFrom + " WHERE " + mapping.idIn(rows));
-                try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                    for (int i = 0; i < count; i++) statement.setObject(i + 1, idList.get(from + i));
-                    try (ResultSet resultSet = statement.executeQuery()) {
-                        while (resultSet.next()) entities.add(mapping.readEntity(resultSet));
-                    }
+        if (idList.isEmpty()) return entities;
+        try (Connection connection = dataSource.getConnection(); PreparedStatement statement = connection.prepareStatement(mapping.selectByIds)) {
+            for (int from = 0; from < idList.size(); from += IDS_PER_SELECT) {
+                for (int i = 0; i < IDS_PER_SELECT; i++) statement.setObject(i + 1, idList.get(Math.min(from + i, idList.size() - 1)));
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) entities.add(mapping.readEntity(resultSet));
                 }
             }
         }
@@ -151,12 +153,11 @@ public final class MysqlEntityMapper implements EntityMapper {
     /** One entity type's table: its columns and statements. */
     private final class TableMapping {
         final EntityType type;
-        final String table, selectFrom, selectById, selectByGroup, insert;
+        final String table, selectFrom, selectById, selectByIds, selectByGroup, insert, delete;
         /** The INSERT, updating the columns that are not keys when the row exists; null when every column is a key. */
         final String upsert;
         final List<MysqlColumn> columns;
         final MysqlColumn idColumn;
-        final ConcurrentHashMap<Integer, String> deleteSqlByRows = new ConcurrentHashMap<>(), selectByIdsSqlByCount = new ConcurrentHashMap<>();
 
         TableMapping(EntityType type) {
             this.type = type;
@@ -171,6 +172,8 @@ public final class MysqlEntityMapper implements EntityMapper {
             List<MysqlColumn> updated = columns.stream().filter(column -> !keys.contains(column.field)).toList();
             selectFrom = "SELECT " + Jdbc.columnList(columns) + " FROM " + MysqlColumn.quote(table);
             selectById = selectFrom + " WHERE " + idColumn.quotedName() + " = ?";
+            selectByIds = selectFrom + " WHERE " + idColumn.quotedName() + " IN (" + String.join(", ", Collections.nCopies(IDS_PER_SELECT, "?")) + ")";
+            delete = "DELETE FROM " + MysqlColumn.quote(table) + " WHERE " + idColumn.quotedName() + " = ?";
             selectByGroup = selectFrom + " WHERE "
                     + type.groupKeys().stream().map(field -> columnOf(field).quotedName() + " = ?").collect(Collectors.joining(" AND "));
             insert = Jdbc.insertSql(table, columns);
@@ -190,19 +193,12 @@ public final class MysqlEntityMapper implements EntityMapper {
             return rows;
         }
 
+        /** The DELETE by id as one JDBC batch. */
         void delete(Connection connection, List<? extends Change> batch) throws SQLException {
-            for (int from = 0; from < batch.size(); from += MAX_IDS_PER_STATEMENT) {
-                int count = Math.min(MAX_IDS_PER_STATEMENT, batch.size() - from);
-                String sql = deleteSqlByRows.computeIfAbsent(count, rows -> "DELETE FROM " + MysqlColumn.quote(table) + " WHERE " + idIn(rows));
-                try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                    for (int row = 0; row < count; row++) statement.setObject(row + 1, batch.get(from + row).id());
-                    statement.executeUpdate();
-                }
-            }
+            List<Object[]> ids = new ArrayList<>(batch.size());
+            for (Change change : batch) ids.add(new Object[] {change.id()});
+            Jdbc.executeBatch(connection, delete, ids);
         }
-
-        /** {@code id IN (?, ...)} with this many placeholders. */
-        String idIn(int ids) { return idColumn.quotedName() + " IN (" + String.join(", ", Collections.nCopies(ids, "?")) + ")"; }
 
         private MysqlColumn columnOf(EntityField field) {
             for (MysqlColumn column : columns) if (column.field == field) return column;

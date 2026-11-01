@@ -117,6 +117,23 @@ class MysqlEntityMapperTest {
     }
 
     @Test
+    void readsAndDeletesAnyNumberOfRowsWithTheStatementsBuiltForTheTable() {
+        StringBuilder values = new StringBuilder();
+        for (long id = 1; id <= 250; id++) values.append(id == 1 ? "" : ", ").append("(").append(id).append(", 'p', 1, 0, '{}')");
+        database.execute("INSERT INTO player VALUES " + values);
+        assertEquals(3, players.getAll(List.of(1L, 2L, 2L, 3L)).size(), "a repeated id once");
+        List<Long> rest = new ArrayList<>();
+        for (long id = 4; id <= 250; id++) rest.add(id);
+        assertEquals(247, players.getAll(rest).size(), "three hundreds, the last filled by repeating an id");
+        for (long id = 1; id <= 120; id++) players.delete(id);
+        data.flush();
+        assertEquals(List.of(List.of(130L)), database.rows("SELECT COUNT(*) FROM player"));
+        Set<String> batchReads = database.prepared.stream().filter(sql -> sql.contains(" IN (")).collect(Collectors.toSet());
+        assertEquals(1, batchReads.size(), "one batch SELECT whatever the number of ids: " + batchReads);
+        assertEquals(1, database.prepared.stream().filter(sql -> sql.startsWith("DELETE")).count(), "one DELETE, batched");
+    }
+
+    @Test
     void loadsGroupsAndDeletesBeforeInsertsSoAUniqueSlotCanBeReused() {
         database.execute("INSERT INTO item VALUES (1, 100, 0, 5001, 1), (2, 100, 1, 5002, 3), (3, 200, 0, 5001, 9)");
         assertEquals(2, items.getGroup(GroupKeys.of(100L)).size());
