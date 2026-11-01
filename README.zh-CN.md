@@ -6,7 +6,7 @@
 
 | 项目 | 依赖 | 内容 |
 | --- | --- | --- |
-| [managame-common](managame-common/README.zh-CN.md) | 无 | `Metadata`、`MetadataKey` 与共用的错误码 |
+| [managame-common](managame-common/README.zh-CN.md) | 无 | `Metadata`、`MetadataKey`、唯一 id 生成器与共用的错误码 |
 | [managame-network](managame-network/README.zh-CN.md) | Netty | TCP / TLS / ws / wss 服务端、HTTP/1.1 服务端与自动重连客户端，可接入任意 Netty handler |
 | [managame-runtime](managame-runtime/README.zh-CN.md) | common、network | 所有业务逻辑经同一个入口执行，同一 domain 与路由键的任务逐个执行：按 domain 路由、注解处理器（`Dispatcher`、`EventBus`、`HttpRoutes`）、拦截器与定时器 |
 | [managame-rpc](managame-rpc/README.zh-CN.md) | common、network | 服务器进程之间的调用与通知：`RpcNode`、`RpcPeer`、基于 TCP 的对等连接、重启识别、准入检查 |

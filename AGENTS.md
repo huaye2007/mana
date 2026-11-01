@@ -9,7 +9,7 @@ Java 25. The workspace is the git repository https://github.com/huaye2007/mana (
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
-| `managame-common` | nothing | `Metadata`, `MetadataKey`, `FrameworkErrorCodes` |
+| `managame-common` | nothing | `Metadata`, `MetadataKey`, `IdGenerator` (`SnowflakeIdGenerator`, `SequenceIdGenerator`), `FrameworkErrorCodes` |
 | `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |

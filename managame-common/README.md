@@ -6,6 +6,9 @@ Types shared by every managame project, with no dependencies:
 
 - `Metadata` and `MetadataKey`: small typed key-value data that travels with every game context, for example a
   trace id or the id of the server a request came from.
+- `IdGenerator`: makes unique long ids, with one method, `generateId()`; the framework gives `SnowflakeIdGenerator`
+  (unique across servers and their merges, ordered by time, holding some data of the application's own, laid out by
+  an `IdLayout`) and `SequenceIdGenerator` (counting up in this process).
 - `FrameworkErrorCodes`: the error codes the framework answers failures with.
 
 ## Metadata
@@ -58,6 +61,39 @@ Rules:
 - `metadata.toBuilder()` derives new metadata with values added or replaced, leaving the original as it was:
   `metadata.toBuilder().put(FROM_SERVER, 8L).build()`.
 - The application owns the key ids. Allocate them in one place so that every server of a cluster agrees.
+
+## Unique ids
+
+```java
+IdGenerator mails = new SnowflakeIdGenerator(IdLayout.DEFAULT, serverId);   // the server id fills the data part
+long mailId = mails.generateId();
+
+SnowflakeIdGenerator items = new SnowflakeIdGenerator(IdLayout.DEFAULT, serverId << 4);
+long itemId = items.generateId(serverId << 4 | ITEM_KIND);   // data per id, with a kind in it as well
+long kind = IdLayout.DEFAULT.data(itemId) & 0xF;             // data, time and sequence read back from any id
+
+IdGenerator rooms = new SequenceIdGenerator();               // 1, 2, 3... in this process only
+IdGenerator own = () -> idService.next();                    // or the application's own
+```
+
+- `IdGenerator` has one method, `generateId()`. The framework gives two: `SnowflakeIdGenerator` for ids that are
+  stored or seen by other servers, and `SequenceIdGenerator` for what lives no longer than the process (rooms,
+  battles, drops on a map). An application may give its own, such as ids reserved in blocks from its database; one
+  called from several threads must be safe to call from them.
+- A `SnowflakeIdGenerator` id holds, from the high bits to the low, its time in ticks since the `epoch`, a sequence
+  counting the ids of one tick, and the application's data. `IdLayout.DEFAULT` has 41 bits of milliseconds from 2026,
+  lasting until 2095, 12 bits of sequence (4096 ids a millisecond per generator) and 10 bits of data. Lay out your own
+  as needed, for example ids a JavaScript number holds exactly, under 2^53:
+  `new IdLayout(epoch, Duration.ofSeconds(1), 31, 10, 12)`.
+- The application lays out the data part, but it must tell apart every generator making ids at the same time and
+  every one whose ids may meet later, as when servers merge: usually a server id, plus whatever bits the application
+  wants (a kind, a shard). A cluster shares one layout, which cannot change once ids exist.
+- Ids of one generator increase whatever data they hold. Any thread may call it; it takes no lock.
+- Time is the system clock, not `GameTime`, which may be shifted. A generator never returns an id ahead of the clock:
+  when a tick's sequence is used up, the next id takes the next tick and `generateId` waits for the clock to reach it,
+  a tick at most as a rule. So ids stay unique across a restart as long as the clock at the restart is past the last
+  id made. If the clock is set back, ids go on from the last one's time and wait for the clock once that tick is used
+  up. A thread that must not wait, such as an event loop, should stay well under `2^sequenceBits` ids a tick.
 
 ## Error codes
 
