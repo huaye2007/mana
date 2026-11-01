@@ -145,13 +145,14 @@ public final class HttpRoutes implements HttpHandler {
 
         /**
          * Registers every {@link HttpMethod} of each object. Two endpoints for one method and path, a path not
-         * starting with a slash, or a context other than HttpRequestContext or its supertypes throw
-         * IllegalArgumentException.
+         * starting with a slash, a context other than HttpRequestContext or its supertypes, or a domain that cannot
+         * route the argument throw IllegalArgumentException.
          */
         public Builder register(Object... targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod method : AnnotatedMethod.scan(target, HttpMethod.class)) {
                     method.requireContext(HttpRequestContext.class);
+                    runtime.checkRoute(method.domain(), method.messageType());
                     HttpMethod mapping = method.method().getAnnotation(HttpMethod.class);
                     String path = mapping.value(), verb = mapping.method().toUpperCase(Locale.ROOT);
                     if (!path.startsWith("/")) throw new IllegalArgumentException(method + ": path must start with /");

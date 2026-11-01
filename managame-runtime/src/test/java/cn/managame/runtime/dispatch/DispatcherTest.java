@@ -15,7 +15,6 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.HandleMethod;
-import cn.managame.runtime.annotation.RouteKey;
 import cn.managame.runtime.executor.RouteExecutors;
 import cn.managame.runtime.http.HttpRequestContext;
 import java.util.List;
@@ -31,8 +30,8 @@ class DispatcherTest {
     private static final byte ROLE = 1;
 
     record Buy(int item) {}
-    record Donate(@RouteKey(GUILD) long guildId) {}
-    record Unroutable() {}
+    record Donate(long guildId) {}
+    record Unroutable(Long guildId) {}
     record Boom() {}
     record Later(String text) {}
     record Note(String text) {}
@@ -40,7 +39,7 @@ class DispatcherTest {
 
     private final GameRuntime runtime = GameRuntime.builder()
             .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId())
-            .domain(GUILD, RouteExecutors.virtualThreads()).build();
+            .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId")).build();
     private final List<String> notes = new CopyOnWriteArrayList<>();
     private final BlockingQueue<String> answers = new LinkedBlockingQueue<>();
     private final GameContext role = new GameContext(0, 0, ROLE, 1001, Metadata.empty());
@@ -85,11 +84,16 @@ class DispatcherTest {
         assertEquals("ok:donated to 7 by 1001", answer(), "the guild domain keys by the message");
     }
 
+    @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {
+        @Domain(GUILD) class Misrouted { @HandleMethod String rest(Buy buy) { return ""; } }   // Buy has no guildId
+        assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(new Misrouted()));
+    }
+
     @Test void failuresAreAnsweredWithErrorCodes() throws Exception {
         Dispatcher dispatcher = dispatcher();
         dispatch(dispatcher, new Unknown());
         assertEquals("fail:" + HANDLER_NOT_FOUND, answer());
-        dispatch(dispatcher, new Unroutable());
+        dispatch(dispatcher, new Unroutable(null));
         assertEquals("fail:" + INVALID_ROUTE_KEY, answer());
         dispatch(dispatcher, new Boom());
         assertEquals("fail:" + RUNTIME_EXECUTION_ERROR, answer());

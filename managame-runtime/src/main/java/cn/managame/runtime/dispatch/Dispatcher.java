@@ -147,13 +147,15 @@ public final class Dispatcher {
         }
 
         /**
-         * Registers every {@link HandleMethod} of each object. Two handlers for one message class, or a handler
-         * declaring a context other than HandleContext or its supertypes, throw IllegalArgumentException.
+         * Registers every {@link HandleMethod} of each object. Two handlers for one message class, a handler declaring
+         * a context other than HandleContext or its supertypes, or one whose domain cannot route its message, throw
+         * IllegalArgumentException.
          */
         public Builder register(Object... targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod handler : AnnotatedMethod.scan(target, HandleMethod.class)) {
                     handler.requireContext(HandleContext.class);
+                    runtime.checkRoute(handler.domain(), handler.messageType());
                     AnnotatedMethod existing = handlers.putIfAbsent(handler.messageType(), handler);
                     if (existing != null)
                         throw new IllegalArgumentException(handler.messageType().getName() + " is handled by both " + existing + " and " + handler);

@@ -21,9 +21,9 @@ static final int PLAYER = 1, GUILD = 2, WORLD = 3;
 static final byte ROLE = 1;
 
 GameRuntime runtime = GameRuntime.builder()
-        .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId())   // 按当前操作的玩家路由
-        .domain(GUILD, RouteExecutors.virtualThreads())                           // 按消息上的 @RouteKey(GUILD) 路由
-        .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))          // 全部在同一条路由上
+        .domain(PLAYER, RouteExecutors.virtualThreads())                              // 按当前操作的玩家路由
+        .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))   // 按消息的 guildId 路由
+        .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))              // 全部在同一条路由上
         .build();
 
 runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get(context.businessId()).levelUp());
@@ -57,16 +57,21 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 - `striped(threads)`：固定数量的平台线程，一个键总在 `hash(key) % threads` 号线程上。不保存键的状态，但一个阻塞的任务会卡住同一线程上的所有键。`striped(threads, maxPendingPerThread)`，默认 65 536。
 - 也可以自己实现 `RouteExecutor`。
 
-**路由键**：resolver 拿到来源上下文和消息，路由键从哪来由业务按 domain 决定：
+**路由键**：每个 domain 的 resolver 为这个 domain 收到的所有消息统一决定路由键从哪来；消息和方法上都不写任何路由信息：
 
-- `RouteKeys.businessId()`：当前操作者的身份，用于玩家 domain。
+- `RouteKeys.businessId()`，即 `domain(id, executor)` 的默认值：当前操作的玩家，请求取会话里的，事件取发布任务的。大多数
+  domain 用它就够了。
+- `RouteKeys.field("guildId")`：消息里同名的整数成员，可以是 record 组件、无参方法或字段。注册的方法的消息没有这个成员时，
+  启动时就失败。
 - `RouteKeys.constant(key)`：所有消息走同一条路由。
-- `RouteKeys.annotated(domain)`，即 `domain(id, executor)` 的默认值：消息上标了 `@RouteKey(domain)` 的整数字段或无参方法，record 组件也可以。一个成员可以同时为多个 domain 提供路由键。
 - 任意 lambda `(source, message) -> key`。抛 `IllegalArgumentException` 表示消息无法路由：Dispatcher 应答 `INVALID_ROUTE_KEY`，HttpRoutes 返回 400。
 
 ```java
-record Donate(@RouteKey(GUILD) long guildId, int gold) {}
+record Donate(long guildId, int gold) {}   // 在 GUILD 里处理，按 RouteKeys.field("guildId") 路由
 ```
+
+不在任何玩家任务里发布的事件或请求没有操作的玩家，按 businessId 路由的 domain 会把它排到 0 号路由上：玩家的事件要在该玩家
+的任务里发布。
 
 路由后的任务，业务身份总是来源的身份：为玩家消息执行的公会处理器，`businessType` / `businessId` 是这个玩家。`runtime.route(domain, source, message)` 返回入口会使用的 `Route`。
 
@@ -167,15 +172,15 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
 ## 事件
 
 ```java
-record LevelUp(@RouteKey(PLAYER) long playerId, @RouteKey(GUILD) long guildId, int level) {}
+record LevelUp(long playerId, long guildId, int level) {}   // 只是数据，不知道任何 domain
 
 @Domain(PLAYER)
 class Quests {
-    @EventMethod void onLevelUp(LevelUp event) { ... }                        // 在 PLAYER:playerId 上执行
+    @EventMethod void onLevelUp(LevelUp event) { ... }                        // 在 PLAYER:发布事件的玩家 上执行
 }
 @Domain(GUILD)
 class GuildLog {
-    @EventMethod void onLevelUp(GameContext context, LevelUp event) { ... }   // 在 GUILD:guildId 上执行
+    @EventMethod void onLevelUp(GameContext context, LevelUp event) { ... }   // 在 GUILD:guildId 上执行（RouteKeys.field）
 }
 
 EventBus events = EventBus.builder(runtime).register(new Quests(), new GuildLog()).build();
@@ -210,7 +215,7 @@ timer.close();
 
 ```java
 record SendMail(String title, String text) {}
-record GuildNotice(@RouteKey(GUILD) long guildId, String text) {}
+record GuildNotice(long guildId, String text) {}
 
 @Domain(PLAYER)
 class PlayerAdmin {
@@ -240,7 +245,7 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 ```
 
 - 接口只有一个参数，由编解码器从请求中读出，通常就是请求体。路径在监听的 contextPath 之下精确匹配；方法默认为 POST，需要其它方法时用 `method` 指定，例如 `@HttpMethod(value = "/status", method = "GET")`。
-- 这个参数就是 domain 的 resolver 用来路由的消息，所以请求体上的 `@RouteKey` 决定路由。
+- 这个参数就是 domain 的 resolver 用来路由的消息，所以在按 `RouteKeys.field` 路由的 domain 里，请求体上那个成员决定路由。
 - 接口一般用不到上下文。需要时在接口内调用 `HttpRequestContext.current()`，或者把它声明为第一个参数：`(HttpRequestContext context, SendMail mail)`。通过它可以取 `request()`（读请求头和查询参数，接口返回前可读）、`remoteAddress()`，以及用 `reply` / `fail` 稍后应答。
 - `source(request -> context)` 决定请求以谁的身份执行；它在连接的 EventLoop 上运行，不能阻塞。默认以空上下文执行。
 - 状态码：未知路径 404；方法不对 405 并带 `Allow`；编解码器读不出参数 400，source 或路由抛 `IllegalArgumentException` 也是 400；任务被拒绝（已关闭、过载）503；接口抛异常 500。

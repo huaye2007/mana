@@ -74,13 +74,14 @@ public final class EventBus {
 
         /**
          * Registers every {@link EventMethod} of each object; subscribers to one event class are called in
-         * registration order. A subscriber declaring a context other than GameContext or its supertypes throws
-         * IllegalArgumentException.
+         * registration order. A subscriber declaring a context other than GameContext or its supertypes, or one whose
+         * domain cannot route its event, throws IllegalArgumentException.
          */
         public Builder register(Object... targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod subscriber : AnnotatedMethod.scan(target, EventMethod.class)) {
                     subscriber.requireContext(GameContext.class);
+                    runtime.checkRoute(subscriber.domain(), subscriber.messageType());
                     subscribers.computeIfAbsent(subscriber.messageType(), type -> new ArrayList<>()).add(subscriber);
                 }
             }

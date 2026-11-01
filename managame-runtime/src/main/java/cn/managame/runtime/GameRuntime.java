@@ -62,6 +62,17 @@ public final class GameRuntime implements AutoCloseable {
     }
 
     /**
+     * Checks that messages of {@code messageType} can be routed in {@code domain}; entries call it as they register a
+     * method, so the mistake fails at startup. IllegalArgumentException for an unregistered domain, or when the domain's
+     * resolver can never route such messages, such as {@link RouteKeys#field} for a class without that member.
+     */
+    public void checkRoute(int domain, Class<?> messageType) {
+        RouteKeyResolver resolver = resolvers.get(domain);
+        if (resolver == null) throw new IllegalArgumentException("Unknown domain " + domain);
+        resolver.check(messageType);
+    }
+
+    /**
      * Queues {@code task} on the route of {@code context} and returns; the task later runs with the context as
      * {@link Context#current()}. Throws GameRuntimeException with RUNTIME_CLOSED after shutdown or
      * ROUTE_EXECUTOR_OVERLOADED when the domain's executor is full; the task then never runs. An unregistered
@@ -168,11 +179,11 @@ public final class GameRuntime implements AutoCloseable {
         private Builder() {}
 
         /**
-         * Registers a domain whose route keys come from the messages' {@code @RouteKey} fields or methods for
-         * it; see {@link #domain(int, RouteExecutor, RouteKeyResolver)}.
+         * Registers a domain routed by the source's business id, the acting player's, which suits most domains; see
+         * {@link #domain(int, RouteExecutor, RouteKeyResolver)}.
          */
         public Builder domain(int domain, RouteExecutor executor) {
-            return domain(domain, executor, RouteKeys.annotated(domain));
+            return domain(domain, executor, RouteKeys.businessId());
         }
 
         /**

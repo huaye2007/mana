@@ -102,8 +102,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - **Every context has the same fields:** `domain` (int), `routeKey` (long), `businessType` (byte),
   `businessId` (long) and `Metadata`.
 - **The business decides routing per domain.** Each domain has its own `RouteExecutor` and its own
-  `RouteKeyResolver`: the key may come from the source context (a player's id) or from the message (a guild id
-  marked `@RouteKey`).
+  `RouteKeyResolver`, set once for the whole domain: by default the source's business id (the acting player), or a
+  member of the message (`RouteKeys.field("guildId")`, checked at startup). Messages and handler methods carry no
+  routing of their own.
 - **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
   `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
   Registrations are immutable once built.

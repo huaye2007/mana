@@ -12,7 +12,6 @@ import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
-import cn.managame.runtime.annotation.RouteKey;
 import cn.managame.runtime.dispatch.HandleContext;
 import cn.managame.runtime.executor.RouteExecutors;
 import io.netty.buffer.Unpooled;
@@ -38,7 +37,7 @@ class HttpRoutesTest {
     private static final byte ROLE = 1;
     private static final HttpClient CLIENT = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
 
-    record Notice(@RouteKey(GUILD) long guildId, String text) {}
+    record Notice(long guildId, String text) {}
     record Posted(long guild, String text) {}
 
     private final GameRuntime runtime = GameRuntime.builder()
@@ -46,7 +45,7 @@ class HttpRoutesTest {
                 if (source.businessId() == 0) throw new IllegalArgumentException("Which role?");
                 return source.businessId();
             })
-            .domain(GUILD, RouteExecutors.virtualThreads())
+            .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))
             .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0)).build();
     private NetworkServer server;
 
@@ -172,7 +171,7 @@ class HttpRoutesTest {
         };
         serve(HttpRoutes.builder(runtime).codec(json).register(new GuildAdmin(), new WorldAdmin()).build());
         HttpResponse<String> posted = send("POST", "/notice", "7:hello");
-        assertEquals("{\"guild\":7,\"text\":\"hello\"}", posted.body(), "the guild domain routes by the notice's @RouteKey");
+        assertEquals("{\"guild\":7,\"text\":\"hello\"}", posted.body(), "the guild domain routes by the notice's guildId");
         assertEquals("application/json", posted.headers().firstValue("content-type").orElseThrow());
         assertEquals(400, send("POST", "/notice", "not a notice").statusCode());
         assertEquals("{\"error\":" + RUNTIME_EXECUTION_ERROR + "}", send("POST", "/boom", "x").body());

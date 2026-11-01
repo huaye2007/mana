@@ -23,9 +23,9 @@ static final int PLAYER = 1, GUILD = 2, WORLD = 3;
 static final byte ROLE = 1;
 
 GameRuntime runtime = GameRuntime.builder()
-        .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId())   // keyed by the acting player
-        .domain(GUILD, RouteExecutors.virtualThreads())                           // keyed by the message's @RouteKey(GUILD)
-        .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))          // everything on one route
+        .domain(PLAYER, RouteExecutors.virtualThreads())                              // keyed by the acting player
+        .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))   // keyed by the message's guildId
+        .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))              // everything on one route
         .build();
 
 runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get(context.businessId()).levelUp());
@@ -68,20 +68,23 @@ message's route key.
   a blocking task holds up every key on its thread. `striped(threads, maxPendingPerThread)`, 65 536 by default.
 - Or your own `RouteExecutor`.
 
-**Route keys.** The resolver receives the source context and the message, and the application decides per
-domain where the key comes from:
+**Route keys.** A domain's resolver decides, once for the whole domain, where the key of every message arriving for
+it comes from; messages and methods carry no routing of their own:
 
-- `RouteKeys.businessId()`: the acting identity, for a player domain.
+- `RouteKeys.businessId()`, the default of `domain(id, executor)`: the acting player, the session's for a request and
+  the publishing task's for an event. Most domains need nothing more.
+- `RouteKeys.field("guildId")`: the message's integral member of that name, a record component, no-argument method
+  or field. Registering a method whose message has no such member fails at startup.
 - `RouteKeys.constant(key)`: one route for everything.
-- `RouteKeys.annotated(domain)`, the default of `domain(id, executor)`: the message's integral field or
-  no-argument method marked `@RouteKey(domain)`, record components included. One member may route several
-  domains.
 - Any lambda `(source, message) -> key`. Throwing `IllegalArgumentException` means the message cannot be routed:
   the Dispatcher answers `INVALID_ROUTE_KEY`, HttpRoutes answers 400.
 
 ```java
-record Donate(@RouteKey(GUILD) long guildId, int gold) {}
+record Donate(long guildId, int gold) {}   // handled in GUILD, routed by RouteKeys.field("guildId")
 ```
+
+An event or a request published outside any player's task has no acting player, so a domain routed by business id
+puts it on key 0: publish a player's events from that player's tasks.
 
 The business identity of a routed task is always the source's: a guild handler running for a player's message
 has that player as `businessType` / `businessId`. `runtime.route(domain, source, message)` returns the `Route` an
@@ -201,15 +204,15 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
 ## Events
 
 ```java
-record LevelUp(@RouteKey(PLAYER) long playerId, @RouteKey(GUILD) long guildId, int level) {}
+record LevelUp(long playerId, long guildId, int level) {}   // only data: it knows no domain
 
 @Domain(PLAYER)
 class Quests {
-    @EventMethod void onLevelUp(LevelUp event) { ... }                        // runs on PLAYER:playerId
+    @EventMethod void onLevelUp(LevelUp event) { ... }                        // runs on PLAYER:the publishing player
 }
 @Domain(GUILD)
 class GuildLog {
-    @EventMethod void onLevelUp(GameContext context, LevelUp event) { ... }   // runs on GUILD:guildId
+    @EventMethod void onLevelUp(GameContext context, LevelUp event) { ... }   // runs on GUILD:guildId, RouteKeys.field
 }
 
 EventBus events = EventBus.builder(runtime).register(new Quests(), new GuildLog()).build();
@@ -249,7 +252,7 @@ timer.close();
 
 ```java
 record SendMail(String title, String text) {}
-record GuildNotice(@RouteKey(GUILD) long guildId, String text) {}
+record GuildNotice(long guildId, String text) {}
 
 @Domain(PLAYER)
 class PlayerAdmin {
@@ -281,7 +284,8 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 - An endpoint's one parameter is its argument, which the codec reads from the request, normally from the body.
   Paths match exactly below the listener's context path, and the method is POST unless `method` says otherwise,
   for example `@HttpMethod(value = "/status", method = "GET")`.
-- The argument is the message the domain's resolver routes by, so a `@RouteKey` in the body picks the route.
+- The argument is the message the domain's resolver routes by, so in a domain routed by `RouteKeys.field`, that
+  member of the body picks the route.
 - Endpoints rarely need their context. When one does, `HttpRequestContext.current()` returns it, or the endpoint
   declares it first: `(HttpRequestContext context, SendMail mail)`. It gives `request()` for headers and query
   (readable until the endpoint returns), `remoteAddress()`, and `reply` / `fail` to answer later.

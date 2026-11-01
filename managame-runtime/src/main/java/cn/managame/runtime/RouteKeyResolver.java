@@ -12,4 +12,10 @@ public interface RouteKeyResolver {
      * exception means the message cannot be routed.
      */
     long routeKey(Context source, Object message);
+
+    /**
+     * Throws IllegalArgumentException when messages of {@code messageType} can never be routed by this resolver, so the
+     * mistake fails at startup: entries call it as they register each method. Nothing by default.
+     */
+    default void check(Class<?> messageType) {}
 }

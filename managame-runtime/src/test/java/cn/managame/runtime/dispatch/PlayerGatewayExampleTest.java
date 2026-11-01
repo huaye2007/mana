@@ -14,7 +14,6 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.HandleMethod;
-import cn.managame.runtime.annotation.RouteKey;
 import cn.managame.runtime.executor.RouteExecutors;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.codec.string.StringEncoder;
@@ -41,7 +40,7 @@ class PlayerGatewayExampleTest {
     private static final AttributeKey<Session> SESSION = AttributeKey.valueOf("example.session");
 
     // The application's messages
-    record Login(@RouteKey(LOGIN) long roleId) {}
+    record Login(long roleId) {}
     record Buy(int item) {}
     record Logout() {}
 
@@ -99,7 +98,7 @@ class PlayerGatewayExampleTest {
                 if (source.businessId() == 0) throw new IllegalArgumentException("Not logged in");
                 return RouteKeys.businessId().routeKey(source, message);
             })
-            .domain(LOGIN, RouteExecutors.striped(2)).build();
+            .domain(LOGIN, RouteExecutors.striped(2), RouteKeys.field("roleId")).build();
     private final BlockingQueue<Long> loggedOut = new LinkedBlockingQueue<>();
     private final NetworkServer server = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
             ConnectionInitializer.tcp()

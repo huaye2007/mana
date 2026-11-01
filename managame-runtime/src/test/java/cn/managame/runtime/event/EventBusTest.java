@@ -10,9 +10,9 @@ import cn.managame.MetadataKey;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
+import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.EventMethod;
-import cn.managame.runtime.annotation.RouteKey;
 import cn.managame.runtime.dispatch.HandleContext;
 import cn.managame.runtime.executor.RouteExecutors;
 import java.util.List;
@@ -29,13 +29,14 @@ class EventBusTest {
     private static final byte ROLE = 1;
     private static final MetadataKey<String> TRACE = MetadataKey.stringKey(1);
 
-    record LevelUp(@RouteKey(PLAYER) long playerId, @RouteKey(GUILD) long guildId, int level) {}
+    record LevelUp(long playerId, long guildId, int level) {}
     record Unheard() {}
 
     private final GameRuntime runtime = GameRuntime.builder()
-            .domain(PLAYER, RouteExecutors.virtualThreads())
-            .domain(GUILD, RouteExecutors.virtualThreads())
-            .domain(ROOM, RouteExecutors.virtualThreads()).build();
+            .domain(PLAYER, RouteExecutors.virtualThreads())                              // by the acting player
+            .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))
+            .domain(ROOM, RouteExecutors.virtualThreads(), (source, message) -> { throw new IllegalArgumentException("no room"); })
+            .build();
     private final BlockingQueue<String> seen = new LinkedBlockingQueue<>();
 
     @AfterEach void stop() { runtime.close(); }
@@ -76,7 +77,7 @@ class EventBusTest {
             }
         }
         EventBus events = EventBus.builder(runtime).register(new Recorder()).build();
-        runtime.execute(GameContext.of(PLAYER, 1001), context -> {
+        runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> {
             order.add("task start");
             for (int level = 1; level <= 3; level++) events.publish(new LevelUp(1001, 0, level));
             order.add("task end"); // the subscriber shares this route, yet nothing ran inside the task
@@ -89,17 +90,23 @@ class EventBusTest {
         EventBus events = EventBus.builder(runtime).register(new Quests()).build();
         events.publish(new Unheard());
         events.publish(new LevelUp(5, 0, 1));
-        assertEquals("player 5 level 1 by 0 null", seen.poll(5, TimeUnit.SECONDS));
+        assertEquals("player 0 level 1 by 0 null", seen.poll(5, TimeUnit.SECONDS), "no acting player: route 0");
     }
 
     @Test void aSubscriberThatCannotBeRoutedDoesNotStopTheOthers() throws Exception {
-        @Domain(ROOM) class RoomLog { // LevelUp has no @RouteKey for ROOM
+        @Domain(ROOM) class RoomLog { // ROOM's resolver refuses every event
             @EventMethod void on(LevelUp event) { seen.add("room"); }
         }
         EventBus events = EventBus.builder(runtime).register(new RoomLog(), new Quests()).build();
         assertThrows(IllegalArgumentException.class, () -> events.publish(new LevelUp(5, 0, 1)));
-        assertTrue(seen.poll(5, TimeUnit.SECONDS).startsWith("player 5"));
+        assertTrue(seen.poll(5, TimeUnit.SECONDS).startsWith("player 0"));
         assertNull(seen.poll(100, TimeUnit.MILLISECONDS));
+    }
+
+    @Test void aSubscriberWhoseDomainCannotRouteItsEventFailsAtRegistration() {
+        record Rested(long playerId) {}
+        @Domain(GUILD) class GuildRest { @EventMethod void on(Rested event) {} }   // no guildId to route by
+        assertThrows(IllegalArgumentException.class, () -> EventBus.builder(runtime).register(new GuildRest()));
     }
 
     @Test void subscribersReceiveOnlyTheirExactClassAndTakeOnlyAGameContext() throws Exception {
