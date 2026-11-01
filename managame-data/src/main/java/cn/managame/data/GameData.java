@@ -149,6 +149,9 @@ public final class GameData implements AutoCloseable {
      * {@code shutdownTimeout} while writes fail; entities and logs at once, on threads of their own, so neither takes
      * the other's time. What is still not written then goes, one by one, to the DataErrorHandler, and close throws
      * {@link DataException} ({@code DATA_SAVE_FAILED}). Reads keep working.
+     * <p>
+     * Close it once the business threads have stopped changing data and inserting logs, as the last step of shutting
+     * down. A change made while it closes is written or refused, but a log inserted meanwhile may be left unwritten.
      */
     @Override public void close() {
         synchronized (this) {

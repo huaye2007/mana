@@ -151,7 +151,9 @@ Every `flushInterval` (1 second) a round writes what changed since the last one:
 - **`close()`** refuses further changes, then writes what is waiting, trying again every flush interval for up to
   `shutdownTimeout` (30 seconds) while writes fail. What is still not written goes, one by one, to the
   `DataErrorHandler`, where the application can keep it elsewhere, and close throws. Close it on shutdown: its threads
-  keep the JVM running until then.
+  keep the JVM running until then. It is the last step: stop the business threads that change data and insert logs
+  first. A change made while it closes is written or refused, but a log inserted meanwhile may be left unwritten; the
+  framework tracks no insert in flight, and the order of shutting down is what keeps it correct.
 - **A crash** loses at most about one flush interval of changes.
 
 The `DataErrorHandler` receives a `DataFailure`: the code (`DATA_SAVE_FAILED`, or `DATA_LOG_SAVE_FAILED` for logs),

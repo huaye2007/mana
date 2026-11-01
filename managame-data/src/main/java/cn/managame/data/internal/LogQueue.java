@@ -6,19 +6,18 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** One log type's logs not yet written, at most {@code capacity} of them, and the writer that writes them. Not API. */
+/**
+ * One log type's logs not yet written, at most {@code capacity} of them, and the writer that writes them. GameData is
+ * closed once the business has stopped inserting, so closing tracks no insert in flight. Not API.
+ */
 public final class LogQueue {
-    /** The bit of {@link #size} set once closed, which refuses every later add. */
-    private static final int CLOSED = Integer.MIN_VALUE;
     final Class<?> type;
     final LogWriter writer;
     final int capacity;
     private final ConcurrentLinkedQueue<Object> logs = new ConcurrentLinkedQueue<>();
-    /**
-     * Logs counted in and not yet taken, which ConcurrentLinkedQueue would count by walking it, and CLOSED once closed.
-     * An add counts its log in before queueing it, so a log counted in may still be on its way into the queue.
-     */
+    /** Logs queued, for the capacity: ConcurrentLinkedQueue would count them by walking it. */
     private final AtomicInteger size = new AtomicInteger();
+    private volatile boolean closed;
     /** What the rounds did since GameData was built, counted by the write thread; read by stats. */
     final AtomicLong written = new AtomicLong(), failures = new AtomicLong(), dropped = new AtomicLong();
     /** Logs refused because the queue was full. */
@@ -35,7 +34,7 @@ public final class LogQueue {
     public int capacity() { return capacity; }
 
     /** Logs waiting in the queue; those the round in progress took are not among them. */
-    public int queued() { return size(); }
+    public int queued() { return size.get(); }
 
     /** Logs written since GameData was built. */
     public long written() { return written.get(); }
@@ -51,10 +50,9 @@ public final class LogQueue {
 
     /** Queues a log; false, counted as refused, when the queue is full. IllegalStateException once closed. */
     public boolean add(Object log) {
-        int before = size.getAndIncrement();   // one atomic add, which unlike a compare-and-set never retries
-        if ((before & CLOSED) != 0 || before >= capacity) {
+        if (closed) throw new IllegalStateException("GameData is closed");
+        if (size.getAndIncrement() >= capacity) {   // one atomic add, which unlike a compare-and-set never retries
             size.decrementAndGet();
-            if ((before & CLOSED) != 0) throw new IllegalStateException("GameData is closed");
             refused.incrementAndGet();
             return false;
         }
@@ -62,14 +60,13 @@ public final class LogQueue {
         return true;
     }
 
-    boolean isEmpty() { return size() == 0; }
+    boolean isEmpty() { return size.get() == 0; }
 
-    int size() { return size.get() & ~CLOSED; }
+    int size() { return size.get(); }
 
-    /** The oldest log, waiting a moment for one counted in but still on its way into the queue; null when none is. */
-    Object take() {
-        Object log;
-        while ((log = logs.poll()) == null && size() > 0) Thread.onSpinWait();
+    /** The oldest queued log, or null. */
+    Object poll() {
+        Object log = logs.poll();
         if (log != null) size.decrementAndGet();
         return log;
     }
@@ -80,6 +77,6 @@ public final class LogQueue {
         size.addAndGet(unwritten.size());
     }
 
-    /** Refuses every later log; one already counted in still arrives, and {@link #take} waits for it. */
-    void close() { size.getAndUpdate(value -> value | CLOSED); }
+    /** Refuses every later log. */
+    void close() { closed = true; }
 }
