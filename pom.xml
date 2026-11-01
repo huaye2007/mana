@@ -1,0 +1,29 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>cn.managame</groupId>
+  <artifactId>managame</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <description>
+    Builds every project in dependency order with one command. Only an aggregator: no project inherits from it, and each
+    still builds on its own once the projects below it are installed.
+  </description>
+
+  <modules>
+    <module>managame-bom</module>
+    <module>managame-common</module>
+    <module>managame-network</module>
+    <module>managame-runtime</module>
+    <module>managame-rpc</module>
+    <module>managame-data</module>
+    <module>managame-data-mysql</module>
+    <module>managame-data-mongo</module>
+    <module>managame-benchmark</module>
+  </modules>
+
+  <properties>
+    <!-- The aggregator itself is no artifact. -->
+    <maven.install.skip>true</maven.install.skip>
+    <maven.deploy.skip>true</maven.deploy.skip>
+  </properties>
+</project>

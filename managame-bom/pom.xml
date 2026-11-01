@@ -1,0 +1,40 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>cn.managame</groupId>
+  <artifactId>managame-bom</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <description>
+    One version for every managame component, and for the Netty modules network, runtime and rpc share. Versions only:
+    no code, and no component depends on it.
+  </description>
+
+  <properties>
+    <netty.version>4.2.19.Final</netty.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-common</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-network</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-runtime</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-rpc</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-data</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-data-mysql</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-data-mongo</artifactId><version>${project.version}</version></dependency>
+
+      <dependency><groupId>io.netty</groupId><artifactId>netty-common</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-buffer</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-resolver</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-transport-native-unix-common</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-handler</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-codec-base</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-codec-compression</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-codec-http</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-transport-classes-epoll</artifactId><version>${netty.version}</version></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-transport-native-epoll</artifactId><version>${netty.version}</version><classifier>linux-x86_64</classifier></dependency>
+      <dependency><groupId>io.netty</groupId><artifactId>netty-transport-native-epoll</artifactId><version>${netty.version}</version><classifier>linux-aarch_64</classifier></dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>

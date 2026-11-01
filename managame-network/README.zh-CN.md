@@ -250,6 +250,10 @@ client.close();         // 停止重连并关闭当前连接
 
 ## 构建
 
+只依赖用到的 Netty 模块，不用 `netty-all`：common、buffer、transport、handler、codec-base、codec-http 和 epoll 的类，运行时
+带 Linux x86-64 与 AArch64 的 epoll 原生库（其它平台用 NIO）。业务需要别的 Netty 模块时按同一版本自行加入，managame-bom 会
+锁定这个版本。
+
 ```bash
 mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```

@@ -4,26 +4,27 @@ Guidance for coding agents working in this workspace. Read it before changing an
 
 ## Workspace
 
-Seven component projects and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
-Java 25. The workspace is the git repository https://github.com/huaye2007/mana (branch `main`).
+Seven component projects, a BOM and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
+Java 25. The root `pom.xml` only aggregates them, to build all in one command; no project inherits from it. The workspace is the git repository https://github.com/huaye2007/mana (branch `main`).
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
 | `managame-common` | nothing | `Metadata`, `MetadataKey`, `IdGenerator` (`SnowflakeIdGenerator`, `SequenceIdGenerator`), `FrameworkErrorCodes` |
-| `managame-network` | Netty 4.2.19 (`netty-all`) | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
+| `managame-network` | Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
 | `managame-data` | common, Caffeine | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
 | `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
 | `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
+| `managame-bom` | nothing | Versions only: every component and the Netty modules they share, for applications importing several |
 | `managame-benchmark` | all, JMH 1.37, H2, MySQL driver, HikariCP | JMH benchmarks per component with recorded baselines (`results/*.csv`), plus `mysqlserver` and `mongo` against real servers; a tool nothing depends on |
 
 ## Build and test
 
-- Build each project on its own, in dependency order: common → network → runtime and rpc (which do not depend on
-  each other), and common → data → data-mysql and data-mongo. A project sees another
-  only through the local Maven repository (`d:\maven_repository`), so after changing a lower project run
-  `mvn install` in it before building the projects above it.
+- Build everything from the root, which runs the projects in dependency order: common → network → runtime and rpc
+  (which do not depend on each other), and common → data → data-mysql and data-mongo, then the benchmark. A project
+  built on its own sees another only through the local Maven repository (`d:\maven_repository`), so after changing a
+  lower project install it before building the projects above it.
 - Tests open real loopback sockets. Run them outside a sandbox, and give the JDK a writable directory for its
   Unix-domain selector sockets:
 
@@ -37,7 +38,10 @@ Java 25. The workspace is the git repository https://github.com/huaye2007/mana (
   runtime and rpc tests use real connections rather than mocks. data's tests run on an in-memory `EntityMapper` that
   behaves as a database does; data-mysql's on H2 in MySQL mode, a real database in memory; a real MySQL or MongoDB
   only when `MysqlIntegrationTest` or `MongoIntegrationTest` is given its address.
-- managame-benchmark builds last (`mvn -o clean package`), after the components are installed.
+- managame-benchmark builds last in the root build; on its own, `mvn -o clean package` after the components are
+  installed. Its jar stays in `target/` and is never installed.
+- A component depends on the modules of a library it uses, not on an aggregate of all (`netty-all`), so an
+  application gets few jars and keeps its own choice of the rest; managame-bom pins the versions components share.
 
 ## Benchmarks
 

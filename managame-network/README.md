@@ -333,6 +333,10 @@ late, reconnecting after the connection drops, and closing a client that never c
 
 ## Build
 
+It depends on the Netty modules it uses, never `netty-all`: common, buffer, transport, handler, codec-base,
+codec-http and epoll's classes, with epoll's native library for Linux x86-64 and AArch64 at run time (NIO elsewhere).
+An application adds any other Netty module it wants at the same version, which managame-bom pins.
+
 ```bash
 mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```

@@ -9,6 +9,9 @@
     <maven.compiler.target>25</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <jmh.version>1.37</jmh.version>
+    <!-- A tool nothing depends on: built from the root, its jar stays in target/. -->
+    <maven.install.skip>true</maven.install.skip>
+    <maven.deploy.skip>true</maven.deploy.skip>
   </properties>
 
   <dependencies>
