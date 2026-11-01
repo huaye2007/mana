@@ -1,7 +1,9 @@
 package cn.managame.runtime.executor;
 
+import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_CLOSED;
 import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -42,7 +44,7 @@ class KeyedRouteExecutorTest {
             eventually(first::isIdle, "the queue is idle again");
             assertSame(first, executor.queue(1), "the key's queue is reused, not created again");
         } finally {
-            executor.close();
+            executor.shutdown();
         }
     }
 
@@ -53,7 +55,7 @@ class KeyedRouteExecutorTest {
             eventually(() -> executor.queueCount() == 0, "queues idle past the timeout are dropped");
             runAndWait(executor, 1); // a dropped key simply gets a new queue
         } finally {
-            executor.close();
+            executor.shutdown();
         }
     }
 
@@ -70,7 +72,7 @@ class KeyedRouteExecutorTest {
             release.countDown();
             assertTrue(ran.await(5, TimeUnit.SECONDS));
         } finally {
-            executor.close();
+            executor.shutdown();
         }
     }
 
@@ -90,7 +92,7 @@ class KeyedRouteExecutorTest {
             runAndWait(executor, 2); // other keys are not held up
             release.countDown();
         } finally {
-            executor.close();
+            executor.shutdown();
         }
     }
 
@@ -119,7 +121,7 @@ class KeyedRouteExecutorTest {
             for (int i = 0; i < tasks; i++) expected.add(i);
             assertEquals(expected, ran);
         } finally {
-            executor.close();
+            executor.shutdown();
         }
     }
 
@@ -141,8 +143,29 @@ class KeyedRouteExecutorTest {
             assertTrue(done.await(30, TimeUnit.SECONDS), "every task ran");
             assertEquals(0, overlaps.get());
         } finally {
-            executor.close();
+            executor.shutdown();
         }
+    }
+
+    @Test void shutdownRefusesNewKeysAndTerminatesOnceTheAcceptedTasksRan() throws Exception {
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60));
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger ran = new AtomicInteger();
+        executor.execute(1, () -> {
+            await(release);
+            ran.incrementAndGet();
+        });
+        executor.execute(1, ran::incrementAndGet);
+        runAndWait(executor, 2);   // a drained queue, retired at once on shutdown
+        executor.shutdown();
+        GameRuntimeException refused = assertThrows(GameRuntimeException.class, () -> executor.execute(3, () -> {}));
+        assertEquals(ROUTE_EXECUTOR_CLOSED, refused.errorCode());
+        assertFalse(executor.awaitTermination(50, TimeUnit.MILLISECONDS), "key 1 still runs");
+        release.countDown();
+        assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        assertEquals(2, ran.get(), "every accepted task ran");
+        assertEquals(0, executor.queueCount());
+        assertThrows(GameRuntimeException.class, () -> executor.execute(1, () -> {}), "a drained key is refused as well");
     }
 
     private static void await(CountDownLatch latch) {

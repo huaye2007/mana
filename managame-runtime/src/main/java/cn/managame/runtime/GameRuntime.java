@@ -10,10 +10,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
 /**
@@ -35,10 +32,6 @@ public final class GameRuntime implements AutoCloseable {
     private final Map<Integer, RouteExecutor> executors;
     private final Map<Integer, RouteKeyResolver> resolvers;
     private final BiConsumer<? super Context, ? super Throwable> errorHandler;
-    /** Accepted tasks that have not finished; termination waits for zero. */
-    private final AtomicLong pending = new AtomicLong();
-    private final AtomicBoolean terminating = new AtomicBoolean();
-    private final CountDownLatch terminated = new CountDownLatch(1);
     private volatile boolean shutdown;
 
     private GameRuntime(Builder b) {
@@ -80,29 +73,24 @@ public final class GameRuntime implements AutoCloseable {
      * Queues {@code task} on the route of {@code context} and returns; the task later runs with the context as
      * {@link Context#current()}. It is also how work comes back from another thread or route, such as an RPC callback
      * or a visit to another player's route: execute with the context to continue on, the task's own or its request.
-     * Throws GameRuntimeException with RUNTIME_CLOSED after shutdown or ROUTE_EXECUTOR_OVERLOADED when the domain's
-     * executor is full; the task then never runs, and a RequestContext is first failed with that code, so a request is
-     * answered whether its task was accepted or not. An unregistered domain throws IllegalArgumentException.
+     * Throws GameRuntimeException with RUNTIME_CLOSED after shutdown (ROUTE_EXECUTOR_CLOSED when the domain's executor
+     * refuses a task given while it shuts down) or ROUTE_EXECUTOR_OVERLOADED when the domain's executor is full; the
+     * task then never runs, and a RequestContext is first failed with that code, so a request is answered whether its
+     * task was accepted or not. An unregistered domain throws IllegalArgumentException.
+     * <p>
+     * The runtime counts no task in flight: each domain's executor knows its own work, and shutdown asks them to finish
+     * it. Close the entries that hand it work (servers, timers and the like) first, so nothing races with shutdown.
      */
     public <C extends Context> void execute(C context, GameTask<? super C> task) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(task, "task");
         RouteExecutor executor = executors.get(context.domain());
         if (executor == null) throw new IllegalArgumentException("Unknown domain " + context.domain());
-        // Counted before the shutdown check, so shutdown never misses a task that is being accepted.
-        pending.incrementAndGet();
-        if (shutdown) {
-            finished();
-            throw refuse(context, new GameRuntimeException(RUNTIME_CLOSED, "the runtime is shut down"));
-        }
+        if (shutdown) throw refuse(context, new GameRuntimeException(RUNTIME_CLOSED, "the runtime is shut down"));
         try {
             executor.execute(context.routeKey(), () -> run(context, task));
         } catch (GameRuntimeException refused) {
-            finished();
             throw refuse(context, refused);
-        } catch (Throwable unexpected) {
-            finished();
-            throw unexpected;
         }
     }
 
@@ -139,35 +127,37 @@ public final class GameRuntime implements AutoCloseable {
                 error.addSuppressed(cause);
                 LOG.log(Level.ERROR, "Game task error handler failed", error);
             }
-        } finally {
-            finished();
         }
-    }
-
-    private void finished() {
-        if (pending.decrementAndGet() == 0 && shutdown) terminate();
     }
 
     /** Refuses new tasks; accepted ones still run. Idempotent. */
     public void shutdown() {
         shutdown = true;
-        if (pending.get() == 0) terminate();
-    }
-
-    private void terminate() {
-        if (!terminating.compareAndSet(false, true)) return;
-        executors.values().forEach(RouteExecutor::close);
-        terminated.countDown();
+        executors.values().forEach(RouteExecutor::shutdown);
     }
 
     public boolean isShutdown() { return shutdown; }
 
     /** Whether shut down with every accepted task finished. */
-    public boolean isTerminated() { return terminated.getCount() == 0; }
+    public boolean isTerminated() {
+        try {
+            return awaitTermination(Duration.ZERO);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
 
-    /** Waits for accepted tasks after shutdown; false when the timeout elapsed first. */
+    /**
+     * Waits for accepted tasks after shutdown, each domain's executor finishing its own; false when the timeout elapsed
+     * first, or before shutdown.
+     */
     public boolean awaitTermination(Duration timeout) throws InterruptedException {
-        return terminated.await(timeout.toNanos(), TimeUnit.NANOSECONDS);
+        long deadline = System.nanoTime() + timeout.toNanos();
+        if (!shutdown) return false;
+        for (RouteExecutor executor : executors.values())
+            if (!executor.awaitTermination(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)) return false;
+        return true;
     }
 
     /**
@@ -178,11 +168,14 @@ public final class GameRuntime implements AutoCloseable {
         if (CURRENT.isBound()) throw new IllegalStateException("Cannot close the runtime from one of its tasks");
         shutdown();
         boolean interrupted = false;
-        while (terminated.getCount() > 0) {
-            try {
-                terminated.await();
-            } catch (InterruptedException e) {
-                interrupted = true;
+        for (RouteExecutor executor : executors.values()) {
+            boolean terminated = false;
+            while (!terminated) {
+                try {
+                    terminated = executor.awaitTermination(1, TimeUnit.DAYS);
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
             }
         }
         if (interrupted) Thread.currentThread().interrupt();

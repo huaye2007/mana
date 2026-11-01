@@ -88,7 +88,7 @@ runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(
 
 - `virtualThreads()`：每个路由键一个队列，由虚拟线程消费，阻塞的任务只会卡住自己的键。任务加入键的队列不加锁。处理完的队列会留给它的键，繁忙的键不会每个任务都新建、丢弃一次队列；空闲超过空闲时间的队列由清理线程回收，内存只跟最近用到的键相关：`virtualThreads(maxPendingPerKey, idleTimeout)`，默认每个键除正在执行的任务外最多 4096 个等待任务、空闲 60 秒。超过上限的键以 `ROUTE_EXECUTOR_OVERLOADED` 拒绝。
 - `striped(threads)`：固定数量的平台线程，一个键总在 `hash(key) % threads` 号线程上。不保存键的状态，但一个阻塞的任务会卡住同一线程上的所有键。`striped(threads, maxPendingPerThread)`，默认 65 536。
-- 也可以自己实现 `RouteExecutor`。
+- 也可以自己实现 `RouteExecutor`：`execute`，加上 `shutdown` 和 `awaitTermination`，用它自己的状态把活做完。
 
 **路由键**：每个 domain 的 resolver 为这个 domain 收到的所有消息统一决定路由键从哪来；消息和方法上都不写任何路由信息：
 
@@ -331,7 +331,8 @@ class JsonCodec implements HttpCodec {
 
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
 - 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
-- `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、定时器等），再关闭 runtime。
+- `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、定时器等），再关闭 runtime，这样关闭期间不会有新的工作交进来。
+- runtime 不统计进行中的任务。每个 domain 的执行器知道自己的活，由它自己做完：`striped` 用其 ThreadPoolExecutor 自带的关闭，`virtualThreads` 不再新建队列、每个队列排空后就退休。执行器关闭期间交来的任务，要么以 `ROUTE_EXECUTOR_CLOSED` 拒绝，要么在终止前执行完。
 
 ## 游戏时间
 

@@ -105,7 +105,8 @@ message's route key.
   key besides the running one and 60 seconds idle. A key over its limit is refused with `ROUTE_EXECUTOR_OVERLOADED`.
 - `striped(threads)`: fixed platform threads, a key always on thread `hash(key) % threads`. No state per key, but
   a blocking task holds up every key on its thread. `striped(threads, maxPendingPerThread)`, 65 536 by default.
-- Or your own `RouteExecutor`.
+- Or your own `RouteExecutor`: `execute`, plus `shutdown` and `awaitTermination`, which finish its work from its own
+  state.
 
 **Route keys.** A domain's resolver decides, once for the whole domain, where the key of every message arriving for
 it comes from; messages and methods carry no routing of their own:
@@ -401,7 +402,10 @@ shape error bodies.
 - What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
 - `shutdown()` refuses new tasks while accepted ones still run; `awaitTermination(timeout)` waits for them;
   `close()` does both and must not be called from a task. Close the entries (servers, timers and the like) before the
-  runtime.
+  runtime, so nothing hands it work while it shuts down.
+- The runtime counts no task in flight. Each domain's executor knows its own work and finishes it: `striped` through
+  its ThreadPoolExecutors' own shutdown, `virtualThreads` by making no new queue and retiring each as it drains. A task
+  given while an executor shuts down is refused with `ROUTE_EXECUTOR_CLOSED` or runs before termination.
 
 ## Game time
 

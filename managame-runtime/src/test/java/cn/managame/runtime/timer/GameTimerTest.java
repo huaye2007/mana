@@ -125,7 +125,8 @@ class GameTimerTest {
         CountDownLatch kept = new CountDownLatch(players / 2);
         Scheduled[] timers = new Scheduled[players];
         for (int id = 0; id < players; id++)
-            timers[id] = timer.after(GameContext.of(PLAYER, id), Duration.ofMillis(50 + id % 50), context -> {
+            // Half a second at least, so that adding and cancelling them all ends before any fires, even on a busy machine.
+            timers[id] = timer.after(GameContext.of(PLAYER, id), Duration.ofMillis(500 + id % 50), context -> {
                 fired.incrementAndGet();
                 kept.countDown();
             });

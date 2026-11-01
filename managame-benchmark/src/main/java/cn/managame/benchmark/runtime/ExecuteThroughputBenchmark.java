@@ -25,7 +25,7 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * Tasks run per second through {@code GameRuntime.execute}, the single entry for business logic: four submitting
- * threads spread tasks over the players of one domain, sharing a window of tasks not yet run, and each task frees
+ * threads, or sixteen, spread tasks over the players of one domain, sharing a window of tasks not yet run, and each task frees
  * room. Tasks of one player run one at a time; the executor decides how players share threads.
  */
 @State(Scope.Benchmark)
@@ -66,6 +66,12 @@ public class ExecuteThroughputBenchmark {
     @TearDown(Level.Trial) public void stop() { runtime.close(); }
 
     @Benchmark public void execute(Player player) throws InterruptedException {
+        inFlight.acquire();
+        runtime.execute(players[player.next()], task);
+    }
+
+    /** Sixteen submitting threads, as many business threads handing work on: how far the runtime's shared state scales. */
+    @Benchmark @Threads(16) public void executeFromSixteenThreads(Player player) throws InterruptedException {
         inFlight.acquire();
         runtime.execute(players[player.next()], task);
     }
