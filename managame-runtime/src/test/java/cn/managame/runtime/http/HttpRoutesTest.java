@@ -29,6 +29,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -92,7 +93,7 @@ class HttpRoutesTest {
     }
 
     private HttpRoutes.Builder routes() {
-        return HttpRoutes.builder(runtime).source(HttpRoutesTest::source).register(new PlayerAdmin(), new WorldAdmin());
+        return HttpRoutes.builder(runtime).source(HttpRoutesTest::source).register(List.of(new PlayerAdmin(), new WorldAdmin()));
     }
 
     private HttpResponse<String> send(String method, String path, String body) throws Exception {
@@ -169,7 +170,7 @@ class HttpRoutesTest {
                 return response;
             }
         };
-        serve(HttpRoutes.builder(runtime).codec(json).register(new GuildAdmin(), new WorldAdmin()).build());
+        serve(HttpRoutes.builder(runtime).codec(json).register(List.of(new GuildAdmin(), new WorldAdmin())).build());
         HttpResponse<String> posted = send("POST", "/notice", "7:hello");
         assertEquals("{\"guild\":7,\"text\":\"hello\"}", posted.body(), "the guild domain routes by the notice's guildId");
         assertEquals("application/json", posted.headers().firstValue("content-type").orElseThrow());
@@ -183,10 +184,10 @@ class HttpRoutesTest {
     @Domain(GUILD) static class Unreadable { @HttpMethod("/x") String x(Notice notice) { return ""; } }
 
     @Test void registrationRejectsWhatCannotWork() {
-        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(new WorldAdmin(), new Duplicate()));
-        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(new NoSlash()));
-        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(new WrongContext()));
-        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(new Unreadable()).build(),
+        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(List.of(new WorldAdmin(), new Duplicate())));
+        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(List.of(new NoSlash())));
+        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(List.of(new WrongContext())));
+        assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(List.of(new Unreadable())).build(),
                 "the basic codec cannot read a Notice");
     }
 }

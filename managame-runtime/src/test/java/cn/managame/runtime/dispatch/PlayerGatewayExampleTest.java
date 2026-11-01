@@ -23,6 +23,7 @@ import java.io.DataOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -105,7 +106,7 @@ class PlayerGatewayExampleTest {
                     .addLast(NetworkHandlers.lengthFieldFraming(1024))
                     .addLast("string-decoder", new StringDecoder(StandardCharsets.UTF_8))
                     .addLast("string-encoder", new StringEncoder(StandardCharsets.UTF_8))
-                    .handler(new Gateway(Dispatcher.builder(runtime).register(new Accounts(), new Shop()).build()))
+                    .handler(new Gateway(Dispatcher.builder(runtime).register(List.of(new Accounts(), new Shop())).build()))
                     .build());
 
     @AfterEach void stop() {

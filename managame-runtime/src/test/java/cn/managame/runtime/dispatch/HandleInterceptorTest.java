@@ -91,7 +91,7 @@ class HandleInterceptorTest {
     @AfterEach void stop() { runtime.close(); }
 
     private Dispatcher dispatcher(HandleInterceptor... interceptors) {
-        return Dispatcher.builder(runtime).intercept(interceptors).register(new Shop()).build();
+        return Dispatcher.builder(runtime).intercept(List.of(interceptors)).register(List.of(new Shop())).build();
     }
 
     private String ask(Dispatcher dispatcher, Context source, Object message) throws InterruptedException {

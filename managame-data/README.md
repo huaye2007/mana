@@ -229,9 +229,9 @@ is missing may write the row again (MySQL's mapper does) or fail (MongoDB's does
 
 | Setting | Default | |
 | --- | --- | --- |
-| `repositories(EntityMapper, Collection)` | | entity repositories and the mapper that keeps them; also as varargs |
-| `preloadedRepositories(EntityMapper, Collection)` | | entity repositories kept whole in memory, read at build; also as varargs |
-| `logRepositories(LogWriter, Collection)` | | log repositories and the writer that writes them; also as varargs |
+| `repositories(EntityMapper, Collection)` | | entity repositories and the mapper that keeps them |
+| `preloadedRepositories(EntityMapper, Collection)` | | entity repositories kept whole in memory, read at build |
+| `logRepositories(LogWriter, Collection)` | | log repositories and the writer that writes them |
 | `flushInterval` | 1 s | how often changes are written; a crash loses about this much |
 | `batchSize` | 500 | changes or logs per batch |
 | `writeThreads` | 4 | entity types written at once; logs have a thread of their own |

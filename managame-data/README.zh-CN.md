@@ -204,9 +204,9 @@ key 字段，并能创建新实例。失败后重写同一批必须无害：一�
 
 | 设置 | 默认值 | |
 | --- | --- | --- |
-| `repositories(EntityMapper, Collection)` | | 实体 Repository 及保存它们的 Mapper；也可以逐个列出 |
-| `preloadedRepositories(EntityMapper, Collection)` | | 整表常驻内存、build 时读入的实体 Repository；也可以逐个列出 |
-| `logRepositories(LogWriter, Collection)` | | 日志 Repository 及写它们的 Writer；也可以逐个列出 |
+| `repositories(EntityMapper, Collection)` | | 实体 Repository 及保存它们的 Mapper |
+| `preloadedRepositories(EntityMapper, Collection)` | | 整表常驻内存、build 时读入的实体 Repository |
+| `logRepositories(LogWriter, Collection)` | | 日志 Repository 及写它们的 Writer |
 | `flushInterval` | 1 秒 | 多久写一次；崩溃时大约丢失这么多 |
 | `batchSize` | 500 | 每批的修改或日志数 |
 | `writeThreads` | 4 | 同时写入的实体类型数；日志有自己的线程 |

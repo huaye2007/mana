@@ -239,9 +239,6 @@ public final class GameData implements AutoCloseable {
             return register(Objects.requireNonNull(mapper, "mapper"), types);
         }
 
-        /** {@link #repositories(EntityMapper, Collection)} for classes listed one by one. */
-        public Builder repositories(EntityMapper mapper, Class<?>... types) { return repositories(mapper, List.of(types)); }
-
         /**
          * As {@link #repositories(EntityMapper, Collection)}, for tables kept whole in memory, such as guilds: build reads
          * every row through the mapper's {@code loadTable}, and nothing leaves memory after, whatever the
@@ -253,18 +250,10 @@ public final class GameData implements AutoCloseable {
             return this;
         }
 
-        /** {@link #preloadedRepositories(EntityMapper, Collection)} for classes listed one by one. */
-        public Builder preloadedRepositories(EntityMapper mapper, Class<?>... types) {
-            return preloadedRepositories(mapper, List.of(types));
-        }
-
         /** Log repository classes whose logs {@code writer} writes, each directly extending LogRepository. */
         public Builder logRepositories(LogWriter writer, Collection<? extends Class<?>> types) {
             return register(Objects.requireNonNull(writer, "writer"), types);
         }
-
-        /** {@link #logRepositories(LogWriter, Collection)} for classes listed one by one. */
-        public Builder logRepositories(LogWriter writer, Class<?>... types) { return logRepositories(writer, List.of(types)); }
 
         /** How often changes are written; a crash loses about this much. 1 second by default. */
         public Builder flushInterval(Duration interval) {

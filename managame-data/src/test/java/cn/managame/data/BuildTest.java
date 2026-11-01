@@ -43,19 +43,19 @@ class BuildTest {
 
     @Test
     void refusesEntityClassesThatDoNotFit() {
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, NoIds.class).build());
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, FinalFields.class).build());
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, WronglyKeyed.class).build());
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, Groups.class).build());
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(NoIds.class)).build());
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(FinalFields.class)).build());
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(WronglyKeyed.class)).build());
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(Groups.class)).build());
     }
 
     @Test
     void refusesRepositoriesRegisteredWrongly() {
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, ItemLogs.class).build());
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).logRepositories((type, logs) -> {}, Players.class).build());
-        assertThrows(IllegalArgumentException.class, () -> GameData.builder().repositories(database, Players.class).repositories(database, Players.class));
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(database, List.of(ItemLogs.class)).build());
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).logRepositories((type, logs) -> {}, List.of(Players.class)).build());
+        assertThrows(IllegalArgumentException.class, () -> GameData.builder().repositories(database, List.of(Players.class)).repositories(database, List.of(Players.class)));
         assertThrows(IllegalStateException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).build());
-        assertThrows(IllegalStateException.class, () -> GameData.builder().repositories(database, Players.class).build(), "no errorHandler");
+        assertThrows(IllegalStateException.class, () -> GameData.builder().repositories(database, List.of(Players.class)).build(), "no errorHandler");
         assertThrows(IllegalArgumentException.class, () -> GameData.builder().cacheExpire(Duration.ZERO));
     }
 
@@ -65,7 +65,7 @@ class BuildTest {
         EntityMapper refusing = new MemoryMapper() {
             @Override public synchronized void prepare(EntityType type) { throw refused; }
         };
-        assertSame(refused, assertThrows(IllegalStateException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(refusing, Players.class).build()));
+        assertSame(refused, assertThrows(IllegalStateException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(refusing, List.of(Players.class)).build()));
     }
 
     @Test

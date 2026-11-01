@@ -153,7 +153,7 @@ class Shop {
     }
 }
 
-Dispatcher dispatcher = Dispatcher.builder(runtime).register(new Shop(), new Accounts()).build();
+Dispatcher dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop(), new Accounts())).build();
 ```
 
 A gateway the application writes itself: a session per connection, its own packets, the Dispatcher only to run
@@ -215,8 +215,8 @@ class SavePlayer implements HandleInterceptor {
 }
 
 Dispatcher dispatcher = Dispatcher.builder(runtime)
-        .intercept(new LoginCheck(), new SavePlayer())
-        .register(new Shop(), new Accounts())
+        .intercept(List.of(new LoginCheck(), new SavePlayer()))
+        .register(List.of(new Shop(), new Accounts()))
         .build();
 ```
 
@@ -245,7 +245,7 @@ class GuildLog {
     @EventMethod void onLevelUp(GameContext context, LevelUp event) { ... }   // runs on GUILD:guildId, RouteKeys.field
 }
 
-EventBus events = EventBus.builder(runtime).register(new Quests(), new GuildLog()).build();
+EventBus events = EventBus.builder(runtime).register(List.of(new Quests(), new GuildLog())).build();
 events.publish(new LevelUp(1001, 7, 10));
 ```
 
@@ -306,7 +306,7 @@ HttpRoutes routes = HttpRoutes.builder(runtime)
             return role == null ? GameContext.of(0, 0) : GameContext.of(0, 0, ROLE, Long.parseLong(role));
         })
         .codec(new JsonCodec())
-        .register(new PlayerAdmin(), new GuildAdmin())
+        .register(List.of(new PlayerAdmin(), new GuildAdmin()))
         .build();
 NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(routes).build());
 ```

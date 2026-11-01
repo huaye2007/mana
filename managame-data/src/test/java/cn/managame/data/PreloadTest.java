@@ -101,7 +101,7 @@ class PreloadTest {
 
             @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) {}
         };
-        DataException failure = assertThrows(DataException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).preloadedRepositories(noTables, Players.class).build());
+        DataException failure = assertThrows(DataException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).preloadedRepositories(noTables, List.of(Players.class)).build());
         assertEquals(DATA_LOAD_FAILED, failure.errorCode());
         assertInstanceOf(UnsupportedOperationException.class, failure.getCause());
     }

@@ -6,6 +6,7 @@ import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.annotation.AnnotatedMethod;
 import cn.managame.runtime.annotation.EventMethod;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,7 @@ import java.util.Objects;
  * class GuildSystem {
  *     @EventMethod void onJoined(GuildJoined event) { ... }
  * }
- * EventBus events = EventBus.builder(runtime).register(guildSystem, questSystem).build();
+ * EventBus events = EventBus.builder(runtime).register(List.of(guildSystem, questSystem)).build();
  * events.publish(new GuildJoined(playerId, guildId));
  * }</pre>
  *
@@ -77,7 +78,7 @@ public final class EventBus {
          * registration order. A subscriber declaring a context other than GameContext or its supertypes, or one whose
          * domain cannot route its event, throws IllegalArgumentException.
          */
-        public Builder register(Object... targets) {
+        public Builder register(Collection<?> targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod subscriber : AnnotatedMethod.scan(target, EventMethod.class)) {
                     subscriber.requireContext(GameContext.class);

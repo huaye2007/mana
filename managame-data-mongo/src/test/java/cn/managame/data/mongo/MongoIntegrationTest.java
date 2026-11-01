@@ -62,7 +62,7 @@ class MongoIntegrationTest {
                 for (long id = 10; id <= 20; id++) players.evict(id);
                 assertEquals(List.of(10L, 12L, 14L), List.copyOf(players.getAll(List.of(10L, 12L, 99L, 14L)).keySet()));
                 assertEquals(49, database.getCollection("player").countDocuments());
-                try (GameData preloaded = GameData.builder().errorHandler(failure -> {}).preloadedRepositories(new MongoEntityMapper(database), Players.class).build()) {
+                try (GameData preloaded = GameData.builder().errorHandler(failure -> {}).preloadedRepositories(new MongoEntityMapper(database), List.of(Players.class)).build()) {
                     assertEquals(49, preloaded.repository(Players.class).all().size());
                 }
                 database.getCollection("player").deleteMany(new Document());

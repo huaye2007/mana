@@ -18,6 +18,7 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import java.lang.System.Logger.Level;
 import java.lang.reflect.Type;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -38,7 +39,7 @@ import java.util.stream.Collectors;
  * HttpRoutes routes = HttpRoutes.builder(runtime)
  *         .source(request -> GameContext.of(0, 0, ROLE, HttpRequests.longQuery(request, "roleId")))
  *         .codec(json)
- *         .register(playerAdmin)
+ *         .register(List.of(playerAdmin))
  *         .build();
  * NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(routes).build());
  * }</pre>
@@ -147,7 +148,7 @@ public final class HttpRoutes implements HttpHandler {
          * starting with a slash, a context other than HttpRequestContext or its supertypes, or a domain that cannot
          * route the argument throw IllegalArgumentException.
          */
-        public Builder register(Object... targets) {
+        public Builder register(Collection<?> targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod method : AnnotatedMethod.scan(target, HttpMethod.class)) {
                     method.requireContext(HttpRequestContext.class);

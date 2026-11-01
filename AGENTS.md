@@ -161,6 +161,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - A method that sends one message returns network's `WriteStatus` (`connection.write`, `peer.notify`,
   `response.writeTo`), not a boolean; one that sends to many returns how many accepted it.
 - Builders validate eagerly, and `build()` / `start()` return a ready object with no "not started" state.
+- What a builder registers in bulk (handlers, interceptors, repositories) it takes as a `Collection`, never as
+  varargs, so an application, or a container that scans annotations, hands over what it gathered as is:
+  `register(handlers)`, `intercept(interceptors)`, `repositories(mapper, types)`.
 - Netty EventLoop callbacks never block, and business logic never runs on EventLoop or timer threads: they hand
   work to the runtime (or, in a component used on its own, to the application's executor).
 

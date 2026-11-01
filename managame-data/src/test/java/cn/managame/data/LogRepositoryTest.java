@@ -112,7 +112,7 @@ class LogRepositoryTest {
             release.await();
             throw new IllegalArgumentException("refused");
         };
-        try (GameData data = GameData.builder().repositories(database, Players.class).logRepositories(hanging, ItemLogs.class)
+        try (GameData data = GameData.builder().repositories(database, List.of(Players.class)).logRepositories(hanging, List.of(ItemLogs.class))
                 .errorHandler(reported).flushInterval(Duration.ofMillis(20)).build()) {
             data.repository(ItemLogs.class).insert(new ItemLog(100, 5001, 1));
             assertTrue(writing.await(5, TimeUnit.SECONDS), "a log round waits in the writer");

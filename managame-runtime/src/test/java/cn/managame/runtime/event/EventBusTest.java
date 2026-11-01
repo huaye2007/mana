@@ -58,7 +58,7 @@ class EventBusTest {
     }
 
     @Test void everySubscriberRunsOnItsDomainsRouteActingForThePublisher() throws Exception {
-        EventBus events = EventBus.builder(runtime).register(new Quests(), new GuildLog()).build();
+        EventBus events = EventBus.builder(runtime).register(List.of(new Quests(), new GuildLog())).build();
         Metadata traced = Metadata.builder().put(TRACE, "t1").build();
         runtime.execute(new GameContext(PLAYER, 1001, ROLE, 1001, traced), context -> events.publish(new LevelUp(1001, 7, 10)));
 
@@ -76,7 +76,7 @@ class EventBusTest {
                 done.countDown();
             }
         }
-        EventBus events = EventBus.builder(runtime).register(new Recorder()).build();
+        EventBus events = EventBus.builder(runtime).register(List.of(new Recorder())).build();
         runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> {
             order.add("task start");
             for (int level = 1; level <= 3; level++) events.publish(new LevelUp(1001, 0, level));
@@ -87,7 +87,7 @@ class EventBusTest {
     }
 
     @Test void publishingOutsideATaskActsForNobodyAndUnheardEventsAreIgnored() throws Exception {
-        EventBus events = EventBus.builder(runtime).register(new Quests()).build();
+        EventBus events = EventBus.builder(runtime).register(List.of(new Quests())).build();
         events.publish(new Unheard());
         events.publish(new LevelUp(5, 0, 1));
         assertEquals("player 0 level 1 by 0 null", seen.poll(5, TimeUnit.SECONDS), "no acting player: route 0");
@@ -97,7 +97,7 @@ class EventBusTest {
         @Domain(ROOM) class RoomLog { // ROOM's resolver refuses every event
             @EventMethod void on(LevelUp event) { seen.add("room"); }
         }
-        EventBus events = EventBus.builder(runtime).register(new RoomLog(), new Quests()).build();
+        EventBus events = EventBus.builder(runtime).register(List.of(new RoomLog(), new Quests())).build();
         assertThrows(IllegalArgumentException.class, () -> events.publish(new LevelUp(5, 0, 1)));
         assertTrue(seen.poll(5, TimeUnit.SECONDS).startsWith("player 0"));
         assertNull(seen.poll(100, TimeUnit.MILLISECONDS));
@@ -106,15 +106,15 @@ class EventBusTest {
     @Test void aSubscriberWhoseDomainCannotRouteItsEventFailsAtRegistration() {
         record Rested(long playerId) {}
         @Domain(GUILD) class GuildRest { @EventMethod void on(Rested event) {} }   // no guildId to route by
-        assertThrows(IllegalArgumentException.class, () -> EventBus.builder(runtime).register(new GuildRest()));
+        assertThrows(IllegalArgumentException.class, () -> EventBus.builder(runtime).register(List.of(new GuildRest())));
     }
 
     @Test void subscribersReceiveOnlyTheirExactClassAndTakeOnlyAGameContext() throws Exception {
         @Domain(PLAYER) class Everything { @EventMethod void on(Object event) { seen.add("object"); } }
-        EventBus.builder(runtime).register(new Everything()).build().publish(new LevelUp(1, 0, 1));
+        EventBus.builder(runtime).register(List.of(new Everything())).build().publish(new LevelUp(1, 0, 1));
         assertNull(seen.poll(100, TimeUnit.MILLISECONDS));
 
         @Domain(PLAYER) class Misdeclared { @EventMethod void on(HandleContext context, LevelUp event) {} }
-        assertThrows(IllegalArgumentException.class, () -> EventBus.builder(runtime).register(new Misdeclared()));
+        assertThrows(IllegalArgumentException.class, () -> EventBus.builder(runtime).register(List.of(new Misdeclared())));
     }
 }

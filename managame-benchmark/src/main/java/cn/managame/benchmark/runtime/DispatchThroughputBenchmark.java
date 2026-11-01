@@ -6,6 +6,7 @@ import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.HandleMethod;
 import cn.managame.runtime.dispatch.Dispatcher;
+import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -67,7 +68,7 @@ public class DispatchThroughputBenchmark {
             inFlight.release();
         };
         runtime = GameRuntime.builder().domain(PLAYER, ExecuteThroughputBenchmark.executor(executor), RouteKeys.businessId()).build();
-        dispatcher = Dispatcher.builder(runtime).register(new Shop()).build();
+        dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop())).build();
         for (int id = 0; id < PLAYERS; id++) players[id] = GameContext.of(PLAYER, id, ExecuteThroughputBenchmark.ROLE, id);
     }
 

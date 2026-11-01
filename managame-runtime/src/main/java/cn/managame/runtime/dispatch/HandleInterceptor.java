@@ -15,7 +15,7 @@ import java.lang.reflect.Method;
  *         return handler.isAnnotationPresent(Anonymous.class) || context.businessId() != 0 ? SUCCESS : NOT_LOGGED_IN;
  *     }
  * }
- * Dispatcher.builder(runtime).intercept(new LoginCheck(), new Metrics()).register(...).build();
+ * Dispatcher.builder(runtime).intercept(List.of(new LoginCheck(), new Metrics())).register(handlers).build();
  * }</pre>
  *
  * Interceptors run {@code before} in the order they were added, then the handler, then {@code after} in reverse

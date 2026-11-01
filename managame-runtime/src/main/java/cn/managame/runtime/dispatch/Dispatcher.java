@@ -15,6 +15,7 @@ import java.lang.System.Logger.Level;
 import java.lang.reflect.Method;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +29,7 @@ import java.util.function.IntConsumer;
  * them:
  *
  * <pre>{@code
- * Dispatcher dispatcher = Dispatcher.builder(runtime).register(shop, guildSystem, login).build();
+ * Dispatcher dispatcher = Dispatcher.builder(runtime).register(List.of(shop, guildSystem, login)).build();
  *
  * // In the application's own ConnectionHandler, which knows its packet format:
  * dispatcher.dispatch(session(connection), packet.body(),
@@ -141,7 +142,7 @@ public final class Dispatcher {
         private Builder(GameRuntime runtime) { this.runtime = Objects.requireNonNull(runtime, "runtime"); }
 
         /** Adds interceptors for every handler; their before methods run in the order they were added. */
-        public Builder intercept(HandleInterceptor... interceptors) {
+        public Builder intercept(Collection<? extends HandleInterceptor> interceptors) {
             for (HandleInterceptor interceptor : interceptors) this.interceptors.add(Objects.requireNonNull(interceptor, "interceptor"));
             return this;
         }
@@ -151,7 +152,7 @@ public final class Dispatcher {
          * a context other than HandleContext or its supertypes, or one whose domain cannot route its message, throw
          * IllegalArgumentException.
          */
-        public Builder register(Object... targets) {
+        public Builder register(Collection<?> targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod handler : AnnotatedMethod.scan(target, HandleMethod.class)) {
                     handler.requireContext(HandleContext.class);
