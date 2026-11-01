@@ -13,7 +13,7 @@ mvn install                                  # 在工作区根目录；第一次
 java -jar managame-example/target/example.jar
 ```
 
-在另一个终端用示例客户端发几个请求：
+在另一个终端用示例客户端发几个请求，客户端本身也基于 managame-network：
 
 ```
 $ java -cp managame-example/target/example.jar cn.managame.example.ExampleClient 1001 ann
@@ -56,9 +56,9 @@ network 的 `lengthFieldFraming` 把字节流切成帧；游戏自己的 `Packet
 | `WorldServer` | RPC 与 runtime 连起来，消息体也是 protobuf：`RpcHandler` 在 EventLoop 上读出请求，把工作交给 runtime，排行榜在唯一的世界路由上维护，不用加锁。 |
 | `Model`、`Schema` | 实体、按组存放的背包、日志，都存在游戏自己建的 MySQL 表里；道具 id 来自 `SnowflakeIdGenerator`，数据部分是服务器 id。 |
 | `OnlinePlayers`、`Jobs` | 游戏自己保存的在线玩家连接；system domain 上的一个 `@Cron` 方法。 |
-| `GameClient`、`ExampleClient` | 协议的阻塞式客户端，以及用它玩游戏的 main。 |
+| `GameClient`、`ExampleClient` | 基于 managame-network 的客户端，就像游戏客户端或压测机器人那样：`NetworkClient` 保持连接、断线重连，复用服务端同样的分帧和 `PacketCodec`，请求返回 future，按序号与应答对应；以及用它玩游戏的 main。 |
 | `ExampleMain` | 在 `GameTime` 上统一设置一次游戏时区，启动容器并注册关闭钩子。 |
-| `ExampleTest` | 在空闲端口上启动容器，通过真实连接把游戏玩一遍，验证破坏协议的客户端会被关闭，再检查容器关闭时保存下来的数据行。 |
+| `ExampleTest` | 在空闲端口上启动容器，用 `GameClient` 通过真实连接把游戏玩一遍（其中包括同时发出两个请求），验证破坏协议的客户端会被关闭，再检查容器关闭时保存下来的数据行。 |
 
 `pom.xml` 按业务同时使用多个组件的方式引入组件：导入 `managame-bom`，引用组件时不写版本号；protobuf 类由
 `protobuf-maven-plugin` 生成。

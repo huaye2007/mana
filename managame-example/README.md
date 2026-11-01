@@ -14,7 +14,7 @@ mvn install                                  # at the workspace root; the first 
 java -jar managame-example/target/example.jar
 ```
 
-From another terminal, play a few requests with the example client:
+From another terminal, play a few requests with the example client, itself built on managame-network:
 
 ```
 $ java -cp managame-example/target/example.jar cn.managame.example.ExampleClient 1001 ann
@@ -59,9 +59,9 @@ message, or no message and the error code. A frame the codec cannot read closes 
 | `WorldServer` | RPC and runtime joined, with protobuf bodies: the `RpcHandler` reads a request on the EventLoop and hands the work to the runtime, whose one world route keeps the board without locks. |
 | `Model`, `Schema` | Entities, a bag as a group, logs, all in MySQL tables the game creates itself; item ids from a `SnowflakeIdGenerator` whose data part is the server id. |
 | `OnlinePlayers`, `Jobs` | The connections of players logged in, kept by the game; a `@Cron` method on the system domain. |
-| `GameClient`, `ExampleClient` | A blocking client of the protocol, and a main that plays it. |
+| `GameClient`, `ExampleClient` | A client on managame-network as a game client or a load robot would be: a `NetworkClient` that keeps the connection up, the server's own framing and `PacketCodec`, and requests that return futures matched to their answers by seq; and a main that plays it. |
 | `ExampleMain` | The game's time zone set once on `GameTime`, the context started, and its shutdown hook. |
-| `ExampleTest` | The context started on free ports, the game played over real connections, a client breaking the protocol closed, then the rows saved when the context closed. |
+| `ExampleTest` | The context started on free ports, the game played with `GameClient` over real connections (two requests in flight at once among them), a client breaking the protocol closed, then the rows saved when the context closed. |
 
 The `pom.xml` takes the components as an application taking several does: it imports `managame-bom` and names them
 without versions. It generates the protobuf classes with `protobuf-maven-plugin`.

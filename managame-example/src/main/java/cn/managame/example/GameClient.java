@@ -1,52 +1,88 @@
 package cn.managame.example;
 
+import cn.managame.network.connection.Connection;
+import cn.managame.network.connection.ConnectionHandler;
+import cn.managame.network.connection.WriteStatus;
+import cn.managame.network.netty.ConnectionInitializer;
+import cn.managame.network.netty.NetworkClient;
+import cn.managame.network.netty.NetworkHandlers;
 import com.google.protobuf.Message;
-import io.netty.buffer.Unpooled;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
-import java.net.Socket;
+import java.net.InetSocketAddress;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * A blocking client of the game's protocol, as a game client would speak it: each request a frame, each answer read
- * back. For {@link ExampleClient} and the test; a real client is the game's own, in its own language.
+ * A game client on managame-network, for {@link ExampleClient}, the test, or robots that load a server: a
+ * {@link NetworkClient} keeps the connection up, the same framing and {@link PacketCodec} as the server's turn frames
+ * into packets, and each answer completes the future of its request, found by seq. The client keeps its own connection,
+ * as the network layer keeps none. After a reconnect the server knows the client no more, so a real client logs in
+ * again; requests waiting when the connection dropped fail.
  */
-final class GameClient implements AutoCloseable {
-    private final Socket socket;
-    private final DataOutputStream out;
-    private final DataInputStream in;
-    private int seq;
+final class GameClient implements ConnectionHandler, AutoCloseable {
+    private final Map<Integer, CompletableFuture<Packet>> waiting = new ConcurrentHashMap<>();
+    private final AtomicInteger lastSeq = new AtomicInteger();
+    private final CountDownLatch connected = new CountDownLatch(1);
+    private final NetworkClient client;
+    private volatile Connection connection;
 
-    GameClient(String host, int port) throws IOException {
-        socket = new Socket(host, port);
-        socket.setSoTimeout(5000);
-        out = new DataOutputStream(socket.getOutputStream());
-        in = new DataInputStream(socket.getInputStream());
+    /** Connects to the game server, waiting up to 5 seconds for the first connection. */
+    GameClient(InetSocketAddress server) throws InterruptedException {
+        client = NetworkClient.connect(server, ConnectionInitializer.tcp()
+                .addLast(NetworkHandlers.lengthFieldFraming(64 * 1024))
+                .addLast("packet-codec", PacketCodec.INSTANCE)
+                .handler(this)
+                .build());
+        if (!connected.await(5, TimeUnit.SECONDS)) {
+            client.close();
+            throw new IllegalStateException("Cannot reach the game server at " + server);
+        }
     }
 
-    /** Sends {@code message} and waits for its answer. */
-    Packet request(Message message) throws IOException {
-        byte[] body = message.toByteArray();
-        out.writeInt(12 + body.length);
-        out.writeInt(Protocol.idOf(message));
-        out.writeInt(++seq);
-        out.writeInt(0);
-        out.write(body);
-        out.flush();
-        int length = in.readInt(), id = in.readInt(), answerSeq = in.readInt(), code = in.readInt();
-        byte[] answer = in.readNBytes(length - 12);
-        return new Packet(answerSeq, code, id == 0 ? null : Protocol.parse(id, Unpooled.wrappedBuffer(answer)));
+    /**
+     * Sends {@code message} under a new seq; the future completes with the answer, an error code included, on the
+     * connection's EventLoop, so what follows it must not block. It fails with IOException when there is no connection
+     * or it drops before the answer.
+     */
+    CompletableFuture<Packet> request(Message message) {
+        Connection current = connection;
+        if (current == null) return CompletableFuture.failedFuture(new IOException("Not connected"));
+        int seq = lastSeq.incrementAndGet();
+        CompletableFuture<Packet> answer = new CompletableFuture<>();
+        waiting.put(seq, answer);
+        if (current.write(Packet.request(seq, message)) != WriteStatus.ACCEPTED && waiting.remove(seq, answer))
+            answer.completeExceptionally(new IOException("The connection cannot take the request"));
+        return answer;
     }
 
-    /** Sends raw bytes as one frame, as a broken or hostile client might. */
-    void sendFrame(byte[] frame) throws IOException {
-        out.writeInt(frame.length);
-        out.write(frame);
-        out.flush();
+    /** {@link #request} and wait, up to 5 seconds, for the answer. */
+    Packet call(Message message) throws Exception { return request(message).get(5, TimeUnit.SECONDS); }
+
+    @Override public void onActive(Connection connection) {
+        this.connection = connection;
+        connected.countDown();
     }
 
-    /** Whether the server closed the connection: the next read finds the end of the stream. */
-    boolean isClosedByServer() throws IOException { return in.read() < 0; }
+    @Override public void onRead(Connection connection, Object message) {
+        Packet answer = (Packet) message;
+        CompletableFuture<Packet> request = waiting.remove(answer.seq());
+        if (request != null) request.complete(answer);
+    }
 
-    @Override public void close() throws IOException { socket.close(); }
+    @Override public void onInActive(Connection connection) {
+        this.connection = null;
+        for (Integer seq : waiting.keySet()) {
+            CompletableFuture<Packet> request = waiting.remove(seq);
+            if (request != null) request.completeExceptionally(new IOException("The connection dropped"));
+        }
+    }
+
+    @Override public void onException(Connection connection, Throwable cause) { connection.close(); }
+
+    /** Stops reconnecting and closes the connection; not from a future's callback, which runs on the client's EventLoop. */
+    @Override public void close() { client.close(); }
 }
