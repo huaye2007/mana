@@ -6,6 +6,7 @@ import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.HandleMethod;
 import cn.managame.runtime.dispatch.Dispatcher;
+import cn.managame.runtime.dispatch.HandleContext;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -29,7 +30,7 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * Player requests answered per second through the Dispatcher, as a gateway hands them over: four threads dispatch
- * decoded messages from the players of one domain to an annotated handler, whose result comes back through the
+ * decoded messages from the players of one domain to an annotated handler, whose answer comes back through the
  * reply callback, sharing a window of requests not yet answered. A request that fails fails the benchmark.
  */
 @State(Scope.Benchmark)
@@ -57,7 +58,7 @@ public class DispatchThroughputBenchmark {
 
     @Domain(PLAYER)
     public static class Shop {
-        @HandleMethod public Integer buy(Buy buy) { return buy.item(); }
+        @HandleMethod public void buy(HandleContext context, Buy buy) { context.reply(buy.item()); }
     }
 
     @Setup(Level.Trial) public void start() {

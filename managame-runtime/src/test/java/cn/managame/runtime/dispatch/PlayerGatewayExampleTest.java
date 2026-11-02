@@ -56,16 +56,16 @@ class PlayerGatewayExampleTest {
 
     @Domain(LOGIN)
     static class Accounts {
-        @HandleMethod String login(HandleContext context, Login login) {
+        @HandleMethod void login(HandleContext context, Login login) {
             Connection connection = ((Session) context.source()).connection();
             connection.set(SESSION, new Session(connection, login.roleId()));
-            return "welcome " + login.roleId();
+            context.reply("welcome " + login.roleId());
         }
     }
 
     @Domain(PLAYER)
     class Shop {
-        @HandleMethod String buy(Buy buy) { return "role " + Context.current().businessId() + " bought " + buy.item(); }
+        @HandleMethod void buy(HandleContext context, Buy buy) { context.reply("role " + context.businessId() + " bought " + buy.item()); }
         @HandleMethod void logout(Logout logout) { loggedOut.add(Context.current().businessId()); }
     }
 

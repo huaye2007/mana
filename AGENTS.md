@@ -118,6 +118,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   routing of their own.
 - **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
   `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
+  A `@HandleMethod` returns void and answers only through its `HandleContext` (`reply` / `fail`, now or later), so
+  success, failure and a later answer go one way; an `@HttpMethod` may return its answer.
   Registrations are immutable once built. `@Cron` methods (registered with `GameTimer.register`) are the exception:
   they run at calendar times on a fixed route, so the annotation carries `domain` and `routeKey`, and they take no
   message, only optionally their `GameContext`.

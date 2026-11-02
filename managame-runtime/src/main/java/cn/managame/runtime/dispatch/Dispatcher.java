@@ -38,7 +38,8 @@ import java.util.function.IntConsumer;
  * }</pre>
  *
  * A message runs in its handler's domain, on the route key the domain's resolver finds for it and the source,
- * acting for the source's business identity. Messages are matched by exact class. One with no handler fails with
+ * acting for the source's business identity, and its handler answers through its {@link HandleContext}, while it
+ * runs or later from any thread. Messages are matched by exact class. One with no handler fails with
  * HANDLER_NOT_FOUND, one that cannot be routed with INVALID_ROUTE_KEY, one the runtime refuses with the runtime's
  * code, and a handler that throws with RUNTIME_EXECUTION_ERROR. {@link HandleInterceptor}s run before and after
  * every handler.
@@ -97,7 +98,7 @@ public final class Dispatcher {
         }
     }
 
-    /** The handler's task: interceptors before, the handler, interceptors after, then the result. */
+    /** The handler's task: interceptors before, the handler, then interceptors after. */
     private void run(AnnotatedMethod handler, HandleContext context, Object message) throws Exception {
         Method method = handler.method();
         for (HandleInterceptor interceptor : interceptors) {
@@ -107,24 +108,23 @@ public final class Dispatcher {
                 return;
             }
         }
-        Object result = null;
         Throwable failure = null;
         try {
-            result = handler.invoke(context, message);
+            handler.invoke(context, message);
         } catch (Exception | Error e) {
             failure = e;
         }
         Throwable thrown = failure;
         for (int i = interceptors.length - 1; i >= 0; i--) {
             try {
-                interceptors[i].after(context, method, message, result, failure);
+                interceptors[i].after(context, method, message, failure);
             } catch (Exception | Error e) {
                 if (thrown == null) thrown = e;
                 else thrown.addSuppressed(e);
             }
         }
         switch (thrown) {
-            case null -> { if (result != null) context.reply(result); }
+            case null -> { }
             case Exception e -> throw e;
             case Error e -> throw e;
             default -> throw new UndeclaredThrowableException(failure);
@@ -150,13 +150,15 @@ public final class Dispatcher {
         }
 
         /**
-         * Registers every {@link HandleMethod} of each object. Two handlers for one message class, a handler declaring
-         * a context other than HandleContext or its supertypes, or one whose domain cannot route its message, throw
-         * IllegalArgumentException.
+         * Registers every {@link HandleMethod} of each object. Two handlers for one message class, a handler that
+         * returns a value, declares a context other than HandleContext or its supertypes, or whose domain cannot
+         * route its message, throw IllegalArgumentException.
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod handler : AnnotatedMethod.scan(target, HandleMethod.class)) {
+                    if (handler.method().getReturnType() != void.class)
+                        throw new IllegalArgumentException(handler + " must return void and answer through its HandleContext");
                     handler.requireContext(HandleContext.class);
                     runtime.checkRoute(handler.domain(), handler.messageType());
                     AnnotatedMethod existing = handlers.putIfAbsent(handler.messageType(), handler);

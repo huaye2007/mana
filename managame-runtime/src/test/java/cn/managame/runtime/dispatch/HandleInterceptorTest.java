@@ -4,6 +4,7 @@ import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 import static cn.managame.FrameworkErrorCodes.SUCCESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
@@ -19,6 +20,7 @@ import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -49,18 +51,17 @@ class HandleInterceptorTest {
 
     @Domain(PLAYER)
     class Shop {
-        @HandleMethod String buy(Buy buy) {
+        @HandleMethod void buy(HandleContext context, Buy buy) {
             trace.add("buy");
-            return "bought " + buy.item();
+            context.reply("bought " + buy.item());
         }
-        @Anonymous @HandleMethod String hello(Hello hello) {
+        @Anonymous @HandleMethod void hello(HandleContext context, Hello hello) {
             trace.add("hello");
-            return "hi";
+            context.reply("hi");
         }
-        @HandleMethod String boom(Boom boom) { throw new IllegalStateException("boom"); }
-        @HandleMethod String later(HandleContext context, Later later) {
+        @HandleMethod void boom(Boom boom) { throw new IllegalStateException("boom"); }
+        @HandleMethod void later(HandleContext context, Later later) {
             Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later")));
-            return null;
         }
         @HandleMethod void note(Note note) { trace.add("note"); }
     }
@@ -77,8 +78,8 @@ class HandleInterceptorTest {
             return SUCCESS;
         }
 
-        @Override public void after(HandleContext context, Method handler, Object message, Object result, Throwable failure) {
-            trace.add(name + " after " + result + (failure == null ? "" : " " + failure.getMessage()));
+        @Override public void after(HandleContext context, Method handler, Object message, Throwable failure) {
+            trace.add(name + " after " + handler.getName() + (failure == null ? "" : " " + failure.getMessage()));
         }
     }
 
@@ -94,18 +95,23 @@ class HandleInterceptorTest {
         return Dispatcher.builder(runtime).intercept(List.of(interceptors)).register(List.of(new Shop())).build();
     }
 
+    /** Dispatches and waits for the answer, then for the task on the source's route to end, afters included. */
     private String ask(Dispatcher dispatcher, Context source, Object message) throws InterruptedException {
         dispatcher.dispatch(source, message, result -> {
             trace.add("reply " + result);
             answers.add("ok " + result);
         }, errorCode -> answers.add("fail " + errorCode));
-        return answers.poll(5, TimeUnit.SECONDS);
+        String answer = answers.poll(5, TimeUnit.SECONDS);
+        CountDownLatch ended = new CountDownLatch(1);
+        runtime.execute(GameContext.of(PLAYER, source.businessId()), _ -> ended.countDown());   // runs after it, on its route
+        ended.await(5, TimeUnit.SECONDS);
+        return answer;
     }
 
-    @Test void interceptorsWrapTheHandlerOnItsRouteBeforeTheAnswer() throws Exception {
+    @Test void interceptorsWrapTheHandlerOnItsRoute() throws Exception {
         assertEquals("ok bought 5", ask(dispatcher(new Recorder("a"), new Recorder("b")), role, new Buy(5)));
         assertEquals(List.of("a before buy on " + PLAYER + ":1001", "b before buy on " + PLAYER + ":1001", "buy",
-                "b after bought 5", "a after bought 5", "reply bought 5"), trace);
+                "reply bought 5", "b after buy", "a after buy"), trace, "the handler answers while it runs, before after");
     }
 
     @Test void aRejectionFailsTheRequestAndNothingElseRuns() throws Exception {
@@ -123,20 +129,27 @@ class HandleInterceptorTest {
     @Test void afterSeesFailuresAndAnswersGivenLater() throws Exception {
         Dispatcher dispatcher = dispatcher(new Recorder("a"));
         assertEquals("fail " + RUNTIME_EXECUTION_ERROR, ask(dispatcher, role, new Boom()));
-        assertEquals("a after null boom", trace.getLast());
+        assertEquals("a after boom boom", trace.getLast());
         assertEquals("ok later", ask(dispatcher, role, new Later()));
-        assertEquals(List.of("a after null", "reply later"), trace.subList(trace.size() - 2, trace.size()),
+        assertEquals(List.of("a after later", "reply later"), trace.subList(trace.size() - 2, trace.size()),
                 "the handler returned without answering, and the answer came after");
     }
 
     @Test void aFailingInterceptorFailsTheRequestYetEveryAfterRuns() throws Exception {
         HandleInterceptor failingAfter = new HandleInterceptor() {
-            @Override public void after(HandleContext context, Method handler, Object message, Object result, Throwable failure) {
+            @Override public void after(HandleContext context, Method handler, Object message, Throwable failure) {
                 throw new IllegalStateException("after");
             }
         };
-        assertEquals("fail " + RUNTIME_EXECUTION_ERROR, ask(dispatcher(new Recorder("a"), failingAfter), role, new Buy(5)));
-        assertEquals(List.of("a before buy on " + PLAYER + ":1001", "buy", "a after bought 5"), trace, "no reply");
+        assertEquals("fail " + RUNTIME_EXECUTION_ERROR, ask(dispatcher(new Recorder("a"), failingAfter), role, new Later()));
+        assertEquals(List.of("a before later on " + PLAYER + ":1001", "a after later"), trace,
+                "the request was still open, so it fails, and no answer comes after");
+        assertNull(answers.poll(100, TimeUnit.MILLISECONDS));
+
+        trace.clear();
+        assertEquals("ok bought 5", ask(dispatcher(new Recorder("a"), failingAfter), role, new Buy(5)));
+        assertEquals(List.of("a before buy on " + PLAYER + ":1001", "buy", "reply bought 5", "a after buy"), trace,
+                "an answered request stays answered");
 
         trace.clear();
         HandleInterceptor failingBefore = new HandleInterceptor() {

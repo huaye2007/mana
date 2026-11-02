@@ -144,9 +144,10 @@ registrations do not change afterwards.
 | `@Cron(domain, value)` | Calendar times, see [Cron](#cron); domain and route key in the annotation, no message | `GameTimer` |
 
 A handler takes one parameter, the message, matched by its exact class, and may take its context before it.
+A `@HandleMethod` returns void and answers through its context; an `@HttpMethod` may return its answer instead.
 Methods are compiled to method handles at registration, so calls use no reflection. Registration throws
-`IllegalArgumentException` for a missing `@Domain`, wrong parameters, two handlers for one message, or a context
-type the entry cannot give.
+`IllegalArgumentException` for a missing `@Domain`, wrong parameters, a `@HandleMethod` that returns a value, two
+handlers for one message, or a context type the entry cannot give.
 
 ## Dispatcher: player requests and other messages
 
@@ -156,10 +157,11 @@ over with the context it comes from and callbacks that answer in its own format.
 ```java
 @Domain(PLAYER)
 class Shop {
-    @HandleMethod String buy(Buy buy) {                              // a non-null result is the answer
-        return "bought " + buy.item() + " for " + Context.current().businessId();
+    @HandleMethod void buy(HandleContext request, Buy buy) {         // answer now through the context
+        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD);
+        else request.reply(bags.add(request.businessId(), buy.item()));
     }
-    @HandleMethod void rank(HandleContext request, AskRank ask) {    // answer later through the context
+    @HandleMethod void rank(HandleContext request, AskRank ask) {    // or later, from any thread
         ranks.query(request.businessId(), rank -> request.reply(rank));
     }
 }
@@ -220,7 +222,7 @@ class LoginCheck implements HandleInterceptor {
 }
 
 class SavePlayer implements HandleInterceptor {
-    public void after(HandleContext context, Method handler, Object message, Object result, Throwable failure) {
+    public void after(HandleContext context, Method handler, Object message, Throwable failure) {
         if (failure == null && context.businessId() != 0) players.get(context.businessId()).saveIfDirty();
     }
 }
@@ -234,11 +236,10 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
 - `before` runs in the order interceptors were added. `SUCCESS` (0) goes on; any other code fails the request
   with that code (a one-way message is dropped), and then neither the handler, the later interceptors nor any
   `after` run.
-- `after` runs in reverse order once the handler has returned or thrown, before its result is sent. It receives
-  the result (null for void, or when the handler answers later) and the handler's exception, if any. Every
-  `after` runs even when one throws.
+- `after` runs in reverse order once the handler has returned or thrown, and receives the handler's exception, if
+  any. An answer the handler gave while it ran is already on its way. Every `after` runs even when one throws.
 - An exception from `before` or `after` fails the request with `RUNTIME_EXECUTION_ERROR`, as one from the handler
-  does.
+  does, unless the handler has answered it already.
 - Every entry that hands messages to the same Dispatcher shares its handlers and interceptors; a handler or
   interceptor tells where a message came from by `HandleContext.source()`, the context the entry passed.
 

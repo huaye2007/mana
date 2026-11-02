@@ -53,15 +53,13 @@ class DispatcherTest {
 
     @Domain(PLAYER)
     class Shop {
-        @HandleMethod String buy(Buy buy) {
-            Context context = Context.current();
-            return "bought " + buy.item() + " by " + context.businessId() + " on " + context.domain() + ":" + context.routeKey();
+        @HandleMethod void buy(HandleContext context, Buy buy) {
+            context.reply("bought " + buy.item() + " by " + context.businessId() + " on " + context.domain() + ":" + context.routeKey());
         }
         @HandleMethod void note(Note note) { notes.add(note.text()); }
-        @HandleMethod String boom(Boom boom) { throw new IllegalStateException("boom"); }
-        @HandleMethod String later(HandleContext context, Later later) {
+        @HandleMethod void boom(Boom boom) { throw new IllegalStateException("boom"); }
+        @HandleMethod void later(HandleContext context, Later later) {
             Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later " + later.text())));
-            return null;
         }
         @HandleMethod void trade(HandleContext request, Trade trade) {
             runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // on the other player's route
@@ -79,10 +77,10 @@ class DispatcherTest {
 
     @Domain(GUILD)
     class Guild {
-        @HandleMethod String donate(Donate donate) {
-            return "donated to " + Context.current().routeKey() + " by " + Context.current().businessId();
+        @HandleMethod void donate(HandleContext context, Donate donate) {
+            context.reply("donated to " + context.routeKey() + " by " + context.businessId());
         }
-        @HandleMethod String unroutable(Unroutable message) { return "never"; }
+        @HandleMethod void unroutable(Unroutable message) {}
     }
 
     private Dispatcher dispatcher() { return Dispatcher.builder(runtime).register(List.of(new Shop(), new Guild())).build(); }
@@ -115,7 +113,7 @@ class DispatcherTest {
     }
 
     @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {
-        @Domain(GUILD) class Misrouted { @HandleMethod String rest(Buy buy) { return ""; } }   // Buy has no guildId
+        @Domain(GUILD) class Misrouted { @HandleMethod void rest(Buy buy) {} }   // Buy has no guildId
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new Misrouted())));
     }
 
@@ -143,13 +141,16 @@ class DispatcherTest {
         assertNull(answers.poll(100, TimeUnit.MILLISECONDS));
     }
 
-    @Domain(PLAYER) static class Duplicate { @HandleMethod String again(Buy buy) { return "again"; } }
-    @Domain(PLAYER) static class WrongContext { @HandleMethod String buy(HttpRequestContext context, Buy buy) { return ""; } }
-    static class NoDomain { @HandleMethod String buy(Buy buy) { return ""; } }
-    @Domain(PLAYER) static class TooMany { @HandleMethod String buy(HandleContext context, Buy buy, int extra) { return ""; } }
+    @Domain(PLAYER) static class Duplicate { @HandleMethod void again(Buy buy) {} }
+    @Domain(PLAYER) static class Returning { @HandleMethod String buy(Buy buy) { return "bought"; } }
+    @Domain(PLAYER) static class WrongContext { @HandleMethod void buy(HttpRequestContext context, Buy buy) {} }
+    static class NoDomain { @HandleMethod void buy(Buy buy) {} }
+    @Domain(PLAYER) static class TooMany { @HandleMethod void buy(HandleContext context, Buy buy, int extra) {} }
 
     @Test void registrationRejectsWhatCannotWork() {
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new Shop(), new Duplicate())));
+        assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new Returning())),
+                "an answer goes through the context, never a return value");
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new WrongContext())));
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new NoDomain())));
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new TooMany())));

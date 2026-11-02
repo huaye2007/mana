@@ -120,7 +120,7 @@ record Donate(long guildId, int gold) {}   // 在 GUILD 里处理，按 RouteKey
 | `@HttpMethod(path)` | HTTP 请求，默认 POST，可用 `method` 指定 | `HttpRoutes` |
 | `@Cron(domain, value)` | 日历时间，见[定时任务](#定时任务)；domain 和路由键写在注解里，方法不带消息 | `GameTimer` |
 
-处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、同一个消息有两个处理器、上下文类型入口给不了。
+处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。`@HandleMethod` 返回 void，通过上下文应答；`@HttpMethod` 可以直接返回应答。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、`@HandleMethod` 有返回值、同一个消息有两个处理器、上下文类型入口给不了。
 
 ## Dispatcher：玩家请求与其它消息
 
@@ -129,10 +129,11 @@ Dispatcher 不知道任何包格式。业务自己解码数据包，把消息连
 ```java
 @Domain(PLAYER)
 class Shop {
-    @HandleMethod String buy(Buy buy) {                              // 返回非 null 即为应答
-        return "bought " + buy.item() + " for " + Context.current().businessId();
+    @HandleMethod void buy(HandleContext request, Buy buy) {         // 当场通过上下文应答
+        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD);
+        else request.reply(bags.add(request.businessId(), buy.item()));
     }
-    @HandleMethod void rank(HandleContext request, AskRank ask) {    // 稍后通过上下文应答
+    @HandleMethod void rank(HandleContext request, AskRank ask) {    // 或稍后在任意线程应答
         ranks.query(request.businessId(), rank -> request.reply(rank));
     }
 }
@@ -187,7 +188,7 @@ class LoginCheck implements HandleInterceptor {
 }
 
 class SavePlayer implements HandleInterceptor {
-    public void after(HandleContext context, Method handler, Object message, Object result, Throwable failure) {
+    public void after(HandleContext context, Method handler, Object message, Throwable failure) {
         if (failure == null && context.businessId() != 0) players.get(context.businessId()).saveIfDirty();
     }
 }
@@ -199,8 +200,8 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
 ```
 
 - `before` 按拦截器添加的顺序执行。返回 `SUCCESS`（0）继续；返回其它错误码则以该错误码应答失败（单向消息直接丢弃），之后的拦截器、处理器以及所有 `after` 都不再执行。
-- `after` 在处理器返回或抛异常之后、结果发出之前按相反顺序执行。它拿到处理器的返回值（void 或稍后应答时为 null）以及处理器抛出的异常（如果有）。某个 `after` 抛异常时，其余的 `after` 仍会执行。
-- `before` 或 `after` 抛异常时，和处理器抛异常一样，以 `RUNTIME_EXECUTION_ERROR` 应答失败。
+- `after` 在处理器返回或抛异常之后按相反顺序执行，拿到处理器抛出的异常（如果有）。处理器执行中给出的应答此时已经发出。某个 `after` 抛异常时，其余的 `after` 仍会执行。
+- `before` 或 `after` 抛异常时，和处理器抛异常一样，以 `RUNTIME_EXECUTION_ERROR` 应答失败；处理器已经应答过的除外。
 - 把消息交给同一个 Dispatcher 的所有入口共用它的处理器和拦截器；处理器或拦截器可以通过 `HandleContext.source()`（入口传入的上下文）判断消息从哪里来。
 
 ## 事件
