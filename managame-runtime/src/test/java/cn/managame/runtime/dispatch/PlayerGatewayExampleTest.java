@@ -56,7 +56,7 @@ class PlayerGatewayExampleTest {
 
     @Domain(LOGIN)
     static class Accounts {
-        @HandleMethod void login(HandleContext context, Login login) {
+        @HandleMethod(routeKey = "roleId") void login(HandleContext context, Login login) {
             Connection connection = ((Session) context.source()).connection();
             connection.set(SESSION, new Session(connection, login.roleId()));
             context.reply("welcome " + login.roleId());
@@ -99,7 +99,7 @@ class PlayerGatewayExampleTest {
                 if (source.businessId() == 0) throw new IllegalArgumentException("Not logged in");
                 return RouteKeys.businessId().routeKey(source, message);
             })
-            .domain(LOGIN, RouteExecutors.striped(2), RouteKeys.field("roleId")).build();
+            .domain(LOGIN, RouteExecutors.striped(2)).build();
     private final BlockingQueue<Long> loggedOut = new LinkedBlockingQueue<>();
     private final NetworkServer server = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
             ConnectionInitializer.tcp()

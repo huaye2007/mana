@@ -49,8 +49,8 @@ public final class GameRuntime implements AutoCloseable {
     /**
      * Where {@code message}, arriving from {@code source}, runs in {@code domain}: the domain's resolver gives the
      * route key, and the business identity is the source's, since that is who acts. Entries such as the
-     * Dispatcher and the EventBus use this to build the context of a handler. An unregistered domain throws
-     * IllegalArgumentException; a resolver's own exception passes through.
+     * Dispatcher and the EventBus use this to build the context of a handler whose annotation names no routeKey. An
+     * unregistered domain throws IllegalArgumentException; a resolver's own exception passes through.
      */
     public Route route(int domain, Context source, Object message) {
         RouteKeyResolver resolver = resolvers.get(domain);
@@ -58,17 +58,7 @@ public final class GameRuntime implements AutoCloseable {
         return Route.of(domain, resolver.routeKey(source, message), source.businessType(), source.businessId());
     }
 
-    /**
-     * Checks that messages of {@code messageType} can be routed in {@code domain}; entries call it as they register a
-     * method, so the mistake fails at startup. IllegalArgumentException for an unregistered domain, or when the domain's
-     * resolver can never route such messages, such as {@link RouteKeys#field} for a class without that member.
-     */
-    public void checkRoute(int domain, Class<?> messageType) {
-        checkDomain(domain);
-        resolvers.get(domain).check(messageType);
-    }
-
-    /** IllegalArgumentException for an unregistered domain; lets an entry that routes by a fixed key fail at startup. */
+    /** IllegalArgumentException for an unregistered domain; entries call it as they register a method, so it fails at startup. */
     public void checkDomain(int domain) {
         if (!resolvers.containsKey(domain)) throw new IllegalArgumentException("Unknown domain " + domain);
     }

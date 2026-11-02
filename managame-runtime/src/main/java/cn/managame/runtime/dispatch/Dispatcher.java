@@ -37,8 +37,8 @@ import java.util.function.IntConsumer;
  *         errorCode -> connection.write(Packet.error(packet.seq(), errorCode)));
  * }</pre>
  *
- * A message runs in its handler's domain, on the route key the domain's resolver finds for it and the source,
- * acting for the source's business identity, and its handler answers through its {@link HandleContext}, while it
+ * A message runs in its handler's domain, on the route key its handler's routeKey member holds, or else the domain's
+ * resolver finds for it and the source, * acting for the source's business identity, and its handler answers through its {@link HandleContext}, while it
  * runs or later from any thread. Messages are matched by exact class. One with no handler fails with
  * HANDLER_NOT_FOUND, one that cannot be routed with INVALID_ROUTE_KEY, one the runtime refuses with the runtime's
  * code, and a handler that throws with RUNTIME_EXECUTION_ERROR. {@link HandleInterceptor}s run before and after
@@ -82,7 +82,7 @@ public final class Dispatcher {
         }
         Route route;
         try {
-            route = runtime.route(handler.domain(), source, message);
+            route = handler.route(runtime, source, message);
         } catch (RuntimeException e) {
             reject(message, onFail, INVALID_ROUTE_KEY, String.valueOf(e));
             return;
@@ -151,16 +151,16 @@ public final class Dispatcher {
 
         /**
          * Registers every {@link HandleMethod} of each object. Two handlers for one message class, a handler that
-         * returns a value, declares a context other than HandleContext or its supertypes, or whose domain cannot
-         * route its message, throw IllegalArgumentException.
+         * returns a value, declares a context other than HandleContext or its supertypes, runs in an unregistered
+         * domain or routes by a member its message lacks, throw IllegalArgumentException.
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
-                for (AnnotatedMethod handler : AnnotatedMethod.scan(target, HandleMethod.class)) {
+                for (AnnotatedMethod handler : AnnotatedMethod.scan(target, HandleMethod.class, HandleMethod::routeKey)) {
                     if (handler.method().getReturnType() != void.class)
                         throw new IllegalArgumentException(handler + " must return void and answer through its HandleContext");
                     handler.requireContext(HandleContext.class);
-                    runtime.checkRoute(handler.domain(), handler.messageType());
+                    runtime.checkDomain(handler.domain());
                     AnnotatedMethod existing = handlers.putIfAbsent(handler.messageType(), handler);
                     if (existing != null)
                         throw new IllegalArgumentException(handler.messageType().getName() + " is handled by both " + existing + " and " + handler);

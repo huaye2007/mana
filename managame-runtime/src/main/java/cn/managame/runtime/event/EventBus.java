@@ -26,8 +26,8 @@ import java.util.Objects;
  * events.publish(new GuildJoined(playerId, guildId));
  * }</pre>
  *
- * A subscriber runs in its domain, on the route key the domain's resolver finds for the event and the
- * publishing context, acting for the publisher's business identity with its metadata; outside a game task the
+ * A subscriber runs in its domain, on the route key its routeKey member of the event holds, or else the domain's
+ * resolver finds for the event and the publishing context, acting for the publisher's business identity with its metadata; outside a game task the
  * publisher is an empty context. Subscribers receive events of exactly their class. Delivery always goes through
  * the runtime, so a subscriber runs after the publishing task, never inside it, and one route receives events in
  * the order they were published. Thread-safe.
@@ -62,7 +62,7 @@ public final class EventBus {
         RuntimeException failure = null;
         for (AnnotatedMethod subscriber : targets) {
             try {
-                GameContext context = new GameContext(runtime.route(subscriber.domain(), publisher, event), publisher.metadata());
+                GameContext context = new GameContext(subscriber.route(runtime, publisher, event), publisher.metadata());
                 runtime.execute(context, task -> subscriber.invoke(task, event));
             } catch (RuntimeException e) {
                 if (failure == null) failure = e;
@@ -80,14 +80,14 @@ public final class EventBus {
 
         /**
          * Registers every {@link EventMethod} of each object; subscribers to one event class are called in
-         * registration order. A subscriber declaring a context other than GameContext or its supertypes, or one whose
-         * domain cannot route its event, throws IllegalArgumentException.
+         * registration order. A subscriber declaring a context other than GameContext or its supertypes, one in an
+         * unregistered domain, or one routing by a member its event lacks, throws IllegalArgumentException.
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
-                for (AnnotatedMethod subscriber : AnnotatedMethod.scan(target, EventMethod.class)) {
+                for (AnnotatedMethod subscriber : AnnotatedMethod.scan(target, EventMethod.class, EventMethod::routeKey)) {
                     subscriber.requireContext(GameContext.class);
-                    runtime.checkRoute(subscriber.domain(), subscriber.messageType());
+                    runtime.checkDomain(subscriber.domain());
                     subscribers.computeIfAbsent(subscriber.messageType(), type -> new ArrayList<>()).add(subscriber);
                 }
             }

@@ -10,7 +10,6 @@ import cn.managame.MetadataKey;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
-import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.EventMethod;
 import cn.managame.runtime.dispatch.HandleContext;
@@ -34,7 +33,7 @@ class EventBusTest {
 
     private final GameRuntime runtime = GameRuntime.builder()
             .domain(PLAYER, RouteExecutors.virtualThreads())                              // by the acting player
-            .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))
+            .domain(GUILD, RouteExecutors.virtualThreads())
             .domain(ROOM, RouteExecutors.virtualThreads(), (source, message) -> { throw new IllegalArgumentException("no room"); })
             .build();
     private final BlockingQueue<String> seen = new LinkedBlockingQueue<>();
@@ -52,7 +51,7 @@ class EventBusTest {
 
     @Domain(GUILD)
     class GuildLog {
-        @EventMethod void onLevelUp(GameContext context, LevelUp event) {
+        @EventMethod(routeKey = "guildId") void onLevelUp(GameContext context, LevelUp event) {
             seen.add("guild " + context.routeKey() + " " + context.metadata().get(TRACE));
         }
     }
@@ -105,7 +104,7 @@ class EventBusTest {
 
     @Test void aSubscriberWhoseDomainCannotRouteItsEventFailsAtRegistration() {
         record Rested(long playerId) {}
-        @Domain(GUILD) class GuildRest { @EventMethod void on(Rested event) {} }   // no guildId to route by
+        @Domain(GUILD) class GuildRest { @EventMethod(routeKey = "guildId") void on(Rested event) {} }   // no guildId to route by
         assertThrows(IllegalArgumentException.class, () -> EventBus.builder(runtime).register(List.of(new GuildRest())));
     }
 

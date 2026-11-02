@@ -25,4 +25,10 @@ public @interface HttpMethod {
 
     /** The HTTP method, POST by default. */
     String method() default "POST";
+
+    /**
+     * The member of the argument whose value is the route key, as for
+     * {@link cn.managame.runtime.annotation.HandleMethod#routeKey()}.
+     */
+    String routeKey() default "";
 }

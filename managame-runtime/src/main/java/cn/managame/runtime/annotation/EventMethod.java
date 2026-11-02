@@ -11,4 +11,7 @@ import java.lang.annotation.Target;
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
-public @interface EventMethod {}
+public @interface EventMethod {
+    /** The member of the event whose value is the route key, as for {@link HandleMethod#routeKey()}. */
+    String routeKey() default "";
+}

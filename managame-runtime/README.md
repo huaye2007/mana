@@ -25,7 +25,7 @@ static final byte ROLE = 1;
 
 GameRuntime runtime = GameRuntime.builder()
         .domain(PLAYER, RouteExecutors.virtualThreads())                              // keyed by the acting player
-        .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))   // keyed by the message's guildId
+        .domain(GUILD, RouteExecutors.virtualThreads())                              // handlers name the key: routeKey = "guildId"
         .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))              // everything on one route
         .build();
 
@@ -108,27 +108,42 @@ message's route key.
 - Or your own `RouteExecutor`: `execute`, plus `shutdown` and `awaitTermination`, which finish its work from its own
   state.
 
-**Route keys.** A domain's resolver decides, once for the whole domain, where the key of every message arriving for
-it comes from; messages and methods carry no routing of their own:
+**Route keys.** A domain's resolver gives the key of every message arriving for it, once for the whole domain:
 
 - `RouteKeys.businessId()`, the default of `domain(id, executor)`: the acting player, the session's for a request and
   the publishing task's for an event. Most domains need nothing more.
-- `RouteKeys.field("guildId")`: the message's integral member of that name, a record component, no-argument method
-  or field. Registering a method whose message has no such member fails at startup.
 - `RouteKeys.constant(key)`: one route for everything.
 - Any lambda `(source, message) -> key`. Throwing `IllegalArgumentException` means the message cannot be routed:
   the Dispatcher answers `INVALID_ROUTE_KEY`, HttpRoutes answers 400.
 
+A handler whose message carries its key, such as the guild a donation goes to, names that member in its annotation
+instead, whatever each message calls it:
+
 ```java
-record Donate(long guildId, int gold) {}   // handled in GUILD, routed by RouteKeys.field("guildId")
+@Domain(GUILD)
+class GuildHandle {
+    @HandleMethod(routeKey = "guildId")         // GUILD:the guild donated to
+    void donate(HandleContext request, Donate donate) { ... }
+    @HandleMethod(routeKey = "targetGuildId")   // another message names it otherwise
+    void apply(HandleContext request, ApplyReq apply) { ... }
+}
 ```
+
+- `routeKey` names a member of the method's message: a no-argument method of that name, else its getter
+  (`getGuildId()`, as protobuf and JavaBeans name it), else a field, of an integral type or its box. It is compiled
+  into a method handle when the method is registered, so a misspelt or non-integral member fails at startup, and
+  reading it costs one method-handle call per message.
+- Only the methods that need it name one; the others, in the same domain or class, run on the domain's key.
+- The key keeps one meaning per domain: in a guild domain every method must route by a guild's id, whatever its
+  message calls it, or tasks of different guilds share a route and tasks of one guild stop running one at a time.
+  The framework cannot tell which id a member holds.
 
 An event or a request published outside any player's task has no acting player, so a domain routed by business id
 puts it on key 0: publish a player's events from that player's tasks.
 
 The business identity of a routed task is always the source's: a guild handler running for a player's message
 has that player as `businessType` / `businessId`. `runtime.route(domain, source, message)` returns the `Route` an
-entry would use.
+entry would use for a handler that names no `routeKey`.
 
 ## Handlers: annotated, registered in batches
 
@@ -146,8 +161,8 @@ registrations do not change afterwards.
 A handler takes one parameter, the message, matched by its exact class, and may take its context before it.
 A `@HandleMethod` returns void and answers through its context; an `@HttpMethod` may return its answer instead.
 Methods are compiled to method handles at registration, so calls use no reflection. Registration throws
-`IllegalArgumentException` for a missing `@Domain`, wrong parameters, a `@HandleMethod` that returns a value, two
-handlers for one message, or a context type the entry cannot give.
+`IllegalArgumentException` for a missing `@Domain`, wrong parameters, a `@HandleMethod` that returns a value, a
+`routeKey` its message lacks, two handlers for one message, or a context type the entry cannot give.
 
 ## Dispatcher: player requests and other messages
 
@@ -254,7 +269,8 @@ class Quests {
 }
 @Domain(GUILD)
 class GuildLog {
-    @EventMethod void onLevelUp(GameContext context, LevelUp event) { ... }   // runs on GUILD:guildId, RouteKeys.field
+    @EventMethod(routeKey = "guildId")                                         // runs on GUILD:guildId
+    void onLevelUp(GameContext context, LevelUp event) { ... }
 }
 
 EventBus events = EventBus.builder(runtime).register(List.of(new Quests(), new GuildLog())).build();
@@ -335,7 +351,8 @@ class PlayerAdmin {
 
 @Domain(GUILD)
 class GuildAdmin {
-    @HttpMethod("/notice") String notice(GuildNotice notice) { // runs on GUILD:guildId, routed by the body
+    @HttpMethod(value = "/notice", routeKey = "guildId")     // runs on GUILD:guildId, read from the body
+    String notice(GuildNotice notice) {
         guilds.get(notice.guildId()).post(notice.text());
         return "ok";
     }
@@ -355,8 +372,8 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 - An endpoint's one parameter is its argument, which the codec reads from the request, normally from the body.
   Paths match exactly below the listener's context path, and the method is POST unless `method` says otherwise,
   for example `@HttpMethod(value = "/status", method = "GET")`.
-- The argument is the message the domain's resolver routes by, so in a domain routed by `RouteKeys.field`, that
-  member of the body picks the route.
+- The argument is the message `routeKey` reads, so `@HttpMethod(value = "/notice", routeKey = "guildId")` routes by
+  that member of the body; without one, the domain's resolver routes.
 - Endpoints rarely need their context. When one does, `HttpRequestContext.current()` returns it, or the endpoint
   declares it first: `(HttpRequestContext context, SendMail mail)`. It gives `request()` for headers and query
   (readable until the endpoint returns), `remoteAddress()`, and `reply` / `fail` to answer later.

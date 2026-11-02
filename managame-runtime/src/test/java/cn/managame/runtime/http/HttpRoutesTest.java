@@ -46,7 +46,7 @@ class HttpRoutesTest {
                 if (source.businessId() == 0) throw new IllegalArgumentException("Which role?");
                 return source.businessId();
             })
-            .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))
+            .domain(GUILD, RouteExecutors.virtualThreads())
             .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0)).build();
     private NetworkServer server;
 
@@ -150,7 +150,7 @@ class HttpRoutesTest {
 
     @Test void aCodecReadsArgumentsThatRouteAndShapesResults() throws Exception {
         @Domain(GUILD) class GuildAdmin {
-            @HttpMethod("/notice") Posted notice(Notice notice) { return new Posted(Context.current().routeKey(), notice.text()); }
+            @HttpMethod(value = "/notice", routeKey = "guildId") Posted notice(Notice notice) { return new Posted(Context.current().routeKey(), notice.text()); }
         }
         HttpCodec json = new HttpCodec() { // a stand-in for a JSON library: "guildId:text" in, JSON out
             @Override public Object decode(FullHttpRequest request, Type type) throws Exception {
@@ -198,7 +198,7 @@ class HttpRoutesTest {
     @Domain(WORLD) static class Duplicate { @HttpMethod(value = "/boom", method = "post") String again(String body) { return ""; } }
     @Domain(WORLD) static class NoSlash { @HttpMethod("boom") String boom(String body) { return ""; } }
     @Domain(WORLD) static class WrongContext { @HttpMethod("/x") String x(HandleContext context, String body) { return ""; } }
-    @Domain(GUILD) static class Unreadable { @HttpMethod("/x") String x(Notice notice) { return ""; } }
+    @Domain(GUILD) static class Unreadable { @HttpMethod(value = "/x", routeKey = "guildId") String x(Notice notice) { return ""; } }
 
     @Test void registrationRejectsWhatCannotWork() {
         assertThrows(IllegalArgumentException.class, () -> HttpRoutes.builder(runtime).register(List.of(new WorldAdmin(), new Duplicate())));

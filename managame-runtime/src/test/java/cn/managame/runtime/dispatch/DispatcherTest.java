@@ -44,7 +44,7 @@ class DispatcherTest {
 
     private final GameRuntime runtime = GameRuntime.builder()
             .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId())
-            .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId")).build();
+            .domain(GUILD, RouteExecutors.virtualThreads()).build();   // its handlers route by their message's guildId
     private final List<String> notes = new CopyOnWriteArrayList<>();
     private final BlockingQueue<String> answers = new LinkedBlockingQueue<>();
     private final GameContext role = new GameContext(0, 0, ROLE, 1001, Metadata.empty());
@@ -77,10 +77,10 @@ class DispatcherTest {
 
     @Domain(GUILD)
     class Guild {
-        @HandleMethod void donate(HandleContext context, Donate donate) {
+        @HandleMethod(routeKey = "guildId") void donate(HandleContext context, Donate donate) {
             context.reply("donated to " + context.routeKey() + " by " + context.businessId());
         }
-        @HandleMethod void unroutable(Unroutable message) {}
+        @HandleMethod(routeKey = "guildId") void unroutable(Unroutable message) {}
     }
 
     private Dispatcher dispatcher() { return Dispatcher.builder(runtime).register(List.of(new Shop(), new Guild())).build(); }
@@ -113,7 +113,7 @@ class DispatcherTest {
     }
 
     @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {
-        @Domain(GUILD) class Misrouted { @HandleMethod void rest(Buy buy) {} }   // Buy has no guildId
+        @Domain(GUILD) class Misrouted { @HandleMethod(routeKey = "guildId") void rest(Buy buy) {} }   // Buy has no guildId
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new Misrouted())));
     }
 

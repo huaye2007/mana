@@ -23,7 +23,7 @@ static final byte ROLE = 1;
 
 GameRuntime runtime = GameRuntime.builder()
         .domain(PLAYER, RouteExecutors.virtualThreads())                              // 按当前操作的玩家路由
-        .domain(GUILD, RouteExecutors.virtualThreads(), RouteKeys.field("guildId"))   // 按消息的 guildId 路由
+        .domain(GUILD, RouteExecutors.virtualThreads())                              // 处理方法自己指定：routeKey = "guildId"
         .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))              // 全部在同一条路由上
         .build();
 
@@ -90,23 +90,36 @@ runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(
 - `striped(threads)`：固定数量的平台线程，一个键总在 `hash(key) % threads` 号线程上。不保存键的状态，但一个阻塞的任务会卡住同一线程上的所有键。`striped(threads, maxPendingPerThread)`，默认 65 536。
 - 也可以自己实现 `RouteExecutor`：`execute`，加上 `shutdown` 和 `awaitTermination`，用它自己的状态把活做完。
 
-**路由键**：每个 domain 的 resolver 为这个 domain 收到的所有消息统一决定路由键从哪来；消息和方法上都不写任何路由信息：
+**路由键**：每个 domain 的 resolver 为这个 domain 收到的所有消息统一给出路由键：
 
 - `RouteKeys.businessId()`，即 `domain(id, executor)` 的默认值：当前操作的玩家，请求取会话里的，事件取发布任务的。大多数
   domain 用它就够了。
-- `RouteKeys.field("guildId")`：消息里同名的整数成员，可以是 record 组件、无参方法或字段。注册的方法的消息没有这个成员时，
-  启动时就失败。
 - `RouteKeys.constant(key)`：所有消息走同一条路由。
 - 任意 lambda `(source, message) -> key`。抛 `IllegalArgumentException` 表示消息无法路由：Dispatcher 应答 `INVALID_ROUTE_KEY`，HttpRoutes 返回 400。
 
+消息本身带着路由键的处理方法（比如捐献给哪个公会），在注解里写出这个成员，各个消息里叫什么名字都行：
+
 ```java
-record Donate(long guildId, int gold) {}   // 在 GUILD 里处理，按 RouteKeys.field("guildId") 路由
+@Domain(GUILD)
+class GuildHandle {
+    @HandleMethod(routeKey = "guildId")         // 在 GUILD:捐献的公会 上执行
+    void donate(HandleContext request, Donate donate) { ... }
+    @HandleMethod(routeKey = "targetGuildId")   // 另一个消息里叫别的名字
+    void apply(HandleContext request, ApplyReq apply) { ... }
+}
 ```
+
+- `routeKey` 是方法参数里那个消息的成员名：先找同名的无参方法，再找它的 getter（`getGuildId()`，protobuf 和 JavaBean
+  的命名），再找字段，类型必须是整数或其包装类型。注册方法时就编译成 method handle，成员名写错或类型不对启动时就失败；
+  每条消息读一次，只多一次 method handle 调用。
+- 只有需要的方法才写；同一个 domain 或同一个类里没写的方法，照样用 domain 的路由键。
+- 一个 domain 里路由键的含义要一致：公会 domain 里每个方法都必须按公会 id 路由，不管消息里叫什么名字，否则不同公会的任务会
+  排到同一条路由上，同一个公会的任务也不再依次执行。框架判断不了一个成员装的是哪种 id。
 
 不在任何玩家任务里发布的事件或请求没有操作的玩家，按 businessId 路由的 domain 会把它排到 0 号路由上：玩家的事件要在该玩家
 的任务里发布。
 
-路由后的任务，业务身份总是来源的身份：为玩家消息执行的公会处理器，`businessType` / `businessId` 是这个玩家。`runtime.route(domain, source, message)` 返回入口会使用的 `Route`。
+路由后的任务，业务身份总是来源的身份：为玩家消息执行的公会处理器，`businessType` / `businessId` 是这个玩家。`runtime.route(domain, source, message)` 返回入口为没写 `routeKey` 的处理方法使用的 `Route`。
 
 ## 处理器：注解声明，批量注册
 
@@ -120,7 +133,7 @@ record Donate(long guildId, int gold) {}   // 在 GUILD 里处理，按 RouteKey
 | `@HttpMethod(path)` | HTTP 请求，默认 POST，可用 `method` 指定 | `HttpRoutes` |
 | `@Cron(domain, value)` | 日历时间，见[定时任务](#定时任务)；domain 和路由键写在注解里，方法不带消息 | `GameTimer` |
 
-处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。`@HandleMethod` 返回 void，通过上下文应答；`@HttpMethod` 可以直接返回应答。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、`@HandleMethod` 有返回值、同一个消息有两个处理器、上下文类型入口给不了。
+处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。`@HandleMethod` 返回 void，通过上下文应答；`@HttpMethod` 可以直接返回应答。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、`@HandleMethod` 有返回值、消息里没有 `routeKey` 指定的成员、同一个消息有两个处理器、上下文类型入口给不了。
 
 ## Dispatcher：玩家请求与其它消息
 
@@ -215,7 +228,8 @@ class Quests {
 }
 @Domain(GUILD)
 class GuildLog {
-    @EventMethod void onLevelUp(GameContext context, LevelUp event) { ... }   // 在 GUILD:guildId 上执行（RouteKeys.field）
+    @EventMethod(routeKey = "guildId")                                         // 在 GUILD:guildId 上执行
+    void onLevelUp(GameContext context, LevelUp event) { ... }
 }
 
 EventBus events = EventBus.builder(runtime).register(List.of(new Quests(), new GuildLog())).build();
@@ -281,7 +295,8 @@ class PlayerAdmin {
 
 @Domain(GUILD)
 class GuildAdmin {
-    @HttpMethod("/notice") String notice(GuildNotice notice) { // 按请求体路由，在 GUILD:guildId 上执行
+    @HttpMethod(value = "/notice", routeKey = "guildId")     // 从请求体读出，在 GUILD:guildId 上执行
+    String notice(GuildNotice notice) {
         guilds.get(notice.guildId()).post(notice.text());
         return "ok";
     }
@@ -299,7 +314,7 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 ```
 
 - 接口只有一个参数，由编解码器从请求中读出，通常就是请求体。路径在监听的 contextPath 之下精确匹配；方法默认为 POST，需要其它方法时用 `method` 指定，例如 `@HttpMethod(value = "/status", method = "GET")`。
-- 这个参数就是 domain 的 resolver 用来路由的消息，所以在按 `RouteKeys.field` 路由的 domain 里，请求体上那个成员决定路由。
+- `routeKey` 读的就是这个参数，所以 `@HttpMethod(value = "/notice", routeKey = "guildId")` 按请求体上的那个成员路由；没写时由 domain 的 resolver 路由。
 - 接口一般用不到上下文。需要时在接口内调用 `HttpRequestContext.current()`，或者把它声明为第一个参数：`(HttpRequestContext context, SendMail mail)`。通过它可以取 `request()`（读请求头和查询参数，接口返回前可读）、`remoteAddress()`，以及用 `reply` / `fail` 稍后应答。
 - `source(request -> context)` 决定请求以谁的身份执行；它在连接的 EventLoop 上运行，不能阻塞。默认以空上下文执行。
 - 状态码：未知路径 404；方法不对 405 并带 `Allow`；编解码器读不出参数 400，source 或路由抛 `IllegalArgumentException` 也是 400；任务被拒绝（已关闭、过载）503；接口抛异常 500。

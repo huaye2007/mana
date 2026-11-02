@@ -112,10 +112,13 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   answered whether its task is accepted or refused.
 - **Every context has the same fields:** `domain` (int), `routeKey` (long), `businessType` (byte),
   `businessId` (long) and `Metadata`.
-- **The business decides routing per domain.** Each domain has its own `RouteExecutor` and its own
-  `RouteKeyResolver`, set once for the whole domain: by default the source's business id (the acting player), or a
-  member of the message (`RouteKeys.field("guildId")`, checked at startup). Messages and handler methods carry no
-  routing of their own.
+- **The business decides routing per domain, and a handler may name its message's key.** Each domain has its own
+  `RouteExecutor` and its own `RouteKeyResolver`, set once for the whole domain: by default the source's business id
+  (the acting player). A handler whose message carries its key names that member in its annotation
+  (`@HandleMethod(routeKey = "guildId")`, also `@EventMethod` and `@HttpMethod`): a method, its getter or a field,
+  compiled into a method handle at registration, so a missing member fails at startup and a message pays one call.
+  Only the handlers that need it name one, since messages name the same key differently; a domain's key keeps one
+  meaning (a guild's id in a guild domain).
 - **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
   `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
   A `@HandleMethod` returns void and answers only through its `HandleContext` (`reply` / `fail`, now or later), so

@@ -41,7 +41,7 @@ import org.openjdk.jmh.annotations.Warmup;
 @Warmup(iterations = 3, time = 2)
 @Measurement(iterations = 5, time = 2)
 public class DispatchThroughputBenchmark {
-    static final int PLAYER = ExecuteThroughputBenchmark.PLAYER, PLAYERS = ExecuteThroughputBenchmark.PLAYERS;
+    static final int PLAYER = ExecuteThroughputBenchmark.PLAYER, PLAYERS = ExecuteThroughputBenchmark.PLAYERS, GUILD = 2;
     @Param({"virtualThreads", "striped"})
     public String executor;
     @Param({"4096"})
@@ -55,10 +55,16 @@ public class DispatchThroughputBenchmark {
     private IntConsumer onFail;
 
     public record Buy(int item) {}
+    public record Donate(long guildId) {}
 
     @Domain(PLAYER)
     public static class Shop {
         @HandleMethod public void buy(HandleContext context, Buy buy) { context.reply(buy.item()); }
+    }
+
+    @Domain(GUILD)
+    public static class Guild {
+        @HandleMethod(routeKey = "guildId") public void donate(HandleContext context, Donate donate) { context.reply(donate.guildId()); }
     }
 
     @Setup(Level.Trial) public void start() {
@@ -68,8 +74,11 @@ public class DispatchThroughputBenchmark {
             failures.incrementAndGet();
             inFlight.release();
         };
-        runtime = GameRuntime.builder().domain(PLAYER, ExecuteThroughputBenchmark.executor(executor), RouteKeys.businessId()).build();
-        dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop())).build();
+        runtime = GameRuntime.builder()
+                .domain(PLAYER, ExecuteThroughputBenchmark.executor(executor), RouteKeys.businessId())
+                .domain(GUILD, ExecuteThroughputBenchmark.executor(executor))
+                .build();
+        dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop(), new Guild())).build();
         for (int id = 0; id < PLAYERS; id++) players[id] = GameContext.of(PLAYER, id, ExecuteThroughputBenchmark.ROLE, id);
     }
 
@@ -85,5 +94,12 @@ public class DispatchThroughputBenchmark {
         inFlight.acquire();
         int id = player.next();
         dispatcher.dispatch(players[id], new Buy(id), onReply, onFail);
+    }
+
+    /** The same, in a domain whose handler routes by a member of its message, the guild it donates to. */
+    @Benchmark public void dispatchByMember(ExecuteThroughputBenchmark.Player player) throws InterruptedException {
+        inFlight.acquire();
+        int id = player.next();
+        dispatcher.dispatch(players[id], new Donate(id), onReply, onFail);
     }
 }

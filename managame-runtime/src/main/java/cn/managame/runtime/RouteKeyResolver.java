@@ -1,8 +1,9 @@
 package cn.managame.runtime;
 
 /**
- * How one domain finds the route key of a message arriving for it. The application decides: from the source
- * context, such as the acting player's id, or from the message, such as its guild id or room id.
+ * How one domain finds the route key of a message whose handler names no routeKey of its own: from the source
+ * context, such as the acting player's id, or however else the application decides. A handler routing by a member of
+ * its message, such as its guild id, names it in its annotation instead.
  */
 @FunctionalInterface
 public interface RouteKeyResolver {
@@ -12,10 +13,4 @@ public interface RouteKeyResolver {
      * exception means the message cannot be routed.
      */
     long routeKey(Context source, Object message);
-
-    /**
-     * Throws IllegalArgumentException when messages of {@code messageType} can never be routed by this resolver, so the
-     * mistake fails at startup: entries call it as they register each method. Nothing by default.
-     */
-    default void check(Class<?> messageType) {}
 }

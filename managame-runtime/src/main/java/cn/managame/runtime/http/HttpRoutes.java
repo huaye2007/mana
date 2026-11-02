@@ -46,8 +46,8 @@ import java.util.stream.Collectors;
  *
  * The codec reads an endpoint's argument from the request, normally its body; an endpoint taking a FullHttpRequest
  * gets the request itself, without the codec. The request then runs in the
- * endpoint's domain, on the route key the domain's resolver finds for the argument and the source the
- * application builds from the request. Unknown paths are answered with 404, other methods with 405, an argument
+ * endpoint's domain, on the route key its routeKey member of the argument holds, or else the domain's resolver
+ * finds for the argument and the source the application builds from the request. Unknown paths are answered with 404, other methods with 405, an argument
  * the codec cannot read with 400, and so is a source or route that cannot be found because of
  * IllegalArgumentException, such as a missing parameter. The request stays readable until the endpoint returns. A
  * request the runtime refuses is answered with the codec's failure response.
@@ -103,7 +103,7 @@ public final class HttpRoutes implements HttpHandler {
         Route route;
         try {
             from = Objects.requireNonNull(source.apply(request), "The source function returned null");
-            route = runtime.route(endpoint.method().domain(), from, argument);
+            route = endpoint.method().route(runtime, from, argument);
         } catch (IllegalArgumentException invalid) {
             badRequest(exchange, invalid);
             return;
@@ -150,14 +150,14 @@ public final class HttpRoutes implements HttpHandler {
 
         /**
          * Registers every {@link HttpMethod} of each object. Two endpoints for one method and path, a path not
-         * starting with a slash, a context other than HttpRequestContext or its supertypes, or a domain that cannot
-         * route the argument throw IllegalArgumentException.
+         * starting with a slash, a context other than HttpRequestContext or its supertypes, an unregistered domain,
+         * or a routeKey member the argument lacks throw IllegalArgumentException.
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
-                for (AnnotatedMethod method : AnnotatedMethod.scan(target, HttpMethod.class)) {
+                for (AnnotatedMethod method : AnnotatedMethod.scan(target, HttpMethod.class, HttpMethod::routeKey)) {
                     method.requireContext(HttpRequestContext.class);
-                    runtime.checkRoute(method.domain(), method.messageType());
+                    runtime.checkDomain(method.domain());
                     HttpMethod mapping = method.method().getAnnotation(HttpMethod.class);
                     String path = mapping.value(), verb = mapping.method().toUpperCase(Locale.ROOT);
                     if (!path.startsWith("/")) throw new IllegalArgumentException(method + ": path must start with /");
