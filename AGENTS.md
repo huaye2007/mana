@@ -9,7 +9,7 @@ Java 25. The root `pom.xml` only aggregates them, to build all in one command; n
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
-| `managame-common` | nothing | `Metadata`, `MetadataKey`, `IdGenerator` (`SnowflakeIdGenerator`, `SequenceIdGenerator`), `FrameworkErrorCodes` |
+| `managame-common` | nothing | `Metadata`, `MetadataKey`, `IdGenerator` (`SnowflakeIdGenerator`, `SequenceIdGenerator`), `FrameworkErrorCodes`, `Metrics` (`cn.managame.metrics`) |
 | `managame-network` | Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
@@ -198,6 +198,13 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   lifecycle (a server listening or closed, a peer joining or leaving, a component started or shut down, what was
   registered); DEBUG for detail per connection, call or round. Never log per message at INFO, and build DEBUG messages
   in a Supplier, so a level that is off costs nothing.
+- Report metrics through common's `Metrics`, never a metrics library: the application binds it to its backend as it
+  bridges `System.Logger`. A component takes it as a builder setting, `metrics(Metrics)`, `Metrics.noop()` by default,
+  never from a global. Metrics are named `managame.<component>.<area>.<what>`, after the loggers. Meters are created
+  at build, or when what they measure is added (a domain, a peer), and kept in fields, so an event costs one call with
+  no tags built; tag values come from small sets (a domain, an error code's name, a node id), never player ids or
+  route keys. What a component already counts or holds is reported as a gauge or a counter read when the backend
+  collects, not counted again on the hot path.
 - Keep test fixtures small and readable; tests double as usage examples (for instance
   `PlayerGatewayExampleTest` shows an application-defined player gateway).
 

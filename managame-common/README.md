@@ -10,6 +10,8 @@ Types shared by every managame project, with no dependencies:
   (unique across servers and their merges, ordered by time, holding some data of the application's own, laid out by
   an `IdLayout`) and `SequenceIdGenerator` (counting up in this process).
 - `FrameworkErrorCodes`: the error codes the framework answers failures with.
+- `Metrics`: counters, gauges and timers, which the framework and the application report through and the
+  application binds to its own backend (Micrometer, Prometheus, OpenTelemetry), in package `cn.managame.metrics`.
 
 ## Metadata
 
@@ -95,6 +97,89 @@ IdGenerator own = () -> idService.next();                    // or the applicati
   id made. If the clock is set back, ids go on from the last one's time and wait for the clock once that tick is used
   up. A thread that must not wait, such as an event loop, should stay well under `2^sequenceBits` ids a tick.
 
+## Metrics
+
+`Metrics` is where the framework and the application report metrics, without depending on a metrics library: the
+application implements it over its own backend, as `System.Logger` is bridged to its logging. A component takes one
+as a builder setting, `Metrics.noop()` by default; business code uses the instance the application holds.
+
+```java
+// Once, when a component is built or something it measures is added:
+Counter refused = metrics.counter("managame.runtime.tasks.refused", "domain", "1");
+Timer calls = metrics.timer("game.rank.calls");
+metrics.gauge("game.players.online", sessions::size);                // read when the backend collects
+Meter sent = metrics.counter("game.mails.sent", mailer::sentCount);  // counted elsewhere, read the same way
+
+// Per event: one call, no tags built, nothing allocated
+refused.increment();
+long start = calls.start();
+callRank();
+calls.stop(start);
+
+sent.close();   // when what it reads goes away: removed from the backend
+```
+
+| Method | Returns | For |
+| --- | --- | --- |
+| `counter(name, tags...)` | `Counter`: `increment()`, `increment(n)` | Events, such as tasks refused or calls timed out |
+| `counter(name, count, tags...)` | `Meter`: `close()` | A count kept elsewhere, such as a field a component counts anyway, read when the backend collects; it never falls |
+| `gauge(name, value, tags...)` | `Meter`: `close()` | A value that rises and falls, such as players online or tasks waiting, read when the backend collects |
+| `timer(name, tags...)` | `Timer`: `record(nanos)`, `start()`, `stop(start)` | Durations, in nanoseconds |
+
+Rules:
+
+- Names are lowercase and dotted, segments of a letter followed by letters, digits or underscores. The framework's
+  are `managame.<component>.<area>.<what>`, after its loggers `cn.managame.<component>.<area>`; the application's
+  take a prefix of their own, such as `game.shop.purchases`.
+- Tags are key, value, key, value, keys following the rule of names. Values must come from a small set (a domain,
+  an error code's name, a node id), never a player id or a route key: every value makes a series of its own.
+- Create meters once and keep them in fields, each name and tag set once. Every meter is safe to use from any thread.
+- Reporting costs what the backend's own meter costs and nothing more: `MetricsBenchmark` in managame-benchmark counts
+  through `Metrics` into a LongAdder, the kind of striped adder Micrometer counts in, as fast as into the LongAdder alone, by one thread or by
+  four sharing it. `Metrics.noop()` is one empty meter, whose methods the JIT inlines away, and its `start()` reads no
+  clock. A bound timer pays two clock reads, about 40 ns on Windows, so time what matters and count the rest; a gauge
+  and a counter kept elsewhere cost nothing until the backend reads them.
+- `close()` removes a gauge or a counter kept elsewhere from the backend and lets go of what it reads, for one of
+  something that goes away, such as a peer. Counters and timers last as long as the backend: a peer back under the
+  same node id reports to the same series again.
+
+### Over Micrometer
+
+The framework has no bridge project; an application on Micrometer writes its own, in a few lines:
+
+```java
+public final class MicrometerMetrics implements Metrics {
+    private final MeterRegistry registry;
+    /** What function counters read: Micrometer holds it weakly. */
+    private final Map<io.micrometer.core.instrument.Meter, LongSupplier> counts = new ConcurrentHashMap<>();
+
+    public MicrometerMetrics(MeterRegistry registry) { this.registry = registry; }
+
+    @Override public Counter counter(String name, String... tags) { return registry.counter(name, tags)::increment; }
+
+    @Override public Meter counter(String name, LongSupplier count, String... tags) {
+        FunctionCounter counter = FunctionCounter.builder(name, count, LongSupplier::getAsLong).tags(tags).register(registry);
+        counts.put(counter, count);
+        return () -> { registry.remove(counter); counts.remove(counter); };
+    }
+
+    @Override public Meter gauge(String name, DoubleSupplier value, String... tags) {
+        Gauge gauge = Gauge.builder(name, value, DoubleSupplier::getAsDouble).tags(tags).strongReference(true).register(registry);
+        return () -> registry.remove(gauge);
+    }
+
+    @Override public Timer timer(String name, String... tags) {
+        io.micrometer.core.instrument.Timer timer = registry.timer(name, tags);
+        return nanos -> timer.record(nanos, TimeUnit.NANOSECONDS);
+    }
+}
+```
+
+Micrometer converts names and units for each backend: for Prometheus, dots into underscores and times into
+seconds. For percentiles such as p99, register timers with
+`Timer.builder(name).tags(tags).publishPercentileHistogram().register(registry)`. Over OpenTelemetry, the same
+methods map to its counter, observable counter, observable gauge and histogram.
+
 ## Error codes
 
 Zero is success and every failure code is positive. The framework uses these:
@@ -127,4 +212,5 @@ unknown code reads `UNKNOWN(<code>)`. Never base program logic on the names.
 mvn install
 ```
 
-Install it before building the projects that use it. The tests cover reading, deriving and validating metadata.
+Install it before building the projects that use it. The tests cover reading, deriving and validating metadata,
+the id generators, and metrics: an application's own backend behind `Metrics`, and the no-op one.

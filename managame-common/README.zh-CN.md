@@ -7,6 +7,8 @@
 - `Metadata` 与 `MetadataKey`：随每个游戏上下文传递的少量带类型的键值数据，例如 trace id、请求来自哪台服务器。
 - `IdGenerator`：生成唯一 long id 的接口，只有 `generateId()` 一个方法；自带 `SnowflakeIdGenerator`（跨服、合服也唯一，按时间递增，可以在 id 里存一部分应用自己的数据，布局由 `IdLayout` 定）和 `SequenceIdGenerator`（进程内自增）。
 - `FrameworkErrorCodes`：框架应答失败时使用的错误码。
+- `Metrics`：计数器、gauge 和计时器，框架和业务都通过它上报指标，由应用接到自己的后端（Micrometer、Prometheus、
+  OpenTelemetry），在 `cn.managame.metrics` 包中。
 
 ## Metadata
 
@@ -77,6 +79,83 @@ IdGenerator own = () -> idService.next();                    // 也可以是应�
 - 同一个生成器的 id 一定递增，与带什么数据无关。不加锁，任意线程都可以调用。
 - 用系统时钟，不用 `GameTime`（它可能被调整）。生成器从不返回超前于时钟的 id：一个 tick 的序号用完时，下一个 id 用下一个 tick，`generateId` 等时钟走到那里（正常最多一个 tick）。所以只要重启时时钟已经过了最后一个 id 的时间，重启后也不会重复。时钟被往回调时，id 接着上一个的时间继续，用完那个 tick 后等时钟追上。不能等待的线程（比如 EventLoop）要让生成速度远低于每 tick `2^sequenceBits` 个。
 
+## 指标
+
+框架和业务通过 `Metrics` 上报指标，它不依赖任何指标库：应用在自己的后端上实现它，就像把 `System.Logger` 桥接到自己的日志一样。
+组件通过 builder 设置拿到它，默认是 `Metrics.noop()`；业务代码用应用持有的那个实例。
+
+```java
+// 只在组件构建时，或它要统计的东西加入时创建一次：
+Counter refused = metrics.counter("managame.runtime.tasks.refused", "domain", "1");
+Timer calls = metrics.timer("game.rank.calls");
+metrics.gauge("game.players.online", sessions::size);                // 后端采集时读取
+Meter sent = metrics.counter("game.mails.sent", mailer::sentCount);  // 别处已经在数的值，同样采集时读取
+
+// 每次事件：一次调用，不拼 tag，不分配内存
+refused.increment();
+long start = calls.start();
+callRank();
+calls.stop(start);
+
+sent.close();   // 读取的对象不在了：从后端移除
+```
+
+| 方法 | 返回 | 用于 |
+| --- | --- | --- |
+| `counter(name, tags...)` | `Counter`：`increment()`、`increment(n)` | 事件，比如被拒绝的任务、超时的调用 |
+| `counter(name, count, tags...)` | `Meter`：`close()` | 别处已经在数的值，比如组件本来就在累加的字段，后端采集时读取；只增不减 |
+| `gauge(name, value, tags...)` | `Meter`：`close()` | 会涨会落的值，比如在线人数、排队的任务数，后端采集时读取 |
+| `timer(name, tags...)` | `Timer`：`record(nanos)`、`start()`、`stop(start)` | 耗时，单位纳秒 |
+
+规则：
+
+- 名字是小写点分的，每段以字母开头，后面是字母、数字或下划线。框架的指标叫 `managame.<组件>.<区域>.<名称>`，对应它的
+  logger 名 `cn.managame.<组件>.<区域>`；应用的指标用自己的前缀，比如 `game.shop.purchases`。
+- tag 按 key、value、key、value 排列，key 的规则和名字相同。value 只能取自一个小集合（domain、错误码名、node id），不能是玩家
+  id 或路由键：每个不同的值都是一条单独的序列。
+- 指标创建一次，存在字段里，每个名字加 tag 组合只创建一次。所有指标都可以在任意线程使用。
+- 上报的开销就是后端自己的指标的开销，不多一分：managame-benchmark 的 `MetricsBenchmark` 经 `Metrics` 往 LongAdder 计数（Micrometer
+  也用这类分段累加器计数），单线程和四线程共用时都和直接用 LongAdder 一样快。`Metrics.noop()` 是同一个空指标，方法被 JIT 内联掉，`start()`
+  不读时钟。接了后端的计时器要读两次时钟，在 Windows 上约 40 ns，所以只给要紧的地方计时，其余用计数；gauge 和别处在数的计数器在后端读取之前没有任何开销。
+- `close()` 把 gauge 或别处在数的计数器从后端移除，并放开它读取的对象；用于会消失的东西，比如一个对端。计数器和计时器与后端同寿：
+  对端用同一个 node id 回来后，还是上报到同一条序列。
+
+### 接到 Micrometer
+
+框架不提供桥接项目；用 Micrometer 的应用自己写一个，只要几行：
+
+```java
+public final class MicrometerMetrics implements Metrics {
+    private final MeterRegistry registry;
+    /** FunctionCounter 读取的对象：Micrometer 只持有它的弱引用。 */
+    private final Map<io.micrometer.core.instrument.Meter, LongSupplier> counts = new ConcurrentHashMap<>();
+
+    public MicrometerMetrics(MeterRegistry registry) { this.registry = registry; }
+
+    @Override public Counter counter(String name, String... tags) { return registry.counter(name, tags)::increment; }
+
+    @Override public Meter counter(String name, LongSupplier count, String... tags) {
+        FunctionCounter counter = FunctionCounter.builder(name, count, LongSupplier::getAsLong).tags(tags).register(registry);
+        counts.put(counter, count);
+        return () -> { registry.remove(counter); counts.remove(counter); };
+    }
+
+    @Override public Meter gauge(String name, DoubleSupplier value, String... tags) {
+        Gauge gauge = Gauge.builder(name, value, DoubleSupplier::getAsDouble).tags(tags).strongReference(true).register(registry);
+        return () -> registry.remove(gauge);
+    }
+
+    @Override public Timer timer(String name, String... tags) {
+        io.micrometer.core.instrument.Timer timer = registry.timer(name, tags);
+        return nanos -> timer.record(nanos, TimeUnit.NANOSECONDS);
+    }
+}
+```
+
+Micrometer 会按各个后端转换名字和单位：对 Prometheus，点换成下划线，时间换成秒。要 p99 这类分位数时，计时器用
+`Timer.builder(name).tags(tags).publishPercentileHistogram().register(registry)` 注册。接 OpenTelemetry 时，这几个方法分别对应它的
+counter、observable counter、observable gauge 和 histogram。
+
 ## 错误码
 
 0 表示成功，所有失败码都是正数。框架目前使用以下错误码：
@@ -109,4 +188,5 @@ runtime 3001–3999，数据 4001–4999；业务自己的错误码应避开这�
 mvn install
 ```
 
-构建使用它的项目之前先安装它。测试覆盖 metadata 的读取、派生与校验。
+构建使用它的项目之前先安装它。测试覆盖 metadata 的读取、派生与校验，id 生成器，以及指标：应用自己的后端实现 `Metrics`，和
+no-op 实现。
