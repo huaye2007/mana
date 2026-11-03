@@ -29,10 +29,8 @@ public class DataConfig {
     public HikariDataSource dataSource(Environment env) {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(env.getProperty("mysql.url", DEFAULT_URL));
-//        config.setUsername(env.getRequiredProperty("mysql.user"));
-//        config.setPassword(env.getRequiredProperty("mysql.password"));
-        config.setUsername("root");
-        config.setPassword("123456");
+        config.setUsername(env.getRequiredProperty("mysql.user"));
+        config.setPassword(env.getRequiredProperty("mysql.password"));
         return new HikariDataSource(config);
     }
 
