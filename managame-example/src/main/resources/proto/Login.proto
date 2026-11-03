@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+option java_package = "cn.managame.example.proto";
+
+message LoginReq {
+   int32 serverId = 1;
+   string token = 2;
+   int64 userId = 3;
+}
+
+message LoginRes {
+   int64 roleId = 1;
+}

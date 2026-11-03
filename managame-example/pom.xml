@@ -12,6 +12,8 @@
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <protobuf.version>3.25.3</protobuf.version>
+        <spring.version>7.0.9</spring.version>
     </properties>
 
     <dependencyManagement>
@@ -43,5 +45,75 @@
             <groupId>cn.managame</groupId>
             <artifactId>managame-data-mysql</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
+        </dependency>
+        <!-- 纯 Spring 做装配：bean、注入、按依赖顺序关闭；不用 Spring Boot -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <version>${spring.version}</version>
+        </dependency>
+        <!-- managame-data-mysql 不带驱动和连接池，由应用选 -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>9.4.0</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>5.1.0</version>
+        </dependency>
+        <!-- 实体里集合、Map 字段存成 JSON 列，JsonCodec 用 Jackson 实现 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.19.4</version>
+        </dependency>
     </dependencies>
+
+    <build>
+        <extensions>
+            <!-- 提供 ${os.detected.classifier}，protoc 按平台下载 -->
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>1.7.1</version>
+            </extension>
+        </extensions>
+        <plugins>
+            <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+                <version>0.6.1</version>
+                <configuration>
+                    <!-- 指定 protoc 编译器，插件会自动下载对应平台的二进制文件 -->
+                    <protocArtifact>
+                        com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}
+                    </protocArtifact>
+
+                    <protoSourceRoot>${project.basedir}/src/main/resources/proto</protoSourceRoot>
+                    <!-- protoc 按 java_package 在此目录下建包目录，所以指向 src/main/java，
+                         由 .proto 里的 java_package 决定落到 cn/managame/example/proto -->
+                    <outputDirectory>${project.basedir}/src/main/java</outputDirectory>
+                    <!-- 默认 true 会先清空输出目录，指向 src/main/java 时必须关掉，否则手写代码会被删 -->
+                    <clearOutputDirectory>false</clearOutputDirectory>
+
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <!-- 只生成 Java 消息类 -->
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>
