@@ -6,13 +6,13 @@ import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.HandleMethod;
 import cn.managame.runtime.dispatch.Dispatcher;
+import cn.managame.runtime.dispatch.FailCallback;
 import cn.managame.runtime.dispatch.HandleContext;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
-import java.util.function.IntConsumer;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -52,7 +52,7 @@ public class DispatchThroughputBenchmark {
     private Dispatcher dispatcher;
     private Semaphore inFlight;
     private Consumer<Object> onReply;
-    private IntConsumer onFail;
+    private FailCallback onFail;
 
     public record Buy(int item) {}
     public record Donate(long guildId) {}
@@ -70,7 +70,7 @@ public class DispatchThroughputBenchmark {
     @Setup(Level.Trial) public void start() {
         inFlight = new Semaphore(window);
         onReply = result -> inFlight.release();
-        onFail = code -> {
+        onFail = (code, args) -> {
             failures.incrementAndGet();
             inFlight.release();
         };

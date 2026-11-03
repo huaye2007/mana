@@ -27,6 +27,7 @@ public interface HandleInterceptor {
     /**
      * Before the handler. SUCCESS (0) lets it run; any other code fails the request with that code, or drops a
      * message that expects no answer, and neither the remaining interceptors nor the handler run, nor any after.
+     * To fail with args, an interceptor fails the context itself, {@code context.fail(code, args)}, and returns the code.
      */
     default int before(HandleContext context, Method handler, Object message) throws Exception { return SUCCESS; }
 

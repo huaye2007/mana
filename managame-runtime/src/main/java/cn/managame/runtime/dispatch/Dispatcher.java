@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
-import java.util.function.IntConsumer;
 
 /**
  * Runs messages on their {@link HandleMethod} handlers, whatever protocol carried them, so one Dispatcher can serve
@@ -34,7 +33,7 @@ import java.util.function.IntConsumer;
  * // In the application's own ConnectionHandler, which knows its packet format:
  * dispatcher.dispatch(session(connection), packet.body(),
  *         result -> connection.write(new Packet(packet.seq(), result)),
- *         errorCode -> connection.write(Packet.error(packet.seq(), errorCode)));
+ *         (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
  * }</pre>
  *
  * A message runs in its handler's domain, on the route key its handler's routeKey member holds, or else the domain's
@@ -71,7 +70,7 @@ public final class Dispatcher {
      * the application's format, at most one of them once, from whichever thread answers. Both null for a message
      * that expects no answer.
      */
-    public void dispatch(Context source, Object message, Consumer<Object> onReply, IntConsumer onFail) {
+    public void dispatch(Context source, Object message, Consumer<Object> onReply, FailCallback onFail) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(message, "message");
         if ((onReply == null) != (onFail == null)) throw new IllegalArgumentException("Give both onReply and onFail, or neither");
@@ -131,9 +130,9 @@ public final class Dispatcher {
         }
     }
 
-    private static void reject(Object message, IntConsumer onFail, int errorCode, String reason) {
+    private static void reject(Object message, FailCallback onFail, int errorCode, String reason) {
         if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, "Rejected " + message.getClass().getName() + ": " + reason);
-        if (onFail != null) onFail.accept(errorCode);
+        if (onFail != null) onFail.onFail(errorCode, HandleContext.NO_ARGS);
     }
 
     public static final class Builder {

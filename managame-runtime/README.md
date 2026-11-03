@@ -53,7 +53,8 @@ Every piece of business logic runs with a `Context`:
 - `RequestContext` adds `reply(result)` and `fail(errorCode)` for work someone waits on. Only the first answer
   counts, and it may come from any thread, also after the task returned. A request is always answered: if its task
   throws, the runtime fails it with `RUNTIME_EXECUTION_ERROR`, and if `execute` refuses its task, with the refusal's
-  code.
+  code. `fail(errorCode, args...)` adds strings, such as the values the code's message shows, for the source to place
+  in its format; an HTTP request has no place for them and answers with the code alone.
 
 ### Continuing on a route
 
@@ -173,7 +174,7 @@ over with the context it comes from and callbacks that answer in its own format.
 @Domain(PLAYER)
 class Shop {
     @HandleMethod void buy(HandleContext request, Buy buy) {         // answer now through the context
-        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD);
+        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
         else request.reply(bags.add(request.businessId(), buy.item()));
     }
     @HandleMethod void rank(HandleContext request, AskRank ask) {    // or later, from any thread
@@ -202,7 +203,7 @@ class Gateway implements ConnectionHandler {
         Packet packet = (Packet) message;
         dispatcher.dispatch(connection.get(SESSION), packet.body(),
                 result -> connection.write(Packet.ok(packet.seq(), result)),
-                errorCode -> connection.write(Packet.error(packet.seq(), errorCode)));
+                (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
     }
     public void onInActive(Connection connection) {
         Session session = connection.get(SESSION);
@@ -216,6 +217,9 @@ class Gateway implements ConnectionHandler {
   handler reads it as `HandleContext.source()`; a login handler can bind the role by replacing the session.
 - Exactly one of `onReply` / `onFail` is called, at most once, on whichever thread answers. Give both, or neither
   for a one-way message.
+- `onFail` receives the code and the args the handler failed with, `fail(errorCode, args...)`, as they are: an
+  empty array after `fail(errorCode)` and for the framework's own failures. Where they go in the packet is the
+  application's, a failure's body for instance.
 - Failures: `HANDLER_NOT_FOUND`, `INVALID_ROUTE_KEY`, the runtime's refusal (`RUNTIME_CLOSED`,
   `ROUTE_EXECUTOR_OVERLOADED`), and `RUNTIME_EXECUTION_ERROR` when the handler throws.
 - A complete, runnable example: `src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`.
@@ -250,7 +254,7 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
 
 - `before` runs in the order interceptors were added. `SUCCESS` (0) goes on; any other code fails the request
   with that code (a one-way message is dropped), and then neither the handler, the later interceptors nor any
-  `after` run.
+  `after` run. To fail with args, an interceptor calls `context.fail(code, args...)` itself and returns the code.
 - `after` runs in reverse order once the handler has returned or thrown, and receives the handler's exception, if
   any. An answer the handler gave while it ran is already on its way. Every `after` runs even when one throws.
 - An exception from `before` or `after` fails the request with `RUNTIME_EXECUTION_ERROR`, as one from the handler

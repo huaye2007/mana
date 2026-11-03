@@ -46,7 +46,7 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
   `new GameContext(domain, key, type, id, metadata)`。
 - 任务内部用 `Context.current()` 取得当前任务的上下文；`Context.hasCurrent()` 判断当前线程是否在执行任务。
 - `GameContext.copyOf(context)` 得到一份普通副本，用于针对同一对象的新工作，保留路由和 metadata。请求的副本不能应答该请求。
-- `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。请求一定会得到应答：任务抛异常时 runtime 以 `RUNTIME_EXECUTION_ERROR` 应答，`execute` 拒绝任务时以拒绝的错误码应答。
+- `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。请求一定会得到应答：任务抛异常时 runtime 以 `RUNTIME_EXECUTION_ERROR` 应答，`execute` 拒绝任务时以拒绝的错误码应答。`fail(errorCode, args...)` 还可以带上字符串参数，例如错误提示里要显示的数值，由来源按自己的格式放置；HTTP 请求没有放它们的地方，只以错误码应答。
 
 ### 回到原路由继续执行
 
@@ -143,7 +143,7 @@ Dispatcher 不知道任何包格式。业务自己解码数据包，把消息连
 @Domain(PLAYER)
 class Shop {
     @HandleMethod void buy(HandleContext request, Buy buy) {         // 当场通过上下文应答
-        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD);
+        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
         else request.reply(bags.add(request.businessId(), buy.item()));
     }
     @HandleMethod void rank(HandleContext request, AskRank ask) {    // 或稍后在任意线程应答
@@ -171,7 +171,7 @@ class Gateway implements ConnectionHandler {
         Packet packet = (Packet) message;
         dispatcher.dispatch(connection.get(SESSION), packet.body(),
                 result -> connection.write(Packet.ok(packet.seq(), result)),
-                errorCode -> connection.write(Packet.error(packet.seq(), errorCode)));
+                (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
     }
     public void onInActive(Connection connection) {
         Session session = connection.get(SESSION);
@@ -183,6 +183,7 @@ class Gateway implements ConnectionHandler {
 
 - 来源可以是任意 `Context`，通常是业务的会话，里面有连接和已登录的角色。处理器通过 `HandleContext.source()` 读取它；登录处理器替换会话即可绑定角色。
 - `onReply` / `onFail` 只会调用其中一个、最多一次，在应答发生的线程上执行。两个都传，或者单向消息两个都不传。
+- `onFail` 原样收到错误码和处理器 `fail(errorCode, args...)` 带的参数：`fail(errorCode)` 和框架自己的失败给的是空数组。参数放在包里的什么位置由业务决定，例如放在失败包的 body 里。
 - 失败：`HANDLER_NOT_FOUND`、`INVALID_ROUTE_KEY`、runtime 拒绝（`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED`），处理器抛异常时为 `RUNTIME_EXECUTION_ERROR`。
 - 完整可运行的示例：`src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`。
 
@@ -212,7 +213,7 @@ Dispatcher dispatcher = Dispatcher.builder(runtime)
         .build();
 ```
 
-- `before` 按拦截器添加的顺序执行。返回 `SUCCESS`（0）继续；返回其它错误码则以该错误码应答失败（单向消息直接丢弃），之后的拦截器、处理器以及所有 `after` 都不再执行。
+- `before` 按拦截器添加的顺序执行。返回 `SUCCESS`（0）继续；返回其它错误码则以该错误码应答失败（单向消息直接丢弃），之后的拦截器、处理器以及所有 `after` 都不再执行。要带参数失败时，拦截器自己调用 `context.fail(code, args...)`，再返回这个错误码。
 - `after` 在处理器返回或抛异常之后按相反顺序执行，拿到处理器抛出的异常（如果有）。处理器执行中给出的应答此时已经发出。某个 `after` 抛异常时，其余的 `after` 仍会执行。
 - `before` 或 `after` 抛异常时，和处理器抛异常一样，以 `RUNTIME_EXECUTION_ERROR` 应答失败；处理器已经应答过的除外。
 - 把消息交给同一个 Dispatcher 的所有入口共用它的处理器和拦截器；处理器或拦截器可以通过 `HandleContext.source()`（入口传入的上下文）判断消息从哪里来。

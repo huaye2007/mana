@@ -36,6 +36,7 @@ import org.junit.jupiter.api.Test;
 class HttpRoutesTest {
     private static final int PLAYER = 1, GUILD = 2, WORLD = 3;
     private static final byte ROLE = 1;
+    private static final int SOLD_OUT = 10_001;   // the game's own code
     private static final HttpClient CLIENT = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
 
     record Notice(long guildId, String text) {}
@@ -74,6 +75,10 @@ class HttpRoutesTest {
             return context.request().headers().get("X-Trace") + " " + body;
         }
         @HttpMethod("/boom") String boom(String body) { throw new IllegalStateException("boom"); }
+        @HttpMethod("/sold-out") String soldOut(HttpRequestContext context, String item) {
+            context.fail(SOLD_OUT, item);
+            return null;
+        }
     }
 
     /** The role a request acts for comes from its query, as the application decides. */
@@ -176,6 +181,8 @@ class HttpRoutesTest {
         assertEquals("application/json", posted.headers().firstValue("content-type").orElseThrow());
         assertEquals(400, send("POST", "/notice", "not a notice").statusCode());
         assertEquals("{\"error\":" + RUNTIME_EXECUTION_ERROR + "}", send("POST", "/boom", "x").body());
+        assertEquals("{\"error\":" + SOLD_OUT + "}", send("POST", "/sold-out", "sword").body(),
+                "HTTP has no place for a failure's args and answers with its code");
     }
 
     @Test void aRequestTakenOrResponseGivenAsIsSkipsTheCodec() throws Exception {

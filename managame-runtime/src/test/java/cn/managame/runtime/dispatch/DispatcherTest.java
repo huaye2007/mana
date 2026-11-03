@@ -67,7 +67,7 @@ class DispatcherTest {
                 boolean taken = bags.get(trade.with()).remove(trade.item());
                 runtime.execute(request, _ -> {                               // back on this player's route
                     routes.add(Context.current().routeKey());
-                    if (!taken) { request.fail(NOT_ENOUGH); return; }
+                    if (!taken) { request.fail(NOT_ENOUGH, String.valueOf(trade.item())); return; }
                     bags.get(request.businessId()).add(trade.item());
                     request.reply("traded");
                 });
@@ -86,7 +86,8 @@ class DispatcherTest {
     private Dispatcher dispatcher() { return Dispatcher.builder(runtime).register(List.of(new Shop(), new Guild())).build(); }
 
     private void dispatch(Dispatcher dispatcher, Object message) {
-        dispatcher.dispatch(role, message, result -> answers.add("ok:" + result), code -> answers.add("fail:" + code));
+        dispatcher.dispatch(role, message, result -> answers.add("ok:" + result),
+                (code, args) -> answers.add("fail:" + code + (args.length == 0 ? "" : ":" + String.join(",", args))));
     }
 
     private String answer() throws InterruptedException { return answers.poll(5, TimeUnit.SECONDS); }
@@ -109,7 +110,7 @@ class DispatcherTest {
         assertEquals(List.of(2002L, 1001L), routes, "taken on the other player's route, given on the trader's");
         assertEquals(Set.of(9), bags.get(1001L));
         dispatch(dispatcher, new Trade(2002, 9));
-        assertEquals("fail:" + NOT_ENOUGH, answer(), "the other player has none left");
+        assertEquals("fail:" + NOT_ENOUGH + ":9", answer(), "the other player has none left; the item goes with the code");
     }
 
     @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {
@@ -120,7 +121,7 @@ class DispatcherTest {
     @Test void failuresAreAnsweredWithErrorCodes() throws Exception {
         Dispatcher dispatcher = dispatcher();
         dispatch(dispatcher, new Unknown());
-        assertEquals("fail:" + HANDLER_NOT_FOUND, answer());
+        assertEquals("fail:" + HANDLER_NOT_FOUND, answer(), "the framework's own failures carry no args");
         dispatch(dispatcher, new Unroutable(null));
         assertEquals("fail:" + INVALID_ROUTE_KEY, answer());
         dispatch(dispatcher, new Boom());

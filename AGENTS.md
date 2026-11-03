@@ -98,7 +98,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   (`ConnectionMapper`). RPC is the deliberate exception: an `RpcPeer` holds its connections because calls travel
   over them.
 - **Protocols belong to the application.** The framework defines no client packet format; `Dispatcher` takes any
-  decoded message plus reply and fail callbacks in the application's format.
+  decoded message plus reply and fail callbacks in the application's format. A failure is its code and string args
+  (`fail(code, args...)`), handed to the fail callback as they are for the application to place, in its failure
+  packet's body say; HTTP has no place for them and answers with the code.
 - **Components carry no business concepts.** rpc knows nodes by id only: what a node is for (game, world, gate)
   travels in its handshake `Metadata`, and grouping peers and picking one for a key are the application's.
   Message fields such as `command`, `businessType` and `businessId` are carried as is, never interpreted.

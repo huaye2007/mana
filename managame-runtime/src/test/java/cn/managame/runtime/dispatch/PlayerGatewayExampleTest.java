@@ -33,10 +33,12 @@ import org.junit.jupiter.api.Test;
 /**
  * How an application receives player requests: its own packet format, its own session per connection, and the
  * framework's Dispatcher only to run each message on its handler. Here a packet is the text
- * {@code seq|type|payload}, length-prefixed; answers are {@code seq|ok|result} or {@code seq|err|code}.
+ * {@code seq|type|payload}, length-prefixed; answers are {@code seq|ok|result} or {@code seq|err|code|args}, the
+ * failure's args joined by commas.
  */
 class PlayerGatewayExampleTest {
     private static final int PLAYER = 1, LOGIN = 2;
+    private static final int SOLD_OUT = 10_001;   // the game's own code; its message shows the item
     private static final byte ROLE = 1;
     private static final AttributeKey<Session> SESSION = AttributeKey.valueOf("example.session");
 
@@ -65,7 +67,10 @@ class PlayerGatewayExampleTest {
 
     @Domain(PLAYER)
     class Shop {
-        @HandleMethod void buy(HandleContext context, Buy buy) { context.reply("role " + context.businessId() + " bought " + buy.item()); }
+        @HandleMethod void buy(HandleContext context, Buy buy) {
+            if (buy.item() > 9) context.fail(SOLD_OUT, String.valueOf(buy.item()));
+            else context.reply("role " + context.businessId() + " bought " + buy.item());
+        }
         @HandleMethod void logout(Logout logout) { loggedOut.add(Context.current().businessId()); }
     }
 
@@ -83,7 +88,7 @@ class PlayerGatewayExampleTest {
             };
             dispatcher.dispatch(connection.get(SESSION), body,
                     result -> connection.write(seq + "|ok|" + result),
-                    errorCode -> connection.write(seq + "|err|" + errorCode));
+                    (errorCode, args) -> connection.write(seq + "|err|" + errorCode + "|" + String.join(",", args)));
         }
 
         @Override public void onInActive(Connection connection) {
@@ -121,11 +126,13 @@ class PlayerGatewayExampleTest {
             DataInputStream in = new DataInputStream(socket.getInputStream());
 
             send(out, "1|buy|5");
-            assertEquals("1|err|" + INVALID_ROUTE_KEY, receive(in), "nobody to act for yet");
+            assertEquals("1|err|" + INVALID_ROUTE_KEY + "|", receive(in), "nobody to act for yet");
             send(out, "2|login|1001");
             assertEquals("2|ok|welcome 1001", receive(in));
             for (int item = 3; item <= 5; item++) send(out, item + "|buy|" + item);
             for (int item = 3; item <= 5; item++) assertEquals(item + "|ok|role 1001 bought " + item, receive(in));
+            send(out, "6|buy|12");
+            assertEquals("6|err|" + SOLD_OUT + "|12", receive(in), "the item travels with the code");
         }
         assertEquals(1001L, loggedOut.poll(5, TimeUnit.SECONDS));
     }

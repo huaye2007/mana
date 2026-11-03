@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 class HandleInterceptorTest {
     private static final int PLAYER = 1;
     private static final byte ROLE = 1;
-    private static final int NOT_LOGGED_IN = 9001;
+    private static final int NOT_LOGGED_IN = 9001, LEVEL_TOO_LOW = 9002;
 
     /** The application's own marker for handlers that need no login. */
     @Retention(RetentionPolicy.RUNTIME)
@@ -100,7 +100,7 @@ class HandleInterceptorTest {
         dispatcher.dispatch(source, message, result -> {
             trace.add("reply " + result);
             answers.add("ok " + result);
-        }, errorCode -> answers.add("fail " + errorCode));
+        }, (errorCode, args) -> answers.add("fail " + errorCode + (args.length == 0 ? "" : " " + String.join(",", args))));
         String answer = answers.poll(5, TimeUnit.SECONDS);
         CountDownLatch ended = new CountDownLatch(1);
         runtime.execute(GameContext.of(PLAYER, source.businessId()), _ -> ended.countDown());   // runs after it, on its route
@@ -124,6 +124,17 @@ class HandleInterceptorTest {
         assertEquals("ok hi", ask(dispatcher, nobody, new Hello()), "an @Anonymous handler needs no login");
         assertFalse(trace.contains("note"));
         assertEquals("hello", trace.get(trace.size() - 4));
+    }
+
+    @Test void anInterceptorFailsWithArgsThroughTheContext() throws Exception {
+        HandleInterceptor levelCheck = new HandleInterceptor() {
+            @Override public int before(HandleContext context, Method handler, Object message) {
+                context.fail(LEVEL_TOO_LOW, "10");   // the level the handler needs
+                return LEVEL_TOO_LOW;
+            }
+        };
+        assertEquals("fail " + LEVEL_TOO_LOW + " 10", ask(dispatcher(levelCheck, new Recorder("a")), role, new Buy(5)));
+        assertEquals(List.of(), trace, "neither the handler nor a later interceptor ran");
     }
 
     @Test void afterSeesFailuresAndAnswersGivenLater() throws Exception {

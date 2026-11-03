@@ -4,9 +4,9 @@ import cn.managame.Metadata;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.RequestContext;
 import cn.managame.runtime.Route;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-import java.util.function.IntConsumer;
 
 /**
  * The context of a dispatched message. It runs on the handler's route, acts for the source's business identity
@@ -15,13 +15,14 @@ import java.util.function.IntConsumer;
  * none, and reply and fail then return false.
  */
 public final class HandleContext implements RequestContext {
+    static final String[] NO_ARGS = {};
     private final Route route;
     private final Context source;
     private final Consumer<Object> onReply;
-    private final IntConsumer onFail;
+    private final FailCallback onFail;
     private final AtomicBoolean answered = new AtomicBoolean();
 
-    HandleContext(Route route, Context source, Consumer<Object> onReply, IntConsumer onFail) {
+    HandleContext(Route route, Context source, Consumer<Object> onReply, FailCallback onFail) {
         this.route = route;
         this.source = source;
         this.onReply = onReply;
@@ -43,9 +44,13 @@ public final class HandleContext implements RequestContext {
         return true;
     }
 
-    @Override public boolean fail(int errorCode) {
+    @Override public boolean fail(int errorCode) { return fail(errorCode, NO_ARGS); }
+
+    /** {@code args} reach the application's {@link FailCallback} as they are. */
+    @Override public boolean fail(int errorCode, String... args) {
+        Objects.requireNonNull(args, "args");
         if (onFail == null || !answered.compareAndSet(false, true)) return false;
-        onFail.accept(errorCode);
+        onFail.onFail(errorCode, args);
         return true;
     }
 }
