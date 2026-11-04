@@ -3,13 +3,13 @@ package cn.managame.runtime.dispatch;
 import static cn.managame.FrameworkErrorCodes.INVALID_ROUTE_KEY;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import cn.managame.Metadata;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import cn.managame.network.netty.ConnectionInitializer;
 import cn.managame.network.netty.NetworkHandlers;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.runtime.Context;
+import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
@@ -47,22 +47,15 @@ class PlayerGatewayExampleTest {
     record Buy(int item) {}
     record Logout() {}
 
-    /** The application's session: the connection and, once logged in, the role it acts for. */
-    record Session(Connection connection, long roleId) implements Context {
-        @Override public int domain() { return 0; }
-        @Override public long routeKey() { return 0; }
-        @Override public byte businessType() { return roleId == 0 ? 0 : ROLE; }
-        @Override public long businessId() { return roleId; }
-        @Override public Metadata metadata() { return Metadata.empty(); }
-    }
+    /**
+     * The application's session, kept on its connection: the connection and, once logged in, the role it acts for. It
+     * is no Context: the gateway builds each message's context from it.
+     */
+    record Session(Connection connection, long roleId) {}
 
     @Domain(LOGIN)
     static class Accounts {
-        @HandleMethod(routeKey = "roleId") void login(HandleContext context, Login login) {
-            Connection connection = ((Session) context.source()).connection();
-            connection.set(SESSION, new Session(connection, login.roleId()));
-            context.reply("welcome " + login.roleId());
-        }
+        @HandleMethod(routeKey = "roleId") void login(HandleContext context, Login login) { context.reply("welcome " + login.roleId()); }
     }
 
     @Domain(PLAYER)
@@ -74,7 +67,10 @@ class PlayerGatewayExampleTest {
         @HandleMethod void logout(Logout logout) { loggedOut.add(Context.current().businessId()); }
     }
 
-    /** The application's ConnectionHandler: it decodes packets, keeps the session and writes answers. */
+    /**
+     * The application's ConnectionHandler: it decodes packets, keeps the session, gives each message the context of
+     * the role it acts for, and writes answers through the callbacks, which hold the connection and the packet's seq.
+     */
     record Gateway(Dispatcher dispatcher) implements ConnectionHandler {
         @Override public void onActive(Connection connection) { connection.set(SESSION, new Session(connection, 0)); }
 
@@ -86,14 +82,24 @@ class PlayerGatewayExampleTest {
                 case "buy" -> new Buy(Integer.parseInt(packet[2]));
                 default -> throw new IllegalArgumentException("Unknown packet type " + packet[1]);
             };
-            dispatcher.dispatch(connection.get(SESSION), body,
-                    result -> connection.write(seq + "|ok|" + result),
+            dispatcher.dispatch(context(connection.get(SESSION)), body,
+                    result -> {
+                        // a login answered: bind the role before the client hears of it, so its next packets act for it
+                        if (body instanceof Login login) connection.set(SESSION, new Session(connection, login.roleId()));
+                        connection.write(seq + "|ok|" + result);
+                    },
                     (errorCode, args) -> connection.write(seq + "|err|" + errorCode + "|" + String.join(",", args)));
         }
 
         @Override public void onInActive(Connection connection) {
             Session session = connection.get(SESSION);
-            if (session.roleId() != 0) dispatcher.dispatch(session, new Logout()); // after the role's pending requests
+            if (session.roleId() != 0) dispatcher.dispatch(context(session), new Logout()); // after the role's pending requests
+        }
+
+        /** Whom a message from the session acts for: the role, on its own route, or nobody before login. */
+        private static GameContext context(Session session) {
+            long role = session.roleId();
+            return role == 0 ? GameContext.of(LOGIN, 0) : GameContext.of(PLAYER, role, ROLE, role);
         }
 
         @Override public void onException(Connection connection, Throwable cause) { connection.close(); }

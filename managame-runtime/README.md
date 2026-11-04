@@ -204,32 +204,42 @@ A gateway the application writes itself: a session per connection, its own packe
 them.
 
 ```java
-record Session(Connection connection, long roleId) implements Context {
-    public int domain() { return 0; }
-    public long routeKey() { return 0; }
-    public byte businessType() { return roleId == 0 ? 0 : ROLE; }
-    public long businessId() { return roleId; }
-    public Metadata metadata() { return Metadata.empty(); }
-}
+record Session(Connection connection, long roleId) {}                 // the application's own, no Context
 
 class Gateway implements ConnectionHandler {
     public void onActive(Connection connection) { connection.set(SESSION, new Session(connection, 0)); }
     public void onRead(Connection connection, Object message) {
         Packet packet = (Packet) message;
-        dispatcher.dispatch(connection.get(SESSION), packet.body(),
-                result -> connection.write(Packet.ok(packet.seq(), result)),
+        dispatcher.dispatch(context(connection.get(SESSION), packet), packet.body(),
+                result -> {
+                    if (result instanceof LoginOk ok) connection.set(SESSION, new Session(connection, ok.roleId()));
+                    connection.write(Packet.ok(packet.seq(), result));
+                },
                 (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
     }
     public void onInActive(Connection connection) {
         Session session = connection.get(SESSION);
-        if (session.roleId() != 0) dispatcher.dispatch(session, new Logout());   // one-way; after the role's pending requests
+        if (session.roleId() != 0) dispatcher.dispatch(context(session, null), new Logout());   // one-way; after the role's pending requests
     }
     public void onException(Connection connection, Throwable cause) { connection.close(); }
+
+    /** Whom a message acts for, the session's role on its own route, with what the packet carries along. */
+    private static GameContext context(Session session, Packet packet) {
+        long role = session.roleId();
+        Metadata metadata = packet == null ? Metadata.empty() : packet.metadata();
+        return role == 0 ? new GameContext(LOGIN, 0, (byte) 0, 0, metadata) : new GameContext(PLAYER, role, ROLE, role, metadata);
+    }
 }
 ```
 
-- The source is any `Context`, typically the application's session with its connection and logged-in role. A
-  handler reads it as `HandleContext.source()`; a login handler can bind the role by replacing the session.
+- The source is the context a message comes in with, which the entry builds for each message: who acts, such as
+  the role a connection is logged in as, and the message's metadata, such as a trace id. The handler gives the domain,
+  and its routeKey member or the domain's resolver the route key. A session is the application's own and stays out
+  of the runtime; the entry binds a role to it, on the answer to a login say.
+- The answer goes back through `onReply` / `onFail`, which hold the way back (the connection, the packet's sequence
+  number), so a context needs no connection, also for an answer given later from another thread. Pushing to a
+  player outside a request, from a timer or another player's route, goes through the application's own map of roles
+  to sessions, kept by its gateway.
 - Exactly one of `onReply` / `onFail` is called, at most once, on whichever thread answers. Give both, or neither
   for a one-way message.
 - `onFail` receives the code and the args the handler failed with, `fail(errorCode, args...)`, as they are: an
@@ -239,9 +249,7 @@ class Gateway implements ConnectionHandler {
   `ROUTE_EXECUTOR_OVERLOADED`), the code and args of a `FailException` the handler throws, and
   `RUNTIME_EXECUTION_ERROR` when it throws anything else.
 - A complete, runnable example: `src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`.
-
-- Every entry that hands messages to the same Dispatcher shares its handlers; a handler tells where a message came
-  from by `HandleContext.source()`, the context the entry passed.
+- Every entry that hands messages to the same Dispatcher shares its handlers.
 
 ## Interceptors
 

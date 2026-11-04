@@ -168,37 +168,41 @@ Dispatcher dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop(),
 业务自己写的网关：每个连接一个会话，自己的包格式，只用 Dispatcher 执行消息。
 
 ```java
-record Session(Connection connection, long roleId) implements Context {
-    public int domain() { return 0; }
-    public long routeKey() { return 0; }
-    public byte businessType() { return roleId == 0 ? 0 : ROLE; }
-    public long businessId() { return roleId; }
-    public Metadata metadata() { return Metadata.empty(); }
-}
+record Session(Connection connection, long roleId) {}                 // 业务自己的会话，不是 Context
 
 class Gateway implements ConnectionHandler {
     public void onActive(Connection connection) { connection.set(SESSION, new Session(connection, 0)); }
     public void onRead(Connection connection, Object message) {
         Packet packet = (Packet) message;
-        dispatcher.dispatch(connection.get(SESSION), packet.body(),
-                result -> connection.write(Packet.ok(packet.seq(), result)),
+        dispatcher.dispatch(context(connection.get(SESSION), packet), packet.body(),
+                result -> {
+                    if (result instanceof LoginOk ok) connection.set(SESSION, new Session(connection, ok.roleId()));
+                    connection.write(Packet.ok(packet.seq(), result));
+                },
                 (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
     }
     public void onInActive(Connection connection) {
         Session session = connection.get(SESSION);
-        if (session.roleId() != 0) dispatcher.dispatch(session, new Logout());   // 单向消息；排在该角色未完成的请求之后
+        if (session.roleId() != 0) dispatcher.dispatch(context(session, null), new Logout());   // 单向消息；排在该角色未完成的请求之后
     }
     public void onException(Connection connection, Throwable cause) { connection.close(); }
+
+    /** 消息以谁的身份执行：会话的角色、在它自己的路由上，带上包里随消息传来的数据。 */
+    private static GameContext context(Session session, Packet packet) {
+        long role = session.roleId();
+        Metadata metadata = packet == null ? Metadata.empty() : packet.metadata();
+        return role == 0 ? new GameContext(LOGIN, 0, (byte) 0, 0, metadata) : new GameContext(PLAYER, role, ROLE, role, metadata);
+    }
 }
 ```
 
-- 来源可以是任意 `Context`，通常是业务的会话，里面有连接和已登录的角色。处理器通过 `HandleContext.source()` 读取它；登录处理器替换会话即可绑定角色。
+- 来源是消息带进来的上下文，由入口为每条消息建立：谁在执行（比如连接登录的角色），以及消息的 metadata（比如 trace id）。domain 由处理器决定，路由键由处理器的 routeKey 成员或 domain 的解析器决定。会话是业务自己的东西，不进入 runtime；入口给它绑定角色，比如在登录的应答里。
+- 应答经 `onReply` / `onFail` 回去，回调里捕获了回去的路（连接、包的序号），所以上下文不需要连接，稍后在别的线程上应答也一样。在请求之外推送给玩家（来自定时器或别的玩家的路由），走业务自己维护的角色到会话的登记，由网关维护。
 - `onReply` / `onFail` 只会调用其中一个、最多一次，在应答发生的线程上执行。两个都传，或者单向消息两个都不传。
 - `onFail` 原样收到错误码和处理器 `fail(errorCode, args...)` 带的参数：`fail(errorCode)` 和框架自己的失败给的是空数组。参数放在包里的什么位置由业务决定，例如放在失败包的 body 里。
 - 失败：`HANDLER_NOT_FOUND`、`INVALID_ROUTE_KEY`、runtime 拒绝（`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED`），处理器抛出 `FailException` 时为它带的错误码和参数，抛其它异常时为 `RUNTIME_EXECUTION_ERROR`。
 - 完整可运行的示例：`src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`。
-
-- 把消息交给同一个 Dispatcher 的所有入口共用它的处理器；处理器可以通过 `HandleContext.source()`（入口传入的上下文）判断消息从哪里来。
+- 把消息交给同一个 Dispatcher 的所有入口共用它的处理器。
 
 ## 拦截器
 
