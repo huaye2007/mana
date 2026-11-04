@@ -111,7 +111,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routeKey)` run one at a time in submission order.
   Work that comes back from another thread or route (an RPC callback, a visit to another player's route) goes on
   through `GameRuntime.execute(context, task)` with the context to continue on, with no API of its own; a request is
-  answered whether its task is accepted or refused.
+  answered whether its task is accepted or refused. What runs around business logic (a trace id in the logs, saving
+  what a task changed, a login check) is a `TaskInterceptor` of the runtime (`GameRuntime.builder().intercept`),
+  around every task whatever its entry, a continuation included; entries have no interceptors of their own, and checks
+  that need the message itself belong in the application's entry before it dispatches.
 - **Every context has the same fields:** `domain` (int), `routeKey` (long), `businessType` (byte),
   `businessId` (long) and `Metadata`.
 - **The business decides routing per domain, and a handler may name its message's key.** Each domain has its own
@@ -124,7 +127,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
   `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
   A `@HandleMethod` returns void and answers only through its `HandleContext` (`reply` / `fail`, now or later), so
-  success, failure and a later answer go one way; an `@HttpMethod` may return its answer.
+  success, failure and a later answer go one way; an `@HttpMethod` may return its answer. Business code fails its
+  request from however deep by throwing `FailException(code, args...)`, which the runtime answers with and hands to
+  no error handler, so game logic returns its result and throws its failures.
   Registrations are immutable once built. `@Cron` methods (registered with `GameTimer.register`) are the exception:
   they run at calendar times on a fixed route, so the annotation carries `domain` and `routeKey`, and they take no
   message, only optionally their `GameContext`.

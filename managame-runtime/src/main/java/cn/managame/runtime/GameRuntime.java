@@ -8,8 +8,11 @@ import cn.managame.FrameworkErrorCodes;
 import cn.managame.runtime.executor.RouteExecutor;
 import java.lang.System.Logger.Level;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -28,6 +31,8 @@ import java.util.function.BiConsumer;
  *         .build();
  * runtime.execute(GameContext.of(PLAYER, playerId, PLAYER_ID, playerId), context -> player.levelUp());
  * }</pre>
+ *
+ * {@link TaskInterceptor}s added with {@link Builder#intercept} run around every task, whichever entry gave it.
  */
 public final class GameRuntime implements AutoCloseable {
     static final ScopedValue<Context> CURRENT = ScopedValue.newInstance();
@@ -35,13 +40,16 @@ public final class GameRuntime implements AutoCloseable {
     private final Map<Integer, RouteExecutor> executors;
     private final Map<Integer, RouteKeyResolver> resolvers;
     private final BiConsumer<? super Context, ? super Throwable> errorHandler;
+    private final TaskInterceptor[] interceptors;
     private volatile boolean shutdown;
 
     private GameRuntime(Builder b) {
         executors = Map.copyOf(b.executors);
         resolvers = Map.copyOf(b.resolvers);
         errorHandler = b.errorHandler;
-        LOG.log(Level.INFO, () -> "Game runtime started; domains " + new TreeMap<>(executors));
+        interceptors = b.interceptors.toArray(TaskInterceptor[]::new);
+        LOG.log(Level.INFO, () -> "Game runtime started; domains " + new TreeMap<>(executors)
+                + (interceptors.length == 0 ? "" : "; " + interceptors.length + " task interceptors"));
     }
 
     public static Builder builder() { return new Builder(); }
@@ -70,7 +78,9 @@ public final class GameRuntime implements AutoCloseable {
      * Throws GameRuntimeException with RUNTIME_CLOSED after shutdown (ROUTE_EXECUTOR_CLOSED when the domain's executor
      * refuses a task given while it shuts down) or ROUTE_EXECUTOR_OVERLOADED when the domain's executor is full; the
      * task then never runs, and a RequestContext is first failed with that code, so a request is answered whether its
-     * task was accepted or not. An unregistered domain throws IllegalArgumentException.
+     * task was accepted or not. A request whose task throws is failed with the code and args of a {@link FailException},
+     * which goes to no error handler, or else with RUNTIME_EXECUTION_ERROR. An unregistered domain throws
+     * IllegalArgumentException.
      * <p>
      * The runtime counts no task in flight: each domain's executor knows its own work, and shutdown asks them to finish
      * it. Close the entries that hand it work (servers, timers and the like) first, so nothing races with shutdown.
@@ -105,13 +115,18 @@ public final class GameRuntime implements AutoCloseable {
     private <C extends Context> void run(C context, GameTask<? super C> task) {
         try {
             ScopedValue.where(CURRENT, context).call(() -> {
-                task.run(context);
+                if (interceptors.length == 0) task.run(context);
+                else intercept(context, task);
                 return null;
             });
         } catch (Throwable cause) {
             // An accepted request is always answered; fail does nothing if the task had already answered it.
             if (context instanceof RequestContext request) {
                 try {
+                    if (cause instanceof FailException failure) {
+                        request.fail(failure.errorCode(), failure.args());
+                        return;
+                    }
                     request.fail(RUNTIME_EXECUTION_ERROR);
                 } catch (Throwable error) {
                     cause.addSuppressed(error);
@@ -124,6 +139,29 @@ public final class GameRuntime implements AutoCloseable {
                 LOG.log(Level.ERROR, "Game task error handler failed", error);
             }
         }
+    }
+
+    /** The befores in order, the task, then the after of each interceptor whose before returned, in reverse. */
+    private <C extends Context> void intercept(C context, GameTask<? super C> task) throws Exception {
+        int entered = 0;
+        Throwable failure = null;
+        try {
+            for (; entered < interceptors.length; entered++) interceptors[entered].before(context);
+            task.run(context);
+        } catch (Exception | Error e) {
+            failure = e;
+        }
+        Throwable thrown = failure;
+        for (int i = entered - 1; i >= 0; i--) {
+            try {
+                interceptors[i].after(context, failure);
+            } catch (Exception | Error e) {
+                if (thrown == null) thrown = e;
+                else thrown.addSuppressed(e);
+            }
+        }
+        if (thrown instanceof Error error) throw error;
+        if (thrown != null) throw (Exception) thrown;
     }
 
     /** Refuses new tasks; accepted ones still run. Idempotent. */
@@ -184,6 +222,7 @@ public final class GameRuntime implements AutoCloseable {
         private final Map<Integer, RouteExecutor> executors = new HashMap<>();
         private final Map<Integer, RouteKeyResolver> resolvers = new HashMap<>();
         private final Map<RouteExecutor, Integer> owners = new IdentityHashMap<>();
+        private final List<TaskInterceptor> interceptors = new ArrayList<>();
         private BiConsumer<? super Context, ? super Throwable> errorHandler = (context, cause) ->
                 LOG.log(Level.ERROR, "Game task failed; domain=" + context.domain() + ", routeKey=" + context.routeKey()
                         + ", businessType=" + context.businessType() + ", businessId=" + context.businessId(), cause);
@@ -214,7 +253,19 @@ public final class GameRuntime implements AutoCloseable {
             return this;
         }
 
-        /** Receives what a task throws; by default it is logged. Runs on the task's thread. */
+        /**
+         * Adds interceptors around every task, whichever entry gave it; their before methods run in the order they were
+         * added. See {@link TaskInterceptor}.
+         */
+        public Builder intercept(Collection<? extends TaskInterceptor> interceptors) {
+            for (TaskInterceptor interceptor : interceptors) this.interceptors.add(Objects.requireNonNull(interceptor, "interceptor"));
+            return this;
+        }
+
+        /**
+         * Receives what a task throws, but a {@link FailException} that failed the task's request; by default it is
+         * logged. Runs on the task's thread.
+         */
         public Builder errorHandler(BiConsumer<? super Context, ? super Throwable> handler) {
             errorHandler = Objects.requireNonNull(handler, "handler");
             return this;

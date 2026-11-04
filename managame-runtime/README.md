@@ -55,6 +55,11 @@ Every piece of business logic runs with a `Context`:
   throws, the runtime fails it with `RUNTIME_EXECUTION_ERROR`, and if `execute` refuses its task, with the refusal's
   code. `fail(errorCode, args...)` adds strings, such as the values the code's message shows, for the source to place
   in its format; an HTTP request has no place for them and answers with the code alone.
+- Business code fails its request from however deep by throwing `FailException(errorCode, args...)`, so it can
+  return its result and leave failures to that: the runtime fails the task's request with the code and args, and hands
+  the exception to no error handler, since it is an answer, not an error. A request already answered, or a one-way
+  message, which has no one to answer, stays as it is. In a task with no request, such as a timer's or an event's, it
+  goes to the error handler as any exception does. It records no stack trace, so throwing one costs an allocation.
 
 ### Continuing on a route
 
@@ -180,6 +185,16 @@ class Shop {
     @HandleMethod void rank(HandleContext request, AskRank ask) {    // or later, from any thread
         ranks.query(request.businessId(), rank -> request.reply(rank));
     }
+    @HandleMethod void sell(HandleContext request, Sell sell) {      // or with what the game's logic returns,
+        request.reply(market.sell(request.businessId(), sell.item()));
+    }
+}
+
+class Market {                                                       // which throws to fail, however deep
+    SellResult sell(long roleId, int item) {
+        if (!bags.remove(roleId, item)) throw new FailException(NOT_ENOUGH_ITEMS, String.valueOf(item));
+        return new SellResult(item, wallets.add(roleId, prices.of(item)));
+    }
 }
 
 Dispatcher dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop(), new Accounts())).build();
@@ -221,46 +236,54 @@ class Gateway implements ConnectionHandler {
   empty array after `fail(errorCode)` and for the framework's own failures. Where they go in the packet is the
   application's, a failure's body for instance.
 - Failures: `HANDLER_NOT_FOUND`, `INVALID_ROUTE_KEY`, the runtime's refusal (`RUNTIME_CLOSED`,
-  `ROUTE_EXECUTOR_OVERLOADED`), and `RUNTIME_EXECUTION_ERROR` when the handler throws.
+  `ROUTE_EXECUTOR_OVERLOADED`), the code and args of a `FailException` the handler throws, and
+  `RUNTIME_EXECUTION_ERROR` when it throws anything else.
 - A complete, runnable example: `src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`.
 
-### Interceptors
+- Every entry that hands messages to the same Dispatcher shares its handlers; a handler tells where a message came
+  from by `HandleContext.source()`, the context the entry passed.
 
-A `HandleInterceptor` runs before and after every handler of a Dispatcher, inside the handler's task on its
-route. Each interceptor sees every handler and decides for itself, from the handler's `Method` (its annotations,
-say) and the message:
+## Interceptors
+
+A `TaskInterceptor` runs before and after every task of the runtime, whichever entry gave it: a Dispatcher's
+handler, an event, an HTTP endpoint, a timer or a Cron, or work continued on a route with `runtime.execute`, which
+is a task of its own. It runs on the task's route and thread, with `Context.current()` the task's context. Each
+interceptor sees every task and decides for itself, by its domain or the kind of its context:
 
 ```java
-@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD)
-@interface Anonymous {}                                   // the application's own marker
-
-class LoginCheck implements HandleInterceptor {
-    public int before(HandleContext context, Method handler, Object message) {
-        return handler.isAnnotationPresent(Anonymous.class) || context.businessId() != 0 ? SUCCESS : NOT_LOGGED_IN;
+class LoginCheck implements TaskInterceptor {             // only the login domain's handlers run before login
+    public void before(Context context) {
+        if (context instanceof HandleContext && context.domain() != LOGIN && context.businessId() == 0)
+            throw new FailException(NOT_LOGGED_IN);
     }
 }
 
-class SavePlayer implements HandleInterceptor {
-    public void after(HandleContext context, Method handler, Object message, Throwable failure) {
-        if (failure == null && context.businessId() != 0) players.get(context.businessId()).saveIfDirty();
+class SavePlayer implements TaskInterceptor {             // whatever changed the player: a request, a timer, an event
+    public void after(Context context, Throwable failure) {
+        if (context.domain() == PLAYER && failure == null) players.get(context.routeKey()).saveIfDirty();
     }
 }
 
-Dispatcher dispatcher = Dispatcher.builder(runtime)
+GameRuntime runtime = GameRuntime.builder()
+        .domain(PLAYER, RouteExecutors.virtualThreads())
+        .domain(LOGIN, RouteExecutors.virtualThreads())
         .intercept(List.of(new LoginCheck(), new SavePlayer()))
-        .register(List.of(new Shop(), new Accounts()))
         .build();
 ```
 
-- `before` runs in the order interceptors were added. `SUCCESS` (0) goes on; any other code fails the request
-  with that code (a one-way message is dropped), and then neither the handler, the later interceptors nor any
-  `after` run. To fail with args, an interceptor calls `context.fail(code, args...)` itself and returns the code.
-- `after` runs in reverse order once the handler has returned or thrown, and receives the handler's exception, if
-  any. An answer the handler gave while it ran is already on its way. Every `after` runs even when one throws.
-- An exception from `before` or `after` fails the request with `RUNTIME_EXECUTION_ERROR`, as one from the handler
-  does, unless the handler has answered it already.
-- Every entry that hands messages to the same Dispatcher shares its handlers and interceptors; a handler or
-  interceptor tells where a message came from by `HandleContext.source()`, the context the entry passed.
+- `before` runs in the order interceptors were added, then the task, then `after` in reverse order. Only an
+  interceptor whose `before` returned has its `after` run, so what a `before` sets up, such as a trace id in the
+  logging context, an `after` always takes down. Every `after` runs even when one throws.
+- `after` receives what the task threw, or a later `before`, or null. An answer the task gave while it ran is already
+  on its way.
+- An exception from `before` or `after` is handled as one from the task: a request fails with the code and args of a
+  `FailException`, so a `before` refuses a request by throwing one, or else with `RUNTIME_EXECUTION_ERROR`, unless it
+  was answered already; any other exception goes to the error handler. A `before` that throws keeps the task and the
+  later `before`s from running.
+- With none added the runtime runs tasks as they are; each one added costs a task its two calls
+  (`ExecuteThroughputBenchmark.executeIntercepted` measures one that does nothing).
+- Checks that need the message itself, such as limits per message kind, belong in the application's entry before it
+  dispatches, where the message and the packet's command are at hand, or in the handler.
 
 ## Events
 
@@ -421,7 +444,8 @@ shape error bodies.
 - `execute` throws `GameRuntimeException` with `RUNTIME_CLOSED` after shutdown or `ROUTE_EXECUTOR_OVERLOADED` when
   the domain's executor is full, and the task never runs; a request is first failed with that code. An unregistered
   domain throws `IllegalArgumentException`.
-- What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
+- What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`),
+  but a `FailException` that failed the task's request, or found it answered.
 - `shutdown()` refuses new tasks while accepted ones still run; `awaitTermination(timeout)` waits for them;
   `close()` does both and must not be called from a task. Close the entries (servers, timers and the like) before the
   runtime, so nothing hands it work while it shuts down.
@@ -451,8 +475,8 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 
 | Logger | Logs |
 | --- | --- |
-| `cn.managame.runtime` | INFO: the runtime started (each domain and its executor), shutting down and closed. DEBUG: each refused task, idle route queues retired. ERROR: a task that failed, from the default error handler. |
-| `cn.managame.runtime.dispatch` | INFO: the Dispatcher's handlers and interceptors. DEBUG: each message's handler, each rejected message. ERROR: a handler that could not run. |
+| `cn.managame.runtime` | INFO: the runtime started (each domain and its executor, and how many task interceptors), shutting down and closed. DEBUG: each refused task, idle route queues retired. ERROR: a task that failed, from the default error handler. |
+| `cn.managame.runtime.dispatch` | INFO: the Dispatcher's handlers. DEBUG: each message's handler, each rejected message. ERROR: a handler that could not run. |
 | `cn.managame.runtime.event` | INFO: the event bus's subscribers. DEBUG: each event's subscribers. |
 | `cn.managame.runtime.http` | INFO: the HTTP endpoints. DEBUG: each endpoint, each bad request. ERROR: a request that could not run or be answered. |
 | `cn.managame.runtime.timer` | INFO: each `@Cron` method scheduled. DEBUG: each `timer.cron`. WARNING: a firing refused. ERROR: a firing that failed. |
@@ -464,5 +488,5 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 Install managame-common and managame-network first. Tests cover ordering and refusal in the runtime and its
-executors, route keys, the Dispatcher with replies, failures and interceptors, a player gateway over real TCP, events,
-timers, and HTTP routes over real connections.
+executors, route keys, the Dispatcher with replies and failures, task interceptors around every entry, a player
+gateway over real TCP, events, timers, and HTTP routes over real connections.

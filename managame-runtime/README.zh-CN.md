@@ -47,6 +47,7 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 - 任务内部用 `Context.current()` 取得当前任务的上下文；`Context.hasCurrent()` 判断当前线程是否在执行任务。
 - `GameContext.copyOf(context)` 得到一份普通副本，用于针对同一对象的新工作，保留路由和 metadata。请求的副本不能应答该请求。
 - `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。请求一定会得到应答：任务抛异常时 runtime 以 `RUNTIME_EXECUTION_ERROR` 应答，`execute` 拒绝任务时以拒绝的错误码应答。`fail(errorCode, args...)` 还可以带上字符串参数，例如错误提示里要显示的数值，由来源按自己的格式放置；HTTP 请求没有放它们的地方，只以错误码应答。
+- 业务代码在任意深处抛出 `FailException(errorCode, args...)` 就能让请求失败，所以业务方法可以只返回结果，失败交给它：runtime 以异常带的错误码和参数应答任务的请求，并且不把它交给错误处理器，因为这是应答，不是错误。请求已经应答过，或是单向消息（没有人等应答）时，什么也不变。在没有请求的任务里（比如定时器、事件），它和其它异常一样交给错误处理器。它不记录调用栈，抛出的开销只是一次分配。
 
 ### 回到原路由继续执行
 
@@ -149,6 +150,16 @@ class Shop {
     @HandleMethod void rank(HandleContext request, AskRank ask) {    // 或稍后在任意线程应答
         ranks.query(request.businessId(), rank -> request.reply(rank));
     }
+    @HandleMethod void sell(HandleContext request, Sell sell) {      // 或用业务逻辑的返回值应答，
+        request.reply(market.sell(request.businessId(), sell.item()));
+    }
+}
+
+class Market {                                                       // 失败时在任意深处抛出
+    SellResult sell(long roleId, int item) {
+        if (!bags.remove(roleId, item)) throw new FailException(NOT_ENOUGH_ITEMS, String.valueOf(item));
+        return new SellResult(item, wallets.add(roleId, prices.of(item)));
+    }
 }
 
 Dispatcher dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop(), new Accounts())).build();
@@ -184,39 +195,41 @@ class Gateway implements ConnectionHandler {
 - 来源可以是任意 `Context`，通常是业务的会话，里面有连接和已登录的角色。处理器通过 `HandleContext.source()` 读取它；登录处理器替换会话即可绑定角色。
 - `onReply` / `onFail` 只会调用其中一个、最多一次，在应答发生的线程上执行。两个都传，或者单向消息两个都不传。
 - `onFail` 原样收到错误码和处理器 `fail(errorCode, args...)` 带的参数：`fail(errorCode)` 和框架自己的失败给的是空数组。参数放在包里的什么位置由业务决定，例如放在失败包的 body 里。
-- 失败：`HANDLER_NOT_FOUND`、`INVALID_ROUTE_KEY`、runtime 拒绝（`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED`），处理器抛异常时为 `RUNTIME_EXECUTION_ERROR`。
+- 失败：`HANDLER_NOT_FOUND`、`INVALID_ROUTE_KEY`、runtime 拒绝（`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED`），处理器抛出 `FailException` 时为它带的错误码和参数，抛其它异常时为 `RUNTIME_EXECUTION_ERROR`。
 - 完整可运行的示例：`src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`。
 
-### 拦截器
+- 把消息交给同一个 Dispatcher 的所有入口共用它的处理器；处理器可以通过 `HandleContext.source()`（入口传入的上下文）判断消息从哪里来。
 
-`HandleInterceptor` 在 Dispatcher 的每个处理器执行前后运行，就在处理器的任务里、它的路由上。每个拦截器都会看到所有处理器，由它自己根据处理器的 `Method`（例如它的注解）和消息决定怎么做：
+## 拦截器
+
+`TaskInterceptor` 在 runtime 的每个任务执行前后运行，不管任务来自哪个入口：Dispatcher 的处理器、事件、HTTP 接口、定时器和定时任务，以及用 `runtime.execute` 回到某条路由上继续的工作（它本身也是一个任务）。拦截器在任务的路由和线程上运行，`Context.current()` 就是任务的上下文。每个拦截器都会看到所有任务，由它自己按 domain 或上下文的类型决定怎么做：
 
 ```java
-@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD)
-@interface Anonymous {}                                   // 业务自己的标记注解
-
-class LoginCheck implements HandleInterceptor {
-    public int before(HandleContext context, Method handler, Object message) {
-        return handler.isAnnotationPresent(Anonymous.class) || context.businessId() != 0 ? SUCCESS : NOT_LOGGED_IN;
+class LoginCheck implements TaskInterceptor {             // 登录前只能执行登录 domain 的处理器
+    public void before(Context context) {
+        if (context instanceof HandleContext && context.domain() != LOGIN && context.businessId() == 0)
+            throw new FailException(NOT_LOGGED_IN);
     }
 }
 
-class SavePlayer implements HandleInterceptor {
-    public void after(HandleContext context, Method handler, Object message, Throwable failure) {
-        if (failure == null && context.businessId() != 0) players.get(context.businessId()).saveIfDirty();
+class SavePlayer implements TaskInterceptor {             // 不管是请求、定时器还是事件改了玩家
+    public void after(Context context, Throwable failure) {
+        if (context.domain() == PLAYER && failure == null) players.get(context.routeKey()).saveIfDirty();
     }
 }
 
-Dispatcher dispatcher = Dispatcher.builder(runtime)
+GameRuntime runtime = GameRuntime.builder()
+        .domain(PLAYER, RouteExecutors.virtualThreads())
+        .domain(LOGIN, RouteExecutors.virtualThreads())
         .intercept(List.of(new LoginCheck(), new SavePlayer()))
-        .register(List.of(new Shop(), new Accounts()))
         .build();
 ```
 
-- `before` 按拦截器添加的顺序执行。返回 `SUCCESS`（0）继续；返回其它错误码则以该错误码应答失败（单向消息直接丢弃），之后的拦截器、处理器以及所有 `after` 都不再执行。要带参数失败时，拦截器自己调用 `context.fail(code, args...)`，再返回这个错误码。
-- `after` 在处理器返回或抛异常之后按相反顺序执行，拿到处理器抛出的异常（如果有）。处理器执行中给出的应答此时已经发出。某个 `after` 抛异常时，其余的 `after` 仍会执行。
-- `before` 或 `after` 抛异常时，和处理器抛异常一样，以 `RUNTIME_EXECUTION_ERROR` 应答失败；处理器已经应答过的除外。
-- 把消息交给同一个 Dispatcher 的所有入口共用它的处理器和拦截器；处理器或拦截器可以通过 `HandleContext.source()`（入口传入的上下文）判断消息从哪里来。
+- `before` 按拦截器添加的顺序执行，然后是任务，再按相反顺序执行 `after`。只有 `before` 已经返回的拦截器才会执行 `after`，所以 `before` 里设置的东西（比如日志上下文里的 trace id）一定会被 `after` 清掉。某个 `after` 抛异常时，其余的 `after` 仍会执行。
+- `after` 拿到任务或后面某个 `before` 抛出的异常，没有则为 null。任务执行中给出的应答此时已经发出。
+- `before` 或 `after` 抛异常时，和任务抛异常一样处理：请求以 `FailException` 带的错误码和参数应答失败（所以 `before` 抛它就能拒绝请求），其它异常以 `RUNTIME_EXECUTION_ERROR` 应答，已经应答过的除外；其它情况交给错误处理器。`before` 抛异常时，任务和之后的 `before` 都不再执行。
+- 没有添加拦截器时 runtime 原样执行任务；每添加一个，每个任务多两次调用（`ExecuteThroughputBenchmark.executeIntercepted` 测量了一个什么都不做的拦截器）。
+- 需要看消息本身的检查，比如按消息类型限流，放在应用的入口里、分发之前做（那里有消息和包的协议号），或者放在处理器里。
 
 ## 事件
 
@@ -347,7 +360,7 @@ class JsonCodec implements HttpCodec {
 ## 错误与关闭
 
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
-- 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
+- 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）；已经让请求失败、或发现请求已应答的 `FailException` 除外。
 - `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、定时器等），再关闭 runtime，这样关闭期间不会有新的工作交进来。
 - runtime 不统计进行中的任务。每个 domain 的执行器知道自己的活，由它自己做完：`striped` 用其 ThreadPoolExecutor 自带的关闭，`virtualThreads` 不再新建队列、每个队列排空后就退休。执行器关闭期间交来的任务，要么以 `ROUTE_EXECUTOR_CLOSED` 拒绝，要么在终止前执行完。
 
@@ -369,8 +382,8 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 
 | Logger | 内容 |
 | --- | --- |
-| `cn.managame.runtime` | INFO：runtime 启动（每个 domain 及其执行器）、开始关闭、关闭完成。DEBUG：每个被拒绝的任务、回收的空闲路由队列。ERROR：默认错误处理器记录的失败任务。 |
-| `cn.managame.runtime.dispatch` | INFO：Dispatcher 的处理器与拦截器数量。DEBUG：每种消息对应的处理器、每条被拒绝的消息。ERROR：无法执行的处理器。 |
+| `cn.managame.runtime` | INFO：runtime 启动（每个 domain 及其执行器，以及任务拦截器的数量）、开始关闭、关闭完成。DEBUG：每个被拒绝的任务、回收的空闲路由队列。ERROR：默认错误处理器记录的失败任务。 |
+| `cn.managame.runtime.dispatch` | INFO：Dispatcher 的处理器数量。DEBUG：每种消息对应的处理器、每条被拒绝的消息。ERROR：无法执行的处理器。 |
 | `cn.managame.runtime.event` | INFO：事件总线的订阅者数量。DEBUG：每种事件的订阅者。 |
 | `cn.managame.runtime.http` | INFO：HTTP 接口数量。DEBUG：每个接口、每个错误请求。ERROR：无法执行或无法应答的请求。 |
 | `cn.managame.runtime.timer` | INFO：每个排上的 `@Cron` 方法。DEBUG：每个 `timer.cron`。WARNING：被拒绝的触发。ERROR：执行失败的触发。 |
@@ -381,4 +394,4 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
-先安装 managame-common 和 managame-network。测试覆盖 runtime 及其执行器的顺序与拒绝、路由键、Dispatcher 的应答、失败与拦截器、基于真实 TCP 的玩家网关、事件、定时器，以及基于真实连接的 HTTP 路由。
+先安装 managame-common 和 managame-network。测试覆盖 runtime 及其执行器的顺序与拒绝、路由键、Dispatcher 的应答与失败、包住所有入口的任务拦截器、基于真实 TCP 的玩家网关、事件、定时器，以及基于真实连接的 HTTP 路由。

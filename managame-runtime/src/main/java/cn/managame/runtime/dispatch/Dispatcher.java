@@ -3,7 +3,6 @@ package cn.managame.runtime.dispatch;
 import static cn.managame.FrameworkErrorCodes.HANDLER_NOT_FOUND;
 import static cn.managame.FrameworkErrorCodes.INVALID_ROUTE_KEY;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
-import static cn.managame.FrameworkErrorCodes.SUCCESS;
 
 import cn.managame.runtime.Context;
 import cn.managame.runtime.GameRuntime;
@@ -12,12 +11,8 @@ import cn.managame.runtime.Route;
 import cn.managame.runtime.annotation.AnnotatedMethod;
 import cn.managame.runtime.annotation.HandleMethod;
 import java.lang.System.Logger.Level;
-import java.lang.reflect.Method;
-import java.lang.reflect.UndeclaredThrowableException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -37,23 +32,21 @@ import java.util.function.Consumer;
  * }</pre>
  *
  * A message runs in its handler's domain, on the route key its handler's routeKey member holds, or else the domain's
- * resolver finds for it and the source, * acting for the source's business identity, and its handler answers through its {@link HandleContext}, while it
- * runs or later from any thread. Messages are matched by exact class. One with no handler fails with
- * HANDLER_NOT_FOUND, one that cannot be routed with INVALID_ROUTE_KEY, one the runtime refuses with the runtime's
- * code, and a handler that throws with RUNTIME_EXECUTION_ERROR. {@link HandleInterceptor}s run before and after
- * every handler.
+ * resolver finds for it and the source, acting for the source's business identity, and its handler answers through its
+ * {@link HandleContext}, while it runs or later from any thread. Messages are matched by exact class. One with no
+ * handler fails with HANDLER_NOT_FOUND, one that cannot be routed with INVALID_ROUTE_KEY, one the runtime refuses with
+ * the runtime's code, and a handler that throws with the code of a FailException, or else RUNTIME_EXECUTION_ERROR. The
+ * runtime's TaskInterceptors run around every handler, as around every task.
  */
 public final class Dispatcher {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime.dispatch");
     private final GameRuntime runtime;
     private final Map<Class<?>, AnnotatedMethod> handlers;
-    private final HandleInterceptor[] interceptors;
 
     private Dispatcher(Builder b) {
         runtime = b.runtime;
         handlers = Map.copyOf(b.handlers);
-        interceptors = b.interceptors.toArray(HandleInterceptor[]::new);
-        LOG.log(Level.INFO, () -> "Dispatcher with " + handlers.size() + " handlers and " + interceptors.length + " interceptors");
+        LOG.log(Level.INFO, () -> "Dispatcher with " + handlers.size() + " handlers");
         handlers.forEach((type, handler) -> LOG.log(Level.DEBUG, () -> type.getName() + " handled by " + handler + " in domain " + handler.domain()));
     }
 
@@ -88,45 +81,12 @@ public final class Dispatcher {
         }
         HandleContext context = new HandleContext(route, source, onReply, onFail);
         try {
-            runtime.execute(context, task -> run(handler, task, message));
+            runtime.execute(context, task -> handler.invoke(task, message));
         } catch (GameRuntimeException refused) {
             // execute answered the request with the refusal's code
         } catch (RuntimeException e) {
             LOG.log(Level.ERROR, "Cannot run " + handler, e);
             context.fail(RUNTIME_EXECUTION_ERROR);
-        }
-    }
-
-    /** The handler's task: interceptors before, the handler, then interceptors after. */
-    private void run(AnnotatedMethod handler, HandleContext context, Object message) throws Exception {
-        Method method = handler.method();
-        for (HandleInterceptor interceptor : interceptors) {
-            int errorCode = interceptor.before(context, method, message);
-            if (errorCode != SUCCESS) {
-                context.fail(errorCode);
-                return;
-            }
-        }
-        Throwable failure = null;
-        try {
-            handler.invoke(context, message);
-        } catch (Exception | Error e) {
-            failure = e;
-        }
-        Throwable thrown = failure;
-        for (int i = interceptors.length - 1; i >= 0; i--) {
-            try {
-                interceptors[i].after(context, method, message, failure);
-            } catch (Exception | Error e) {
-                if (thrown == null) thrown = e;
-                else thrown.addSuppressed(e);
-            }
-        }
-        switch (thrown) {
-            case null -> { }
-            case Exception e -> throw e;
-            case Error e -> throw e;
-            default -> throw new UndeclaredThrowableException(failure);
         }
     }
 
@@ -138,15 +98,8 @@ public final class Dispatcher {
     public static final class Builder {
         private final GameRuntime runtime;
         private final Map<Class<?>, AnnotatedMethod> handlers = new HashMap<>();
-        private final List<HandleInterceptor> interceptors = new ArrayList<>();
 
         private Builder(GameRuntime runtime) { this.runtime = Objects.requireNonNull(runtime, "runtime"); }
-
-        /** Adds interceptors for every handler; their before methods run in the order they were added. */
-        public Builder intercept(Collection<? extends HandleInterceptor> interceptors) {
-            for (HandleInterceptor interceptor : interceptors) this.interceptors.add(Objects.requireNonNull(interceptor, "interceptor"));
-            return this;
-        }
 
         /**
          * Registers every {@link HandleMethod} of each object. Two handlers for one message class, a handler that
