@@ -7,9 +7,11 @@ import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.Metadata;
 import cn.managame.runtime.Context;
+import cn.managame.runtime.FailException;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
@@ -41,10 +43,13 @@ class DispatcherTest {
     record Note(String text) {}
     record Unknown() {}
     record Trade(long with, int item) {}
+    record Sell(int item) {}
 
+    private final BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
     private final GameRuntime runtime = GameRuntime.builder()
             .domain(PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId())
-            .domain(GUILD, RouteExecutors.virtualThreads()).build();   // its handlers route by their message's guildId
+            .domain(GUILD, RouteExecutors.virtualThreads())   // its handlers route by their message's guildId
+            .errorHandler((context, cause) -> errors.add(cause)).build();
     private final List<String> notes = new CopyOnWriteArrayList<>();
     private final BlockingQueue<String> answers = new LinkedBlockingQueue<>();
     private final GameContext role = new GameContext(0, 0, ROLE, 1001, Metadata.empty());
@@ -58,6 +63,7 @@ class DispatcherTest {
         }
         @HandleMethod void note(Note note) { notes.add(note.text()); }
         @HandleMethod void boom(Boom boom) { throw new IllegalStateException("boom"); }
+        @HandleMethod void sell(HandleContext context, Sell sell) { context.reply(sellItem(context.businessId(), sell.item())); }
         @HandleMethod void later(HandleContext context, Later later) {
             Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later " + later.text())));
         }
@@ -111,6 +117,25 @@ class DispatcherTest {
         assertEquals(Set.of(9), bags.get(1001L));
         dispatch(dispatcher, new Trade(2002, 9));
         assertEquals("fail:" + NOT_ENOUGH + ":9", answer(), "the other player has none left; the item goes with the code");
+    }
+
+    /** The game's own logic, apart from its handler: returns what it did, and throws when it cannot. */
+    private String sellItem(long player, int item) {
+        if (!bags.get(player).remove(item)) throw new FailException(NOT_ENOUGH, String.valueOf(item));
+        return "sold " + item;
+    }
+
+    @Test void aHandlerRepliesWithItsResultAndItsLogicThrowsItsFailure() throws Exception {
+        bags.get(1001L).add(3);
+        Dispatcher dispatcher = dispatcher();
+        dispatch(dispatcher, new Sell(3));
+        assertEquals("ok:sold 3", answer());
+        dispatch(dispatcher, new Sell(3));
+        assertEquals("fail:" + NOT_ENOUGH + ":3", answer(), "the code and args of the FailException");
+        dispatcher.dispatch(role, new Sell(3));   // one-way, as a notify: no one to answer
+        dispatch(dispatcher, new Buy(1));         // after it on the same route
+        assertEquals("ok:bought 1 by 1001 on " + PLAYER + ":1001", answer());
+        assertTrue(errors.isEmpty(), "a FailException is an answer, never an error, even with no one to answer");
     }
 
     @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {

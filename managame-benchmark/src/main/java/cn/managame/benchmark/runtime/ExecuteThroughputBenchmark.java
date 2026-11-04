@@ -4,8 +4,10 @@ import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameTask;
 import cn.managame.runtime.RouteKeys;
+import cn.managame.runtime.TaskInterceptor;
 import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.executor.RouteExecutors;
+import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -26,7 +28,8 @@ import org.openjdk.jmh.annotations.Warmup;
 /**
  * Tasks run per second through {@code GameRuntime.execute}, the single entry for business logic: four submitting
  * threads, or sixteen, spread tasks over the players of one domain, sharing a window of tasks not yet run, and each task frees
- * room. Tasks of one player run one at a time; the executor decides how players share threads.
+ * room. Tasks of one player run one at a time; the executor decides how players share threads. {@code executeIntercepted}
+ * runs the same tasks through a runtime with one interceptor that does nothing, the cost of having interceptors.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -43,7 +46,7 @@ public class ExecuteThroughputBenchmark {
     @Param({"4096"})
     public int window;
     private final GameContext[] players = new GameContext[PLAYERS];
-    private GameRuntime runtime;
+    private GameRuntime runtime, intercepted;
     private Semaphore inFlight;
     private GameTask<GameContext> task;
 
@@ -51,6 +54,8 @@ public class ExecuteThroughputBenchmark {
         inFlight = new Semaphore(window);
         task = context -> inFlight.release();
         runtime = GameRuntime.builder().domain(PLAYER, executor(executor), RouteKeys.businessId()).build();
+        intercepted = GameRuntime.builder().domain(PLAYER, executor(executor), RouteKeys.businessId())
+                .intercept(List.of(new TaskInterceptor() {})).build();
         for (int id = 0; id < PLAYERS; id++) players[id] = GameContext.of(PLAYER, id, ROLE, id);
     }
 
@@ -63,11 +68,19 @@ public class ExecuteThroughputBenchmark {
         inFlight.release(window);
     }
 
-    @TearDown(Level.Trial) public void stop() { runtime.close(); }
+    @TearDown(Level.Trial) public void stop() {
+        runtime.close();
+        intercepted.close();
+    }
 
     @Benchmark public void execute(Player player) throws InterruptedException {
         inFlight.acquire();
         runtime.execute(players[player.next()], task);
+    }
+
+    @Benchmark public void executeIntercepted(Player player) throws InterruptedException {
+        inFlight.acquire();
+        intercepted.execute(players[player.next()], task);
     }
 
     /** Sixteen submitting threads, as many business threads handing work on: how far the runtime's shared state scales. */

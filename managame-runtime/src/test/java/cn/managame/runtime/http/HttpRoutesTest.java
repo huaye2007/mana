@@ -8,6 +8,7 @@ import cn.managame.FrameworkErrorCodes;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.runtime.Context;
+import cn.managame.runtime.FailException;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
@@ -75,6 +76,7 @@ class HttpRoutesTest {
             return context.request().headers().get("X-Trace") + " " + body;
         }
         @HttpMethod("/boom") String boom(String body) { throw new IllegalStateException("boom"); }
+        @HttpMethod("/out-of-stock") String outOfStock(String item) { throw new FailException(SOLD_OUT, item); }
         @HttpMethod("/sold-out") String soldOut(HttpRequestContext context, String item) {
             context.fail(SOLD_OUT, item);
             return null;
@@ -183,6 +185,8 @@ class HttpRoutesTest {
         assertEquals("{\"error\":" + RUNTIME_EXECUTION_ERROR + "}", send("POST", "/boom", "x").body());
         assertEquals("{\"error\":" + SOLD_OUT + "}", send("POST", "/sold-out", "sword").body(),
                 "HTTP has no place for a failure's args and answers with its code");
+        assertEquals("{\"error\":" + SOLD_OUT + "}", send("POST", "/out-of-stock", "sword").body(),
+                "a FailException answers as failing the context does");
     }
 
     @Test void aRequestTakenOrResponseGivenAsIsSkipsTheCodec() throws Exception {

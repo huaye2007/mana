@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 class RequestContextTest {
     private static final int PLAYER = 1;
     private static final byte PLAYER_ID = 1;
+    private static final int NOT_ENOUGH_GOLD = 10_001;   // the game's own code
 
     /** Stands in for a source's implementation: keeps the first answer. */
     private record TestRequest(int domain, long routeKey, byte businessType, long businessId, Metadata metadata,
@@ -32,6 +33,9 @@ class RequestContextTest {
 
         @Override public boolean reply(Object result) { return answer(result); }
         @Override public boolean fail(int errorCode) { return answer("fail:" + errorCode); }
+        @Override public boolean fail(int errorCode, String... args) {
+            return answer("fail:" + errorCode + (args.length == 0 ? "" : ":" + String.join(",", args)));
+        }
 
         private boolean answer(Object value) {
             if (!answer.compareAndSet(null, value)) return false;
@@ -80,6 +84,56 @@ class RequestContextTest {
             assertTrue(errors.poll(5, TimeUnit.SECONDS) instanceof IllegalStateException);
             assertEquals("done", request.answer().get());
         }
+    }
+
+    /** Business code as the game writes it: returns its result, and throws its failure from however deep. */
+    private static String buy(long gold, int price) {
+        if (gold < price) throw new FailException(NOT_ENOUGH_GOLD, String.valueOf(price));
+        return "bought for " + price;
+    }
+
+    @Test void aFailExceptionFailsItsRequestWithItsCodeAndIsNoError() throws Exception {
+        BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
+        TestRequest rich = new TestRequest(1001), poor = new TestRequest(1001);
+        try (GameRuntime runtime = runtime(errors)) {
+            runtime.execute(rich, context -> context.reply(buy(100, 50)));
+            runtime.execute(poor, context -> context.reply(buy(10, 50)));
+            assertEquals("bought for 50", rich.awaitAnswer());
+            assertEquals("fail:" + NOT_ENOUGH_GOLD + ":50", poor.awaitAnswer());
+            awaitRoute(runtime, 1001);
+            assertTrue(errors.isEmpty(), "an answer, not an error");
+        }
+    }
+
+    @Test void aFailExceptionAfterAnAnswerChangesNothing() throws Exception {
+        BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
+        TestRequest request = new TestRequest(1001);
+        try (GameRuntime runtime = runtime(errors)) {
+            runtime.execute(request, (RequestContext context) -> {
+                context.reply("done");
+                throw new FailException(NOT_ENOUGH_GOLD);
+            });
+            assertEquals("done", request.awaitAnswer());
+            awaitRoute(runtime, 1001);
+            assertTrue(errors.isEmpty());
+        }
+    }
+
+    @Test void aFailExceptionWithNoRequestGoesToTheErrorHandler() throws Exception {
+        BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
+        try (GameRuntime runtime = runtime(errors)) {
+            runtime.execute(GameContext.of(PLAYER, 1001), context -> buy(10, 50));
+            Throwable error = errors.poll(5, TimeUnit.SECONDS);
+            assertTrue(error instanceof FailException);
+            assertEquals("error code " + NOT_ENOUGH_GOLD + " [50]", error.getMessage());
+        }
+    }
+
+    /** Waits for the tasks given to a route so far, which run one at a time, to finish. */
+    private static void awaitRoute(GameRuntime runtime, long routeKey) throws InterruptedException {
+        CountDownLatch done = new CountDownLatch(1);
+        runtime.execute(GameContext.of(PLAYER, routeKey), context -> done.countDown());
+        assertTrue(done.await(5, TimeUnit.SECONDS));
     }
 
     @Test void aCallbackResumesOnTheOriginalContextAndAnswersLater() throws Exception {
