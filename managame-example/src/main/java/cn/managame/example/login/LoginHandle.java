@@ -12,7 +12,7 @@ public class LoginHandle {
     private LoginService loginService;
 
     @HandleMethod(routeKey = "userId")
-    public void login(Login.LoginReq loginReq){
-        loginService.login(loginReq);
+    public Login.LoginRes login(Login.LoginReq loginReq){
+        return loginService.login(loginReq);
     }
 }

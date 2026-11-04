@@ -1,11 +1,6 @@
 package cn.managame.example.login;
 
-import cn.managame.example.DomainConstant;
 import cn.managame.example.proto.Login;
-import cn.managame.runtime.Context;
-import cn.managame.runtime.annotation.Domain;
-import cn.managame.runtime.annotation.HandleMethod;
-import cn.managame.runtime.dispatch.HandleContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -15,7 +10,7 @@ public class LoginService {
     private UserRepository userRepository;
 
 
-    public void login(Login.LoginReq loginReq){
+    public Login.LoginRes login(Login.LoginReq loginReq){
         User user = userRepository.get(loginReq.getUserId());
         if(user == null){
             user = new User();
@@ -30,7 +25,6 @@ public class LoginService {
         }
         Login.LoginRes.Builder builder = Login.LoginRes.newBuilder();
         builder.setRoleId(roleId);
-        HandleContext handleContext = (HandleContext) Context.current();
-        handleContext.reply(builder.build());
+        return builder.build();
     }
 }
