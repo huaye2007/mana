@@ -25,8 +25,8 @@ import java.util.function.Consumer;
  * <pre>{@code
  * Dispatcher dispatcher = Dispatcher.builder(runtime).register(List.of(shop, guildSystem, login)).build();
  *
- * // In the application's own ConnectionHandler, which knows its packet format:
- * dispatcher.dispatch(session(connection), packet.body(),
+ * // In the application's own ConnectionHandler, which knows its packet format and whom its session acts for:
+ * dispatcher.dispatch(GameContext.of(PLAYER, roleId, ROLE, roleId), packet.body(),
  *         result -> connection.write(new Packet(packet.seq(), result)),
  *         (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
  * }</pre>
@@ -59,9 +59,11 @@ public final class Dispatcher {
     public void dispatch(Context source, Object message) { dispatch(source, message, null, null); }
 
     /**
-     * Dispatches {@code message} from {@code source}; {@code onReply} and {@code onFail} deliver its answer in
-     * the application's format, at most one of them once, from whichever thread answers. Both null for a message
-     * that expects no answer.
+     * Dispatches {@code message} from {@code source}, the context it comes in with, which the application builds for
+     * each message: who acts, such as the player a connection is logged in as, and the message's metadata; the
+     * handler gives the domain, and its routeKey member or the domain's resolver the route key. {@code onReply} and
+     * {@code onFail} deliver its answer in the application's format, at most one of them once, from whichever thread
+     * answers, and hold the way back, such as the connection. Both null for a message that expects no answer.
      */
     public void dispatch(Context source, Object message, Consumer<Object> onReply, FailCallback onFail) {
         Objects.requireNonNull(source, "source");
@@ -79,7 +81,7 @@ public final class Dispatcher {
             reject(message, onFail, INVALID_ROUTE_KEY, String.valueOf(e));
             return;
         }
-        HandleContext context = new HandleContext(route, source, onReply, onFail);
+        HandleContext context = new HandleContext(route, source.metadata(), onReply, onFail);
         try {
             runtime.execute(context, task -> handler.invoke(task, message));
         } catch (GameRuntimeException refused) {

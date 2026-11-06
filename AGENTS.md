@@ -100,7 +100,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - **Protocols belong to the application.** The framework defines no client packet format; `Dispatcher` takes any
   decoded message plus reply and fail callbacks in the application's format. A failure is its code and string args
   (`fail(code, args...)`), handed to the fail callback as they are for the application to place, in its failure
-  packet's body say; HTTP has no place for them and answers with the code.
+  packet's body say; HTTP has no place for them and answers with the code. A session (the connection, the role it
+  is logged in as) is the application's and never a `Context`: its entry builds each message's context (who acts,
+  the message's metadata) when it dispatches, and the answer goes back through the callbacks, which hold the
+  connection; pushing to a player outside a request goes through the application's own map of roles to sessions.
 - **Components carry no business concepts.** rpc knows nodes by id only: what a node is for (game, world, gate)
   travels in its handshake `Metadata`, and grouping peers and picking one for a key are the application's.
   Message fields such as `command`, `businessType` and `businessId` are carried as is, never interpreted.
