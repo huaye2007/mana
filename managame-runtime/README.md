@@ -256,11 +256,12 @@ interceptor sees every task and decides for itself, by its domain or the kind of
 
 ```java
 class LoginCheck implements TaskInterceptor {             // only the login domain's handlers run before login
-    public void before(Context context) {
+    public boolean before(Context context) {
         if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
             request.fail(NOT_LOGGED_IN);
-            throw new IllegalStateException("Not logged in");   // keeps the task from running
+            return false;                                     // the task does not run
         }
+        return true;
     }
 }
 
@@ -278,14 +279,16 @@ GameRuntime runtime = GameRuntime.builder()
 ```
 
 - `before` runs in the order interceptors were added, then the task, then `after` in reverse order. Only an
-  interceptor whose `before` returned has its `after` run, so what a `before` sets up, such as a trace id in the
+  interceptor whose `before` returned true has its `after` run, so what a `before` sets up, such as a trace id in the
   logging context, an `after` always takes down. Every `after` runs even when one throws.
-- `after` receives what the task threw, or a later `before`, or null. An answer the task gave while it ran is already
-  on its way.
+- A `before` that returns false refuses the task: it and the later `before`s do not run, and nothing reaches the error
+  handler, since a refusal is no error. The interceptor answers a request it refuses, as `LoginCheck` does, or else it
+  fails with `RUNTIME_EXECUTION_ERROR`, since a request is always answered.
+- `after` receives what the task threw, or a later `before`, or null, as when a later `before` refused the task. An
+  answer the task gave while it ran is already on its way.
 - An exception from `before` or `after` is handled as one from the task: a request fails with
   `RUNTIME_EXECUTION_ERROR`, unless it was answered already, and the exception goes to the error handler. A `before`
-  that throws keeps the task and the later `before`s from running, so one refuses a request by failing it and
-  throwing: the request keeps that first answer, and the exception still reaches the error handler.
+  that throws also keeps the task and the later `before`s from running.
 - With none added the runtime runs tasks as they are; each one added costs a task its two calls
   (`ExecuteThroughputBenchmark.executeIntercepted` measures one that does nothing).
 - Checks that need the message itself, such as limits per message kind, belong in the application's entry before it

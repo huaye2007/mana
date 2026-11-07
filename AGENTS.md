@@ -118,7 +118,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   answered whether its task is accepted or refused. What runs around business logic (a trace id in the logs, saving
   what a task changed, a login check) is a `TaskInterceptor` of the runtime (`GameRuntime.builder().intercept`),
   around every task whatever its entry, a continuation included; entries have no interceptors of their own, and checks
-  that need the message itself belong in the application's entry before it dispatches.
+  that need the message itself belong in the application's entry before it dispatches. A `before` refuses a task by
+  returning false, answering a request it refuses itself; a refusal is no error.
 - **Every context has the same fields:** `domain` (int), `routeKey` (long), `businessType` (byte),
   `businessId` (long) and `Metadata`.
 - **The business decides routing per domain, and a handler may name its message's key.** Each domain has its own

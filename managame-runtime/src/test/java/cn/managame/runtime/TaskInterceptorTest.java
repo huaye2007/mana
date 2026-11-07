@@ -70,9 +70,10 @@ class TaskInterceptorTest {
 
         Recorder(String name) { this.name = name; }
 
-        @Override public void before(Context context) {
-            if (context.businessType() == MARKER) return;
-            trace.add(name + " before " + context.domain() + ":" + context.routeKey() + (Context.current() == context ? "" : " elsewhere"));
+        @Override public boolean before(Context context) {
+            if (context.businessType() != MARKER)
+                trace.add(name + " before " + context.domain() + ":" + context.routeKey() + (Context.current() == context ? "" : " elsewhere"));
+            return true;
         }
 
         @Override public void after(Context context, Throwable failure) {
@@ -83,11 +84,12 @@ class TaskInterceptorTest {
 
     /** Lets only the login domain's handlers run for a source with no role. */
     static class LoginCheck implements TaskInterceptor {
-        @Override public void before(Context context) {
+        @Override public boolean before(Context context) {
             if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
                 request.fail(NOT_LOGGED_IN);
-                throw new IllegalStateException("not logged in");   // keeps the task from running
+                return false;
             }
+            return true;
         }
     }
 
@@ -152,27 +154,52 @@ class TaskInterceptorTest {
                 trace, "the handler's task, then the task that continued the request on its route");
     }
 
-    @Test void aBeforeRefusesARequestByFailingItAndThrowing() throws Exception {
+    @Test void aBeforeRefusesARequestByReturningFalse() throws Exception {
         TaskInterceptor levelCheck = new TaskInterceptor() {
-            @Override public void before(Context context) {
+            @Override public boolean before(Context context) {
                 if (context instanceof HandleContext request && context.businessId() == 1002) {
                     request.fail(LEVEL_TOO_LOW, "10");   // the level it needs
-                    throw new IllegalStateException("level too low");
+                    return false;
                 }
+                return true;
             }
         };
         start(new Recorder("a"), new LoginCheck(), levelCheck, new Recorder("b"));
         assertEquals("fail " + NOT_LOGGED_IN, ask(nobody, new Buy(5)));
-        assertEquals(List.of("a before " + PLAYER + ":0", "a after not logged in"), trace,
-                "neither the task nor a later before ran, and the after of the before that returned did");
+        assertEquals(List.of("a before " + PLAYER + ":0", "a after"), trace,
+                "neither the task nor a later before ran, and the after of the before that returned true did");
         assertEquals("fail " + LEVEL_TOO_LOW + " 10", ask(GameContext.of(0, 0, ROLE, 1002), new Buy(5)));
 
         trace.clear();
         assertEquals("ok hi", ask(nobody, new Hello()), "the login domain's handlers need no role");
         assertTrue(trace.contains("hello"));
         awaitRoute(PLAYER, 0);
-        assertEquals("not logged in", errors.poll(5, TimeUnit.SECONDS).getMessage(), "what kept the task from running is an error like any other");
-        assertEquals("level too low", errors.poll(5, TimeUnit.SECONDS).getMessage());
+        assertTrue(errors.isEmpty(), "a refusal is an answer, not an error");
+    }
+
+    @Test void aRefusedRequestIsAlwaysAnsweredAndARefusedTaskWithNoRequestIsSkipped() throws Exception {
+        TaskInterceptor refuseAll = new TaskInterceptor() {
+            @Override public boolean before(Context context) { return context.businessType() == MARKER; }
+        };
+        start(refuseAll);
+        assertEquals("fail " + RUNTIME_EXECUTION_ERROR, ask(role, new Buy(5)), "the interceptor left the request unanswered");
+        EventBus.builder(runtime).register(List.of(new Shop())).build().publish(new LevelUp(7));
+        awaitRoute(PLAYER, 7);
+        assertEquals(List.of(), trace, "neither the handler nor the event ran");
+        assertTrue(errors.isEmpty(), "a refusal is no error, answered or not");
+    }
+
+    @Test void aBeforeThatThrowsIsAnErrorAndKeepsTheTaskFromRunning() throws Exception {
+        TaskInterceptor broken = new TaskInterceptor() {
+            @Override public boolean before(Context context) {
+                if (context.businessType() != MARKER) throw new IllegalStateException("broken");
+                return true;
+            }
+        };
+        start(new Recorder("a"), broken, new Recorder("b"));
+        assertEquals("fail " + RUNTIME_EXECUTION_ERROR, ask(role, new Buy(5)));
+        assertEquals(List.of("a before " + PLAYER + ":1001", "a after broken"), trace);
+        assertEquals("broken", errors.poll(5, TimeUnit.SECONDS).getMessage());
     }
 
     @Test void afterSeesWhatTheTaskThrew() throws Exception {

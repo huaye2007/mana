@@ -136,13 +136,14 @@ public final class GameRuntime implements AutoCloseable {
         }
     }
 
-    /** The befores in order, the task, then the after of each interceptor whose before returned, in reverse. */
+    /** The befores in order, the task unless one refused it, then the after of each before that returned true, in reverse. */
     private <C extends Context> void intercept(C context, GameTask<? super C> task) throws Exception {
         int entered = 0;
         Throwable failure = null;
         try {
-            for (; entered < interceptors.length; entered++) interceptors[entered].before(context);
-            task.run(context);
+            while (entered < interceptors.length && interceptors[entered].before(context)) entered++;
+            if (entered == interceptors.length) task.run(context);
+            else refused(context);
         } catch (Exception | Error e) {
             failure = e;
         }
@@ -157,6 +158,12 @@ public final class GameRuntime implements AutoCloseable {
         }
         if (thrown instanceof Error error) throw error;
         if (thrown != null) throw (Exception) thrown;
+    }
+
+    /** An interceptor refused the task; fail does nothing if it answered the request, as it should. */
+    private static void refused(Context context) {
+        LOG.log(Level.DEBUG, () -> "An interceptor refused a task of domain " + context.domain() + ", route key " + context.routeKey());
+        if (context instanceof RequestContext request) request.fail(RUNTIME_EXECUTION_ERROR);
     }
 
     /** Refuses new tasks; accepted ones still run. Idempotent. */

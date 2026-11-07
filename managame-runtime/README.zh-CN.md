@@ -208,11 +208,12 @@ class Gateway implements ConnectionHandler {
 
 ```java
 class LoginCheck implements TaskInterceptor {             // 登录前只能执行登录 domain 的处理器
-    public void before(Context context) {
+    public boolean before(Context context) {
         if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
             request.fail(NOT_LOGGED_IN);
-            throw new IllegalStateException("Not logged in");   // 让任务不再执行
+            return false;                                     // 任务不再执行
         }
+        return true;
     }
 }
 
@@ -229,9 +230,10 @@ GameRuntime runtime = GameRuntime.builder()
         .build();
 ```
 
-- `before` 按拦截器添加的顺序执行，然后是任务，再按相反顺序执行 `after`。只有 `before` 已经返回的拦截器才会执行 `after`，所以 `before` 里设置的东西（比如日志上下文里的 trace id）一定会被 `after` 清掉。某个 `after` 抛异常时，其余的 `after` 仍会执行。
-- `after` 拿到任务或后面某个 `before` 抛出的异常，没有则为 null。任务执行中给出的应答此时已经发出。
-- `before` 或 `after` 抛异常时，和任务抛异常一样处理：请求以 `RUNTIME_EXECUTION_ERROR` 应答，已经应答过的除外，异常交给错误处理器。`before` 抛异常时，任务和之后的 `before` 都不再执行，所以要拒绝请求就先让它失败再抛异常：请求保持第一次的应答，异常仍会交给错误处理器。
+- `before` 按拦截器添加的顺序执行，然后是任务，再按相反顺序执行 `after`。只有 `before` 返回 true 的拦截器才会执行 `after`，所以 `before` 里设置的东西（比如日志上下文里的 trace id）一定会被 `after` 清掉。某个 `after` 抛异常时，其余的 `after` 仍会执行。
+- `before` 返回 false 表示拒绝任务：任务和之后的 `before` 都不再执行，也不会交给错误处理器，因为拒绝不是错误。被拒绝的请求由拦截器自己应答（如上面的 `LoginCheck`），没有应答时以 `RUNTIME_EXECUTION_ERROR` 应答，因为请求一定会得到应答。
+- `after` 拿到任务或后面某个 `before` 抛出的异常，没有则为 null，后面的 `before` 拒绝任务时也是 null。任务执行中给出的应答此时已经发出。
+- `before` 或 `after` 抛异常时，和任务抛异常一样处理：请求以 `RUNTIME_EXECUTION_ERROR` 应答，已经应答过的除外，异常交给错误处理器。`before` 抛异常时，任务和之后的 `before` 同样不再执行。
 - 没有添加拦截器时 runtime 原样执行任务；每添加一个，每个任务多两次调用（`ExecuteThroughputBenchmark.executeIntercepted` 测量了一个什么都不做的拦截器）。
 - 需要看消息本身的检查，比如按消息类型限流，放在应用的入口里、分发之前做（那里有消息和包的协议号），或者放在处理器里。
 

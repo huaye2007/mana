@@ -8,11 +8,12 @@ package cn.managame.runtime;
  *
  * <pre>{@code
  * class LoginCheck implements TaskInterceptor {
- *     public void before(Context context) {
+ *     public boolean before(Context context) {
  *         if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
  *             request.fail(NOT_LOGGED_IN);
- *             throw new IllegalStateException("Not logged in");   // keeps the task from running
+ *             return false;
  *         }
+ *         return true;
  *     }
  * }
  * class SavePlayer implements TaskInterceptor {
@@ -24,18 +25,22 @@ package cn.managame.runtime;
  * }</pre>
  *
  * The befores run in the order the interceptors were added, then the task, then in reverse order the after of each
- * interceptor whose before returned, so what a before sets up an after always takes down. An exception from either is
- * handled as one from the task: a request fails with RUNTIME_EXECUTION_ERROR, unless it was answered already, and the
- * exception goes to the error handler. A before that throws keeps the task and the later befores from running, so one
- * refuses a request by failing it and throwing. Every after runs even when another throws.
+ * interceptor whose before returned true, so what a before sets up an after always takes down. A before that returns
+ * false refuses the task: it and the later befores do not run, and no error handler hears of it, since a refusal is no
+ * error. The interceptor answers a request it refuses, or else it fails with RUNTIME_EXECUTION_ERROR, since a request
+ * is always answered.
+ *
+ * <p>An exception from either is handled as one from the task: a request fails with RUNTIME_EXECUTION_ERROR, unless it
+ * was answered already, and the exception goes to the error handler. A before that throws also keeps the task and the
+ * later befores from running. Every after runs even when another throws.
  */
 public interface TaskInterceptor {
-    /** Before the task. */
-    default void before(Context context) throws Exception {}
+    /** Before the task; true lets it run, false refuses it. */
+    default boolean before(Context context) throws Exception { return true; }
 
     /**
-     * After the task returned or threw, or a later interceptor's before threw. {@code failure} is what was thrown, or
-     * null. An answer the task gave is already on its way.
+     * After the task returned or threw, or a later interceptor's before refused it or threw. {@code failure} is what
+     * was thrown, or null, as after a refusal. An answer the task gave is already on its way.
      */
     default void after(Context context, Throwable failure) throws Exception {}
 }
