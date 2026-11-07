@@ -1,6 +1,7 @@
 package cn.managame.runtime;
 
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
+import static cn.managame.FrameworkErrorCodes.SUCCESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -83,8 +84,10 @@ class TaskInterceptorTest {
     /** Lets only the login domain's handlers run for a source with no role. */
     static class LoginCheck implements TaskInterceptor {
         @Override public void before(Context context) {
-            if (context instanceof HandleContext && context.domain() != LOGIN && context.businessId() == 0)
-                throw new FailException(NOT_LOGGED_IN);
+            if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
+                request.fail(NOT_LOGGED_IN);
+                throw new IllegalStateException("not logged in");   // keeps the task from running
+            }
         }
     }
 
@@ -102,9 +105,13 @@ class TaskInterceptorTest {
     /** Dispatches and waits for the answer, then for the task on the source's route to end, afters included. */
     private String ask(Context source, Object message) throws InterruptedException {
         dispatcher.dispatch(source, message, result -> {
-            trace.add("reply " + result);
-            answers.add("ok " + result);
-        }, (errorCode, args) -> answers.add("fail " + errorCode + (args.length == 0 ? "" : " " + String.join(",", args))));
+            if (result.code() != SUCCESS) {
+                answers.add("fail " + result.code() + (result.args().length == 0 ? "" : " " + String.join(",", result.args())));
+                return;
+            }
+            trace.add("reply " + result.data());
+            answers.add("ok " + result.data());
+        });
         String answer = answers.poll(5, TimeUnit.SECONDS);
         awaitRoute(PLAYER, source.businessId());
         return answer;
@@ -145,15 +152,18 @@ class TaskInterceptorTest {
                 trace, "the handler's task, then the task that continued the request on its route");
     }
 
-    @Test void aBeforeRefusesARequestWithAFailException() throws Exception {
+    @Test void aBeforeRefusesARequestByFailingItAndThrowing() throws Exception {
         TaskInterceptor levelCheck = new TaskInterceptor() {
             @Override public void before(Context context) {
-                if (context.businessId() == 1002) throw new FailException(LEVEL_TOO_LOW, "10");   // the level it needs
+                if (context instanceof HandleContext request && context.businessId() == 1002) {
+                    request.fail(LEVEL_TOO_LOW, "10");   // the level it needs
+                    throw new IllegalStateException("level too low");
+                }
             }
         };
         start(new Recorder("a"), new LoginCheck(), levelCheck, new Recorder("b"));
         assertEquals("fail " + NOT_LOGGED_IN, ask(nobody, new Buy(5)));
-        assertEquals(List.of("a before " + PLAYER + ":0", "a after error code " + NOT_LOGGED_IN), trace,
+        assertEquals(List.of("a before " + PLAYER + ":0", "a after not logged in"), trace,
                 "neither the task nor a later before ran, and the after of the before that returned did");
         assertEquals("fail " + LEVEL_TOO_LOW + " 10", ask(GameContext.of(0, 0, ROLE, 1002), new Buy(5)));
 
@@ -161,7 +171,8 @@ class TaskInterceptorTest {
         assertEquals("ok hi", ask(nobody, new Hello()), "the login domain's handlers need no role");
         assertTrue(trace.contains("hello"));
         awaitRoute(PLAYER, 0);
-        assertTrue(errors.isEmpty(), "a refusal is an answer, not an error");
+        assertEquals("not logged in", errors.poll(5, TimeUnit.SECONDS).getMessage(), "what kept the task from running is an error like any other");
+        assertEquals("level too low", errors.poll(5, TimeUnit.SECONDS).getMessage());
     }
 
     @Test void afterSeesWhatTheTaskThrew() throws Exception {
@@ -178,7 +189,7 @@ class TaskInterceptorTest {
             }
         };
         start(new Recorder("a"), failingAfter, new Recorder("b"));
-        dispatcher.dispatch(role, new Boom(), result -> answers.add("ok"), (errorCode, args) -> answers.add("fail " + errorCode));
+        dispatcher.dispatch(role, new Boom(), result -> answers.add(result.code() == SUCCESS ? "ok" : "fail " + result.code()));
         assertEquals("fail " + RUNTIME_EXECUTION_ERROR, answers.poll(5, TimeUnit.SECONDS));
         awaitRoute(PLAYER, 1001);
         assertEquals("a after boom", trace.getLast(), "every after ran, seeing what the task threw");

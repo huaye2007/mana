@@ -1,13 +1,14 @@
 package cn.managame.benchmark.runtime;
 
+import static cn.managame.FrameworkErrorCodes.SUCCESS;
+
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.HandleMethod;
 import cn.managame.runtime.dispatch.Dispatcher;
-import cn.managame.runtime.dispatch.FailCallback;
-import cn.managame.runtime.dispatch.HandleContext;
+import cn.managame.runtime.dispatch.HandleResult;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -31,7 +32,7 @@ import org.openjdk.jmh.annotations.Warmup;
 /**
  * Player requests answered per second through the Dispatcher, as a gateway hands them over: four threads dispatch
  * decoded messages from the players of one domain to an annotated handler, whose answer comes back through the
- * reply callback, sharing a window of requests not yet answered. A request that fails fails the benchmark.
+ * answer callback, sharing a window of requests not yet answered. A request that fails fails the benchmark.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -51,27 +52,25 @@ public class DispatchThroughputBenchmark {
     private GameRuntime runtime;
     private Dispatcher dispatcher;
     private Semaphore inFlight;
-    private Consumer<Object> onReply;
-    private FailCallback onFail;
+    private Consumer<HandleResult> onAnswer;
 
     public record Buy(int item) {}
     public record Donate(long guildId) {}
 
     @Domain(PLAYER)
     public static class Shop {
-        @HandleMethod public void buy(HandleContext context, Buy buy) { context.reply(buy.item()); }
+        @HandleMethod public HandleResult buy(Buy buy) { return HandleResult.ok(buy.item()); }
     }
 
     @Domain(GUILD)
     public static class Guild {
-        @HandleMethod(routeKey = "guildId") public void donate(HandleContext context, Donate donate) { context.reply(donate.guildId()); }
+        @HandleMethod(routeKey = "guildId") public HandleResult donate(Donate donate) { return HandleResult.ok(donate.guildId()); }
     }
 
     @Setup(Level.Trial) public void start() {
         inFlight = new Semaphore(window);
-        onReply = result -> inFlight.release();
-        onFail = (code, args) -> {
-            failures.incrementAndGet();
+        onAnswer = result -> {
+            if (result.code() != SUCCESS) failures.incrementAndGet();
             inFlight.release();
         };
         runtime = GameRuntime.builder()
@@ -93,13 +92,13 @@ public class DispatchThroughputBenchmark {
     @Benchmark public void dispatch(ExecuteThroughputBenchmark.Player player) throws InterruptedException {
         inFlight.acquire();
         int id = player.next();
-        dispatcher.dispatch(players[id], new Buy(id), onReply, onFail);
+        dispatcher.dispatch(players[id], new Buy(id), onAnswer);
     }
 
     /** The same, in a domain whose handler routes by a member of its message, the guild it donates to. */
     @Benchmark public void dispatchByMember(ExecuteThroughputBenchmark.Player player) throws InterruptedException {
         inFlight.acquire();
         int id = player.next();
-        dispatcher.dispatch(players[id], new Donate(id), onReply, onFail);
+        dispatcher.dispatch(players[id], new Donate(id), onAnswer);
     }
 }

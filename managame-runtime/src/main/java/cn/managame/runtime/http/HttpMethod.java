@@ -14,8 +14,10 @@ import java.lang.annotation.Target;
  * }</pre>
  *
  * The {@link HttpRequestContext} is {@link HttpRequestContext#current()} while the method runs, or may be declared
- * before the argument: {@code (HttpRequestContext, Argument)}. A non-null result is the answer; void or null means
- * the answer comes later through the context.
+ * before the argument: {@code (HttpRequestContext, Argument)}. A non-null result is the answer: an {@link HttpResult}
+ * for an API's common shape, any type of the endpoint's own that the {@link HttpCodec} writes, or a
+ * {@code FullHttpResponse}, sent as is. Void or null means the answer comes later through the context. A failure goes
+ * to {@link HttpCodec#encodeFailure} whatever the method returns.
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)

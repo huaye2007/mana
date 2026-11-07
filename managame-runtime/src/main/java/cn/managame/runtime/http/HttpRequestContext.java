@@ -2,6 +2,7 @@ package cn.managame.runtime.http;
 
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 
+import cn.managame.FrameworkErrorCodes;
 import cn.managame.Metadata;
 import cn.managame.network.http.HttpExchange;
 import cn.managame.runtime.Context;
@@ -9,8 +10,10 @@ import cn.managame.runtime.RequestContext;
 import cn.managame.runtime.Route;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import java.lang.System.Logger.Level;
 import java.net.SocketAddress;
+import java.util.Objects;
 
 /**
  * The context of an HTTP request: answers go out as HTTP responses through the routes' codec. An endpoint rarely
@@ -18,6 +21,7 @@ import java.net.SocketAddress;
  */
 public final class HttpRequestContext implements RequestContext {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime.http");
+    private static final String[] NO_ARGS = {};
     private final Route route;
     private final Metadata metadata;
     private final HttpExchange exchange;
@@ -64,5 +68,21 @@ public final class HttpRequestContext implements RequestContext {
         return exchange.respond(response);
     }
 
-    @Override public boolean fail(int errorCode) { return exchange.respond(codec.encodeFailure(errorCode)); }
+    @Override public boolean fail(int errorCode) { return fail(errorCode, NO_ARGS); }
+
+    /**
+     * {@code args} reach {@link HttpCodec#encodeFailure} as they are, for it to make the failure's text from. A failure
+     * it cannot encode is answered 500 with no body, and logged.
+     */
+    @Override public boolean fail(int errorCode, String... args) {
+        Objects.requireNonNull(args, "args");
+        FullHttpResponse response;
+        try {
+            response = codec.encodeFailure(errorCode, args);
+        } catch (Throwable cause) {
+            LOG.log(Level.ERROR, "Cannot encode the HTTP failure " + FrameworkErrorCodes.describe(errorCode), cause);
+            return exchange.respond(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+        }
+        return exchange.respond(response);
+    }
 }

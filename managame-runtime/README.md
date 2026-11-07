@@ -54,12 +54,7 @@ Every piece of business logic runs with a `Context`:
   counts, and it may come from any thread, also after the task returned. A request is always answered: if its task
   throws, the runtime fails it with `RUNTIME_EXECUTION_ERROR`, and if `execute` refuses its task, with the refusal's
   code. `fail(errorCode, args...)` adds strings, such as the values the code's message shows, for the source to place
-  in its format; an HTTP request has no place for them and answers with the code alone.
-- Business code fails its request from however deep by throwing `FailException(errorCode, args...)`, so it can
-  return its result and leave failures to that: the runtime fails the task's request with the code and args, and hands
-  the exception to no error handler, since it is an answer, not an error. A request already answered, or a one-way
-  message, which has no one to answer, stays as it is. In a task with no request, such as a timer's or an event's, it
-  goes to the error handler as any exception does. It records no stack trace, so throwing one costs an allocation.
+  in its format; an HTTP request shows a text instead, which its codec makes from them.
 
 ### Continuing on a route
 
@@ -165,35 +160,37 @@ registrations do not change afterwards.
 | `@Cron(domain, value)` | Calendar times, see [Cron](#cron); domain and route key in the annotation, no message | `GameTimer` |
 
 A handler takes one parameter, the message, matched by its exact class, and may take its context before it.
-A `@HandleMethod` returns void and answers through its context; an `@HttpMethod` may return its answer instead.
+A `@HandleMethod` returns a `HandleResult`, or void or null when it answers later through its context. An
+`@HttpMethod` returns an `HttpResult`, any type of its own that the codec writes, or a `FullHttpResponse`, or void or
+null likewise.
 Methods are compiled to method handles at registration, so calls use no reflection. Registration throws
-`IllegalArgumentException` for a missing `@Domain`, wrong parameters, a `@HandleMethod` that returns a value, a
+`IllegalArgumentException` for a missing `@Domain`, wrong parameters, a `@HandleMethod` that returns anything else, a
 `routeKey` its message lacks, two handlers for one message, or a context type the entry cannot give.
 
 ## Dispatcher: player requests and other messages
 
 The Dispatcher does not know any packet format. The application decodes its own packets and hands each message
-over with the context it comes from and callbacks that answer in its own format.
+over with the context it comes from and a callback that answers in its own format.
 
 ```java
 @Domain(PLAYER)
 class Shop {
-    @HandleMethod void buy(HandleContext request, Buy buy) {         // answer now through the context
-        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
-        else request.reply(bags.add(request.businessId(), buy.item()));
+    @HandleMethod HandleResult buy(HandleContext request, Buy buy) {    // answer with what it returns
+        if (!wallets.pay(request.businessId(), buy.price())) return HandleResult.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
+        return HandleResult.ok(bags.add(request.businessId(), buy.item()));
     }
-    @HandleMethod void rank(HandleContext request, AskRank ask) {    // or later, from any thread
+    @HandleMethod void rank(HandleContext request, AskRank ask) {       // or later through the context, from any thread
         ranks.query(request.businessId(), rank -> request.reply(rank));
     }
-    @HandleMethod void sell(HandleContext request, Sell sell) {      // or with what the game's logic returns,
-        request.reply(market.sell(request.businessId(), sell.item()));
+    @HandleMethod HandleResult sell(HandleContext request, Sell sell) { // or with what the game's logic returns
+        return market.sell(request.businessId(), sell.item());
     }
 }
 
-class Market {                                                       // which throws to fail, however deep
-    SellResult sell(long roleId, int item) {
-        if (!bags.remove(roleId, item)) throw new FailException(NOT_ENOUGH_ITEMS, String.valueOf(item));
-        return new SellResult(item, wallets.add(roleId, prices.of(item)));
+class Market {
+    HandleResult sell(long roleId, int item) {
+        if (!bags.remove(roleId, item)) return HandleResult.fail(NOT_ENOUGH_ITEMS, String.valueOf(item));
+        return HandleResult.ok(new SellResult(item, wallets.add(roleId, prices.of(item))));
     }
 }
 
@@ -210,12 +207,10 @@ class Gateway implements ConnectionHandler {
     public void onActive(Connection connection) { connection.set(SESSION, new Session(connection, 0)); }
     public void onRead(Connection connection, Object message) {
         Packet packet = (Packet) message;
-        dispatcher.dispatch(context(connection.get(SESSION), packet), packet.body(),
-                result -> {
-                    if (result instanceof LoginOk ok) connection.set(SESSION, new Session(connection, ok.roleId()));
-                    connection.write(Packet.ok(packet.seq(), result));
-                },
-                (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
+        dispatcher.dispatch(context(connection.get(SESSION), packet), packet.body(), result -> {
+            if (result.data() instanceof LoginOk ok) connection.set(SESSION, new Session(connection, ok.roleId()));
+            connection.write(new Packet(packet.seq(), result.code(), result.args(), result.data()));
+        });
     }
     public void onInActive(Connection connection) {
         Session session = connection.get(SESSION);
@@ -236,18 +231,19 @@ class Gateway implements ConnectionHandler {
   the role a connection is logged in as, and the message's metadata, such as a trace id. The handler gives the domain,
   and its routeKey member or the domain's resolver the route key. A session is the application's own and stays out
   of the runtime; the entry binds a role to it, on the answer to a login say.
-- The answer goes back through `onReply` / `onFail`, which hold the way back (the connection, the packet's sequence
+- The answer goes back through the callback, which holds the way back (the connection, the packet's sequence
   number), so a context needs no connection, also for an answer given later from another thread. Pushing to a
   player outside a request, from a timer or another player's route, goes through the application's own map of roles
   to sessions, kept by its gateway.
-- Exactly one of `onReply` / `onFail` is called, at most once, on whichever thread answers. Give both, or neither
-  for a one-way message.
-- `onFail` receives the code and the args the handler failed with, `fail(errorCode, args...)`, as they are: an
-  empty array after `fail(errorCode)` and for the framework's own failures. Where they go in the packet is the
-  application's, a failure's body for instance.
+- The callback is called at most once, on whichever thread answers, and must not block. Leave it out for a one-way
+  message.
+- It receives a `HandleResult` for every outcome, `code`, `data` and `args`: `SUCCESS` with the result, or a failure's
+  code with its args as they are, an empty array when it gave none, as the framework's own failures do. Where they
+  go in the packet is the application's, a failure's body for instance.
+- A handler fails by returning `HandleResult.fail(code, args...)`, and the logic below it hands that up as it hands up
+  its results. An exception is a bug, not a failure: it answers `RUNTIME_EXECUTION_ERROR` and goes to the error handler.
 - Failures: `HANDLER_NOT_FOUND`, `INVALID_ROUTE_KEY`, the runtime's refusal (`RUNTIME_CLOSED`,
-  `ROUTE_EXECUTOR_OVERLOADED`), the code and args of a `FailException` the handler throws, and
-  `RUNTIME_EXECUTION_ERROR` when it throws anything else.
+  `ROUTE_EXECUTOR_OVERLOADED`), and `RUNTIME_EXECUTION_ERROR` when the handler throws.
 - A complete, runnable example: `src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`.
 - Every entry that hands messages to the same Dispatcher shares its handlers.
 
@@ -261,8 +257,10 @@ interceptor sees every task and decides for itself, by its domain or the kind of
 ```java
 class LoginCheck implements TaskInterceptor {             // only the login domain's handlers run before login
     public void before(Context context) {
-        if (context instanceof HandleContext && context.domain() != LOGIN && context.businessId() == 0)
-            throw new FailException(NOT_LOGGED_IN);
+        if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
+            request.fail(NOT_LOGGED_IN);
+            throw new IllegalStateException("Not logged in");   // keeps the task from running
+        }
     }
 }
 
@@ -284,10 +282,10 @@ GameRuntime runtime = GameRuntime.builder()
   logging context, an `after` always takes down. Every `after` runs even when one throws.
 - `after` receives what the task threw, or a later `before`, or null. An answer the task gave while it ran is already
   on its way.
-- An exception from `before` or `after` is handled as one from the task: a request fails with the code and args of a
-  `FailException`, so a `before` refuses a request by throwing one, or else with `RUNTIME_EXECUTION_ERROR`, unless it
-  was answered already; any other exception goes to the error handler. A `before` that throws keeps the task and the
-  later `before`s from running.
+- An exception from `before` or `after` is handled as one from the task: a request fails with
+  `RUNTIME_EXECUTION_ERROR`, unless it was answered already, and the exception goes to the error handler. A `before`
+  that throws keeps the task and the later `before`s from running, so one refuses a request by failing it and
+  throwing: the request keeps that first answer, and the exception still reaches the error handler.
 - With none added the runtime runs tasks as they are; each one added costs a task its two calls
   (`ExecuteThroughputBenchmark.executeIntercepted` measures one that does nothing).
 - Checks that need the message itself, such as limits per message kind, belong in the application's entry before it
@@ -419,11 +417,27 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
   endpoint that throws 500.
 - Helpers: `HttpRequests.query`, `longQuery`, `text`.
 
+**Results.** What an endpoint returns is its answer, of whichever type suits it:
+
+```java
+@HttpMethod("/mail") HttpResult mail(SendMail mail) { return HttpResult.ok(mails.send(mail)); }    // the API's common shape
+@HttpMethod("/pay/notify") PayAck payNotify(PayNotice notice) { return new PayAck("SUCCESS"); }    // the shape the other side fixes
+@HttpMethod(value = "/export", method = "GET") FullHttpResponse export(FullHttpRequest request) { ... }   // its own status and headers
+```
+
+- `HttpResult` has `code`, `data` and `msg`, the text for whoever called, with `HttpResult.ok(data)` and
+  `HttpResult.fail(code, msg)`. It goes through the codec like any other result, so a JSON library writes it as
+  `{code, data, msg}` as it is.
+- A failure goes to the codec's `encodeFailure` whatever the endpoint returns: a refused task, an exception, `fail` on
+  the context. An endpoint that answers its failures in its own type returns that type. A refused task never reaches
+  the endpoint, so it stays in the codec's shape.
+
 **Codec.** An `HttpCodec` reads arguments and writes results and failures. An endpoint taking a `FullHttpRequest`
 gets the request itself and a `FullHttpResponse` result is sent as is: neither goes through the codec, whichever it
 is. `HttpCodec.basic()`, the default, reads a `String` parameter as the UTF-8 body and `byte[]` as its bytes, and
-writes text as UTF-8 `text/plain` and `byte[]` / `ByteBuf` as `application/octet-stream`; `build()` rejects
-endpoints taking anything else. For JSON, implement it with your library:
+writes text as UTF-8 `text/plain`, `byte[]` / `ByteBuf` as `application/octet-stream`, and an `HttpResult` as its
+data, or, when it failed, as a failure with its msg as text; `build()` rejects endpoints taking anything else. For
+JSON, implement it with your library:
 
 ```java
 class JsonCodec implements HttpCodec {
@@ -444,16 +458,22 @@ class JsonCodec implements HttpCodec {
 }
 ```
 
-Decoding runs on the connection's EventLoop before the endpoint is called; override `encodeFailure(errorCode)` to
-shape error bodies.
+Decoding runs on the connection's EventLoop before the endpoint is called. Override `encodeFailure(errorCode, args)`
+to shape failures, which by default answer 503 for a refused task and 500 otherwise, with the code as text. HTTP shows
+a text rather than args, so make it from the game's own messages; an exception from it answers 500 with no body:
+
+```java
+public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOException {
+    return encode(HttpResult.fail(errorCode, messages.format(errorCode, args)));
+}
+```
 
 ## Errors and shutdown
 
 - `execute` throws `GameRuntimeException` with `RUNTIME_CLOSED` after shutdown or `ROUTE_EXECUTOR_OVERLOADED` when
   the domain's executor is full, and the task never runs; a request is first failed with that code. An unregistered
   domain throws `IllegalArgumentException`.
-- What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`),
-  but a `FailException` that failed the task's request, or found it answered.
+- What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
 - `shutdown()` refuses new tasks while accepted ones still run; `awaitTermination(timeout)` waits for them;
   `close()` does both and must not be called from a task. Close the entries (servers, timers and the like) before the
   runtime, so nothing hands it work while it shuts down.

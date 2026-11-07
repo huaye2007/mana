@@ -9,8 +9,10 @@ package cn.managame.runtime;
  * <pre>{@code
  * class LoginCheck implements TaskInterceptor {
  *     public void before(Context context) {
- *         if (context instanceof HandleContext && context.domain() != LOGIN && context.businessId() == 0)
- *             throw new FailException(NOT_LOGGED_IN);
+ *         if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
+ *             request.fail(NOT_LOGGED_IN);
+ *             throw new IllegalStateException("Not logged in");   // keeps the task from running
+ *         }
  *     }
  * }
  * class SavePlayer implements TaskInterceptor {
@@ -23,9 +25,9 @@ package cn.managame.runtime;
  *
  * The befores run in the order the interceptors were added, then the task, then in reverse order the after of each
  * interceptor whose before returned, so what a before sets up an after always takes down. An exception from either is
- * handled as one from the task: a request fails with the code of a {@link FailException}, or else with
- * RUNTIME_EXECUTION_ERROR, unless it was answered already, and any other exception goes to the error handler. A before
- * that throws keeps the task and the later befores from running. Every after runs even when another throws.
+ * handled as one from the task: a request fails with RUNTIME_EXECUTION_ERROR, unless it was answered already, and the
+ * exception goes to the error handler. A before that throws keeps the task and the later befores from running, so one
+ * refuses a request by failing it and throwing. Every after runs even when another throws.
  */
 public interface TaskInterceptor {
     /** Before the task. */

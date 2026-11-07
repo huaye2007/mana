@@ -1,5 +1,6 @@
 package cn.managame.runtime.http;
 
+import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -8,7 +9,6 @@ import cn.managame.FrameworkErrorCodes;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.runtime.Context;
-import cn.managame.runtime.FailException;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
@@ -22,6 +22,7 @@ import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
+import java.io.IOException;
 import java.lang.reflect.Type;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -42,6 +43,7 @@ class HttpRoutesTest {
 
     record Notice(long guildId, String text) {}
     record Posted(long guild, String text) {}
+    record PayAck(String result) {}
 
     private final GameRuntime runtime = GameRuntime.builder()
             .domain(PLAYER, RouteExecutors.virtualThreads(), (source, message) -> {
@@ -76,7 +78,6 @@ class HttpRoutesTest {
             return context.request().headers().get("X-Trace") + " " + body;
         }
         @HttpMethod("/boom") String boom(String body) { throw new IllegalStateException("boom"); }
-        @HttpMethod("/out-of-stock") String outOfStock(String item) { throw new FailException(SOLD_OUT, item); }
         @HttpMethod("/sold-out") String soldOut(HttpRequestContext context, String item) {
             context.fail(SOLD_OUT, item);
             return null;
@@ -115,6 +116,14 @@ class HttpRoutesTest {
 
     private static HttpResponse<String> send(HttpRequest.Builder request) throws Exception {
         return CLIENT.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** A 200 of JSON, whatever the endpoint answered, as a codec for an API of its own writes it. */
+    private static FullHttpResponse json(String body) {
+        FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                Unpooled.copiedBuffer(body, StandardCharsets.UTF_8));
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        return response;
     }
 
     @Test void endpointsArePostAndTakeTheBody() throws Exception {
@@ -167,14 +176,10 @@ class HttpRoutesTest {
             }
             @Override public FullHttpResponse encode(Object result) throws Exception {
                 if (!(result instanceof Posted posted)) return HttpCodec.basic().encode(result);
-                return response("{\"guild\":" + posted.guild() + ",\"text\":\"" + posted.text() + "\"}");
+                return json("{\"guild\":" + posted.guild() + ",\"text\":\"" + posted.text() + "\"}");
             }
-            @Override public FullHttpResponse encodeFailure(int errorCode) { return response("{\"error\":" + errorCode + "}"); }
-            private FullHttpResponse response(String body) {
-                FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
-                        Unpooled.copiedBuffer(body, StandardCharsets.UTF_8));
-                response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
-                return response;
+            @Override public FullHttpResponse encodeFailure(int errorCode, String[] args) {
+                return json("{\"error\":" + errorCode + ",\"args\":\"" + String.join(",", args) + "\"}");
             }
         };
         serve(HttpRoutes.builder(runtime).codec(json).register(List.of(new GuildAdmin(), new WorldAdmin())).build());
@@ -182,11 +187,70 @@ class HttpRoutesTest {
         assertEquals("{\"guild\":7,\"text\":\"hello\"}", posted.body(), "the guild domain routes by the notice's guildId");
         assertEquals("application/json", posted.headers().firstValue("content-type").orElseThrow());
         assertEquals(400, send("POST", "/notice", "not a notice").statusCode());
-        assertEquals("{\"error\":" + RUNTIME_EXECUTION_ERROR + "}", send("POST", "/boom", "x").body());
-        assertEquals("{\"error\":" + SOLD_OUT + "}", send("POST", "/sold-out", "sword").body(),
-                "HTTP has no place for a failure's args and answers with its code");
-        assertEquals("{\"error\":" + SOLD_OUT + "}", send("POST", "/out-of-stock", "sword").body(),
-                "a FailException answers as failing the context does");
+        assertEquals("{\"error\":" + RUNTIME_EXECUTION_ERROR + ",\"args\":\"\"}", send("POST", "/boom", "x").body());
+        assertEquals("{\"error\":" + SOLD_OUT + ",\"args\":\"sword\"}", send("POST", "/sold-out", "sword").body(),
+                "a failure's args reach the codec");
+    }
+
+    @Test void aResultGoesThroughTheBasicCodecAsItsDataOrItsFailure() throws Exception {
+        @Domain(WORLD) class Results {
+            @HttpMethod("/ok") HttpResult ok(String body) { return HttpResult.ok("got " + body); }
+            @HttpMethod("/empty") HttpResult empty(String body) { return HttpResult.ok(null); }
+            @HttpMethod("/sold-out") HttpResult soldOut(String body) { return HttpResult.fail(SOLD_OUT, "sold out"); }
+            @HttpMethod("/closing") HttpResult closing(String body) { return HttpResult.fail(RUNTIME_CLOSED, "closing"); }
+        }
+        serve(HttpRoutes.builder(runtime).register(List.of(new Results())).build());
+        HttpResponse<String> ok = send("POST", "/ok", "x");
+        assertEquals(200, ok.statusCode());
+        assertEquals("got x", ok.body());
+        HttpResponse<String> empty = send("POST", "/empty", "x");
+        assertEquals(200, empty.statusCode());
+        assertEquals("", empty.body());
+        HttpResponse<String> soldOut = send("POST", "/sold-out", "x");
+        assertEquals(500, soldOut.statusCode());
+        assertEquals("sold out", soldOut.body(), "its msg is the text");
+        assertEquals(503, send("POST", "/closing", "x").statusCode());
+    }
+
+    @Test void endpointsAnswerInTheApisShapeOrTheOtherSidesAndFailAlike() throws Exception {
+        @Domain(WORLD) class Api {
+            @HttpMethod("/mail") HttpResult mail(String text) { return HttpResult.ok(text); }
+            @HttpMethod("/pay/notify") PayAck payNotify(String order) { return new PayAck(order + " paid"); }
+            @HttpMethod("/buy") PayAck buy(HttpRequestContext context, String item) {
+                context.fail(SOLD_OUT, item);
+                return null;
+            }
+        }
+        HttpCodec json = new HttpCodec() {   // a stand-in for a JSON library and the game's messages
+            @Override public Object decode(FullHttpRequest request, Type type) throws Exception { return HttpCodec.basic().decode(request, type); }
+            @Override public FullHttpResponse encode(Object result) {
+                return json(switch (result) {
+                    case HttpResult answer -> "{\"code\":" + answer.code() + ",\"data\":\"" + answer.data() + "\",\"msg\":\"" + answer.msg() + "\"}";
+                    case PayAck ack -> "{\"result\":\"" + ack.result() + "\"}";
+                    default -> throw new IllegalArgumentException("not JSON");
+                });
+            }
+            @Override public FullHttpResponse encodeFailure(int errorCode, String[] args) {
+                return encode(HttpResult.fail(errorCode, String.join(",", args) + " is sold out"));
+            }
+        };
+        serve(HttpRoutes.builder(runtime).codec(json).register(List.of(new Api())).build());
+        assertEquals("{\"code\":0,\"data\":\"hi\",\"msg\":\"\"}", send("POST", "/mail", "hi").body());
+        assertEquals("{\"result\":\"7 paid\"}", send("POST", "/pay/notify", "7").body(), "the endpoint's own type");
+        assertEquals("{\"code\":" + SOLD_OUT + ",\"data\":\"null\",\"msg\":\"sword is sold out\"}", send("POST", "/buy", "sword").body(),
+                "a failure takes the codec's shape whatever the endpoint returns, with its text from the args");
+    }
+
+    @Test void aFailureTheCodecCannotEncodeIsAnswered500() throws Exception {
+        HttpCodec broken = new HttpCodec() {
+            @Override public Object decode(FullHttpRequest request, Type type) throws Exception { return HttpCodec.basic().decode(request, type); }
+            @Override public FullHttpResponse encode(Object result) throws Exception { return HttpCodec.basic().encode(result); }
+            @Override public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOException { throw new IOException("broken"); }
+        };
+        serve(HttpRoutes.builder(runtime).codec(broken).register(List.of(new WorldAdmin())).build());
+        HttpResponse<String> response = send("POST", "/boom", "x");
+        assertEquals(500, response.statusCode());
+        assertEquals("", response.body());
     }
 
     @Test void aRequestTakenOrResponseGivenAsIsSkipsTheCodec() throws Exception {

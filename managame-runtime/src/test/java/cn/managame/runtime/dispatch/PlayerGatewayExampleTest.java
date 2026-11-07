@@ -1,6 +1,7 @@
 package cn.managame.runtime.dispatch;
 
 import static cn.managame.FrameworkErrorCodes.INVALID_ROUTE_KEY;
+import static cn.managame.FrameworkErrorCodes.SUCCESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import cn.managame.network.connection.Connection;
@@ -55,21 +56,21 @@ class PlayerGatewayExampleTest {
 
     @Domain(LOGIN)
     static class Accounts {
-        @HandleMethod(routeKey = "roleId") void login(HandleContext context, Login login) { context.reply("welcome " + login.roleId()); }
+        @HandleMethod(routeKey = "roleId") HandleResult login(Login login) { return HandleResult.ok("welcome " + login.roleId()); }
     }
 
     @Domain(PLAYER)
     class Shop {
-        @HandleMethod void buy(HandleContext context, Buy buy) {
-            if (buy.item() > 9) context.fail(SOLD_OUT, String.valueOf(buy.item()));
-            else context.reply("role " + context.businessId() + " bought " + buy.item());
+        @HandleMethod HandleResult buy(HandleContext context, Buy buy) {
+            if (buy.item() > 9) return HandleResult.fail(SOLD_OUT, String.valueOf(buy.item()));
+            return HandleResult.ok("role " + context.businessId() + " bought " + buy.item());
         }
         @HandleMethod void logout(Logout logout) { loggedOut.add(Context.current().businessId()); }
     }
 
     /**
      * The application's ConnectionHandler: it decodes packets, keeps the session, gives each message the context of
-     * the role it acts for, and writes answers through the callbacks, which hold the connection and the packet's seq.
+     * the role it acts for, and writes answers through its callback, which holds the connection and the packet's seq.
      */
     record Gateway(Dispatcher dispatcher) implements ConnectionHandler {
         @Override public void onActive(Connection connection) { connection.set(SESSION, new Session(connection, 0)); }
@@ -82,13 +83,15 @@ class PlayerGatewayExampleTest {
                 case "buy" -> new Buy(Integer.parseInt(packet[2]));
                 default -> throw new IllegalArgumentException("Unknown packet type " + packet[1]);
             };
-            dispatcher.dispatch(context(connection.get(SESSION)), body,
-                    result -> {
-                        // a login answered: bind the role before the client hears of it, so its next packets act for it
-                        if (body instanceof Login login) connection.set(SESSION, new Session(connection, login.roleId()));
-                        connection.write(seq + "|ok|" + result);
-                    },
-                    (errorCode, args) -> connection.write(seq + "|err|" + errorCode + "|" + String.join(",", args)));
+            dispatcher.dispatch(context(connection.get(SESSION)), body, result -> {
+                if (result.code() != SUCCESS) {
+                    connection.write(seq + "|err|" + result.code() + "|" + String.join(",", result.args()));
+                    return;
+                }
+                // a login answered: bind the role before the client hears of it, so its next packets act for it
+                if (body instanceof Login login) connection.set(SESSION, new Session(connection, login.roleId()));
+                connection.write(seq + "|ok|" + result.data());
+            });
         }
 
         @Override public void onInActive(Connection connection) {

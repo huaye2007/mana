@@ -78,9 +78,8 @@ public final class GameRuntime implements AutoCloseable {
      * Throws GameRuntimeException with RUNTIME_CLOSED after shutdown (ROUTE_EXECUTOR_CLOSED when the domain's executor
      * refuses a task given while it shuts down) or ROUTE_EXECUTOR_OVERLOADED when the domain's executor is full; the
      * task then never runs, and a RequestContext is first failed with that code, so a request is answered whether its
-     * task was accepted or not. A request whose task throws is failed with the code and args of a {@link FailException},
-     * which goes to no error handler, or else with RUNTIME_EXECUTION_ERROR. An unregistered domain throws
-     * IllegalArgumentException.
+     * task was accepted or not. A request whose task throws is failed with RUNTIME_EXECUTION_ERROR. An unregistered
+     * domain throws IllegalArgumentException.
      * <p>
      * The runtime counts no task in flight: each domain's executor knows its own work, and shutdown asks them to finish
      * it. Close the entries that hand it work (servers, timers and the like) first, so nothing races with shutdown.
@@ -123,10 +122,6 @@ public final class GameRuntime implements AutoCloseable {
             // An accepted request is always answered; fail does nothing if the task had already answered it.
             if (context instanceof RequestContext request) {
                 try {
-                    if (cause instanceof FailException failure) {
-                        request.fail(failure.errorCode(), failure.args());
-                        return;
-                    }
                     request.fail(RUNTIME_EXECUTION_ERROR);
                 } catch (Throwable error) {
                     cause.addSuppressed(error);
@@ -263,8 +258,7 @@ public final class GameRuntime implements AutoCloseable {
         }
 
         /**
-         * Receives what a task throws, but a {@link FailException} that failed the task's request; by default it is
-         * logged. Runs on the task's thread.
+         * Receives what a task throws; by default it is logged. Runs on the task's thread.
          */
         public Builder errorHandler(BiConsumer<? super Context, ? super Throwable> handler) {
             errorHandler = Objects.requireNonNull(handler, "handler");

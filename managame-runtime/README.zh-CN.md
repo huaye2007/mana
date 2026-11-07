@@ -46,8 +46,7 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
   `new GameContext(domain, key, type, id, metadata)`。
 - 任务内部用 `Context.current()` 取得当前任务的上下文；`Context.hasCurrent()` 判断当前线程是否在执行任务。
 - `GameContext.copyOf(context)` 得到一份普通副本，用于针对同一对象的新工作，保留路由和 metadata。请求的副本不能应答该请求。
-- `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。请求一定会得到应答：任务抛异常时 runtime 以 `RUNTIME_EXECUTION_ERROR` 应答，`execute` 拒绝任务时以拒绝的错误码应答。`fail(errorCode, args...)` 还可以带上字符串参数，例如错误提示里要显示的数值，由来源按自己的格式放置；HTTP 请求没有放它们的地方，只以错误码应答。
-- 业务代码在任意深处抛出 `FailException(errorCode, args...)` 就能让请求失败，所以业务方法可以只返回结果，失败交给它：runtime 以异常带的错误码和参数应答任务的请求，并且不把它交给错误处理器，因为这是应答，不是错误。请求已经应答过，或是单向消息（没有人等应答）时，什么也不变。在没有请求的任务里（比如定时器、事件），它和其它异常一样交给错误处理器。它不记录调用栈，抛出的开销只是一次分配。
+- `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。请求一定会得到应答：任务抛异常时 runtime 以 `RUNTIME_EXECUTION_ERROR` 应答，`execute` 拒绝任务时以拒绝的错误码应答。`fail(errorCode, args...)` 还可以带上字符串参数，例如错误提示里要显示的数值，由来源按自己的格式放置；HTTP 请求要显示的是文案，由编解码器根据它们生成。
 
 ### 回到原路由继续执行
 
@@ -134,31 +133,31 @@ class GuildHandle {
 | `@HttpMethod(path)` | HTTP 请求，默认 POST，可用 `method` 指定 | `HttpRoutes` |
 | `@Cron(domain, value)` | 日历时间，见[定时任务](#定时任务)；domain 和路由键写在注解里，方法不带消息 | `GameTimer` |
 
-处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。`@HandleMethod` 返回 void，通过上下文应答；`@HttpMethod` 可以直接返回应答。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、`@HandleMethod` 有返回值、消息里没有 `routeKey` 指定的成员、同一个消息有两个处理器、上下文类型入口给不了。
+处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。`@HandleMethod` 返回 `HandleResult`，要稍后通过上下文应答时返回 void 或 null；`@HttpMethod` 返回 `HttpResult`、编解码器能写出的自定义类型或 `FullHttpResponse`，稍后应答时同样返回 void 或 null。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、`@HandleMethod` 返回其它类型、消息里没有 `routeKey` 指定的成员、同一个消息有两个处理器、上下文类型入口给不了。
 
 ## Dispatcher：玩家请求与其它消息
 
-Dispatcher 不知道任何包格式。业务自己解码数据包，把消息连同它的来源上下文、以及按自己格式应答的回调一起交给 Dispatcher。
+Dispatcher 不知道任何包格式。业务自己解码数据包，把消息连同它的来源上下文、以及一个按自己格式应答的回调一起交给 Dispatcher。
 
 ```java
 @Domain(PLAYER)
 class Shop {
-    @HandleMethod void buy(HandleContext request, Buy buy) {         // 当场通过上下文应答
-        if (!wallets.pay(request.businessId(), buy.price())) request.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
-        else request.reply(bags.add(request.businessId(), buy.item()));
+    @HandleMethod HandleResult buy(HandleContext request, Buy buy) {    // 用返回值应答
+        if (!wallets.pay(request.businessId(), buy.price())) return HandleResult.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
+        return HandleResult.ok(bags.add(request.businessId(), buy.item()));
     }
-    @HandleMethod void rank(HandleContext request, AskRank ask) {    // 或稍后在任意线程应答
+    @HandleMethod void rank(HandleContext request, AskRank ask) {       // 或稍后通过上下文在任意线程应答
         ranks.query(request.businessId(), rank -> request.reply(rank));
     }
-    @HandleMethod void sell(HandleContext request, Sell sell) {      // 或用业务逻辑的返回值应答，
-        request.reply(market.sell(request.businessId(), sell.item()));
+    @HandleMethod HandleResult sell(HandleContext request, Sell sell) { // 或用业务逻辑的返回值应答
+        return market.sell(request.businessId(), sell.item());
     }
 }
 
-class Market {                                                       // 失败时在任意深处抛出
-    SellResult sell(long roleId, int item) {
-        if (!bags.remove(roleId, item)) throw new FailException(NOT_ENOUGH_ITEMS, String.valueOf(item));
-        return new SellResult(item, wallets.add(roleId, prices.of(item)));
+class Market {
+    HandleResult sell(long roleId, int item) {
+        if (!bags.remove(roleId, item)) return HandleResult.fail(NOT_ENOUGH_ITEMS, String.valueOf(item));
+        return HandleResult.ok(new SellResult(item, wallets.add(roleId, prices.of(item))));
     }
 }
 
@@ -174,12 +173,10 @@ class Gateway implements ConnectionHandler {
     public void onActive(Connection connection) { connection.set(SESSION, new Session(connection, 0)); }
     public void onRead(Connection connection, Object message) {
         Packet packet = (Packet) message;
-        dispatcher.dispatch(context(connection.get(SESSION), packet), packet.body(),
-                result -> {
-                    if (result instanceof LoginOk ok) connection.set(SESSION, new Session(connection, ok.roleId()));
-                    connection.write(Packet.ok(packet.seq(), result));
-                },
-                (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
+        dispatcher.dispatch(context(connection.get(SESSION), packet), packet.body(), result -> {
+            if (result.data() instanceof LoginOk ok) connection.set(SESSION, new Session(connection, ok.roleId()));
+            connection.write(new Packet(packet.seq(), result.code(), result.args(), result.data()));
+        });
     }
     public void onInActive(Connection connection) {
         Session session = connection.get(SESSION);
@@ -197,10 +194,11 @@ class Gateway implements ConnectionHandler {
 ```
 
 - 来源是消息带进来的上下文，由入口为每条消息建立：谁在执行（比如连接登录的角色），以及消息的 metadata（比如 trace id）。domain 由处理器决定，路由键由处理器的 routeKey 成员或 domain 的解析器决定。会话是业务自己的东西，不进入 runtime；入口给它绑定角色，比如在登录的应答里。
-- 应答经 `onReply` / `onFail` 回去，回调里捕获了回去的路（连接、包的序号），所以上下文不需要连接，稍后在别的线程上应答也一样。在请求之外推送给玩家（来自定时器或别的玩家的路由），走业务自己维护的角色到会话的登记，由网关维护。
-- `onReply` / `onFail` 只会调用其中一个、最多一次，在应答发生的线程上执行。两个都传，或者单向消息两个都不传。
-- `onFail` 原样收到错误码和处理器 `fail(errorCode, args...)` 带的参数：`fail(errorCode)` 和框架自己的失败给的是空数组。参数放在包里的什么位置由业务决定，例如放在失败包的 body 里。
-- 失败：`HANDLER_NOT_FOUND`、`INVALID_ROUTE_KEY`、runtime 拒绝（`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED`），处理器抛出 `FailException` 时为它带的错误码和参数，抛其它异常时为 `RUNTIME_EXECUTION_ERROR`。
+- 应答经回调回去，回调里捕获了回去的路（连接、包的序号），所以上下文不需要连接，稍后在别的线程上应答也一样。在请求之外推送给玩家（来自定时器或别的玩家的路由），走业务自己维护的角色到会话的登记，由网关维护。
+- 回调最多调用一次，在应答发生的线程上执行，不能阻塞。单向消息不传回调。
+- 所有结果都以 `HandleResult` 交给回调，字段是 `code`、`data` 和 `args`：成功时是 `SUCCESS` 和返回结果；失败时是错误码和原样的参数，没有参数时是空数组，框架自己的失败也一样。它们放在包里的什么位置由业务决定，例如放在失败包的 body 里。
+- 处理器返回 `HandleResult.fail(code, args...)` 表示失败，处理器之下的业务逻辑像返回结果一样把它逐层返回。异常表示 bug，不是业务失败：以 `RUNTIME_EXECUTION_ERROR` 应答，并交给错误处理器。
+- 失败：`HANDLER_NOT_FOUND`、`INVALID_ROUTE_KEY`、runtime 拒绝（`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED`），处理器抛异常时为 `RUNTIME_EXECUTION_ERROR`。
 - 完整可运行的示例：`src/test/java/cn/managame/runtime/dispatch/PlayerGatewayExampleTest.java`。
 - 把消息交给同一个 Dispatcher 的所有入口共用它的处理器。
 
@@ -211,8 +209,10 @@ class Gateway implements ConnectionHandler {
 ```java
 class LoginCheck implements TaskInterceptor {             // 登录前只能执行登录 domain 的处理器
     public void before(Context context) {
-        if (context instanceof HandleContext && context.domain() != LOGIN && context.businessId() == 0)
-            throw new FailException(NOT_LOGGED_IN);
+        if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
+            request.fail(NOT_LOGGED_IN);
+            throw new IllegalStateException("Not logged in");   // 让任务不再执行
+        }
     }
 }
 
@@ -231,7 +231,7 @@ GameRuntime runtime = GameRuntime.builder()
 
 - `before` 按拦截器添加的顺序执行，然后是任务，再按相反顺序执行 `after`。只有 `before` 已经返回的拦截器才会执行 `after`，所以 `before` 里设置的东西（比如日志上下文里的 trace id）一定会被 `after` 清掉。某个 `after` 抛异常时，其余的 `after` 仍会执行。
 - `after` 拿到任务或后面某个 `before` 抛出的异常，没有则为 null。任务执行中给出的应答此时已经发出。
-- `before` 或 `after` 抛异常时，和任务抛异常一样处理：请求以 `FailException` 带的错误码和参数应答失败（所以 `before` 抛它就能拒绝请求），其它异常以 `RUNTIME_EXECUTION_ERROR` 应答，已经应答过的除外；其它情况交给错误处理器。`before` 抛异常时，任务和之后的 `before` 都不再执行。
+- `before` 或 `after` 抛异常时，和任务抛异常一样处理：请求以 `RUNTIME_EXECUTION_ERROR` 应答，已经应答过的除外，异常交给错误处理器。`before` 抛异常时，任务和之后的 `before` 都不再执行，所以要拒绝请求就先让它失败再抛异常：请求保持第一次的应答，异常仍会交给错误处理器。
 - 没有添加拦截器时 runtime 原样执行任务；每添加一个，每个任务多两次调用（`ExecuteThroughputBenchmark.executeIntercepted` 测量了一个什么都不做的拦截器）。
 - 需要看消息本身的检查，比如按消息类型限流，放在应用的入口里、分发之前做（那里有消息和包的协议号），或者放在处理器里。
 
@@ -338,7 +338,18 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 - 状态码：未知路径 404；方法不对 405 并带 `Allow`；编解码器读不出参数 400，source 或路由抛 `IllegalArgumentException` 也是 400；任务被拒绝（已关闭、过载）503；接口抛异常 500。
 - 辅助方法：`HttpRequests.query`、`longQuery`、`text`。
 
-**编解码器**：`HttpCodec` 负责读取参数、写出结果和失败响应。参数是 `FullHttpRequest` 的接口直接拿到请求本身，返回 `FullHttpResponse` 的原样发送，这两种都不经过编解码器，不管配的是哪个。默认的 `HttpCodec.basic()` 把 `String` 参数读成 UTF-8 请求体，`byte[]` 读成请求体字节；写出时文本按 UTF-8 `text/plain`，`byte[]` / `ByteBuf` 按 `application/octet-stream`；接口参数是其它类型时 `build()` 直接报错。需要 JSON 时用自己的库实现：
+**返回值**：接口的返回值就是它的应答，类型按需要选：
+
+```java
+@HttpMethod("/mail") HttpResult mail(SendMail mail) { return HttpResult.ok(mails.send(mail)); }    // 接口统一的格式
+@HttpMethod("/pay/notify") PayAck payNotify(PayNotice notice) { return new PayAck("SUCCESS"); }    // 对方指定的格式
+@HttpMethod(value = "/export", method = "GET") FullHttpResponse export(FullHttpRequest request) { ... }   // 自己定状态码和响应头
+```
+
+- `HttpResult` 的字段是 `code`、`data` 和 `msg`（给调用方看的文案），用 `HttpResult.ok(data)` 和 `HttpResult.fail(code, msg)` 创建。它和其它返回值一样经过编解码器，所以 JSON 库不用额外处理就能写成 `{code, data, msg}`。
+- 失败一律交给编解码器的 `encodeFailure`，与接口的返回类型无关：任务被拒绝、抛异常、在上下文上 `fail` 都是如此。接口要用自己的类型应答失败时，直接返回该类型。任务被拒绝时接口根本没有运行，所以仍是编解码器的格式。
+
+**编解码器**：`HttpCodec` 负责读取参数、写出结果和失败响应。参数是 `FullHttpRequest` 的接口直接拿到请求本身，返回 `FullHttpResponse` 的原样发送，这两种都不经过编解码器，不管配的是哪个。默认的 `HttpCodec.basic()` 把 `String` 参数读成 UTF-8 请求体，`byte[]` 读成请求体字节；写出时文本按 UTF-8 `text/plain`，`byte[]` / `ByteBuf` 按 `application/octet-stream`，`HttpResult` 写出它的 data，失败时按失败响应写出，msg 作为文本；接口参数是其它类型时 `build()` 直接报错。需要 JSON 时用自己的库实现：
 
 ```java
 class JsonCodec implements HttpCodec {
@@ -359,12 +370,18 @@ class JsonCodec implements HttpCodec {
 }
 ```
 
-解码在连接的 EventLoop 上、调用接口之前进行；重写 `encodeFailure(errorCode)` 可以定制错误响应体。
+解码在连接的 EventLoop 上、调用接口之前进行。重写 `encodeFailure(errorCode, args)` 可以定制失败响应，默认任务被拒绝时 503、其它情况 500，错误码作为文本。HTTP 要显示的是文案而不是参数，所以用游戏自己的文案表生成；它抛异常时以 500 空响应应答：
+
+```java
+public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOException {
+    return encode(HttpResult.fail(errorCode, messages.format(errorCode, args)));
+}
+```
 
 ## 错误与关闭
 
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
-- 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）；已经让请求失败、或发现请求已应答的 `FailException` 除外。
+- 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
 - `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、定时器等），再关闭 runtime，这样关闭期间不会有新的工作交进来。
 - runtime 不统计进行中的任务。每个 domain 的执行器知道自己的活，由它自己做完：`striped` 用其 ThreadPoolExecutor 自带的关闭，`virtualThreads` 不再新建队列、每个队列排空后就退休。执行器关闭期间交来的任务，要么以 `ROUTE_EXECUTOR_CLOSED` 拒绝，要么在终止前执行完。
 

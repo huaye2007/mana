@@ -1,5 +1,10 @@
 package cn.managame.runtime.http;
 
+import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_CLOSED;
+import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
+import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
+import static cn.managame.FrameworkErrorCodes.SUCCESS;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -28,12 +33,21 @@ final class BasicHttpCodec implements HttpCodec {
 
     @Override public FullHttpResponse encode(Object result) {
         return switch (result) {
+            case HttpResult failed when failed.code() != SUCCESS -> failure(failed.code(), failed.msg());
+            case HttpResult empty when empty.data() == null -> text(HttpResponseStatus.OK, empty.msg());
+            case HttpResult success -> encode(success.data());
             case CharSequence text -> text(HttpResponseStatus.OK, text.toString());
             case byte[] bytes -> bytes(Unpooled.wrappedBuffer(bytes));
             case ByteBuf bytes -> bytes(bytes);
             default -> throw new IllegalArgumentException("No HTTP encoding for " + result.getClass().getName()
                     + "; configure an HttpCodec");
         };
+    }
+
+    /** 503 when the runtime refused the request because it is shut down or full, 500 otherwise, with {@code text}. */
+    static FullHttpResponse failure(int errorCode, String text) {
+        boolean refused = errorCode == RUNTIME_CLOSED || errorCode == ROUTE_EXECUTOR_OVERLOADED || errorCode == ROUTE_EXECUTOR_CLOSED;
+        return text(refused ? HttpResponseStatus.SERVICE_UNAVAILABLE : HttpResponseStatus.INTERNAL_SERVER_ERROR, text);
     }
 
     static FullHttpResponse text(HttpResponseStatus status, String text) {

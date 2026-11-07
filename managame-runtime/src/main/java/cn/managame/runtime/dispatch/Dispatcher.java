@@ -27,16 +27,15 @@ import java.util.function.Consumer;
  *
  * // In the application's own ConnectionHandler, which knows its packet format and whom its session acts for:
  * dispatcher.dispatch(GameContext.of(PLAYER, roleId, ROLE, roleId), packet.body(),
- *         result -> connection.write(new Packet(packet.seq(), result)),
- *         (errorCode, args) -> connection.write(Packet.error(packet.seq(), errorCode, args)));
+ *         result -> connection.write(new Packet(packet.seq(), result.code(), result.args(), result.data())));
  * }</pre>
  *
  * A message runs in its handler's domain, on the route key its handler's routeKey member holds, or else the domain's
- * resolver finds for it and the source, acting for the source's business identity, and its handler answers through its
- * {@link HandleContext}, while it runs or later from any thread. Messages are matched by exact class. One with no
- * handler fails with HANDLER_NOT_FOUND, one that cannot be routed with INVALID_ROUTE_KEY, one the runtime refuses with
- * the runtime's code, and a handler that throws with the code of a FailException, or else RUNTIME_EXECUTION_ERROR. The
- * runtime's TaskInterceptors run around every handler, as around every task.
+ * resolver finds for it and the source, acting for the source's business identity, and its handler answers by
+ * returning a {@link HandleResult}, or through its {@link HandleContext}, also later from any thread. Messages are
+ * matched by exact class. One with no handler fails with HANDLER_NOT_FOUND, one that cannot be routed with
+ * INVALID_ROUTE_KEY, one the runtime refuses with the runtime's code, and a handler that throws with
+ * RUNTIME_EXECUTION_ERROR. The runtime's TaskInterceptors run around every handler, as around every task.
  */
 public final class Dispatcher {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime.dispatch");
@@ -56,34 +55,36 @@ public final class Dispatcher {
     public GameRuntime runtime() { return runtime; }
 
     /** Dispatches a message that expects no answer. */
-    public void dispatch(Context source, Object message) { dispatch(source, message, null, null); }
+    public void dispatch(Context source, Object message) { dispatch(source, message, null); }
 
     /**
      * Dispatches {@code message} from {@code source}, the context it comes in with, which the application builds for
      * each message: who acts, such as the player a connection is logged in as, and the message's metadata; the
-     * handler gives the domain, and its routeKey member or the domain's resolver the route key. {@code onReply} and
-     * {@code onFail} deliver its answer in the application's format, at most one of them once, from whichever thread
-     * answers, and hold the way back, such as the connection. Both null for a message that expects no answer.
+     * handler gives the domain, and its routeKey member or the domain's resolver the route key. {@code onAnswer}
+     * delivers its answer in the application's format, a success and a failure alike, at most once, from whichever
+     * thread answers, and holds the way back, such as the connection; it must not block, since that may be an
+     * EventLoop. Null for a message that expects no answer.
      */
-    public void dispatch(Context source, Object message, Consumer<Object> onReply, FailCallback onFail) {
+    public void dispatch(Context source, Object message, Consumer<HandleResult> onAnswer) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(message, "message");
-        if ((onReply == null) != (onFail == null)) throw new IllegalArgumentException("Give both onReply and onFail, or neither");
         AnnotatedMethod handler = handlers.get(message.getClass());
         if (handler == null) {
-            reject(message, onFail, HANDLER_NOT_FOUND, "no handler");
+            reject(message, onAnswer, HANDLER_NOT_FOUND, "no handler");
             return;
         }
         Route route;
         try {
             route = handler.route(runtime, source, message);
         } catch (RuntimeException e) {
-            reject(message, onFail, INVALID_ROUTE_KEY, String.valueOf(e));
+            reject(message, onAnswer, INVALID_ROUTE_KEY, String.valueOf(e));
             return;
         }
-        HandleContext context = new HandleContext(route, source.metadata(), onReply, onFail);
+        HandleContext context = new HandleContext(route, source.metadata(), onAnswer);
         try {
-            runtime.execute(context, task -> handler.invoke(task, message));
+            runtime.execute(context, task -> {
+                if (handler.invoke(task, message) instanceof HandleResult result) task.answer(result);
+            });
         } catch (GameRuntimeException refused) {
             // execute answered the request with the refusal's code
         } catch (RuntimeException e) {
@@ -92,9 +93,9 @@ public final class Dispatcher {
         }
     }
 
-    private static void reject(Object message, FailCallback onFail, int errorCode, String reason) {
+    private static void reject(Object message, Consumer<HandleResult> onAnswer, int errorCode, String reason) {
         if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, "Rejected " + message.getClass().getName() + ": " + reason);
-        if (onFail != null) onFail.onFail(errorCode, HandleContext.NO_ARGS);
+        if (onAnswer != null) onAnswer.accept(HandleResult.fail(errorCode));
     }
 
     public static final class Builder {
@@ -105,14 +106,15 @@ public final class Dispatcher {
 
         /**
          * Registers every {@link HandleMethod} of each object. Two handlers for one message class, a handler that
-         * returns a value, declares a context other than HandleContext or its supertypes, runs in an unregistered
-         * domain or routes by a member its message lacks, throw IllegalArgumentException.
+         * returns anything but a HandleResult or void, declares a context other than HandleContext or its supertypes,
+         * runs in an unregistered domain or routes by a member its message lacks, throw IllegalArgumentException.
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
                 for (AnnotatedMethod handler : AnnotatedMethod.scan(target, HandleMethod.class, HandleMethod::routeKey)) {
-                    if (handler.method().getReturnType() != void.class)
-                        throw new IllegalArgumentException(handler + " must return void and answer through its HandleContext");
+                    Class<?> returned = handler.method().getReturnType();
+                    if (returned != HandleResult.class && returned != void.class)
+                        throw new IllegalArgumentException(handler + " must return HandleResult, or void to answer through its HandleContext");
                     handler.requireContext(HandleContext.class);
                     runtime.checkDomain(handler.domain());
                     AnnotatedMethod existing = handlers.putIfAbsent(handler.messageType(), handler);

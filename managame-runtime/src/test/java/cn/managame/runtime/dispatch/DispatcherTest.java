@@ -4,6 +4,7 @@ import static cn.managame.FrameworkErrorCodes.HANDLER_NOT_FOUND;
 import static cn.managame.FrameworkErrorCodes.INVALID_ROUTE_KEY;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
+import static cn.managame.FrameworkErrorCodes.SUCCESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -11,7 +12,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.Metadata;
 import cn.managame.runtime.Context;
-import cn.managame.runtime.FailException;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
@@ -44,6 +44,10 @@ class DispatcherTest {
     record Unknown() {}
     record Trade(long with, int item) {}
     record Sell(int item) {}
+    record Refuse() {}
+    record Nothing() {}
+    record Twice() {}
+    record LaterAfterNull(String text) {}
 
     private final BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
     private final GameRuntime runtime = GameRuntime.builder()
@@ -58,14 +62,24 @@ class DispatcherTest {
 
     @Domain(PLAYER)
     class Shop {
-        @HandleMethod void buy(HandleContext context, Buy buy) {
-            context.reply("bought " + buy.item() + " by " + context.businessId() + " on " + context.domain() + ":" + context.routeKey());
+        @HandleMethod HandleResult buy(HandleContext context, Buy buy) {
+            return HandleResult.ok("bought " + buy.item() + " by " + context.businessId() + " on " + context.domain() + ":" + context.routeKey());
         }
         @HandleMethod void note(Note note) { notes.add(note.text()); }
         @HandleMethod void boom(Boom boom) { throw new IllegalStateException("boom"); }
-        @HandleMethod void sell(HandleContext context, Sell sell) { context.reply(sellItem(context.businessId(), sell.item())); }
+        @HandleMethod HandleResult sell(HandleContext context, Sell sell) { return sellItem(context.businessId(), sell.item()); }
+        @HandleMethod HandleResult refuse(Refuse refuse) { return HandleResult.fail(NOT_ENOUGH, "a", "b"); }
+        @HandleMethod HandleResult nothing(Nothing nothing) { return HandleResult.ok(null); }
+        @HandleMethod HandleResult twice(HandleContext context, Twice twice) {
+            context.reply("first");
+            return HandleResult.ok("second");
+        }
         @HandleMethod void later(HandleContext context, Later later) {
             Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later " + later.text())));
+        }
+        @HandleMethod HandleResult laterAfterNull(HandleContext context, LaterAfterNull later) {
+            Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later " + later.text())));
+            return null;
         }
         @HandleMethod void trade(HandleContext request, Trade trade) {
             runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // on the other player's route
@@ -83,8 +97,8 @@ class DispatcherTest {
 
     @Domain(GUILD)
     class Guild {
-        @HandleMethod(routeKey = "guildId") void donate(HandleContext context, Donate donate) {
-            context.reply("donated to " + context.routeKey() + " by " + context.businessId());
+        @HandleMethod(routeKey = "guildId") HandleResult donate(HandleContext context, Donate donate) {
+            return HandleResult.ok("donated to " + context.routeKey() + " by " + context.businessId());
         }
         @HandleMethod(routeKey = "guildId") void unroutable(Unroutable message) {}
     }
@@ -92,8 +106,8 @@ class DispatcherTest {
     private Dispatcher dispatcher() { return Dispatcher.builder(runtime).register(List.of(new Shop(), new Guild())).build(); }
 
     private void dispatch(Dispatcher dispatcher, Object message) {
-        dispatcher.dispatch(role, message, result -> answers.add("ok:" + result),
-                (code, args) -> answers.add("fail:" + code + (args.length == 0 ? "" : ":" + String.join(",", args))));
+        dispatcher.dispatch(role, message, result -> answers.add(result.code() == SUCCESS ? "ok:" + result.data()
+                : "fail:" + result.code() + (result.args().length == 0 ? "" : ":" + String.join(",", result.args()))));
     }
 
     private String answer() throws InterruptedException { return answers.poll(5, TimeUnit.SECONDS); }
@@ -119,23 +133,36 @@ class DispatcherTest {
         assertEquals("fail:" + NOT_ENOUGH + ":9", answer(), "the other player has none left; the item goes with the code");
     }
 
-    /** The game's own logic, apart from its handler: returns what it did, and throws when it cannot. */
-    private String sellItem(long player, int item) {
-        if (!bags.get(player).remove(item)) throw new FailException(NOT_ENOUGH, String.valueOf(item));
-        return "sold " + item;
+    /** The game's own logic, apart from its handler: returns what it did, or why it could not. */
+    private HandleResult sellItem(long player, int item) {
+        if (!bags.get(player).remove(item)) return HandleResult.fail(NOT_ENOUGH, String.valueOf(item));
+        return HandleResult.ok("sold " + item);
     }
 
-    @Test void aHandlerRepliesWithItsResultAndItsLogicThrowsItsFailure() throws Exception {
+    @Test void aHandlerAnswersWithWhatItsLogicReturns() throws Exception {
         bags.get(1001L).add(3);
         Dispatcher dispatcher = dispatcher();
         dispatch(dispatcher, new Sell(3));
         assertEquals("ok:sold 3", answer());
         dispatch(dispatcher, new Sell(3));
-        assertEquals("fail:" + NOT_ENOUGH + ":3", answer(), "the code and args of the FailException");
+        assertEquals("fail:" + NOT_ENOUGH + ":3", answer(), "the code and args it failed with");
         dispatcher.dispatch(role, new Sell(3));   // one-way, as a notify: no one to answer
         dispatch(dispatcher, new Buy(1));         // after it on the same route
         assertEquals("ok:bought 1 by 1001 on " + PLAYER + ":1001", answer());
-        assertTrue(errors.isEmpty(), "a FailException is an answer, never an error, even with no one to answer");
+        assertTrue(errors.isEmpty(), "a failure is an answer, never an error, even with no one to answer");
+    }
+
+    @Test void whatAHandlerReturnsIsItsAnswer() throws Exception {
+        Dispatcher dispatcher = dispatcher();
+        dispatch(dispatcher, new Refuse());
+        assertEquals("fail:" + NOT_ENOUGH + ":a,b", answer(), "a failure returned, with its args");
+        dispatch(dispatcher, new Nothing());
+        assertEquals("ok:null", answer(), "a success with nothing to send back");
+        dispatch(dispatcher, new Twice());
+        assertEquals("ok:first", answer(), "only the first answer counts");
+        dispatch(dispatcher, new LaterAfterNull("x"));
+        assertEquals("ok:later x", answer(), "null means the answer comes later through the context");
+        assertNull(answers.poll(100, TimeUnit.MILLISECONDS), "each message was answered once");
     }
 
     @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {
@@ -176,10 +203,9 @@ class DispatcherTest {
     @Test void registrationRejectsWhatCannotWork() {
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new Shop(), new Duplicate())));
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new Returning())),
-                "an answer goes through the context, never a return value");
+                "an answer is a HandleResult, never another type");
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new WrongContext())));
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new NoDomain())));
         assertThrows(IllegalArgumentException.class, () -> Dispatcher.builder(runtime).register(List.of(new TooMany())));
-        assertThrows(IllegalArgumentException.class, () -> dispatcher().dispatch(role, new Buy(1), result -> {}, null));
     }
 }

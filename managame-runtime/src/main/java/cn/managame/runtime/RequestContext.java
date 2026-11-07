@@ -21,8 +21,8 @@ public interface RequestContext extends Context {
 
     /**
      * Answers with a failure that carries {@code args}, such as the values the code's message shows, for the source
-     * to place in its format, a packet's body for instance. A source with no place for them answers as
-     * {@link #fail(int)}, as an HTTP request does. False when the request was already answered.
+     * to place in its format, a packet's body for instance, or for an HTTP request's codec to make its text from. A
+     * source with no use for them answers as {@link #fail(int)}. False when the request was already answered.
      */
     default boolean fail(int errorCode, String... args) { return fail(errorCode); }
 }

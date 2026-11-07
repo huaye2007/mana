@@ -7,16 +7,18 @@ import java.lang.annotation.Target;
 
 /**
  * Marks a method a Dispatcher calls for messages of its parameter's exact class: {@code (Message)}, or
- * {@code (HandleContext, Message)} to receive the context. It returns void and answers through the context, with
- * {@code reply} or {@code fail}, while it runs or later from any thread:
+ * {@code (HandleContext, Message)} to receive the context. It returns its
+ * {@link cn.managame.runtime.dispatch.HandleResult}, the one shape of every answer:
  *
  * <pre>{@code
- * @HandleMethod void login(HandleContext context, LoginReq req) {
+ * @HandleMethod HandleResult login(LoginReq req) {
  *     int code = logins.check(req);
- *     if (code != 0) context.fail(code);
- *     else context.reply(logins.login(req));
+ *     return code != 0 ? HandleResult.fail(code) : HandleResult.ok(logins.login(req));
  * }
  * }</pre>
+ *
+ * A handler whose answer comes later, from a call to another server say, returns void or null and answers through the
+ * context, with {@code reply} or {@code fail}, from any thread. Only the first answer counts.
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)

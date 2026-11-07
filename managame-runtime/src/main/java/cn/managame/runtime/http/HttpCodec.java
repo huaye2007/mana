@@ -1,13 +1,8 @@
 package cn.managame.runtime.http;
 
-import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_CLOSED;
-import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
-import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
-
 import cn.managame.FrameworkErrorCodes;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
-import io.netty.handler.codec.http.HttpResponseStatus;
 import java.lang.reflect.Type;
 
 /**
@@ -24,9 +19,10 @@ import java.lang.reflect.Type;
  * }</pre>
  *
  * An endpoint taking a FullHttpRequest gets the request itself, and a FullHttpResponse result is sent as is: neither
- * goes through the codec, which only turns other objects into requests' arguments and responses. {@link #basic()}
- * reads and writes text and bytes. Decoding runs on the connection's EventLoop before the endpoint is called,
- * encoding on whichever thread answers; a codec must be thread-safe.
+ * goes through the codec, which only turns other objects into requests' arguments and responses, an
+ * {@link HttpResult} and an endpoint's own type alike. {@link #basic()} reads and writes text and bytes. Decoding runs
+ * on the connection's EventLoop before the endpoint is called, encoding on whichever thread answers; a codec must be
+ * thread-safe.
  */
 public interface HttpCodec {
     /**
@@ -42,19 +38,28 @@ public interface HttpCodec {
     FullHttpResponse encode(Object result) throws Exception;
 
     /**
-     * The response for a failed request: 503 when the runtime refused the request because it is shut down or
-     * full, 500 otherwise, with the error code as text.
+     * The response for a failed request, whatever its endpoint returns when it succeeds: the runtime's refusal, an
+     * exception and {@code fail} on the context all come here. {@code args} are the failure's, an empty array when it
+     * gave none. HTTP shows a text rather than args, so a codec makes it from the application's own messages:
+     *
+     * <pre>{@code
+     * public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOException {
+     *     return encode(HttpResult.fail(errorCode, messages.format(errorCode, args)));
+     * }
+     * }</pre>
+     *
+     * By default 503 when the runtime refused the request because it is shut down or full, 500 otherwise, with the
+     * error code as text, leaving the args out. An exception answers 500 with no body.
      */
-    default FullHttpResponse encodeFailure(int errorCode) {
-        HttpResponseStatus status = errorCode == RUNTIME_CLOSED || errorCode == ROUTE_EXECUTOR_OVERLOADED
-                || errorCode == ROUTE_EXECUTOR_CLOSED ? HttpResponseStatus.SERVICE_UNAVAILABLE : HttpResponseStatus.INTERNAL_SERVER_ERROR;
-        return BasicHttpCodec.text(status, FrameworkErrorCodes.describe(errorCode));
+    default FullHttpResponse encodeFailure(int errorCode, String[] args) throws Exception {
+        return BasicHttpCodec.failure(errorCode, FrameworkErrorCodes.describe(errorCode));
     }
 
     /**
      * Reads a parameter of type String as the UTF-8 body and byte[] as the body's bytes. Writes text as UTF-8
-     * text/plain, byte[] and ByteBuf as application/octet-stream. HttpRoutes using it reject endpoints taking other
-     * types when built.
+     * text/plain, byte[] and ByteBuf as application/octet-stream, and an {@link HttpResult} as its data, or, when it
+     * failed, with the statuses of {@link #encodeFailure} and its msg as text. HttpRoutes using it reject endpoints
+     * taking other types when built.
      */
     static HttpCodec basic() { return BasicHttpCodec.INSTANCE; }
 }

@@ -98,11 +98,12 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   (`ConnectionMapper`). RPC is the deliberate exception: an `RpcPeer` holds its connections because calls travel
   over them.
 - **Protocols belong to the application.** The framework defines no client packet format; `Dispatcher` takes any
-  decoded message plus reply and fail callbacks in the application's format. A failure is its code and string args
-  (`fail(code, args...)`), handed to the fail callback as they are for the application to place, in its failure
-  packet's body say; HTTP has no place for them and answers with the code. A session (the connection, the role it
+  decoded message plus one callback in the application's format, which receives a `HandleResult` (`code`, `data`,
+  `args`) for every outcome. A failure is its code and string args (`fail(code, args...)`), handed over as they are
+  for the application to place, in its failure packet's body say; HTTP shows a text rather than args, which its
+  codec's `encodeFailure(code, args)` makes from them. A session (the connection, the role it
   is logged in as) is the application's and never a `Context`: its entry builds each message's context (who acts,
-  the message's metadata) when it dispatches, and the answer goes back through the callbacks, which hold the
+  the message's metadata) when it dispatches, and the answer goes back through the callback, which holds the
   connection; pushing to a player outside a request goes through the application's own map of roles to sessions.
 - **Components carry no business concepts.** rpc knows nodes by id only: what a node is for (game, world, gate)
   travels in its handshake `Metadata`, and grouping peers and picking one for a key are the application's.
@@ -129,10 +130,13 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   meaning (a guild's id in a guild domain).
 - **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
   `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
-  A `@HandleMethod` returns void and answers only through its `HandleContext` (`reply` / `fail`, now or later), so
-  success, failure and a later answer go one way; an `@HttpMethod` may return its answer. Business code fails its
-  request from however deep by throwing `FailException(code, args...)`, which the runtime answers with and hands to
-  no error handler, so game logic returns its result and throws its failures.
+  A `@HandleMethod` returns its `HandleResult` (`ok(data)`, `fail(code, args...)`), or void or null when the answer
+  comes later through its `HandleContext` (`reply` / `fail`), so success, failure and a later answer reach the
+  application one way. An `@HttpMethod` returns any result: an `HttpResult` (`code`, `data`, `msg`) for an API's
+  common shape, a type of its own that the codec writes for a format the other side fixes, or a `FullHttpResponse`;
+  its failures go to the codec's `encodeFailure` whatever it returns. Game logic hands its failures up as it hands up
+  its results and never throws them; an exception is a bug, answered with `RUNTIME_EXECUTION_ERROR` and handed to the
+  error handler.
   Registrations are immutable once built. `@Cron` methods (registered with `GameTimer.register`) are the exception:
   they run at calendar times on a fixed route, so the annotation carries `domain` and `routeKey`, and they take no
   message, only optionally their `GameContext`.
