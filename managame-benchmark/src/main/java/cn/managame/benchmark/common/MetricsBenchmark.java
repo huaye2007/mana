@@ -2,7 +2,6 @@ package cn.managame.benchmark.common;
 
 import cn.managame.metrics.Counter;
 import cn.managame.metrics.Metrics;
-import cn.managame.metrics.Timer;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -17,10 +16,10 @@ import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 
 /**
- * What a component pays on its hot path to report metrics. With the default {@link Metrics#noop()}: counting an event
- * and timing one, against doing nothing at all. With a backend bound, here one counting in a LongAdder as Micrometer
- * does: a counter through Metrics against the LongAdder used directly, by one thread and by four sharing it, which is
- * what Metrics adds over the backend's own cost; and a timer, whose two clock reads {@code clock} measures alone.
+ * What a component pays on its hot path to report metrics. With the default {@link Metrics#noop()}: counting an event,
+ * against doing nothing at all. With a backend bound, here one counting in a LongAdder as Micrometer does: a counter
+ * through Metrics against the LongAdder used directly, by one thread and by four sharing it, which is what Metrics adds
+ * over the backend's own cost.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.AverageTime)
@@ -30,20 +29,14 @@ import org.openjdk.jmh.annotations.Warmup;
 @Measurement(iterations = 5, time = 1)
 public class MetricsBenchmark {
     private final Counter noopCounter = Metrics.noop().counter("managame.benchmark.events", "domain", "1");
-    private final Timer noopTimer = Metrics.noop().timer("managame.benchmark.tasks", "domain", "1");
-    private final LongAdder adder = new LongAdder(), timed = new LongAdder(), nanos = new LongAdder();
+    private final LongAdder adder = new LongAdder();
     private final Counter counter = adder::add;
-    private final Timer timer = recorded -> {
-        timed.increment();
-        nanos.add(recorded);
-    };
 
     /** Nothing, the floor the others compare with. */
     @Benchmark public void nothing() {}
 
     @Benchmark public void noopCounter() { noopCounter.increment(); }
 
-    @Benchmark public void noopTimer() { noopTimer.stop(noopTimer.start()); }
 
     /** The backend's own cost, which {@code counter} compares with. */
     @Benchmark public void adder() { adder.increment(); }
@@ -53,9 +46,4 @@ public class MetricsBenchmark {
     @Benchmark @Threads(4) public void adderShared() { adder.increment(); }
 
     @Benchmark @Threads(4) public void counterShared() { counter.increment(); }
-
-    @Benchmark public void timer() { timer.stop(timer.start()); }
-
-    /** The clock read at start and at stop, which a bound timer pays. */
-    @Benchmark public long clock() { return System.nanoTime() - System.nanoTime(); }
 }

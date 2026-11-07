@@ -83,7 +83,9 @@ public final class Dispatcher {
         HandleContext context = new HandleContext(route, source.metadata(), onAnswer);
         try {
             runtime.execute(context, task -> {
-                if (handler.invoke(task, message) instanceof HandleResult result) task.answer(result);
+                Object result = handler.invoke(task, message);
+                if (result != null) task.answer((HandleResult) result);
+                else if (!handler.returnsVoid()) throw new IllegalStateException(handler + " returned null; only a void handler answers later");
             });
         } catch (GameRuntimeException refused) {
             // execute answered the request with the refusal's code

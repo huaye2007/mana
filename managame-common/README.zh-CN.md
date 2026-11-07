@@ -87,15 +87,11 @@ IdGenerator own = () -> idService.next();                    // 也可以是应�
 ```java
 // 只在组件构建时，或它要统计的东西加入时创建一次：
 Counter refused = metrics.counter("managame.runtime.tasks.refused", "domain", "1");
-Timer calls = metrics.timer("game.rank.calls");
 metrics.gauge("game.players.online", sessions::size);                // 后端采集时读取
 Meter sent = metrics.counter("game.mails.sent", mailer::sentCount);  // 别处已经在数的值，同样采集时读取
 
 // 每次事件：一次调用，不拼 tag，不分配内存
 refused.increment();
-long start = calls.start();
-callRank();
-calls.stop(start);
 
 sent.close();   // 读取的对象不在了：从后端移除
 ```
@@ -105,7 +101,6 @@ sent.close();   // 读取的对象不在了：从后端移除
 | `counter(name, tags...)` | `Counter`：`increment()`、`increment(n)` | 事件，比如被拒绝的任务、超时的调用 |
 | `counter(name, count, tags...)` | `Meter`：`close()` | 别处已经在数的值，比如组件本来就在累加的字段，后端采集时读取；只增不减 |
 | `gauge(name, value, tags...)` | `Meter`：`close()` | 会涨会落的值，比如在线人数、排队的任务数，后端采集时读取 |
-| `timer(name, tags...)` | `Timer`：`record(nanos)`、`start()`、`stop(start)` | 耗时，单位纳秒 |
 
 规则：
 
@@ -115,9 +110,10 @@ sent.close();   // 读取的对象不在了：从后端移除
   id 或路由键：每个不同的值都是一条单独的序列。
 - 指标创建一次，存在字段里，每个名字加 tag 组合只创建一次。所有指标都可以在任意线程使用。
 - 上报的开销就是后端自己的指标的开销，不多一分：managame-benchmark 的 `MetricsBenchmark` 经 `Metrics` 往 LongAdder 计数（Micrometer
-  也用这类分段累加器计数），单线程和四线程共用时都和直接用 LongAdder 一样快。`Metrics.noop()` 是同一个空指标，方法被 JIT 内联掉，`start()`
-  不读时钟。接了后端的计时器要读两次时钟，在 Windows 上约 40 ns，所以只给要紧的地方计时，其余用计数；gauge 和别处在数的计数器在后端读取之前没有任何开销。
-- `close()` 把 gauge 或别处在数的计数器从后端移除，并放开它读取的对象；用于会消失的东西，比如一个对端。计数器和计时器与后端同寿：
+  也用这类分段累加器计数），单线程和四线程共用时都和直接用 LongAdder 一样快。`Metrics.noop()` 是同一个空指标，方法被 JIT 内联掉；gauge 和别处在数的计数器在后端读取之前没有任何开销。
+- 不提供计时器。给每个任务或调用读时钟，会占掉热路径的大部分时间，换来的平均值却定位不到问题，所以组件上报的是拒绝了什么、什么失败了、手里积压了什么。
+  应用要给关心的调用计时，直接用自己的后端。
+- `close()` 把 gauge 或别处在数的计数器从后端移除，并放开它读取的对象；用于会消失的东西，比如一个对端。计数器与后端同寿：
   对端用同一个 node id 回来后，还是上报到同一条序列。
 
 ### 接到 Micrometer
@@ -144,17 +140,11 @@ public final class MicrometerMetrics implements Metrics {
         Gauge gauge = Gauge.builder(name, value, DoubleSupplier::getAsDouble).tags(tags).strongReference(true).register(registry);
         return () -> registry.remove(gauge);
     }
-
-    @Override public Timer timer(String name, String... tags) {
-        io.micrometer.core.instrument.Timer timer = registry.timer(name, tags);
-        return nanos -> timer.record(nanos, TimeUnit.NANOSECONDS);
-    }
 }
 ```
 
-Micrometer 会按各个后端转换名字和单位：对 Prometheus，点换成下划线，时间换成秒。要 p99 这类分位数时，计时器用
-`Timer.builder(name).tags(tags).publishPercentileHistogram().register(registry)` 注册。接 OpenTelemetry 时，这几个方法分别对应它的
-counter、observable counter、observable gauge 和 histogram。
+Micrometer 会按各个后端转换名字：对 Prometheus，点换成下划线。接 OpenTelemetry 时，这几个方法分别对应它的 counter、observable counter 和
+observable gauge。
 
 ## 错误码
 

@@ -33,8 +33,24 @@ class KeyedRouteExecutorTest {
         assertTrue(done.await(5, TimeUnit.SECONDS));
     }
 
+    @Test void aNewKeyOverTheLimitIsRefusedUntilAnIdleQueueGoes() throws Exception {
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(500), 2);
+        try {
+            runAndWait(executor, 1);
+            runAndWait(executor, 2);
+            assertEquals(2, executor.routes());
+            GameRuntimeException refused = assertThrows(GameRuntimeException.class, () -> executor.execute(3, () -> {}));
+            assertEquals(ROUTE_EXECUTOR_OVERLOADED, refused.errorCode());
+            runAndWait(executor, 1);
+            eventually(() -> executor.routes() == 0, "idle queues go");
+            runAndWait(executor, 3);
+        } finally {
+            executor.shutdown();
+        }
+    }
+
     @Test void aDrainedQueueStaysAndIsReusedByItsKey() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60));
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60), RouteExecutors.DEFAULT_MAX_KEYS);
         try {
             runAndWait(executor, 1);
             KeyedRouteExecutor.KeyQueue first = executor.queue(1);
@@ -49,7 +65,7 @@ class KeyedRouteExecutorTest {
     }
 
     @Test void queuesIdlePastTheTimeoutAreDroppedAndKeysGetNewOnes() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(100));
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(100), RouteExecutors.DEFAULT_MAX_KEYS);
         try {
             for (long key = 0; key < 1000; key++) runAndWait(executor, key);
             eventually(() -> executor.queueCount() == 0, "queues idle past the timeout are dropped");
@@ -60,7 +76,7 @@ class KeyedRouteExecutorTest {
     }
 
     @Test void aBusyQueueIsNeverDropped() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(20));
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofMillis(20), RouteExecutors.DEFAULT_MAX_KEYS);
         try {
             CountDownLatch release = new CountDownLatch(1), ran = new CountDownLatch(2);
             executor.execute(1, () -> await(release));
@@ -77,7 +93,7 @@ class KeyedRouteExecutorTest {
     }
 
     @Test void aKeyRefusesTasksBeyondItsWaitingLimit() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 2, Duration.ofSeconds(60));
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 2, Duration.ofSeconds(60), RouteExecutors.DEFAULT_MAX_KEYS);
         try {
             CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
             executor.execute(1, () -> {
@@ -99,7 +115,7 @@ class KeyedRouteExecutorTest {
     @Test void aKeyThatKeepsGoingIdleAndBusyKeepsItsOrder() throws Exception {
         // Tiny tasks submitted one by one make the queue go idle and restart over and over, while a short timeout
         // has the sweeper retire it now and then.
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 1 << 20, Duration.ofMillis(1));
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 1 << 20, Duration.ofMillis(1), RouteExecutors.DEFAULT_MAX_KEYS);
         try {
             int tasks = 50_000;
             List<Integer> ran = new CopyOnWriteArrayList<>();
@@ -126,7 +142,7 @@ class KeyedRouteExecutorTest {
     }
 
     @Test void manyThreadsOnOneKeyNeverRunTwoTasksAtOnceNorLoseOne() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 1 << 20, Duration.ofMillis(1));
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 1 << 20, Duration.ofMillis(1), RouteExecutors.DEFAULT_MAX_KEYS);
         int threads = 8, perThread = 20_000;
         AtomicInteger running = new AtomicInteger(), overlaps = new AtomicInteger();
         CountDownLatch done = new CountDownLatch(threads * perThread);
@@ -148,7 +164,7 @@ class KeyedRouteExecutorTest {
     }
 
     @Test void shutdownRefusesNewKeysAndTerminatesOnceTheAcceptedTasksRan() throws Exception {
-        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60));
+        KeyedRouteExecutor executor = new KeyedRouteExecutor("test", 16, Duration.ofSeconds(60), RouteExecutors.DEFAULT_MAX_KEYS);
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger ran = new AtomicInteger();
         executor.execute(1, () -> {

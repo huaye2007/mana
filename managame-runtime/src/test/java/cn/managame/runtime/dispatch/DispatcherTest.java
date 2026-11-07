@@ -47,7 +47,7 @@ class DispatcherTest {
     record Refuse() {}
     record Nothing() {}
     record Twice() {}
-    record LaterAfterNull(String text) {}
+    record Forgets() {}
 
     private final BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
     private final GameRuntime runtime = GameRuntime.builder()
@@ -77,10 +77,7 @@ class DispatcherTest {
         @HandleMethod void later(HandleContext context, Later later) {
             Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later " + later.text())));
         }
-        @HandleMethod HandleResult laterAfterNull(HandleContext context, LaterAfterNull later) {
-            Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply("later " + later.text())));
-            return null;
-        }
+        @HandleMethod HandleResult forgets(Forgets forgets) { return null; }
         @HandleMethod void trade(HandleContext request, Trade trade) {
             runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // on the other player's route
                 routes.add(Context.current().routeKey());
@@ -160,9 +157,13 @@ class DispatcherTest {
         assertEquals("ok:null", answer(), "a success with nothing to send back");
         dispatch(dispatcher, new Twice());
         assertEquals("ok:first", answer(), "only the first answer counts");
-        dispatch(dispatcher, new LaterAfterNull("x"));
-        assertEquals("ok:later x", answer(), "null means the answer comes later through the context");
         assertNull(answers.poll(100, TimeUnit.MILLISECONDS), "each message was answered once");
+    }
+
+    @Test void onlyAVoidHandlerAnswersLater() throws Exception {
+        dispatch(dispatcher(), new Forgets());
+        assertEquals("fail:" + RUNTIME_EXECUTION_ERROR, answer(), "null from a handler with a result is a bug, never a later answer");
+        assertTrue(errors.poll(5, TimeUnit.SECONDS) instanceof IllegalStateException);
     }
 
     @Test void aHandlerWhoseDomainCannotRouteItsMessageFailsAtRegistration() {

@@ -86,8 +86,10 @@ runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(
 The framework's part is `runtime.execute`, `GameContext.of` and the request's `reply` and `fail`; `Trade`, `bags`,
 `profiles` and `NOT_ENOUGH` are the game's own, and a task that does not use its context names it `_`. The continued
 task sees `Context.current()` as that context, answers its request once, and, if it throws or is refused, fails the
-request with a code: nothing more to remember. Steps on two routes are not one transaction: if the way back is refused,
-the request fails with the refusal's code and putting back what the first step took is the game's. On a virtual-thread
+request with a code: nothing more to remember. A task handing work on is never refused, for load or shutdown, so steps
+on two routes both run. Work that comes back from outside a task, such as an RPC callback, is an entry and may be
+refused when its route is full: the request then fails with the refusal's code, and putting back what the first step
+did is the game's. On a virtual-thread
 route, a blocking call such as a
 database query needs no callback at all, as it holds up only its own key; a callback is for waiting on another route,
 where waiting in place could leave two routes waiting on each other, or on an API that is asynchronous anyway.
@@ -102,12 +104,15 @@ message's route key.
 - `virtualThreads()`: one queue per route key, drained by a virtual thread, so a blocking task holds up only its
   own key. A task joins its key's queue without a lock. A drained queue stays for its key, so a busy key does not
   create and drop a queue for every task, and a sweeper drops queues idle longer than the idle timeout, so memory
-  follows the keys used lately: `virtualThreads(maxPendingPerKey, idleTimeout)`, by default 4096 tasks waiting per
-  key besides the running one and 60 seconds idle. A key over its limit is refused with `ROUTE_EXECUTOR_OVERLOADED`.
+  follows the keys used lately: `virtualThreads(maxPendingPerKey, idleTimeout, maxKeys)`, by default 4096 tasks waiting
+  per key besides the running one, 60 seconds idle and 1 048 576 keys. A key over its limit, or a new key while
+  `maxKeys` queues exist, idle ones included, is refused with `ROUTE_EXECUTOR_OVERLOADED`. The key limit bounds what a
+  domain keyed by what clients send can hold, such as a login by account before it is checked.
 - `striped(threads)`: fixed platform threads, a key always on thread `hash(key) % threads`. No state per key, but
   a blocking task holds up every key on its thread. `striped(threads, maxPendingPerThread)`, 65 536 by default.
 - Or your own `RouteExecutor`: `execute`, plus `shutdown` and `awaitTermination`, which finish its work from its own
-  state.
+  state; `handOn` if it refuses for load, so tasks can hand work on past it; and `pending`, which shutdown waits on, with
+  `maxPending` and `routes`, for [metrics](#metrics), if it can tell.
 
 **Route keys.** A domain's resolver gives the key of every message arriving for it, once for the whole domain:
 
@@ -124,9 +129,9 @@ instead, whatever each message calls it:
 @Domain(GUILD)
 class GuildHandle {
     @HandleMethod(routeKey = "guildId")         // GUILD:the guild donated to
-    void donate(HandleContext request, Donate donate) { ... }
+    HandleResult donate(Donate donate) { ... }
     @HandleMethod(routeKey = "targetGuildId")   // another message names it otherwise
-    void apply(HandleContext request, ApplyReq apply) { ... }
+    HandleResult apply(ApplyReq apply) { ... }
 }
 ```
 
@@ -159,10 +164,12 @@ registrations do not change afterwards.
 | `@HttpMethod(path)` | HTTP requests, POST unless `method` says otherwise | `HttpRoutes` |
 | `@Cron(domain, value)` | Calendar times, see [Cron](#cron); domain and route key in the annotation, no message | `GameTimer` |
 
-A handler takes one parameter, the message, matched by its exact class, and may take its context before it.
-A `@HandleMethod` returns a `HandleResult`, or void or null when it answers later through its context. An
-`@HttpMethod` returns an `HttpResult`, any type of its own that the codec writes, or a `FullHttpResponse`, or void or
-null likewise.
+A handler takes one parameter, the message, matched by its exact class. Most need nothing else; one that reads a field
+of its context, such as whom it acts for, or that answers later, takes the context before the message.
+A `@HandleMethod` returns a `HandleResult`, or is void when it answers later through its context. An `@HttpMethod`
+returns an `HttpResult`, any type of its own that the codec writes, or a `FullHttpResponse`, or is void likewise. Only a
+void method answers later: null from one with a return type is a bug, answered with `RUNTIME_EXECUTION_ERROR` and
+handed to the error handler.
 Methods are compiled to method handles at registration, so calls use no reflection. Registration throws
 `IllegalArgumentException` for a missing `@Domain`, wrong parameters, a `@HandleMethod` that returns anything else, a
 `routeKey` its message lacks, two handlers for one message, or a context type the entry cannot give.
@@ -175,15 +182,14 @@ over with the context it comes from and a callback that answers in its own forma
 ```java
 @Domain(PLAYER)
 class Shop {
-    @HandleMethod HandleResult buy(HandleContext request, Buy buy) {    // answer with what it returns
-        if (!wallets.pay(request.businessId(), buy.price())) return HandleResult.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
-        return HandleResult.ok(bags.add(request.businessId(), buy.item()));
+    @HandleMethod HandleResult prices(AskPrices ask) {                  // the usual form: the message in, its answer out
+        return HandleResult.ok(catalog.prices(ask.category()));
     }
-    @HandleMethod void rank(HandleContext request, AskRank ask) {       // or later through the context, from any thread
-        ranks.query(request.businessId(), rank -> request.reply(rank));
+    @HandleMethod HandleResult sell(HandleContext context, Sell sell) { // the context, when the logic needs whom it acts for
+        return market.sell(context.businessId(), sell.item());
     }
-    @HandleMethod HandleResult sell(HandleContext request, Sell sell) { // or with what the game's logic returns
-        return market.sell(request.businessId(), sell.item());
+    @HandleMethod void rank(HandleContext context, AskRank ask) {       // or to answer later, from any thread
+        ranks.query(context.businessId(), rank -> context.reply(rank));
     }
 }
 
@@ -476,13 +482,20 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
 - `execute` throws `GameRuntimeException` with `RUNTIME_CLOSED` after shutdown or `ROUTE_EXECUTOR_OVERLOADED` when
   the domain's executor is full, and the task never runs; a request is first failed with that code. An unregistered
   domain throws `IllegalArgumentException`.
+- `execute(context, task, finished)` also runs `finished` once however the task ends: when it returned or threw, when
+  an interceptor stopped it, or when it was refused. An entry that holds something for its task, as `HttpRoutes` holds
+  the request's buffer, gives it back there rather than in the task, which may never run.
 - What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
-- `shutdown()` refuses new tasks while accepted ones still run; `awaitTermination(timeout)` waits for them;
-  `close()` does both and must not be called from a task. Close the entries (servers, timers and the like) before the
-  runtime, so nothing hands it work while it shuts down.
-- The runtime counts no task in flight. Each domain's executor knows its own work and finishes it: `striped` through
-  its ThreadPoolExecutors' own shutdown, `virtualThreads` by making no new queue and retiring each as it drains. A task
-  given while an executor shuts down is refused with `ROUTE_EXECUTOR_CLOSED` or runs before termination.
+- Limits and shutdown are for what comes in from outside. `execute` called from a game task is never refused for load
+  or shutdown, so what was accepted finishes what it began. Any other caller is an entry, an RPC callback too, and its
+  task may be refused. A task that hands work to itself without end passes every limit too; `routes.max_pending` shows it.
+- `shutdown()` refuses tasks from outside and returns at once. Accepted tasks still run and may hand work on, and the
+  executors shut down once no domain has work left; `awaitTermination(timeout)` waits for that, and `close()` does both
+  and must not be called from a task. Close the entries (servers, RPC, timers and the like) before the runtime, so RPC
+  callbacks come in while the runtime still takes them.
+- The runtime counts no task in flight: it waits on each domain's `pending`, what its executor holds anyway. Once nothing
+  is left, `striped` shuts down through its ThreadPoolExecutors' own shutdown, and `virtualThreads` makes no new queue and
+  retires each as it drains.
 
 ## Game time
 
@@ -511,6 +524,23 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 | `cn.managame.runtime.event` | INFO: the event bus's subscribers. DEBUG: each event's subscribers. |
 | `cn.managame.runtime.http` | INFO: the HTTP endpoints. DEBUG: each endpoint, each bad request. ERROR: a request that could not run or be answered. |
 | `cn.managame.runtime.timer` | INFO: each `@Cron` method scheduled. DEBUG: each `timer.cron`. WARNING: a firing refused. ERROR: a firing that failed. |
+
+## Metrics
+
+`GameRuntime.builder().metrics(metrics)` reports through common's `Metrics`, `Metrics.noop()` by default. All are tagged
+with the `domain`, and a task that runs and returns reports nothing, so metrics add nothing to its cost:
+
+| Metric | Kind | What it answers |
+| --- | --- | --- |
+| `managame.runtime.tasks.refused` | counter | Is the server overloaded? Tasks not accepted, tagged `code`: `RUNTIME_CLOSED`, `ROUTE_EXECUTOR_OVERLOADED` or `ROUTE_EXECUTOR_CLOSED` |
+| `managame.runtime.tasks.failed` | counter | Is there a bug? Tasks that threw |
+| `managame.runtime.tasks.pending` | gauge | How much is waiting? Tasks accepted and not finished |
+| `managame.runtime.routes.max_pending` | gauge | Is a route stuck? The most tasks on one route key, or on one thread of a striped domain |
+| `managame.runtime.routes.active` | gauge | How near is `maxKeys`? Route keys with a queue; 0 for a striped domain, which keeps nothing per key |
+
+Gauges read the executor's own state when the backend collects, and `close()` removes them. A stuck route shows in
+`routes.max_pending` while tasks keep joining it; one that gets no new tasks does not show. There is no timer: to find a
+slow message, time it in its handler with your own backend.
 
 ## Build and tests
 

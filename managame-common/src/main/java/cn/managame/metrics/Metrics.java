@@ -17,15 +17,18 @@ import java.util.function.LongSupplier;
  *
  * <p>Meters are created once, when a component is built or a domain, peer or the like is added, and kept in fields;
  * reporting an event is then one call, building no tags and allocating nothing. Create each name and tag set once.
- * Counters and timers last as long as the backend; a peer that leaves and comes back under the same node id reports
- * to the same series again. Every method and meter is safe to call from any thread.
+ * Counters last as long as the backend; a peer that leaves and comes back under the same node id reports to the same
+ * series again. Every method and meter is safe to call from any thread.
  *
  * <p>Names are lowercase and dotted, segments of a letter followed by letters, digits or underscores:
  * {@code managame.<component>.<area>.<what>} for the framework's, as its loggers are named {@code cn.managame.<component>.<area>},
  * and a prefix of the application's own for its metrics ({@code game.shop.purchases}). Tags are key, value, key,
  * value: keys follow the rule of names, and values must come from a small set (a domain, an error code's name, a
- * node id), never a player id or route key, since every value makes a series of its own. Durations are nanoseconds;
- * the implementation converts them to its backend's unit.
+ * node id), never a player id or route key, since every value makes a series of its own.
+ *
+ * <p>There is no timer. Reading the clock around every task or call costs a hot path most of its time, for an average
+ * that finds nothing: a component reports what it refuses, what fails and what it holds, and an application times the
+ * calls it cares about with its own backend.
  */
 public interface Metrics {
     /** A counter of events, which the caller increments. */
@@ -43,12 +46,6 @@ public interface Metrics {
      */
     Meter gauge(String name, DoubleSupplier value, String... tags);
 
-    /** A timer of durations, such as a task's or a call's. */
-    Timer timer(String name, String... tags);
-
-    /**
-     * Metrics that report nothing, the default of every component: each meter is an empty method, and its
-     * {@link Timer#start()} does not read the clock.
-     */
+    /** Metrics that report nothing, the default of every component: each meter is an empty method. */
     static Metrics noop() { return NoopMetrics.INSTANCE; }
 }

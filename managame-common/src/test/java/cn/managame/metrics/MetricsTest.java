@@ -3,7 +3,6 @@ package cn.managame.metrics;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
@@ -40,17 +39,6 @@ class MetricsTest {
             return () -> readings.remove(key);
         }
 
-        @Override public Timer timer(String name, String... tags) {
-            String key = key(name, tags);
-            LongAdder count = new LongAdder(), nanos = new LongAdder();
-            readings.put(key + ".count", count::sum);
-            readings.put(key + ".nanos", nanos::sum);
-            return recorded -> {
-                count.increment();
-                nanos.add(recorded);
-            };
-        }
-
         private static String key(String name, String[] tags) { return tags.length == 0 ? name : name + List.of(tags); }
     }
 
@@ -75,30 +63,13 @@ class MetricsTest {
         assertFalse(metrics.readings.containsKey("managame.data.changes.written"));
     }
 
-    @Test void timerStartAndStopRecordTheTimeBetween() throws InterruptedException {
-        MemoryMetrics metrics = new MemoryMetrics();
-        Timer tasks = metrics.timer("managame.runtime.tasks", "domain", "1");
-
-        long start = tasks.start();
-        Thread.sleep(2);
-        tasks.stop(start);
-        tasks.record(1_000);
-
-        assertEquals(2, metrics.read("managame.runtime.tasks[domain, 1].count"));
-        assertTrue(metrics.read("managame.runtime.tasks[domain, 1].nanos") >= 2_001_000);
-    }
-
-    @Test void noopIsOneEmptyMeterThatReadsNoClock() {
+    @Test void noopIsOneEmptyMeter() {
         Metrics metrics = Metrics.noop();
         Counter counter = metrics.counter("managame.rpc.calls", "node", "7");
-        Timer timer = metrics.timer("managame.rpc.calls.time");
 
         counter.increment();
-        timer.stop(timer.start());
         metrics.gauge("managame.rpc.calls.waiting", () -> 1).close();
 
-        assertSame(counter, timer);
         assertSame(counter, metrics.counter("managame.rpc.calls.answered", () -> 1));
-        assertEquals(0, timer.start());
     }
 }

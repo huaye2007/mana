@@ -164,6 +164,9 @@ public final class AnnotatedMethod {
 
     public Method method() { return method; }
 
+    /** Whether it returns void: the one kind of method that answers later through its context, not with its result. */
+    public boolean returnsVoid() { return method.getReturnType() == void.class; }
+
     public Object target() { return target; }
 
     /**

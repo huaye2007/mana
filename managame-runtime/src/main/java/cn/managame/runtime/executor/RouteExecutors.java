@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class RouteExecutors {
     public static final int DEFAULT_MAX_PENDING_PER_KEY = 4096;
     public static final Duration DEFAULT_IDLE_TIMEOUT = Duration.ofSeconds(60);
+    public static final int DEFAULT_MAX_KEYS = 1 << 20;
     public static final int DEFAULT_MAX_PENDING_PER_THREAD = 65536;
     private static final AtomicInteger INSTANCES = new AtomicInteger();
 
@@ -15,21 +16,29 @@ public final class RouteExecutors {
     /**
      * One queue per route key, drained by a virtual thread: a blocking task holds up only its own key. Tasks join a
      * queue without a lock, and a drained queue stays for its key until idle for long; see
-     * {@link #virtualThreads(int, Duration)}, here with {@link #DEFAULT_MAX_PENDING_PER_KEY} and
-     * {@link #DEFAULT_IDLE_TIMEOUT}.
+     * {@link #virtualThreads(int, Duration, int)}, here with {@link #DEFAULT_MAX_PENDING_PER_KEY},
+     * {@link #DEFAULT_IDLE_TIMEOUT} and {@link #DEFAULT_MAX_KEYS}.
      */
     public static RouteExecutor virtualThreads() {
-        return virtualThreads(DEFAULT_MAX_PENDING_PER_KEY, DEFAULT_IDLE_TIMEOUT);
+        return virtualThreads(DEFAULT_MAX_PENDING_PER_KEY, DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_KEYS);
+    }
+
+    /** {@link #virtualThreads(int, Duration, int)} with {@link #DEFAULT_MAX_KEYS}. */
+    public static RouteExecutor virtualThreads(int maxPendingPerKey, Duration idleTimeout) {
+        return virtualThreads(maxPendingPerKey, idleTimeout, DEFAULT_MAX_KEYS);
     }
 
     /**
      * @param maxPendingPerKey tasks one key may have waiting besides the running one; more are refused
      * @param idleTimeout how long a drained queue stays for its key before it is dropped, so memory follows the keys
      *                    used within it
+     * @param maxKeys queues it may hold, idle ones included; a key with no queue is refused above it, so keys that come
+     *                from clients cannot grow memory without bound
      */
-    public static RouteExecutor virtualThreads(int maxPendingPerKey, Duration idleTimeout) {
+    public static RouteExecutor virtualThreads(int maxPendingPerKey, Duration idleTimeout, int maxKeys) {
         if (idleTimeout.toMillis() <= 0) throw new IllegalArgumentException("idleTimeout must be at least one millisecond");
-        return new KeyedRouteExecutor("game-route-" + INSTANCES.incrementAndGet(), positive(maxPendingPerKey, "maxPendingPerKey"), idleTimeout);
+        return new KeyedRouteExecutor("game-route-" + INSTANCES.incrementAndGet(), positive(maxPendingPerKey, "maxPendingPerKey"), idleTimeout,
+                positive(maxKeys, "maxKeys"));
     }
 
     /**

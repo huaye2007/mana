@@ -7,7 +7,7 @@ import java.lang.annotation.Target;
 
 /**
  * Marks a method a Dispatcher calls for messages of its parameter's exact class: {@code (Message)}, or
- * {@code (HandleContext, Message)} to receive the context. It returns its
+ * {@code (HandleContext, Message)} when it reads a field of the context or answers later. It returns its
  * {@link cn.managame.runtime.dispatch.HandleResult}, the one shape of every answer:
  *
  * <pre>{@code
@@ -17,8 +17,9 @@ import java.lang.annotation.Target;
  * }
  * }</pre>
  *
- * A handler whose answer comes later, from a call to another server say, returns void or null and answers through the
- * context, with {@code reply} or {@code fail}, from any thread. Only the first answer counts.
+ * A handler whose answer comes later, from a call to another server say, returns void and answers through the context,
+ * with {@code reply} or {@code fail}, from any thread. Only the first answer counts. Null from a handler that returns a
+ * result is a bug: the message fails with RUNTIME_EXECUTION_ERROR, and the exception goes to the error handler.
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)

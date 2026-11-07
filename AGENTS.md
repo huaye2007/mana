@@ -110,12 +110,16 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   Message fields such as `command`, `businessType` and `businessId` are carried as is, never interpreted.
 - **Reference counting follows Netty.** Bodies are `ByteBuf`s, never copied on the way; RPC messages are
   `ReferenceCounted` through them. What is handed to the framework becomes its own; what the framework hands to a
-  callback is released when it returns.
+  callback is released when it returns. What an entry holds for a task goes back through
+  `GameRuntime.execute(context, task, finished)`, never in the task, which an interceptor or a refusal may keep from
+  running.
 - **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
   (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routeKey)` run one at a time in submission order.
   Work that comes back from another thread or route (an RPC callback, a visit to another player's route) goes on
-  through `GameRuntime.execute(context, task)` with the context to continue on, with no API of its own; a request is
-  answered whether its task is accepted or refused. What runs around business logic (a trace id in the logs, saving
+  through `GameRuntime.execute(context, task)` with the context to continue on, with no API of its own. Called from a
+  game task it is never refused, for load or shutdown, so what was accepted finishes what it began; any other caller is
+  an entry, an RPC callback too, and shutdown refuses entries first and shuts executors down once none has work. A
+  request is answered whether its task is accepted or refused. What runs around business logic (a trace id in the logs, saving
   what a task changed, a login check) is a `TaskInterceptor` of the runtime (`GameRuntime.builder().intercept`),
   around every task whatever its entry, a continuation included; entries have no interceptors of their own, and checks
   that need the message itself belong in the application's entry before it dispatches. A `before` refuses a task by
@@ -131,9 +135,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   meaning (a guild's id in a guild domain).
 - **Handlers are annotated and registered in batches at startup:** `@HandleMethod`, `@EventMethod`,
   `@HttpMethod`, placed by `@Domain`. A handler takes one message parameter, optionally preceded by its context.
-  A `@HandleMethod` returns its `HandleResult` (`ok(data)`, `fail(code, args...)`), or void or null when the answer
+  A `@HandleMethod` returns its `HandleResult` (`ok(data)`, `fail(code, args...)`), or is void when the answer
   comes later through its `HandleContext` (`reply` / `fail`), so success, failure and a later answer reach the
-  application one way. An `@HttpMethod` returns any result: an `HttpResult` (`code`, `data`, `msg`) for an API's
+  application one way; only a void method answers later, and null from any other is a bug, answered with
+  `RUNTIME_EXECUTION_ERROR`. An `@HttpMethod` returns any result: an `HttpResult` (`code`, `data`, `msg`) for an API's
   common shape, a type of its own that the codec writes for a format the other side fixes, or a `FullHttpResponse`;
   its failures go to the codec's `encodeFailure` whatever it returns. Game logic hands its failures up as it hands up
   its results and never throws them; an exception is a bug, answered with `RUNTIME_EXECUTION_ERROR` and handed to the
@@ -217,7 +222,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   at build, or when what they measure is added (a domain, a peer), and kept in fields, so an event costs one call with
   no tags built; tag values come from small sets (a domain, an error code's name, a node id), never player ids or
   route keys. What a component already counts or holds is reported as a gauge or a counter read when the backend
-  collects, not counted again on the hot path.
+  collects, not counted again on the hot path. There is no timer: a component reports what it refuses, what fails and
+  what it holds, what a game server's operators act on, and nothing per task that runs and returns; an application
+  times the calls it cares about with its own backend.
 - Keep test fixtures small and readable; tests double as usage examples (for instance
   `PlayerGatewayExampleTest` shows an application-defined player gateway).
 
@@ -227,4 +234,6 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   links to the other on its first line.
 - When public API or behavior changes, update both READMEs in the same change and keep their code samples in
   line with the current API.
+- Samples show a handler with its message alone. Its context appears only where the sample reads a business field from
+  it or answers later: most handlers need neither, and a sample is what people copy.
 - Update this file when a convention changes.

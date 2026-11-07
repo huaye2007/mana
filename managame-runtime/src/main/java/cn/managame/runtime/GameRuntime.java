@@ -1,10 +1,14 @@
 package cn.managame.runtime;
 
+import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_CLOSED;
+import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 
 import cn.managame.FrameworkErrorCodes;
-
+import cn.managame.metrics.Counter;
+import cn.managame.metrics.Meter;
+import cn.managame.metrics.Metrics;
 import cn.managame.runtime.executor.RouteExecutor;
 import java.lang.System.Logger.Level;
 import java.time.Duration;
@@ -37,18 +41,18 @@ import java.util.function.BiConsumer;
 public final class GameRuntime implements AutoCloseable {
     static final ScopedValue<Context> CURRENT = ScopedValue.newInstance();
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime");
-    private final Map<Integer, RouteExecutor> executors;
-    private final Map<Integer, RouteKeyResolver> resolvers;
+    private final Map<Integer, RouteDomain> domains;
     private final BiConsumer<? super Context, ? super Throwable> errorHandler;
     private final TaskInterceptor[] interceptors;
     private volatile boolean shutdown;
 
     private GameRuntime(Builder b) {
-        executors = Map.copyOf(b.executors);
-        resolvers = Map.copyOf(b.resolvers);
+        Map<Integer, RouteDomain> built = new HashMap<>();
+        b.executors.forEach((domain, executor) -> built.put(domain, RouteDomain.of(domain, executor, b.resolvers.get(domain), b.metrics)));
+        domains = Map.copyOf(built);
         errorHandler = b.errorHandler;
         interceptors = b.interceptors.toArray(TaskInterceptor[]::new);
-        LOG.log(Level.INFO, () -> "Game runtime started; domains " + new TreeMap<>(executors)
+        LOG.log(Level.INFO, () -> "Game runtime started; domains " + new TreeMap<>(domains)
                 + (interceptors.length == 0 ? "" : "; " + interceptors.length + " task interceptors"));
     }
 
@@ -61,14 +65,14 @@ public final class GameRuntime implements AutoCloseable {
      * unregistered domain throws IllegalArgumentException; a resolver's own exception passes through.
      */
     public Route route(int domain, Context source, Object message) {
-        RouteKeyResolver resolver = resolvers.get(domain);
-        if (resolver == null) throw new IllegalArgumentException("Unknown domain " + domain);
-        return Route.of(domain, resolver.routeKey(source, message), source.businessType(), source.businessId());
+        RouteDomain target = domains.get(domain);
+        if (target == null) throw new IllegalArgumentException("Unknown domain " + domain);
+        return Route.of(domain, target.resolver().routeKey(source, message), source.businessType(), source.businessId());
     }
 
     /** IllegalArgumentException for an unregistered domain; entries call it as they register a method, so it fails at startup. */
     public void checkDomain(int domain) {
-        if (!resolvers.containsKey(domain)) throw new IllegalArgumentException("Unknown domain " + domain);
+        if (!domains.containsKey(domain)) throw new IllegalArgumentException("Unknown domain " + domain);
     }
 
     /**
@@ -81,24 +85,64 @@ public final class GameRuntime implements AutoCloseable {
      * task was accepted or not. A request whose task throws is failed with RUNTIME_EXECUTION_ERROR. An unregistered
      * domain throws IllegalArgumentException.
      * <p>
-     * The runtime counts no task in flight: each domain's executor knows its own work, and shutdown asks them to finish
-     * it. Close the entries that hand it work (servers, timers and the like) first, so nothing races with shutdown.
+     * Refusing is for what comes in from outside. Called from a game task, this takes the work past every limit on load
+     * and during shutdown, so that what was accepted finishes what it began, such as the second step of a trade. Any
+     * other caller is an entry, an RPC callback too, as a task's context does not travel with it.
+     * <p>
+     * The runtime counts no task in flight: each domain's executor knows its own work, and shutdown waits for them to
+     * have none. Close the entries that hand it work (servers, RPC, timers and the like) first, so nothing races with
+     * shutdown.
      */
     public <C extends Context> void execute(C context, GameTask<? super C> task) {
-        Objects.requireNonNull(context, "context");
         Objects.requireNonNull(task, "task");
-        RouteExecutor executor = executors.get(context.domain());
-        if (executor == null) throw new IllegalArgumentException("Unknown domain " + context.domain());
-        if (shutdown) throw refuse(context, new GameRuntimeException(RUNTIME_CLOSED, "the runtime is shut down"));
+        submit(context, () -> run(context, task));
+    }
+
+    /**
+     * As {@link #execute(Context, GameTask)}, and runs {@code finished} once however the task ends: on its route after
+     * the task and its interceptors, when the task threw or an interceptor stopped it too, or before this throws when
+     * the task was not accepted. It is for what an entry holds for its task, such as a buffer to release, and must not
+     * throw.
+     */
+    public <C extends Context> void execute(C context, GameTask<? super C> task, Runnable finished) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(finished, "finished");
+        boolean accepted = false;
         try {
-            executor.execute(context.routeKey(), () -> run(context, task));
-        } catch (GameRuntimeException refused) {
-            throw refuse(context, refused);
+            submit(context, () -> {
+                try {
+                    run(context, task);
+                } finally {
+                    finished.run();
+                }
+            });
+            accepted = true;
+        } finally {
+            if (!accepted) finished.run();
         }
     }
 
-    /** Fails a refused request with the refusal's code, which is then thrown. */
-    private static GameRuntimeException refuse(Context context, GameRuntimeException refusal) {
+    private void submit(Context context, Runnable work) {
+        Objects.requireNonNull(context, "context");
+        RouteDomain domain = domains.get(context.domain());
+        if (domain == null) throw new IllegalArgumentException("Unknown domain " + context.domain());
+        RouteExecutor executor = domain.executor();
+        try {
+            if (shutdown && !CURRENT.isBound()) throw new GameRuntimeException(RUNTIME_CLOSED, "the runtime is shut down");
+            try {
+                executor.execute(context.routeKey(), work);
+            } catch (GameRuntimeException full) {
+                if (!CURRENT.isBound()) throw full;
+                executor.handOn(context.routeKey(), work);
+            }
+        } catch (GameRuntimeException refused) {
+            throw refuse(domain, context, refused);
+        }
+    }
+
+    /** Counts the refusal and fails a refused request with its code, which is then thrown. */
+    private static GameRuntimeException refuse(RouteDomain domain, Context context, GameRuntimeException refusal) {
+        domain.refused(refusal.errorCode());
         LOG.log(Level.DEBUG, () -> "Refused a task of domain " + context.domain() + ", route key " + context.routeKey() + ": "
                 + FrameworkErrorCodes.describe(refusal.errorCode()));
         if (context instanceof RequestContext request) {
@@ -119,6 +163,7 @@ public final class GameRuntime implements AutoCloseable {
                 return null;
             });
         } catch (Throwable cause) {
+            domains.get(context.domain()).failed().increment();
             // An accepted request is always answered; fail does nothing if the task had already answered it.
             if (context instanceof RequestContext request) {
                 try {
@@ -166,12 +211,33 @@ public final class GameRuntime implements AutoCloseable {
         if (context instanceof RequestContext request) request.fail(RUNTIME_EXECUTION_ERROR);
     }
 
-    /** Refuses new tasks; accepted ones still run. Idempotent. */
+    /**
+     * Refuses tasks from outside; accepted ones still run and may hand work on, and the executors shut down once none is
+     * left. Returns at once. Idempotent.
+     */
     public void shutdown() {
-        boolean first = !shutdown;
+        if (shutdown) return;
         shutdown = true;
-        executors.values().forEach(RouteExecutor::shutdown);
-        if (first) LOG.log(Level.INFO, "Game runtime shutting down; accepted tasks still run");
+        LOG.log(Level.INFO, "Game runtime shutting down; accepted tasks still run");
+        Thread.ofVirtual().name("game-runtime-shutdown").start(this::shutDownExecutorsWhenIdle);
+    }
+
+    /**
+     * A task hands on before it ends, so work moving between domains always shows in one, yet a look at one domain after
+     * another can miss it once. Looking twice in a row cannot: that would take two whole hops between two looks.
+     */
+    private void shutDownExecutorsWhenIdle() {
+        try {
+            while (!idle() || !idle()) Thread.sleep(1);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        domains.values().forEach(domain -> domain.executor().shutdown());
+    }
+
+    private boolean idle() {
+        for (RouteDomain domain : domains.values()) if (domain.executor().pending() > 0) return false;
+        return true;
     }
 
     public boolean isShutdown() { return shutdown; }
@@ -193,8 +259,8 @@ public final class GameRuntime implements AutoCloseable {
     public boolean awaitTermination(Duration timeout) throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
         if (!shutdown) return false;
-        for (RouteExecutor executor : executors.values())
-            if (!executor.awaitTermination(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)) return false;
+        for (RouteDomain domain : domains.values())
+            if (!domain.executor().awaitTermination(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)) return false;
         return true;
     }
 
@@ -206,18 +272,43 @@ public final class GameRuntime implements AutoCloseable {
         if (CURRENT.isBound()) throw new IllegalStateException("Cannot close the runtime from one of its tasks");
         shutdown();
         boolean interrupted = false;
-        for (RouteExecutor executor : executors.values()) {
+        for (RouteDomain domain : domains.values()) {
             boolean terminated = false;
             while (!terminated) {
                 try {
-                    terminated = executor.awaitTermination(1, TimeUnit.DAYS);
+                    terminated = domain.executor().awaitTermination(1, TimeUnit.DAYS);
                 } catch (InterruptedException e) {
                     interrupted = true;
                 }
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
+        domains.values().forEach(domain -> domain.gauges().forEach(Meter::close));
         LOG.log(Level.INFO, "Game runtime closed; every accepted task finished");
+    }
+
+    /** What the runtime keeps per domain: who runs its tasks, how a message finds its key, and its meters. */
+    private record RouteDomain(RouteExecutor executor, RouteKeyResolver resolver, Counter failed, Map<Integer, Counter> refusals,
+                               List<Meter> gauges) {
+        private static final String REFUSED = "managame.runtime.tasks.refused";
+
+        static RouteDomain of(int domain, RouteExecutor executor, RouteKeyResolver resolver, Metrics metrics) {
+            String id = String.valueOf(domain);
+            return new RouteDomain(executor, resolver, metrics.counter("managame.runtime.tasks.failed", "domain", id),
+                    Map.of(RUNTIME_CLOSED, metrics.counter(REFUSED, "domain", id, "code", "RUNTIME_CLOSED"),
+                            ROUTE_EXECUTOR_OVERLOADED, metrics.counter(REFUSED, "domain", id, "code", "ROUTE_EXECUTOR_OVERLOADED"),
+                            ROUTE_EXECUTOR_CLOSED, metrics.counter(REFUSED, "domain", id, "code", "ROUTE_EXECUTOR_CLOSED")),
+                    List.of(metrics.gauge("managame.runtime.tasks.pending", executor::pending, "domain", id),
+                            metrics.gauge("managame.runtime.routes.max_pending", executor::maxPending, "domain", id),
+                            metrics.gauge("managame.runtime.routes.active", executor::routes, "domain", id)));
+        }
+
+        void refused(int errorCode) {
+            Counter counter = refusals.get(errorCode);
+            if (counter != null) counter.increment();
+        }
+
+        @Override public String toString() { return executor.toString(); }
     }
 
     public static final class Builder {
@@ -225,6 +316,7 @@ public final class GameRuntime implements AutoCloseable {
         private final Map<Integer, RouteKeyResolver> resolvers = new HashMap<>();
         private final Map<RouteExecutor, Integer> owners = new IdentityHashMap<>();
         private final List<TaskInterceptor> interceptors = new ArrayList<>();
+        private Metrics metrics = Metrics.noop();
         private BiConsumer<? super Context, ? super Throwable> errorHandler = (context, cause) ->
                 LOG.log(Level.ERROR, "Game task failed; domain=" + context.domain() + ", routeKey=" + context.routeKey()
                         + ", businessType=" + context.businessType() + ", businessId=" + context.businessId(), cause);
@@ -269,6 +361,16 @@ public final class GameRuntime implements AutoCloseable {
          */
         public Builder errorHandler(BiConsumer<? super Context, ? super Throwable> handler) {
             errorHandler = Objects.requireNonNull(handler, "handler");
+            return this;
+        }
+
+        /**
+         * Where the runtime reports, by domain: tasks refused, by error code, tasks that threw, and what its executor
+         * holds, read when the backend collects; {@link Metrics#noop()} by default. A task that runs and returns reports
+         * nothing, so metrics cost it nothing.
+         */
+        public Builder metrics(Metrics metrics) {
+            this.metrics = Objects.requireNonNull(metrics, "metrics");
             return this;
         }
 

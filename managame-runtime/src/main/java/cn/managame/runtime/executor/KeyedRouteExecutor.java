@@ -18,7 +18,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * One queue per route key, drained by a virtual thread while it has tasks, so a task that blocks holds up only its
  * own key. Adding a task to a key's queue takes no lock: a compare-and-set counts it in. A drained queue stays for its
  * key and is reused when the key gets work again; a sweeper retires queues idle for {@code idleTimeout}, so memory
- * follows the keys used lately. Virtual threads are not reused: they are cheap to create and are not meant to be
+ * follows the keys used lately, and a new key is refused while {@code maxKeys} queues exist, which costs a look at the
+ * map only when a queue is made. Virtual threads are not reused: they are cheap to create and are not meant to be
  * pooled. Once shut down it makes no new queue and retires each one as it drains, so it has terminated when no queue is
  * left: the queues themselves say whether work remains.
  */
@@ -30,31 +31,37 @@ final class KeyedRouteExecutor implements RouteExecutor {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime");
     private final ConcurrentHashMap<Long, KeyQueue> queues = new ConcurrentHashMap<>();
     private final ThreadFactory threads;
-    private final int maxPendingPerKey;
+    private final int maxPendingPerKey, maxKeys;
     private final long idleTimeoutNanos;
     private final Thread sweeper;
     private volatile boolean shutdown;
 
-    KeyedRouteExecutor(String name, int maxPendingPerKey, Duration idleTimeout) {
+    KeyedRouteExecutor(String name, int maxPendingPerKey, Duration idleTimeout, int maxKeys) {
         threads = Thread.ofVirtual().name(name + "-", 0).factory();
         this.maxPendingPerKey = maxPendingPerKey;
+        this.maxKeys = maxKeys;
         idleTimeoutNanos = idleTimeout.toNanos();
         sweeper = Thread.ofVirtual().name(name + "-sweeper").start(this::sweepUntilShutdown);
     }
+
+    @Override public void execute(long routeKey, Runnable task) { add(routeKey, task, maxPendingPerKey, maxKeys); }
+
+    @Override public void handOn(long routeKey, Runnable task) { add(routeKey, task, Integer.MAX_VALUE, Integer.MAX_VALUE); }
 
     /**
      * Counts the task into its key's queue, a queue the sweeper retired meanwhile being replaced by a new one, then
      * queues it; whoever finds the queue empty starts its drain. Once shut down, a key without a queue is refused.
      */
-    @Override public void execute(long routeKey, Runnable task) {
+    private void add(long routeKey, Runnable task, int maxWaiting, int mostKeys) {
         KeyQueue queue = queues.get(routeKey);
         int pending = RETIRED;
         while (pending == RETIRED) {
             if (queue == null) {
                 if (shutdown) throw new GameRuntimeException(ROUTE_EXECUTOR_CLOSED, "the executor is shut down");
+                if (queues.size() >= mostKeys) throw new GameRuntimeException(ROUTE_EXECUTOR_OVERLOADED, "already " + mostKeys + " route keys");
                 queue = queues.computeIfAbsent(routeKey, key -> new KeyQueue());
             }
-            pending = queue.countIn(routeKey, maxPendingPerKey);
+            pending = queue.countIn(routeKey, maxWaiting);
             if (pending == RETIRED) {
                 queues.remove(routeKey, queue);
                 queue = null;
@@ -126,8 +133,23 @@ final class KeyedRouteExecutor implements RouteExecutor {
         return queues.isEmpty();
     }
 
+    @Override public long pending() {
+        long pending = 0;
+        for (KeyQueue queue : queues.values()) pending += Math.max(0, queue.pending.get());
+        return pending;
+    }
+
+    @Override public long maxPending() {
+        long most = 0;
+        for (KeyQueue queue : queues.values()) most = Math.max(most, queue.pending.get());
+        return most;
+    }
+
+    @Override public long routes() { return queues.mappingCount(); }
+
     @Override public String toString() {
-        return "virtualThreads(maxPendingPerKey=" + maxPendingPerKey + ", idleTimeout=" + Duration.ofNanos(idleTimeoutNanos) + ")";
+        return "virtualThreads(maxPendingPerKey=" + maxPendingPerKey + ", idleTimeout=" + Duration.ofNanos(idleTimeoutNanos)
+                + ", maxKeys=" + maxKeys + ")";
     }
 
     /** Queues in the map, busy or idle. */

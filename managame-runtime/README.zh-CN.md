@@ -76,8 +76,8 @@ runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(
 
 框架提供的只有 `runtime.execute`、`GameContext.of` 和请求的 `reply`、`fail`；`Trade`、`bags`、`profiles`、`NOT_ENOUGH`
 都是游戏自己的，任务用不到的 context 写成 `_`。继续执行的任务里 `Context.current()` 就是这个 context，请求只应答一次，任务
-抛异常或被拒绝时请求会以错误码失败：不需要再记别的。两条路由上的两步不是一个事务：回来的那一步被拒绝时，请求以拒绝的错误码
-失败，把第一步扣掉的东西还回去是游戏自己的事。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
+抛异常或被拒绝时请求会以错误码失败：不需要再记别的。任务里交出去的工作不会因为过载或关闭被拒绝，所以两条路由上的两步都会执行。RPC 回调这类从任务之外回来的工作算入口，路由满时可能被拒绝：这时请求以拒绝的错误码
+失败，把第一步已经做完的事还原是游戏自己的事。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
 互相等待），或者本来就是异步的 API。
 
 ## Domain、执行器与路由键
@@ -86,9 +86,9 @@ runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(
 
 **执行器**（`RouteExecutors`，每个 domain 用一个新实例）：
 
-- `virtualThreads()`：每个路由键一个队列，由虚拟线程消费，阻塞的任务只会卡住自己的键。任务加入键的队列不加锁。处理完的队列会留给它的键，繁忙的键不会每个任务都新建、丢弃一次队列；空闲超过空闲时间的队列由清理线程回收，内存只跟最近用到的键相关：`virtualThreads(maxPendingPerKey, idleTimeout)`，默认每个键除正在执行的任务外最多 4096 个等待任务、空闲 60 秒。超过上限的键以 `ROUTE_EXECUTOR_OVERLOADED` 拒绝。
+- `virtualThreads()`：每个路由键一个队列，由虚拟线程消费，阻塞的任务只会卡住自己的键。任务加入键的队列不加锁。处理完的队列会留给它的键，繁忙的键不会每个任务都新建、丢弃一次队列；空闲超过空闲时间的队列由清理线程回收，内存只跟最近用到的键相关：`virtualThreads(maxPendingPerKey, idleTimeout, maxKeys)`，默认每个键除正在执行的任务外最多 4096 个等待任务、空闲 60 秒、最多 1 048 576 个键。键超过上限，或者已有 `maxKeys` 个队列（包括空闲的）时来了新键，都以 `ROUTE_EXECUTOR_OVERLOADED` 拒绝。键数上限用来约束按客户端发来的值路由的 domain 能占用多少内存，比如鉴权之前按账号路由的登录。
 - `striped(threads)`：固定数量的平台线程，一个键总在 `hash(key) % threads` 号线程上。不保存键的状态，但一个阻塞的任务会卡住同一线程上的所有键。`striped(threads, maxPendingPerThread)`，默认 65 536。
-- 也可以自己实现 `RouteExecutor`：`execute`，加上 `shutdown` 和 `awaitTermination`，用它自己的状态把活做完。
+- 也可以自己实现 `RouteExecutor`：`execute`，加上 `shutdown` 和 `awaitTermination`，用它自己的状态把活做完；如果它会因过载拒绝任务，还要实现 `handOn`，让任务能越过限制把工作交下去；能提供的话再实现 `pending`（关闭时要等它归零）、`maxPending` 和 `routes`，用于[指标](#指标)。
 
 **路由键**：每个 domain 的 resolver 为这个 domain 收到的所有消息统一给出路由键：
 
@@ -103,9 +103,9 @@ runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(
 @Domain(GUILD)
 class GuildHandle {
     @HandleMethod(routeKey = "guildId")         // 在 GUILD:捐献的公会 上执行
-    void donate(HandleContext request, Donate donate) { ... }
+    HandleResult donate(Donate donate) { ... }
     @HandleMethod(routeKey = "targetGuildId")   // 另一个消息里叫别的名字
-    void apply(HandleContext request, ApplyReq apply) { ... }
+    HandleResult apply(ApplyReq apply) { ... }
 }
 ```
 
@@ -133,7 +133,7 @@ class GuildHandle {
 | `@HttpMethod(path)` | HTTP 请求，默认 POST，可用 `method` 指定 | `HttpRoutes` |
 | `@Cron(domain, value)` | 日历时间，见[定时任务](#定时任务)；domain 和路由键写在注解里，方法不带消息 | `GameTimer` |
 
-处理器只有一个参数，即消息，按精确类型匹配；也可以在它前面多加一个上下文参数。`@HandleMethod` 返回 `HandleResult`，要稍后通过上下文应答时返回 void 或 null；`@HttpMethod` 返回 `HttpResult`、编解码器能写出的自定义类型或 `FullHttpResponse`，稍后应答时同样返回 void 或 null。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、`@HandleMethod` 返回其它类型、消息里没有 `routeKey` 指定的成员、同一个消息有两个处理器、上下文类型入口给不了。
+处理器只有一个参数，即消息，按精确类型匹配。大多数处理器只需要消息；业务要读上下文里的字段（比如当前操作的玩家），或者要稍后应答时，才在消息前面多加一个上下文参数。`@HandleMethod` 返回 `HandleResult`，要稍后通过上下文应答时声明为 void；`@HttpMethod` 返回 `HttpResult`、编解码器能写出的自定义类型或 `FullHttpResponse`，稍后应答时同样声明为 void。只有 void 方法才算稍后应答：有返回类型的方法返回 null 是 bug，以 `RUNTIME_EXECUTION_ERROR` 应答，并交给错误处理器。注册时方法被编译成 method handle，调用时不走反射。注册时遇到以下情况抛 `IllegalArgumentException`：缺少 `@Domain`、参数不对、`@HandleMethod` 返回其它类型、消息里没有 `routeKey` 指定的成员、同一个消息有两个处理器、上下文类型入口给不了。
 
 ## Dispatcher：玩家请求与其它消息
 
@@ -142,15 +142,14 @@ Dispatcher 不知道任何包格式。业务自己解码数据包，把消息连
 ```java
 @Domain(PLAYER)
 class Shop {
-    @HandleMethod HandleResult buy(HandleContext request, Buy buy) {    // 用返回值应答
-        if (!wallets.pay(request.businessId(), buy.price())) return HandleResult.fail(NOT_ENOUGH_GOLD, String.valueOf(buy.price()));
-        return HandleResult.ok(bags.add(request.businessId(), buy.item()));
+    @HandleMethod HandleResult prices(AskPrices ask) {                  // 常规写法：传入消息，返回应答
+        return HandleResult.ok(catalog.prices(ask.category()));
     }
-    @HandleMethod void rank(HandleContext request, AskRank ask) {       // 或稍后通过上下文在任意线程应答
-        ranks.query(request.businessId(), rank -> request.reply(rank));
+    @HandleMethod HandleResult sell(HandleContext context, Sell sell) { // 业务逻辑要知道当前操作的玩家时才取上下文
+        return market.sell(context.businessId(), sell.item());
     }
-    @HandleMethod HandleResult sell(HandleContext request, Sell sell) { // 或用业务逻辑的返回值应答
-        return market.sell(request.businessId(), sell.item());
+    @HandleMethod void rank(HandleContext context, AskRank ask) {       // 或者要稍后在任意线程应答时
+        ranks.query(context.businessId(), rank -> context.reply(rank));
     }
 }
 
@@ -383,9 +382,11 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
 ## 错误与关闭
 
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
+- `execute(context, task, finished)` 还会在任务结束时运行一次 `finished`，不管任务是正常返回、抛异常、被拦截器拦下，还是被拒绝。入口为任务持有的东西（比如 `HttpRoutes` 持有的请求缓冲区）要在这里归还，不能放在任务里，因为任务可能根本不运行。
 - 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
-- `shutdown()` 拒绝新任务，已接受的继续执行；`awaitTermination(timeout)` 等待它们完成；`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、定时器等），再关闭 runtime，这样关闭期间不会有新的工作交进来。
-- runtime 不统计进行中的任务。每个 domain 的执行器知道自己的活，由它自己做完：`striped` 用其 ThreadPoolExecutor 自带的关闭，`virtualThreads` 不再新建队列、每个队列排空后就退休。执行器关闭期间交来的任务，要么以 `ROUTE_EXECUTOR_CLOSED` 拒绝，要么在终止前执行完。
+- 限流和关闭只针对从外部进来的工作。在游戏任务里调用 `execute` 不会因为过载或关闭被拒绝，已接受的工作能把开始的事做完。其它调用方都算入口，包括 RPC 回调，它们的任务可能被拒绝。任务不断给自己交工作时同样会越过所有限制，可以从 `routes.max_pending` 发现。
+- `shutdown()` 拒绝来自外部的任务，并立即返回。已接受的任务继续执行，也可以继续交出工作，所有 domain 都没有工作后执行器才关闭；`awaitTermination(timeout)` 等到这一步，`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、RPC、定时器等），再关闭 runtime，这样 RPC 回调回来时 runtime 还能接受。
+- runtime 不统计进行中的任务：它等的是各 domain 的 `pending`，即执行器本来就持有的状态。没有工作后，`striped` 用其 ThreadPoolExecutor 自带的关闭，`virtualThreads` 不再新建队列、每个队列排空后就退休。
 
 ## 游戏时间
 
@@ -410,6 +411,20 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 | `cn.managame.runtime.event` | INFO：事件总线的订阅者数量。DEBUG：每种事件的订阅者。 |
 | `cn.managame.runtime.http` | INFO：HTTP 接口数量。DEBUG：每个接口、每个错误请求。ERROR：无法执行或无法应答的请求。 |
 | `cn.managame.runtime.timer` | INFO：每个排上的 `@Cron` 方法。DEBUG：每个 `timer.cron`。WARNING：被拒绝的触发。ERROR：执行失败的触发。 |
+
+## 指标
+
+`GameRuntime.builder().metrics(metrics)` 通过 common 的 `Metrics` 上报，默认 `Metrics.noop()`。所有指标都带 `domain` 标签；正常执行完的任务不上报任何东西，所以指标不增加它的开销：
+
+| 指标 | 类型 | 回答的问题 |
+| --- | --- | --- |
+| `managame.runtime.tasks.refused` | counter | 扛不住了吗？没有被接受的任务，带 `code` 标签：`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED` 或 `ROUTE_EXECUTOR_CLOSED` |
+| `managame.runtime.tasks.failed` | counter | 有 bug 吗？抛异常的任务 |
+| `managame.runtime.tasks.pending` | gauge | 积压多少？已接受、尚未结束的任务 |
+| `managame.runtime.routes.max_pending` | gauge | 有路由卡住吗？单个路由键上最多的任务数，striped 的 domain 是单个线程上的 |
+| `managame.runtime.routes.active` | gauge | 离 `maxKeys` 还有多远？有队列的路由键；striped 的 domain 不保存键的状态，始终为 0 |
+
+gauge 在采集时才读取执行器自己的状态，`close()` 时移除。路由卡住后只要还有任务进来，就会体现在 `routes.max_pending` 上；没有新任务进来时看不出来。这里不提供计时器：要查慢消息，在它的处理器里用自己的后端计时。
 
 ## 构建与测试
 

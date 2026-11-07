@@ -37,6 +37,13 @@ class GameRuntimeTest {
                 Arguments.of("striped", (Supplier<RouteExecutor>) () -> RouteExecutors.striped(4)));
     }
 
+    /** Room for one task waiting. */
+    static Stream<Arguments> limited() {
+        return Stream.of(
+                Arguments.of("virtualThreads", (Supplier<RouteExecutor>) () -> RouteExecutors.virtualThreads(1, Duration.ofSeconds(60))),
+                Arguments.of("striped", (Supplier<RouteExecutor>) () -> RouteExecutors.striped(2, 1)));
+    }
+
     private static GameRuntime runtime(Supplier<RouteExecutor> executor) {
         return GameRuntime.builder().domain(PLAYER, executor.get()).domain(WORLD, executor.get()).build();
     }
@@ -153,6 +160,85 @@ class GameRuntimeTest {
         assertEquals(11, ran.get());
         assertTrue(runtime.isTerminated());
         runtime.close();
+    }
+
+    @ParameterizedTest(name = "{0}") @MethodSource("limited")
+    void aFullRouteRefusesAnEntryButNotATaskHandingWorkOn(String name, Supplier<RouteExecutor> executor) throws Exception {
+        CountDownLatch release = new CountDownLatch(1), started = new CountDownLatch(1), handedOn = new CountDownLatch(1);
+        List<String> ran = new CopyOnWriteArrayList<>();
+        try (GameRuntime runtime = GameRuntime.builder().domain(PLAYER, executor.get()).build()) {
+            runtime.execute(GameContext.of(PLAYER, 1), context -> { started.countDown(); release.await(); });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            runtime.execute(GameContext.of(PLAYER, 1), context -> ran.add("waiting"));
+            assertEquals(ROUTE_EXECUTOR_OVERLOADED, assertThrows(GameRuntimeException.class,
+                    () -> runtime.execute(GameContext.of(PLAYER, 1), context -> ran.add("refused"))).errorCode());
+            runtime.execute(GameContext.of(PLAYER, 2), context -> {     // as the second step of a trade
+                runtime.execute(GameContext.of(PLAYER, 1), back -> ran.add("handed on"));
+                handedOn.countDown();
+            });
+            assertTrue(handedOn.await(5, TimeUnit.SECONDS));
+            release.countDown();
+        }
+        assertEquals(List.of("waiting", "handed on"), ran);
+    }
+
+    @ParameterizedTest(name = "{0}") @MethodSource("executors")
+    void workHandedOnDuringShutdownRunsAcrossDomains(String name, Supplier<RouteExecutor> executor) throws Exception {
+        int hops = 200;
+        CountDownLatch release = new CountDownLatch(1), started = new CountDownLatch(1);
+        AtomicInteger ran = new AtomicInteger();
+        BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
+        GameRuntime[] runtime = new GameRuntime[1];
+        class Hop implements GameTask<GameContext> {
+            private final int left;
+
+            Hop(int left) { this.left = left; }
+
+            @Override public void run(GameContext context) {
+                ran.incrementAndGet();
+                if (left > 0) runtime[0].execute(GameContext.of(left % 2 == 0 ? PLAYER : WORLD, left), new Hop(left - 1));
+            }
+        }
+        runtime[0] = GameRuntime.builder().domain(PLAYER, executor.get()).domain(WORLD, executor.get())
+                .errorHandler((context, cause) -> errors.add(cause)).build();
+        runtime[0].execute(GameContext.of(PLAYER, 0), context -> {
+            started.countDown();
+            release.await();
+            new Hop(hops).run(context);
+        });
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+        runtime[0].shutdown();
+        assertEquals(RUNTIME_CLOSED, assertThrows(GameRuntimeException.class,
+                () -> runtime[0].execute(GameContext.of(PLAYER, 1), context -> {})).errorCode());
+        assertFalse(runtime[0].awaitTermination(Duration.ofMillis(50)), "a task still runs, and may hand work on");
+        release.countDown();
+        runtime[0].close();
+        assertEquals(hops + 1, ran.get());
+        assertTrue(errors.isEmpty(), () -> "refused on the way: " + errors);
+        assertTrue(runtime[0].isTerminated());
+    }
+
+    @Test void finishedRunsOnceHoweverTheTaskEnds() {
+        byte refusedRole = 2;
+        List<String> trace = new CopyOnWriteArrayList<>();
+        TaskInterceptor gate = new TaskInterceptor() {
+            @Override public boolean before(Context context) { return context.businessType() != refusedRole; }
+            @Override public void after(Context context, Throwable failure) { trace.add("after"); }
+        };
+        GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.striped(1), RouteKeys.constant(0))
+                .intercept(List.of(gate)).errorHandler((context, cause) -> {}).build();
+        runtime.execute(GameContext.of(PLAYER, 7), context -> trace.add("task"), () -> trace.add("finished"));
+        runtime.execute(GameContext.of(PLAYER, 7), context -> { throw new IllegalStateException("boom"); },
+                () -> trace.add("finished after a throw"));
+        runtime.execute(GameContext.of(PLAYER, 7, refusedRole, 1), context -> trace.add("stopped"),
+                () -> trace.add("finished after an interceptor stopped it"));
+        runtime.close();
+        GameRuntimeException refused = assertThrows(GameRuntimeException.class,
+                () -> runtime.execute(GameContext.of(PLAYER, 7), context -> trace.add("refused"), () -> trace.add("finished after a refusal")));
+        assertEquals(RUNTIME_CLOSED, refused.errorCode());
+        assertEquals(0, refused.getStackTrace().length, "refusals come in floods, and record no stack trace");
+        assertEquals(List.of("task", "after", "finished", "after", "finished after a throw",
+                "finished after an interceptor stopped it", "finished after a refusal"), trace);
     }
 
     @Test void closingFromATaskIsRefused() throws Exception {

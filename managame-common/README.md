@@ -106,15 +106,11 @@ as a builder setting, `Metrics.noop()` by default; business code uses the instan
 ```java
 // Once, when a component is built or something it measures is added:
 Counter refused = metrics.counter("managame.runtime.tasks.refused", "domain", "1");
-Timer calls = metrics.timer("game.rank.calls");
 metrics.gauge("game.players.online", sessions::size);                // read when the backend collects
 Meter sent = metrics.counter("game.mails.sent", mailer::sentCount);  // counted elsewhere, read the same way
 
 // Per event: one call, no tags built, nothing allocated
 refused.increment();
-long start = calls.start();
-callRank();
-calls.stop(start);
 
 sent.close();   // when what it reads goes away: removed from the backend
 ```
@@ -124,7 +120,6 @@ sent.close();   // when what it reads goes away: removed from the backend
 | `counter(name, tags...)` | `Counter`: `increment()`, `increment(n)` | Events, such as tasks refused or calls timed out |
 | `counter(name, count, tags...)` | `Meter`: `close()` | A count kept elsewhere, such as a field a component counts anyway, read when the backend collects; it never falls |
 | `gauge(name, value, tags...)` | `Meter`: `close()` | A value that rises and falls, such as players online or tasks waiting, read when the backend collects |
-| `timer(name, tags...)` | `Timer`: `record(nanos)`, `start()`, `stop(start)` | Durations, in nanoseconds |
 
 Rules:
 
@@ -136,12 +131,14 @@ Rules:
 - Create meters once and keep them in fields, each name and tag set once. Every meter is safe to use from any thread.
 - Reporting costs what the backend's own meter costs and nothing more: `MetricsBenchmark` in managame-benchmark counts
   through `Metrics` into a LongAdder, the kind of striped adder Micrometer counts in, as fast as into the LongAdder alone, by one thread or by
-  four sharing it. `Metrics.noop()` is one empty meter, whose methods the JIT inlines away, and its `start()` reads no
-  clock. A bound timer pays two clock reads, about 40 ns on Windows, so time what matters and count the rest; a gauge
-  and a counter kept elsewhere cost nothing until the backend reads them.
+  four sharing it. `Metrics.noop()` is one empty meter, whose methods the JIT inlines away; a gauge and a counter kept
+  elsewhere cost nothing until the backend reads them.
+- There is no timer. Reading the clock around every task or call costs a hot path most of its time, for an average that
+  finds nothing, so a component reports what it refuses, what fails and what it holds. An application times the calls
+  it cares about with its own backend.
 - `close()` removes a gauge or a counter kept elsewhere from the backend and lets go of what it reads, for one of
-  something that goes away, such as a peer. Counters and timers last as long as the backend: a peer back under the
-  same node id reports to the same series again.
+  something that goes away, such as a peer. Counters last as long as the backend: a peer back under the same node id
+  reports to the same series again.
 
 ### Over Micrometer
 
@@ -167,18 +164,11 @@ public final class MicrometerMetrics implements Metrics {
         Gauge gauge = Gauge.builder(name, value, DoubleSupplier::getAsDouble).tags(tags).strongReference(true).register(registry);
         return () -> registry.remove(gauge);
     }
-
-    @Override public Timer timer(String name, String... tags) {
-        io.micrometer.core.instrument.Timer timer = registry.timer(name, tags);
-        return nanos -> timer.record(nanos, TimeUnit.NANOSECONDS);
-    }
 }
 ```
 
-Micrometer converts names and units for each backend: for Prometheus, dots into underscores and times into
-seconds. For percentiles such as p99, register timers with
-`Timer.builder(name).tags(tags).publishPercentileHistogram().register(registry)`. Over OpenTelemetry, the same
-methods map to its counter, observable counter, observable gauge and histogram.
+Micrometer converts names for each backend: for Prometheus, dots into underscores. Over OpenTelemetry, the same
+methods map to its counter, observable counter and observable gauge.
 
 ## Error codes
 

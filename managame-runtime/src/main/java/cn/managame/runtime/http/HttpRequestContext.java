@@ -53,10 +53,12 @@ public final class HttpRequestContext implements RequestContext {
     public SocketAddress remoteAddress() { return exchange.remoteAddress(); }
 
     /**
-     * A FullHttpResponse is sent as is; anything else goes through the codec, and a result it cannot encode is answered
-     * with the failure for RUNTIME_EXECUTION_ERROR, and logged.
+     * A FullHttpResponse is sent as is, and null, a success with nothing to send back, is an empty 200; anything else
+     * goes through the codec, and a result it cannot encode is answered with the failure for RUNTIME_EXECUTION_ERROR,
+     * and logged.
      */
     @Override public boolean reply(Object result) {
+        if (result == null) return exchange.respond(HttpResponseStatus.OK);
         if (result instanceof FullHttpResponse ready) return exchange.respond(ready);
         FullHttpResponse response;
         try {

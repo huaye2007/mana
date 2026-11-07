@@ -116,17 +116,13 @@ public final class HttpRoutes implements HttpHandler {
         request.retain(); // the exchange releases its reference when this returns; the task keeps its own
         try {
             runtime.execute(context, task -> {
-                try {
-                    Object result = endpoint.method().invoke(task, argument);
-                    if (result != null) task.reply(result);
-                } finally {
-                    request.release();
-                }
-            });
+                Object result = endpoint.method().invoke(task, argument);
+                if (result != null) task.reply(result);
+                else if (!endpoint.method().returnsVoid()) throw new IllegalStateException(endpoint.method() + " returned null; only a void endpoint answers later");
+            }, request::release);
         } catch (GameRuntimeException refused) {
-            request.release();   // execute answered the request with the refusal's code
+            // execute answered the request with the refusal's code
         } catch (RuntimeException e) {
-            request.release();
             LOG.log(Level.ERROR, "Cannot run HTTP request " + request.uri(), e);
             context.fail(RUNTIME_EXECUTION_ERROR);
         }

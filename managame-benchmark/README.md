@@ -8,7 +8,7 @@ depends on it, and its benchmarks of one component never join it with another.
 
 | Package | Benchmarks | What they measure |
 | --- | --- | --- |
-| `cn.managame.benchmark.common` | `MetadataBenchmark`, `IdGeneratorBenchmark`, `MetricsBenchmark` | Building metadata, reading a value, wrapping received bytes; making ids; counting and timing with the no-op metrics against doing nothing, and through `Metrics` over a LongAdder against the LongAdder alone, by one thread and by four (ns/op) |
+| `cn.managame.benchmark.common` | `MetadataBenchmark`, `IdGeneratorBenchmark`, `MetricsBenchmark` | Building metadata, reading a value, wrapping received bytes; making ids; counting with the no-op metrics against doing nothing, and through `Metrics` over a LongAdder against the LongAdder alone, by one thread and by four (ns/op) |
 | `cn.managame.benchmark.network` | `EchoThroughputBenchmark`, `EchoLatencyBenchmark`, and the same as `…ProcessBenchmark` | Length-framed messages echoed over loopback: per second with many in flight, and the round trip of one |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`, `DispatchThroughputBenchmark` | Tasks through `GameRuntime.execute`, without and with an interceptor, and player requests through the `Dispatcher` to an annotated handler, per second |
 | `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`, `CallLatencyBenchmark`, `NotifyThroughputBenchmark`, and the same as `…ProcessBenchmark` | Calls answered and notifies handled per second with many in flight, and the round trip of one call |
