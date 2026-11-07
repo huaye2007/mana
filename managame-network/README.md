@@ -188,8 +188,9 @@ You can also skip `NettyConnection` and implement `Connection` yourself.
   returns a Connection.
 - `onEvent`: user events from the pipeline (such as `IdleStateEvent`), excluding TLS / WebSocket handshake
   events.
-- `onException`: exceptions after `onActive`, including those thrown by the other callbacks. The connection is
-  not closed automatically; the application decides.
+- `onException`: exceptions while the connection is up, including those thrown by the other callbacks. The connection
+  is not closed automatically; the application decides. Writes still waiting when it closes fail without coming here,
+  however many there were: `onInActive` tells it is gone.
 - `Connection.write` returns `ACCEPTED` / `INACTIVE` / `NOT_WRITABLE` (over the write buffer's high-water mark)
   and never blocks.
 
@@ -248,8 +249,9 @@ addFront… | [ssl] | http-codec, http-flow, http-exchange, http-keep-alive, htt
 ## Client
 
 A `NetworkClient` keeps a connection to one remote address up: it connects at once, and whenever connecting
-fails or the connection closes it connects again, waiting twice as long after each failure up to a maximum, and
-from the minimum again after a success. What each connection does is the handler you give it, normally a
+fails or the connection closes it connects again, waiting twice as long each time up to a maximum, and from the
+minimum again once a connection has stayed up for that maximum, so a server that accepts and closes at once, as one
+refusing a handshake does, is dialed ever less often. What each connection does is the handler you give it, normally a
 `ConnectionInitializer`, so client connections follow the same `ConnectionHandler` semantics as server ones:
 `onActive` on every connect, `onInActive` when it drops.
 

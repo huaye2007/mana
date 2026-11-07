@@ -10,7 +10,7 @@ Types shared by every managame project, with no dependencies:
   (unique across servers and their merges, ordered by time, holding some data of the application's own, laid out by
   an `IdLayout`) and `SequenceIdGenerator` (counting up in this process).
 - `FrameworkErrorCodes`: the error codes the framework answers failures with.
-- `Metrics`: counters, gauges and timers, which the framework and the application report through and the
+- `Metrics`: counters and gauges, which the framework and the application report through and the
   application binds to its own backend (Micrometer, Prometheus, OpenTelemetry), in package `cn.managame.metrics`.
 
 ## Metadata
@@ -176,10 +176,11 @@ Zero is success and every failure code is positive. The framework uses these:
 
 | Code | Name | Meaning |
 | --- | --- | --- |
-| 2002 | `RPC_UNAVAILABLE` | The peer has no connection up, its connection is too busy, too many calls to it wait, a new instance of it replaced the one asked, or it was removed or the calling node closed |
+| 2002 | `RPC_UNAVAILABLE` | The peer has no connection up, a new instance of it replaced the one asked, or it was removed or the calling node closed |
 | 2003 | `RPC_TIMEOUT` | No answer within the call's timeout |
 | 2006 | `RPC_HANDLER_ERROR` | The peer's RPC handler threw |
 | 2007 | `RPC_PROTOCOL_ERROR` | The request is larger than the peer receives, or its answer larger than the caller does |
+| 2008 | `RPC_OVERLOADED` | The peer's connection is too busy, or too many calls to it wait |
 | 3001 | `RUNTIME_CLOSED` | The runtime is shut down and refuses new tasks |
 | 3002 | `HANDLER_NOT_FOUND` | No handler for the message |
 | 3005 | `INVALID_ROUTE_KEY` | The handler's domain could not find a route key for the message |

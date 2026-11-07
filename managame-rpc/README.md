@@ -54,8 +54,9 @@ Node 1 can call node 2 back over the connections node 2 dialed: `world.peer(2).n
 - `deadline` is a `System.nanoTime()` value of the process holding the request, when the caller stops waiting.
   It travels as the time left, so the two clocks need not agree. A request that arrives expired is dropped; the
   callee can check `request.isExpired()` before running a queued request.
-- `RpcResponse.of(requestId, [metadata,] body)` is a success (code 0); `RpcResponse.failure(requestId, code)` a
-  failure, with a positive code.
+- `RpcResponse.of(requestId, [metadata,] body)` is a success (code 0); `RpcResponse.failure(requestId, code[, metadata,
+  body])` a failure, with a positive code. Its metadata and body say what the code alone cannot, such as the values
+  its message shows, in the application's format.
 - Bodies are Netty `ByteBuf`s; the three records are reference-counted through them, like Netty's own messages.
 
 ## Calls
@@ -81,7 +82,7 @@ connection's slot from its handshake.
 3. With no connection up, a call fails with `RPC_UNAVAILABLE` and a notify returns `INACTIVE`.
 
 A busy connection does not hand its keys to another, which would reorder them each time it becomes busy: a call
-fails with `RPC_UNAVAILABLE` and a notify returns `NOT_WRITABLE`.
+fails with `RPC_OVERLOADED` and a notify returns `NOT_WRITABLE`.
 
 ### Callbacks
 
@@ -115,7 +116,8 @@ fails with `RPC_UNAVAILABLE` and a notify returns `NOT_WRITABLE`.
 
 | Code | When |
 | --- | --- |
-| `RPC_UNAVAILABLE` | No connection is up, the connection is too busy, `maxPendingCalls` calls wait already, the peer's last connection closed while the call waited, a new instance of the peer replaced the one asked, or the peer was removed or this node closed |
+| `RPC_UNAVAILABLE` | No connection is up, the peer's last connection closed while the call waited, a new instance of the peer replaced the one asked, or the peer was removed or this node closed: the peer is not there, so try another node |
+| `RPC_OVERLOADED` | The connection is too busy, or `maxPendingCalls` calls wait already: the peer is there, and asking it more only makes it worse, so slow down |
 | `RPC_TIMEOUT` | No answer within the timeout (5 seconds by default), also when the request or its answer was lost with a connection that closed while another stayed up |
 | `RPC_PROTOCOL_ERROR` | The answer was larger than the callee's largest frame |
 | `RPC_HANDLER_ERROR` | The callee's handler threw |
@@ -180,7 +182,8 @@ The application drives membership from its own configuration or service discover
 
 - **`node.createPeer(id, address[, connections])`** dials a node with one or more connections and returns its
   peer at once. Each connection is dialed again whenever it fails or closes, from 100 ms doubling up to 10 seconds
-  by default (`redialDelay`).
+  by default (`redialDelay`), and from 100 ms again once a connection has stayed up for those 10 seconds, so a node
+  refused in its handshake dials ever less often.
 - **A node that dials in** joins by the id in its handshake. When all its connections are gone, its peer stays
   known, and the node dialing in again rejoins the same `RpcPeer` instance.
 - **`node.removePeer(id)`** forgets a peer, dialed or dialing in: its waiting calls fail with `RPC_UNAVAILABLE`,
@@ -288,7 +291,7 @@ RpcNode.builder()
 
 - A connection with more data queued than its high water mark is busy. The mark is
   `DEFAULT_WRITE_BUFFER_WATER_MARK` (1 MiB low, 4 MiB high) unless a bootstrap sets Netty's `WRITE_BUFFER_WATER_MARK`.
-  A busy connection refuses new calls (`RPC_UNAVAILABLE`) and notifies (`NOT_WRITABLE`) at once, so that a slow
+  A busy connection refuses new calls (`RPC_OVERLOADED`) and notifies (`NOT_WRITABLE`) at once, so that a slow
   peer cannot fill this node's memory, but takes answers written with `writeTo`. Messages from other threads
   count by their size while they wait for the connection's EventLoop: the node sets an estimator that knows calls,
   notifies and answers, unless a bootstrap sets Netty's `MESSAGE_SIZE_ESTIMATOR`.
@@ -302,9 +305,9 @@ RpcNode.builder()
   ```
 
   The peer's connection then fills and turns busy: its notifies return `NOT_WRITABLE` and its calls fail with
-  `RPC_UNAVAILABLE`. Pause briefly: a side that reads nothing for three heartbeat intervals closes the connection.
+  `RPC_OVERLOADED`. Pause briefly: a side that reads nothing for three heartbeat intervals closes the connection.
 - At most `maxPendingCalls` calls to one peer wait for their answer at a time (4096 by default); more fail with
-  `RPC_UNAVAILABLE` until some end. Each peer has a table of waiting calls with a reference for each call allowed,
+  `RPC_OVERLOADED` until some end. Each peer has a table of waiting calls with a reference for each call allowed,
   about 16 KiB at the default.
 - Each node sends and receives frames up to its `maxFrameLength`, and the nodes of a cluster use the same value: a
   larger frame arriving closes the connection. A call or notify larger throws `IllegalArgumentException`, after its
@@ -338,6 +341,14 @@ heartbeat. The heartbeat itself runs on the connection's EventLoop.
 - `peer.connectionCount()`, `peer.isConnected()`, `peer.incarnation()`, and the listener's connections and restarts.
 - Every call's outcome reaches its callback with the request it answers; an application measures latency, timeouts
   and failures by peer and command in its own callback adapter, for whatever monitoring it uses.
+- `metrics(Metrics)` reports what operators act on, by peer: the tag `node` is the peer's id. A call that succeeds
+  reports nothing, so metrics cost it nothing.
+
+| Metric | Kind | Tells |
+| --- | --- | --- |
+| `managame.rpc.peer.connections` | gauge | Is the peer there? Its connections up |
+| `managame.rpc.calls.pending` | gauge | Is the peer keeping up? Calls waiting for its answer |
+| `managame.rpc.calls.failed` | counter | Calls that failed, with the tag `code`: `RPC_UNAVAILABLE`, `RPC_OVERLOADED`, `RPC_TIMEOUT`, `RPC_HANDLER_ERROR` or `RPC_PROTOCOL_ERROR`. An application's own codes are its own to count |
 
 ## Threads
 
@@ -367,6 +378,7 @@ None of them may block: business logic belongs on the application's own threads,
 | `heartbeatInterval(Duration)` | 5 seconds | How often a dialed connection sends a heartbeat; three intervals without data close a connection. The same on every node of a cluster |
 | `maxFrameLength(int)` | 8 MiB | The largest frame this node sends and receives, its length field included. The same on every node of a cluster |
 | `maxPendingCalls(int)` | 4096 | How many calls to one peer may wait for their answer at a time |
+| `metrics(Metrics)` | `Metrics.noop()` | Where the node reports, see [Observability](#observability) |
 
 `start()` listens when asked to and returns the running node. A failed bind releases what it started and throws
 `NetworkException`.

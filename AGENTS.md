@@ -110,9 +110,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   Message fields such as `command`, `businessType` and `businessId` are carried as is, never interpreted.
 - **Reference counting follows Netty.** Bodies are `ByteBuf`s, never copied on the way; RPC messages are
   `ReferenceCounted` through them. What is handed to the framework becomes its own; what the framework hands to a
-  callback is released when it returns. What an entry holds for a task goes back through
-  `GameRuntime.execute(context, task, finished)`, never in the task, which an interceptor or a refusal may keep from
-  running.
+  callback is released when it returns. What an entry holds for a task goes back at the end of its `run` and in its
+  `GameTask.refused`, which runs instead when an interceptor or a refusal keeps it from running.
 - **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
   (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routeKey)` run one at a time in submission order.
   Work that comes back from another thread or route (an RPC callback, a visit to another player's route) goes on
@@ -167,7 +166,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   falls back to another one up while that one is down; heartbeats are the dialing side's; there is no Goodbye or
   drain protocol, as a node announces going offline itself; callbacks never run on the calling thread; one time
   wheel per node does all its timing (call timeouts, heartbeats); the handshake negotiates nothing, so the nodes
-  of a cluster share one protocol version, heartbeat interval and largest frame.
+  of a cluster share one protocol version, heartbeat interval and largest frame; a call fails with `RPC_UNAVAILABLE`
+  when its peer is not there and `RPC_OVERLOADED` when it is but can take no more, since a caller answers the two
+  differently.
 - data names and decisions the maintainer made: `GameData` with `GameData.builder()`, `SingleRepository<K, E>`
   (by `@Id`), `GroupRepository<K, E>` (groups by `@GroupKey`, `GroupKeys.of(...)`, a map per group by `@MapKey`,
   `MapKeys.of(...)` for several), `LogRepository<E>`, repositories as empty subclasses the builder creates, registered

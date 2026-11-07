@@ -23,7 +23,7 @@ class PendingCallsTest {
     private static Call call(PendingCalls calls) { return call(calls, (request, response) -> {}); }
 
     @Test void callsGetIdsOfTheirOwnAndAreTakenOutOnce() {
-        PendingCalls calls = new PendingCalls(4);
+        PendingCalls calls = new PendingCalls(4, code -> {});
         Call first = call(calls), second = call(calls);
         assertTrue(calls.add(first));
         assertTrue(calls.add(second));
@@ -39,7 +39,7 @@ class PendingCallsTest {
     }
 
     @Test void theLimitHoldsAndIdsSkipTakenSlots() {
-        PendingCalls calls = new PendingCalls(3); // 4 slots
+        PendingCalls calls = new PendingCalls(3, code -> {}); // 4 slots
         Call stuck = call(calls);
         calls.add(stuck);
         for (int i = 0; i < 2; i++) assertTrue(calls.add(call(calls)));
@@ -57,17 +57,19 @@ class PendingCallsTest {
     }
 
     @Test void failAllEndsEveryCallWithTheCode() {
-        PendingCalls calls = new PendingCalls(8);
+        List<Integer> heard = new ArrayList<>();
+        PendingCalls calls = new PendingCalls(8, heard::add);
         List<Integer> codes = new ArrayList<>();
         for (int i = 0; i < 5; i++) calls.add(call(calls, (request, response) -> codes.add(response.code())));
         calls.failAll(77);
         assertEquals(List.of(77, 77, 77, 77, 77), codes);
+        assertEquals(codes, heard, "each failure is heard");
         assertEquals(0, calls.size());
     }
 
     /** Callers add and take out their calls while answers take them out by id and failAll empties the table: each call ends once. */
     @Test void everyCallEndsOnceUnderContention() throws Exception {
-        PendingCalls calls = new PendingCalls(64);
+        PendingCalls calls = new PendingCalls(64, code -> {});
         Set<Integer> ended = ConcurrentHashMap.newKeySet();
         AtomicInteger twice = new AtomicInteger(), made = new AtomicInteger();
         RpcCallback record = (request, response) -> { if (!ended.add(response.requestId())) twice.incrementAndGet(); };

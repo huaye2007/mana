@@ -2,6 +2,7 @@ package cn.managame.rpc;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.function.IntConsumer;
 
 /**
  * The calls to one peer waiting for their answer, keyed by request id, safe from any thread without locks: a table
@@ -10,6 +11,8 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * its slot ends it, so each call ends exactly once.
  */
 final class PendingCalls {
+    /** Hears the code of each call that fails on this node, before its callback does. */
+    final IntConsumer failed;
     private final AtomicReferenceArray<Call> slots;
     /** The calls kept at most, and the number of slots less one: slots are the power of two no smaller than that. */
     private final int limit, mask;
@@ -17,7 +20,8 @@ final class PendingCalls {
     private final AtomicInteger size = new AtomicInteger();
 
     /** At most {@code limit} calls at a time, at least one. */
-    PendingCalls(int limit) {
+    PendingCalls(int limit, IntConsumer failed) {
+        this.failed = failed;
         this.limit = limit;
         int capacity = limit == 1 ? 1 : Integer.highestOneBit(limit - 1) << 1;
         mask = capacity - 1;

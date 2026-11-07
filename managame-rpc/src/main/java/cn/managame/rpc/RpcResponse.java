@@ -11,8 +11,9 @@ import java.util.Objects;
 
 /**
  * The answer to one call, under the call's {@code requestId}: {@code code} zero with the metadata and body the
- * callee replied with, or a failure code with no metadata and an empty body, from the callee or from the calling
- * node itself (see {@link RpcPeer#call}). The callee writes it to the connection the request came on:
+ * callee replied with, or a failure code, from the callee, with whatever metadata and body it gave it, or from the
+ * calling node itself (see {@link RpcPeer#call}), with neither. The callee writes it to the connection the request
+ * came on:
  *
  * <pre>{@code
  * RpcResponse.of(request.requestId(), body).writeTo(connection);
@@ -35,10 +36,19 @@ public record RpcResponse(int requestId, int code, Metadata metadata, ByteBuf bo
         return new RpcResponse(requestId, FrameworkErrorCodes.SUCCESS, metadata, body);
     }
 
-    /** A failure; {@code code} must be positive (IllegalArgumentException otherwise). */
+    /** A failure with nothing more to say; {@code code} must be positive (IllegalArgumentException otherwise). */
     public static RpcResponse failure(int requestId, int code) {
+        return failure(requestId, code, Metadata.empty(), Unpooled.EMPTY_BUFFER);
+    }
+
+    /**
+     * A failure that says more than its code, such as the values the code's message shows, in the application's format,
+     * which the caller reads from the response as it reads a success; {@code code} must be positive
+     * (IllegalArgumentException otherwise).
+     */
+    public static RpcResponse failure(int requestId, int code, Metadata metadata, ByteBuf body) {
         if (code <= 0) throw new IllegalArgumentException("A failure code must be positive: " + code);
-        return new RpcResponse(requestId, code, Metadata.empty(), Unpooled.EMPTY_BUFFER);
+        return new RpcResponse(requestId, code, metadata, body);
     }
 
     public boolean isSuccess() { return code == FrameworkErrorCodes.SUCCESS; }

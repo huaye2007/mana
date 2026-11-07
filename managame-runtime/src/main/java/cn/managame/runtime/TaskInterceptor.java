@@ -28,7 +28,7 @@ package cn.managame.runtime;
  * interceptor whose before returned true, so what a before sets up an after always takes down. A before that returns
  * false refuses the task: it and the later befores do not run, and no error handler hears of it, since a refusal is no
  * error. The interceptor answers a request it refuses, or else it fails with RUNTIME_EXECUTION_ERROR, since a request
- * is always answered.
+ * is always answered. After the afters, a task that did not run has its {@link GameTask#refused} called.
  *
  * <p>An exception from either is handled as one from the task: a request fails with RUNTIME_EXECUTION_ERROR, unless it
  * was answered already, and the exception goes to the error handler. A before that throws also keeps the task and the

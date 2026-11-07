@@ -8,6 +8,7 @@ import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeException;
+import cn.managame.runtime.GameTask;
 import cn.managame.runtime.Route;
 import cn.managame.runtime.annotation.AnnotatedMethod;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
@@ -115,11 +116,7 @@ public final class HttpRoutes implements HttpHandler {
         HttpRequestContext context = new HttpRequestContext(route, from.metadata(), exchange, codec);
         request.retain(); // the exchange releases its reference when this returns; the task keeps its own
         try {
-            runtime.execute(context, task -> {
-                Object result = endpoint.method().invoke(task, argument);
-                if (result != null) task.reply(result);
-                else if (!endpoint.method().returnsVoid()) throw new IllegalStateException(endpoint.method() + " returned null; only a void endpoint answers later");
-            }, request::release);
+            runtime.execute(context, new EndpointTask(endpoint.method(), argument, request));
         } catch (GameRuntimeException refused) {
             // execute answered the request with the refusal's code
         } catch (RuntimeException e) {
@@ -135,6 +132,21 @@ public final class HttpRoutes implements HttpHandler {
 
     /** An endpoint and the type of the argument it takes. */
     private record Endpoint(AnnotatedMethod method, Type argument) {}
+
+    /** A request on its endpoint. It keeps a reference to the request, which goes back whether it runs or not. */
+    private record EndpointTask(AnnotatedMethod method, Object argument, FullHttpRequest request) implements GameTask<HttpRequestContext> {
+        @Override public void run(HttpRequestContext context) throws Exception {
+            try {
+                Object result = method.invoke(context, argument);
+                if (result != null) context.reply(result);
+                else if (!method.returnsVoid()) throw new IllegalStateException(method + " returned null; only a void endpoint answers later");
+            } finally {
+                request.release();
+            }
+        }
+
+        @Override public void refused(HttpRequestContext context) { request.release(); }
+    }
 
     public static final class Builder {
         private final GameRuntime runtime;

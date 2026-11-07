@@ -81,9 +81,9 @@ public final class GameRuntime implements AutoCloseable {
      * or a visit to another player's route: execute with the context to continue on, the task's own or its request.
      * Throws GameRuntimeException with RUNTIME_CLOSED after shutdown (ROUTE_EXECUTOR_CLOSED when the domain's executor
      * refuses a task given while it shuts down) or ROUTE_EXECUTOR_OVERLOADED when the domain's executor is full; the
-     * task then never runs, and a RequestContext is first failed with that code, so a request is answered whether its
-     * task was accepted or not. A request whose task throws is failed with RUNTIME_EXECUTION_ERROR. An unregistered
-     * domain throws IllegalArgumentException.
+     * task then never runs, its {@link GameTask#refused} does, and a RequestContext is first failed with that code, so a
+     * request is answered whether its task was accepted or not. A request whose task throws is failed with
+     * RUNTIME_EXECUTION_ERROR. An unregistered domain throws IllegalArgumentException.
      * <p>
      * Refusing is for what comes in from outside. Called from a game task, this takes the work past every limit on load
      * and during shutdown, so that what was accepted finishes what it began, such as the second step of a trade. Any
@@ -95,30 +95,11 @@ public final class GameRuntime implements AutoCloseable {
      */
     public <C extends Context> void execute(C context, GameTask<? super C> task) {
         Objects.requireNonNull(task, "task");
-        submit(context, () -> run(context, task));
-    }
-
-    /**
-     * As {@link #execute(Context, GameTask)}, and runs {@code finished} once however the task ends: on its route after
-     * the task and its interceptors, when the task threw or an interceptor stopped it too, or before this throws when
-     * the task was not accepted. It is for what an entry holds for its task, such as a buffer to release, and must not
-     * throw.
-     */
-    public <C extends Context> void execute(C context, GameTask<? super C> task, Runnable finished) {
-        Objects.requireNonNull(task, "task");
-        Objects.requireNonNull(finished, "finished");
-        boolean accepted = false;
         try {
-            submit(context, () -> {
-                try {
-                    run(context, task);
-                } finally {
-                    finished.run();
-                }
-            });
-            accepted = true;
-        } finally {
-            if (!accepted) finished.run();
+            submit(context, () -> run(context, task));
+        } catch (RuntimeException notAccepted) {
+            task.refused(context);
+            throw notAccepted;
         }
     }
 
@@ -181,7 +162,10 @@ public final class GameRuntime implements AutoCloseable {
         }
     }
 
-    /** The befores in order, the task unless one refused it, then the after of each before that returned true, in reverse. */
+    /**
+     * The befores in order, the task unless one refused it, then the after of each before that returned true, in reverse,
+     * and last the refused of a task that did not run. All of them run whatever one throws.
+     */
     private <C extends Context> void intercept(C context, GameTask<? super C> task) throws Exception {
         int entered = 0;
         Throwable failure = null;
@@ -197,12 +181,24 @@ public final class GameRuntime implements AutoCloseable {
             try {
                 interceptors[i].after(context, failure);
             } catch (Exception | Error e) {
-                if (thrown == null) thrown = e;
-                else thrown.addSuppressed(e);
+                thrown = joined(thrown, e);
+            }
+        }
+        if (entered < interceptors.length) {
+            try {
+                task.refused(context);
+            } catch (Exception | Error e) {
+                thrown = joined(thrown, e);
             }
         }
         if (thrown instanceof Error error) throw error;
         if (thrown != null) throw (Exception) thrown;
+    }
+
+    private static Throwable joined(Throwable first, Throwable next) {
+        if (first == null) return next;
+        first.addSuppressed(next);
+        return first;
     }
 
     /** An interceptor refused the task; fail does nothing if it answered the request, as it should. */

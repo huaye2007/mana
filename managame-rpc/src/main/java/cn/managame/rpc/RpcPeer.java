@@ -1,8 +1,16 @@
 package cn.managame.rpc;
 
+import static cn.managame.FrameworkErrorCodes.RPC_HANDLER_ERROR;
+import static cn.managame.FrameworkErrorCodes.RPC_OVERLOADED;
+import static cn.managame.FrameworkErrorCodes.RPC_PROTOCOL_ERROR;
+import static cn.managame.FrameworkErrorCodes.RPC_TIMEOUT;
 import static cn.managame.FrameworkErrorCodes.RPC_UNAVAILABLE;
 
+import cn.managame.FrameworkErrorCodes;
 import cn.managame.Metadata;
+import cn.managame.metrics.Counter;
+import cn.managame.metrics.Meter;
+import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.netty.NetworkClient;
@@ -11,7 +19,9 @@ import io.netty.util.AttributeKey;
 import java.lang.System.Logger.Level;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
@@ -56,10 +66,14 @@ public final class RpcPeer {
     private static final AttributeKey<RpcPeer> KEY = AttributeKey.valueOf("cn.managame.rpc.peer");
     /** The incarnation of the instance of the peer a connection joined. */
     private static final AttributeKey<Long> INCARNATION = AttributeKey.valueOf("cn.managame.rpc.incarnation");
+    /** The failures counted, the framework's own; an application's codes make no series of their own. */
+    private static final int[] FAILURES = {RPC_UNAVAILABLE, RPC_OVERLOADED, RPC_TIMEOUT, RPC_HANDLER_ERROR, RPC_PROTOCOL_ERROR};
     private final RpcNode node;
     private final int nodeId;
     private final boolean outbound;
     private final PendingCalls pending;
+    private final Map<Integer, Counter> failures;
+    private final List<Meter> gauges;
     /** The dialers keeping the connections to an outbound peer up. */
     private volatile List<NetworkClient> clients = List.of();
     /** Replaced whole, under this, as connections join and leave. */
@@ -79,8 +93,15 @@ public final class RpcPeer {
         this.node = node;
         this.nodeId = nodeId;
         this.outbound = outbound;
-        pending = new PendingCalls(node.maxPendingCalls());
+        pending = new PendingCalls(node.maxPendingCalls(), this::failed);
         instance = new Instance(0, new Connection[slots]);
+        Metrics metrics = node.metrics();
+        String id = String.valueOf(nodeId);
+        Map<Integer, Counter> counters = new HashMap<>();
+        for (int code : FAILURES) counters.put(code, metrics.counter("managame.rpc.calls.failed", "node", id, "code", FrameworkErrorCodes.name(code)));
+        failures = Map.copyOf(counters);
+        gauges = List.of(metrics.gauge("managame.rpc.peer.connections", this::connectionCount, "node", id),
+                metrics.gauge("managame.rpc.calls.pending", pending::size, "node", id));
     }
 
     public int nodeId() { return nodeId; }
@@ -118,9 +139,10 @@ public final class RpcPeer {
      * about the network throws: the callback receives the callee's answer, which may be a failure code of the
      * callee's, or one of
      * <ul>
-     * <li>RPC_UNAVAILABLE: no connection is up, the connection is too busy to take the request, as many calls as
-     * the builder's {@code maxPendingCalls} wait already, the peer's last connection closed while the call waited,
-     * a new instance of the peer replaced the one asked, or the peer was removed or this node closed;</li>
+     * <li>RPC_UNAVAILABLE: no connection is up, the peer's last connection closed while the call waited, a new
+     * instance of the peer replaced the one asked, or the peer was removed or this node closed: try another node;</li>
+     * <li>RPC_OVERLOADED: the connection is too busy to take the request, or as many calls as the builder's
+     * {@code maxPendingCalls} wait already: the peer is there, and asking it more only makes it worse;</li>
      * <li>RPC_TIMEOUT: no answer within {@code timeout}, also when the request or its answer was lost with a
      * connection that closed while another stayed up;</li>
      * <li>RPC_PROTOCOL_ERROR: the answer was larger than the callee's largest frame.</li>
@@ -146,16 +168,17 @@ public final class RpcPeer {
         Connection connection = removed || node.isClosed() ? null : connection(request.routeKey());
         if (connection == null || !connection.isWritable() || !pending.add(call)) {
             call.release();
-            failLater(call, RPC_UNAVAILABLE);
+            failLater(call, connection == null ? RPC_UNAVAILABLE : RPC_OVERLOADED);
             return;
         }
         try {
             call.timeout = node.timer().newTimeout(call, timeoutNanos, TimeUnit.NANOSECONDS);
         } catch (IllegalStateException stopped) {} // the node is closing, and fails the call
         // Read after joining: a removal or a close either fails the call or is seen here.
-        if (!removed && !node.isClosed() && connection.write(call) == WriteStatus.ACCEPTED) return;
+        WriteStatus status = removed || node.isClosed() ? WriteStatus.INACTIVE : connection.write(call);
+        if (status == WriteStatus.ACCEPTED) return;
         call.release();
-        if (pending.remove(call)) failLater(call, RPC_UNAVAILABLE);
+        if (pending.remove(call)) failLater(call, status == WriteStatus.NOT_WRITABLE ? RPC_OVERLOADED : RPC_UNAVAILABLE);
     }
 
     /**
@@ -217,7 +240,14 @@ public final class RpcPeer {
     /** An answer from the peer: it ends its call, if that still waits. */
     void answer(RpcResponse response) {
         Call call = pending.remove(response.requestId());
-        if (call != null) call.complete(response);
+        if (call == null) return;
+        if (!response.isSuccess()) failed(response.code());
+        call.complete(response);
+    }
+
+    private void failed(int code) {
+        Counter counter = failures.get(code);
+        if (counter != null) counter.increment();
     }
 
     /** The connections the dialing side opens: fixed for a peer this node dials. */
@@ -307,15 +337,15 @@ public final class RpcPeer {
             removed = true;
             slots = instance.slots();
         }
-        pending.failAll(RPC_UNAVAILABLE);
-        for (NetworkClient client : clients) client.close();
+        close();
         for (Connection connection : slots) if (connection != null) connection.close();
     }
 
-    /** The node is closing: the waiting calls fail with RPC_UNAVAILABLE and dialing stops. */
+    /** The node is closing: the waiting calls fail with RPC_UNAVAILABLE, dialing stops and the peer lets go of its gauges. */
     void close() {
         pending.failAll(RPC_UNAVAILABLE);
         for (NetworkClient client : clients) client.close();
+        gauges.forEach(Meter::close);
     }
 
     @Override public String toString() {

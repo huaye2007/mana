@@ -277,7 +277,8 @@ timer.close();
 - 基于时间轮（Netty 的 `HashedWheelTimer`）：添加和取消的开销与定时器数量无关，适合每个玩家一个定时器。定时器在到期后一格之内触发。
 - 时间轮的线程只负责把到期任务交给 runtime，业务逻辑和其它任务一样在路由上执行。
 - 延迟使用单调时钟，不受 `GameTime` 影响。
-- `every` 按固定频率执行，第一次在一个周期之后。被 runtime 拒绝（路由已满）的那一次会记录日志并跳过；runtime 关闭后定时器停止。
+- `every` 按固定频率执行，第一次在一个周期之后。上一次还没结束时，这一次会记录日志并跳过，所以任务比周期慢时只会变慢，不会占满路由：做 tick 的业务要读实际过了多久，不要数触发次数。被 runtime 拒绝（路由已满）的那一次同样记录日志并跳过；runtime 关闭后定时器停止。
+- 在定时器自己的路由上取消后，它不会再执行，已经排在路由上的那次也不会，所以关闭副本的任务取消心跳后就不用再管了。在别的线程上取消时，`cancel` 返回的同时可能正好有一次开始执行。
 
 ### 定时任务
 
@@ -296,7 +297,7 @@ timer.cron(GameContext.of(WORLD, 0), activity.cron(), context -> activity.open()
 
 - 表达式 6 段：秒、分、时、日、月、周。每段是 `*`、一个值、范围 `a-b`、列表 `a,b` 或步长（`*/15`、`5/20`、`9-17/2`）；月可写 `JAN`–`DEC`，周可写 `SUN`–`SAT` 或 `0`–`7`（0 和 7 都是周日）；`?` 等同于 `*`。日和周都写了具体值时，满足其一就触发，与 Unix cron 相同。不支持 `L`、`W`、`#`。
 - 方法不带参数，或带一个 `GameContext`（即 `GameContext.of(domain, routeKey)`），返回值忽略。方法签名、表达式不对或 domain 未注册时，`register` 抛 `IllegalArgumentException`，一个也不排。
-- 时间按 `GameTime` 的时钟和时区读取，见[游戏时间](#游戏时间)。定时任务至少每秒看一次 `GameTime`：到点就触发，再在"现在"和"刚到点的时刻"中较晚者之后找下一次；发现时钟或时区换了，就在新的上面重新找，所以 `setClock`、`setZone`、`resetClock` 之后一秒内自动重排，不用取消再注册。夏令时跳过的本地时刻不触发，重复的只触发一次。晚了的那次只补一次，停机期间错过的不补，被 runtime 拒绝的那次记录日志并跳过。
+- 时间按 `GameTime` 的时钟和时区读取，见[游戏时间](#游戏时间)。定时任务至少每秒看一次 `GameTime`：到点就触发，再在"现在"和"刚到点的时刻"中较晚者之后找下一次；发现时钟或时区换了，就在新的上面重新找，所以 `setClock`、`setZone`、`resetClock` 之后一秒内自动重排，不用取消再注册。夏令时跳过的本地时刻不触发，重复的只触发一次。晚了的那次只补一次，停机期间错过的不补，上一次还没结束或被 runtime 拒绝的那次记录日志并跳过。
 
 ## HTTP
 
@@ -382,7 +383,7 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
 ## 错误与关闭
 
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
-- `execute(context, task, finished)` 还会在任务结束时运行一次 `finished`，不管任务是正常返回、抛异常、被拦截器拦下，还是被拒绝。入口为任务持有的东西（比如 `HttpRoutes` 持有的请求缓冲区）要在这里归还，不能放在任务里，因为任务可能根本不运行。
+- 任务不会执行时，会调用它的 `refused(context)` 来代替 `run`：被拦截器拦下、拦截器在它之前抛了异常，或者 runtime 没有接受它。持有东西的任务（比如 `HttpRoutes` 交给 runtime 的任务持有请求缓冲区）在 `run` 结束时和 `refused` 里都要归还。lambda 不持有东西，两处都不用管。
 - 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
 - 限流和关闭只针对从外部进来的工作。在游戏任务里调用 `execute` 不会因为过载或关闭被拒绝，已接受的工作能把开始的事做完。其它调用方都算入口，包括 RPC 回调，它们的任务可能被拒绝。任务不断给自己交工作时同样会越过所有限制，可以从 `routes.max_pending` 发现。
 - `shutdown()` 拒绝来自外部的任务，并立即返回。已接受的任务继续执行，也可以继续交出工作，所有 domain 都没有工作后执行器才关闭；`awaitTermination(timeout)` 等到这一步，`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、RPC、定时器等），再关闭 runtime，这样 RPC 回调回来时 runtime 还能接受。
@@ -410,7 +411,7 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 | `cn.managame.runtime.dispatch` | INFO：Dispatcher 的处理器数量。DEBUG：每种消息对应的处理器、每条被拒绝的消息。ERROR：无法执行的处理器。 |
 | `cn.managame.runtime.event` | INFO：事件总线的订阅者数量。DEBUG：每种事件的订阅者。 |
 | `cn.managame.runtime.http` | INFO：HTTP 接口数量。DEBUG：每个接口、每个错误请求。ERROR：无法执行或无法应答的请求。 |
-| `cn.managame.runtime.timer` | INFO：每个排上的 `@Cron` 方法。DEBUG：每个 `timer.cron`。WARNING：被拒绝的触发。ERROR：执行失败的触发。 |
+| `cn.managame.runtime.timer` | INFO：每个排上的 `@Cron` 方法。DEBUG：每个 `timer.cron`。WARNING：被拒绝或跳过的触发。ERROR：执行失败的触发。 |
 
 ## 指标
 

@@ -43,7 +43,7 @@ worldPeer.call(RpcRequest.of(RANK_OF, playerId, body), (request, response) -> {
 - 除 `requestId`、`deadline` 和 `code` 外，所有字段都归业务所有，原样传输：`command` 表示请求的内容，`businessType` 和 `businessId` 表示涉及的业务对象，`metadata`（common 的 `Metadata`）携带其他信息，比如追踪 id、调用方身份。节点自己只读 `routeKey`，用来选连接。
 - `requestId` 和 `deadline` 由发起调用的节点分配。`RpcRequest.of(...)` 把它们设为 0，调用时再分配。被调用方用同一个 id 回一个 `RpcResponse`。
 - `deadline` 是持有该请求的进程的 `System.nanoTime()` 值，表示调用方停止等待的时间点。它在线上以"剩余时间"传输，所以两台机器的时钟不必一致。到达时已过期的请求直接丢弃；被调用方在执行排过队的请求前，可以用 `request.isExpired()` 检查一下。
-- `RpcResponse.of(requestId, [metadata,] body)` 表示成功（code 为 0）；`RpcResponse.failure(requestId, code)` 表示失败，code 必须是正数。
+- `RpcResponse.of(requestId, [metadata,] body)` 表示成功（code 为 0）；`RpcResponse.failure(requestId, code[, metadata, body])` 表示失败，code 必须是正数。metadata 和 body 用来说明错误码说不清的内容，比如提示文字里的动态值，格式由业务决定。
 - body 是 Netty 的 `ByteBuf`。三种记录都通过 body 做引用计数，和 Netty 自己的消息一样。
 
 ## 调用
@@ -63,7 +63,7 @@ worldPeer.call(RpcRequest.of(RANK_OF, playerId, body), (request, response) -> {
 2. 这条连接断开期间，它的 key 改走后面槽位中第一条可用的连接。只有断开那个槽上的 key 会换连接。这个槽恢复后，它的 key 切回来；切回的那一刻，备用连接上还没到的消息可能被本槽连接上新发的消息超过。
 3. 一条可用的连接都没有时，调用以 `RPC_UNAVAILABLE` 失败，通知返回 `INACTIVE`。
 
-连接繁忙时不换连接：繁忙会频繁出现又消失，一繁忙就换会让同一个 key 的消息乱序。这时调用以 `RPC_UNAVAILABLE` 失败，通知返回 `NOT_WRITABLE`。
+连接繁忙时不换连接：繁忙会频繁出现又消失，一繁忙就换会让同一个 key 的消息乱序。这时调用以 `RPC_OVERLOADED` 失败，通知返回 `NOT_WRITABLE`。
 
 ### 回调
 
@@ -84,7 +84,8 @@ worldPeer.call(RpcRequest.of(RANK_OF, playerId, body), (request, response) -> {
 
 | 错误码 | 何时出现 |
 | --- | --- |
-| `RPC_UNAVAILABLE` | 没有可用连接、连接繁忙、已有 `maxPendingCalls` 个调用在等待、调用等待期间对端的最后一条连接断开了、对端的新实例替换了被调用的实例，或对端被移除、本节点已关闭 |
+| `RPC_UNAVAILABLE` | 没有可用连接、调用等待期间对端的最后一条连接断开了、对端的新实例替换了被调用的实例，或对端被移除、本节点已关闭：对端不在，应该换一个节点 |
+| `RPC_OVERLOADED` | 连接繁忙，或已有 `maxPendingCalls` 个调用在等待：对端还在，继续请求只会更糟，应该降速 |
 | `RPC_TIMEOUT` | 超时时间内没有应答（默认 5 秒）；请求或应答随一条连接丢失、而其他连接还在时也是这样 |
 | `RPC_PROTOCOL_ERROR` | 应答超过了被调用方的最大帧长度 |
 | `RPC_HANDLER_ERROR` | 被调用方的处理器抛出了异常 |
@@ -131,7 +132,7 @@ body 是 Netty 的 `ByteBuf`，一路都不拷贝。三种记录遵循 Netty 的
 
 成员关系由业务根据自己的配置或服务发现来驱动。
 
-- **`node.createPeer(id, address[, connections])`** 用一条或多条连接主动连接一个节点，并立即返回它的对端对象。每条连接失败或断开后都会重连，默认间隔从 100 毫秒开始翻倍，最长 10 秒（可用 `redialDelay` 设置）。
+- **`node.createPeer(id, address[, connections])`** 用一条或多条连接主动连接一个节点，并立即返回它的对端对象。每条连接失败或断开后都会重连，默认间隔从 100 毫秒开始翻倍，最长 10 秒（可用 `redialDelay` 设置）；连接稳定存活 10 秒后才从 100 毫秒重新开始，所以握手被拒的节点重连得越来越慢。
 - **主动连进来的节点**按握手里的 id 加入。它的连接全部断开后，对端对象仍然保留；该节点再次连进来时，会重新挂到同一个 `RpcPeer` 实例上。
 - **`node.removePeer(id)`** 移除一个对端，不论连接由哪一方发起：等待中的调用以 `RPC_UNAVAILABLE` 失败，停止重连，关闭它的连接。该节点之后再连进来，会作为新的对端加入。连进来的对端在被移除前一直保留，所以节点会以新 id 上下线的集群，要在服务发现看到节点离开时移除它。
 - **`node.peer(id)`** 返回该 id 的对端，没有则返回 null；**`node.peers()`** 返回所有对端的快照。
@@ -209,15 +210,15 @@ RpcNode.builder()
 
 ## 背压与上限
 
-- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（`RPC_UNAVAILABLE`）和通知（`NOT_WRITABLE`），这样慢对端不会撑爆本节点的内存；但通过 `writeTo` 写出的应答照样接收。从其他线程发出的消息在等待连接的 EventLoop 时，按实际大小计入水位：除非 bootstrap 自己设置了 Netty 的 `MESSAGE_SIZE_ESTIMATOR`，节点会设置一个认识调用、通知和应答的估算器。
+- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（`RPC_OVERLOADED`）和通知（`NOT_WRITABLE`），这样慢对端不会撑爆本节点的内存；但通过 `writeTo` 写出的应答照样接收。从其他线程发出的消息在等待连接的 EventLoop 时，按实际大小计入水位：除非 bootstrap 自己设置了 Netty 的 `MESSAGE_SIZE_ESTIMATOR`，节点会设置一个认识调用、通知和应答的估算器。
 - **被调用方靠暂停读取来反压。** 处理器总是立即返回，socket 一直被读空，所以对端发得比本节点业务处理得快时，光靠 TCP 不会让它慢下来。业务队列快满时，在消息到达的那条连接上关掉 Netty 自带的开关，处理完积压后再打开：
 
   ```java
   ((NettyConnection) connection).channel().config().setAutoRead(false); // 设回 true 即恢复
   ```
 
-  对端的这条连接随之写满、变为繁忙：它的通知返回 `NOT_WRITABLE`，调用以 `RPC_UNAVAILABLE` 失败。只能短暂停顿：任何一方连续三个心跳间隔读不到数据，就会关闭连接。
-- 每个对端同时等待应答的调用最多 `maxPendingCalls` 个（默认 4096），超出的调用以 `RPC_UNAVAILABLE` 失败，直到有调用结束。每个对端有一张等待表，每个允许的调用占一个引用，默认约 16 KiB。
+  对端的这条连接随之写满、变为繁忙：它的通知返回 `NOT_WRITABLE`，调用以 `RPC_OVERLOADED` 失败。只能短暂停顿：任何一方连续三个心跳间隔读不到数据，就会关闭连接。
+- 每个对端同时等待应答的调用最多 `maxPendingCalls` 个（默认 4096），超出的调用以 `RPC_OVERLOADED` 失败，直到有调用结束。每个对端有一张等待表，每个允许的调用占一个引用，默认约 16 KiB。
 - 每个节点只发送和接收不超过自己 `maxFrameLength` 的帧，集群里各节点用同一个值：收到更长的帧就关闭连接。调用或通知超过上限时，先释放消息，再抛 `IllegalArgumentException`；应答超过上限时，改为发出 `RPC_PROTOCOL_ERROR`。
 
 ## 握手与心跳
@@ -238,6 +239,13 @@ RpcNode.builder()
 - `peer.pendingCount()`：发往该对端、还在等待应答的调用数。
 - `peer.connectionCount()`、`peer.isConnected()`、`peer.incarnation()`，以及通过监听器获知的连接和重启事件。
 - 每个调用的结果都会和它的请求一起交给回调；业务在自己的回调适配器里按对端和 command 统计延迟、超时和失败，对接自己使用的任何监控系统。
+- `metrics(Metrics)` 按对端上报运维需要处理的情况：标签 `node` 是对端的 id。成功的调用不上报，所以指标不增加它的开销。
+
+| 指标 | 类型 | 回答的问题 |
+| --- | --- | --- |
+| `managame.rpc.peer.connections` | gauge | 对端还在吗？它可用的连接数 |
+| `managame.rpc.calls.pending` | gauge | 对端跟得上吗？等待它应答的调用数 |
+| `managame.rpc.calls.failed` | counter | 失败的调用，带 `code` 标签：`RPC_UNAVAILABLE`、`RPC_OVERLOADED`、`RPC_TIMEOUT`、`RPC_HANDLER_ERROR` 或 `RPC_PROTOCOL_ERROR`。业务自己的错误码由业务自己统计 |
 
 ## 线程
 
@@ -267,6 +275,7 @@ RpcNode.builder()
 | `heartbeatInterval(Duration)` | 5 秒 | 主动建立的连接多久发一次心跳；连续三个间隔收不到数据就关闭连接。集群里各节点用同一个值 |
 | `maxFrameLength(int)` | 8 MiB | 本节点发送和接收的最大帧长度，包括长度字段。集群里各节点用同一个值 |
 | `maxPendingCalls(int)` | 4096 | 每个对端同时等待应答的调用最多有几个 |
+| `metrics(Metrics)` | `Metrics.noop()` | 节点上报到哪里，见[可观测性](#可观测性) |
 
 `start()` 按配置开始监听，并返回运行中的节点。绑定端口失败时，会先释放已启动的资源，再抛出 `NetworkException`。
 

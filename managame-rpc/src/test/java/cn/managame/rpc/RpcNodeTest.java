@@ -2,6 +2,7 @@ package cn.managame.rpc;
 
 import static cn.managame.FrameworkErrorCodes.HANDLER_NOT_FOUND;
 import static cn.managame.FrameworkErrorCodes.RPC_HANDLER_ERROR;
+import static cn.managame.FrameworkErrorCodes.RPC_OVERLOADED;
 import static cn.managame.FrameworkErrorCodes.RPC_PROTOCOL_ERROR;
 import static cn.managame.FrameworkErrorCodes.RPC_TIMEOUT;
 import static cn.managame.FrameworkErrorCodes.RPC_UNAVAILABLE;
@@ -15,8 +16,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import cn.managame.FrameworkErrorCodes;
 import cn.managame.Metadata;
 import cn.managame.MetadataKey;
+import cn.managame.metrics.Counter;
+import cn.managame.metrics.Meter;
+import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.WriteStatus;
 import io.netty.bootstrap.Bootstrap;
@@ -53,7 +58,10 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
+import java.util.function.DoubleSupplier;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -65,7 +73,8 @@ class RpcNodeTest {
     private static final MetadataKey<Integer> SERVICE = MetadataKey.intKey(2);
     private static final MetadataKey<String> TOKEN = MetadataKey.stringKey(3);
     private static final int ECHO = 1, FIELDS = 2, LATER = 3, KEEP = 4, BOOM = 5, SILENT = 6, TWICE = 7, BIG = 8,
-            HOLD = 9, CLOSE = 10, DROP = 11, NOTE = 20, ORDER = 21;
+            HOLD = 9, CLOSE = 10, DROP = 11, REFUSE = 12, NOTE = 20, ORDER = 21;
+    private static final int SOLD_OUT = 10_001;   // the game's own code
 
     /** What handlers saw, what listeners heard, and what callbacks got. */
     private final BlockingQueue<String> seen = new LinkedBlockingQueue<>(), events = new LinkedBlockingQueue<>(),
@@ -133,6 +142,7 @@ class RpcNodeTest {
                 RpcResponse.of(id, text(name + " closing")).writeTo(connection);
                 connection.close();
             }
+            case REFUSE -> RpcResponse.failure(id, SOLD_OUT, Metadata.builder().put(TRACE, "t-1").build(), text("3 of 5")).writeTo(connection);
             case DROP -> { // the connection drops before the answer is ready, which then goes on another connection
                 connection.close();
                 Thread.ofVirtual().start(() -> {
@@ -638,8 +648,75 @@ class RpcNodeTest {
         RpcPeer peer = game.createPeer(1, at(world));
         await(peer::isConnected);
         for (int i = 0; i < 3; i++) peer.call(RpcRequest.of(SILENT, text("")), recorder());
-        assertEquals("fail " + RPC_UNAVAILABLE, next(answers));
+        assertEquals("fail " + RPC_OVERLOADED, next(answers));
         assertEquals(2, peer.pendingCount());
+    }
+
+    @Test void aFailureMaySayMoreThanItsCode() throws Exception {
+        RpcPeer peer = connect(1);
+        BlockingQueue<String> failures = new LinkedBlockingQueue<>();
+        peer.call(RpcRequest.of(REFUSE, text("")), (request, response) -> failures.add(response.code() + " "
+                + response.metadata().get(TRACE) + " " + text(response.body())));
+        assertEquals(SOLD_OUT + " t-1 3 of 5", next(failures));
+    }
+
+    /** Stands in for a backend: adds up counters, and holds gauges until they are closed. */
+    private static final class Backend implements Metrics {
+        final Map<String, LongAdder> counts = new ConcurrentHashMap<>();
+        final Map<String, DoubleSupplier> gauges = new ConcurrentHashMap<>();
+
+        private static String key(String name, String... tags) { return name + List.of(tags); }
+
+        @Override public Counter counter(String name, String... tags) { return counts.computeIfAbsent(key(name, tags), key -> new LongAdder())::add; }
+
+        @Override public Meter counter(String name, LongSupplier count, String... tags) { throw new UnsupportedOperationException(); }
+
+        @Override public Meter gauge(String name, DoubleSupplier value, String... tags) {
+            gauges.put(key(name, tags), value);
+            return () -> gauges.remove(key(name, tags));
+        }
+
+        long failed(int node, int code) {
+            return counts.get(key("managame.rpc.calls.failed", "node", String.valueOf(node), "code", FrameworkErrorCodes.name(code))).sum();
+        }
+
+        double gauge(String name, int node) { return gauges.get(key(name, "node", String.valueOf(node))).getAsDouble(); }
+    }
+
+    @Test void aPeerReportsItsConnectionsItsWaitingCallsAndItsFailures() throws Exception {
+        Backend metrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK));
+        game = start(node(2, "game").metrics(metrics).maxPendingCalls(2));
+        RpcPeer peer = game.createPeer(1, at(world), 2);
+        await(() -> peer.connectionCount() == 2);
+        assertEquals(2, metrics.gauge("managame.rpc.peer.connections", 1));
+
+        peer.call(RpcRequest.of(SILENT, text("")), Duration.ofMillis(50), recorder());
+        assertEquals("fail " + RPC_TIMEOUT, next(answers));
+        for (int i = 0; i < 2; i++) peer.call(RpcRequest.of(SILENT, text("")), recorder());
+        assertEquals(2, metrics.gauge("managame.rpc.calls.pending", 1));
+        peer.call(RpcRequest.of(SILENT, text("")), recorder());
+        assertEquals("fail " + RPC_OVERLOADED, next(answers));
+
+        assertTrue(game.removePeer(1));
+        assertEquals(1, metrics.failed(1, RPC_TIMEOUT));
+        assertEquals(1, metrics.failed(1, RPC_OVERLOADED));
+        assertEquals(2, metrics.failed(1, RPC_UNAVAILABLE), "the two that waited");
+        assertTrue(metrics.gauges.isEmpty(), "a peer removed lets go of its gauges");
+    }
+
+    @Test void failuresFromTheCalleeAreCountedTooButNotAnApplicationsOwn() throws Exception {
+        Backend metrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK));
+        game = start(node(2, "game").metrics(metrics));
+        RpcPeer peer = game.createPeer(1, at(world));
+        await(peer::isConnected);
+        peer.call(RpcRequest.of(BOOM, text("")), recorder());
+        assertEquals("fail " + RPC_HANDLER_ERROR, next(answers));
+        peer.call(RpcRequest.of(99, text("")), recorder());
+        assertEquals("fail 999", next(answers));
+        assertEquals(1, metrics.failed(1, RPC_HANDLER_ERROR));
+        assertEquals(5, metrics.counts.size(), "the framework's codes, none made for the application's");
     }
 
     /**
@@ -713,7 +790,7 @@ class RpcNodeTest {
         } finally {
             release.countDown();
         }
-        assertEquals("fail " + RPC_UNAVAILABLE, next(answers), "refused, and failed on the EventLoop once it is free");
+        assertEquals("fail " + RPC_OVERLOADED, next(answers), "refused, and failed on the EventLoop once it is free");
         await(() -> peer.notify(RpcNotify.of(NOTE, text("again"))) == WriteStatus.ACCEPTED);
     }
 

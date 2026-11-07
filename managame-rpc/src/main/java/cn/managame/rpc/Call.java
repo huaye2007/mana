@@ -50,7 +50,10 @@ final class Call implements ReferenceCounted, TimerTask {
         }
     }
 
-    void fail(int code) { complete(RpcResponse.failure(id, code)); }
+    void fail(int code) {
+        calls.failed.accept(code);
+        complete(RpcResponse.failure(id, code));
+    }
 
     @Override public int refCnt() { return request.refCnt(); }
     @Override public Call retain() { request.retain(); return this; }

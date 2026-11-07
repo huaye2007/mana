@@ -218,27 +218,58 @@ class GameRuntimeTest {
         assertTrue(runtime[0].isTerminated());
     }
 
-    @Test void finishedRunsOnceHoweverTheTaskEnds() {
-        byte refusedRole = 2;
+    /** A task holding something, which says what became of it. */
+    private record Holding(List<String> trace, String name) implements GameTask<Context> {
+        @Override public void run(Context context) { trace.add(name + " ran"); }
+        @Override public void refused(Context context) { trace.add(name + " refused"); }
+    }
+
+    @Test void aTaskThatWillNotRunIsToldSo() {
+        byte refusedRole = 2, throwingRole = 3;
         List<String> trace = new CopyOnWriteArrayList<>();
         TaskInterceptor gate = new TaskInterceptor() {
-            @Override public boolean before(Context context) { return context.businessType() != refusedRole; }
+            @Override public boolean before(Context context) {
+                if (context.businessType() == throwingRole) throw new IllegalStateException("boom");
+                return context.businessType() != refusedRole;
+            }
             @Override public void after(Context context, Throwable failure) { trace.add("after"); }
         };
+        TaskInterceptor outer = new TaskInterceptor() {
+            @Override public void after(Context context, Throwable failure) { trace.add("outer after"); }
+        };
         GameRuntime runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.striped(1), RouteKeys.constant(0))
-                .intercept(List.of(gate)).errorHandler((context, cause) -> {}).build();
-        runtime.execute(GameContext.of(PLAYER, 7), context -> trace.add("task"), () -> trace.add("finished"));
-        runtime.execute(GameContext.of(PLAYER, 7), context -> { throw new IllegalStateException("boom"); },
-                () -> trace.add("finished after a throw"));
-        runtime.execute(GameContext.of(PLAYER, 7, refusedRole, 1), context -> trace.add("stopped"),
-                () -> trace.add("finished after an interceptor stopped it"));
+                .intercept(List.of(outer, gate)).errorHandler((context, cause) -> {}).build();
+        runtime.execute(GameContext.of(PLAYER, 7), new Holding(trace, "accepted"));
+        runtime.execute(GameContext.of(PLAYER, 7, refusedRole, 1), new Holding(trace, "stopped"));
+        runtime.execute(GameContext.of(PLAYER, 7, throwingRole, 1), new Holding(trace, "broken"));
         runtime.close();
         GameRuntimeException refused = assertThrows(GameRuntimeException.class,
-                () -> runtime.execute(GameContext.of(PLAYER, 7), context -> trace.add("refused"), () -> trace.add("finished after a refusal")));
+                () -> runtime.execute(GameContext.of(PLAYER, 7), new Holding(trace, "late")));
         assertEquals(RUNTIME_CLOSED, refused.errorCode());
         assertEquals(0, refused.getStackTrace().length, "refusals come in floods, and record no stack trace");
-        assertEquals(List.of("task", "after", "finished", "after", "finished after a throw",
-                "finished after an interceptor stopped it", "finished after a refusal"), trace);
+        assertEquals(List.of("accepted ran", "after", "outer after", "outer after", "stopped refused", "outer after", "broken refused",
+                "late refused"), trace);
+    }
+
+    @ParameterizedTest(name = "{0}") @MethodSource("executors")
+    void whatARefusedTaskThrowsGoesToTheErrorHandlerAndItsRouteCarriesOn(String name, Supplier<RouteExecutor> executor) throws Exception {
+        byte refusedRole = 2;
+        BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();
+        CountDownLatch next = new CountDownLatch(1);
+        TaskInterceptor gate = new TaskInterceptor() {
+            @Override public boolean before(Context context) { return context.businessType() != refusedRole; }
+        };
+        GameRuntime runtime = GameRuntime.builder().domain(PLAYER, executor.get()).intercept(List.of(gate))
+                .errorHandler((context, cause) -> errors.add(cause)).build();
+        runtime.execute(GameContext.of(PLAYER, 7, refusedRole, 1), new GameTask<Context>() {
+            @Override public void run(Context context) {}
+            @Override public void refused(Context context) { throw new IllegalStateException("released twice"); }
+        });
+        assertEquals("released twice", errors.poll(5, TimeUnit.SECONDS).getMessage());
+        runtime.execute(GameContext.of(PLAYER, 7), context -> next.countDown());
+        assertTrue(next.await(5, TimeUnit.SECONDS), "the route still runs tasks");
+        runtime.shutdown();
+        assertTrue(runtime.awaitTermination(Duration.ofSeconds(5)), "and the runtime can finish");
     }
 
     @Test void closingFromATaskIsRefused() throws Exception {

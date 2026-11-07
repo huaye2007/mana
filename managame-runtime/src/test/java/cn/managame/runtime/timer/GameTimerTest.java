@@ -13,6 +13,8 @@ import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RequestContext;
+import cn.managame.runtime.TaskInterceptor;
+import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.executor.RouteExecutors;
 import cn.managame.runtime.time.GameTime;
 import java.time.Clock;
@@ -25,6 +27,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -103,6 +106,89 @@ class GameTimerTest {
         Scheduled scheduled = timer.after(GameContext.of(WORLD, 0), Duration.ofMillis(100), context -> fired.incrementAndGet());
         assertTrue(scheduled.cancel());
         TimeUnit.MILLISECONDS.sleep(200);
+        assertEquals(0, fired.get());
+    }
+
+    @Test void aTimerCancelledOnItsRouteRunsNoMore() throws Exception {
+        GameContext route = GameContext.of(PLAYER, 7);
+        AtomicInteger fired = new AtomicInteger();
+        List<Boolean> stopped = new CopyOnWriteArrayList<>();
+        CountDownLatch behind = new CountDownLatch(1);
+        runtime.execute(route, context -> {
+            Scheduled tick = timer.every(route, Duration.ofMillis(20), later -> fired.incrementAndGet());
+            Scheduled expiry = timer.after(route, Duration.ofMillis(20), later -> fired.incrementAndGet());
+            TimeUnit.MILLISECONDS.sleep(100);   // both are due, and wait for this task behind it
+            stopped.addAll(List.of(tick.cancel(), expiry.cancel(), expiry.isDone()));
+            runtime.execute(route, later -> behind.countDown());
+        });
+        assertTrue(behind.await(5, TimeUnit.SECONDS));
+        assertEquals(List.of(true, true, true), stopped);
+        assertEquals(0, fired.get(), "what waited on the route found its timer cancelled");
+    }
+
+    @Test void aPeriodicTaskSlowerThanItsPeriodSkipsFiringsRatherThanFillItsRoute() throws Exception {
+        RouteExecutor executor = RouteExecutors.virtualThreads();
+        AtomicInteger ran = new AtomicInteger();
+        long most = 0;
+        try (GameRuntime slow = GameRuntime.builder().domain(PLAYER, executor).build(); GameTimer fast = new GameTimer(slow, Duration.ofMillis(1))) {
+            fast.every(GameContext.of(PLAYER, 7), Duration.ofMillis(5), context -> {
+                ran.incrementAndGet();
+                TimeUnit.MILLISECONDS.sleep(25);
+            });
+            for (int i = 0; i < 40; i++) {
+                most = Math.max(most, executor.pending());
+                TimeUnit.MILLISECONDS.sleep(5);
+            }
+        }
+        assertTrue(most <= 2, "the running one, and the next as it ends; saw " + most);
+        assertTrue(ran.get() >= 2, "it goes on as each firing finishes");
+    }
+
+    @Test void aCronTaskStillRunningSkipsItsNextTimes() throws Exception {
+        RouteExecutor executor = RouteExecutors.virtualThreads();
+        CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
+        long pending;
+        try (GameRuntime slow = GameRuntime.builder().domain(PLAYER, executor).build(); GameTimer fast = new GameTimer(slow, Duration.ofMillis(1))) {
+            fast.cron(GameContext.of(PLAYER, 7), "* * * * * *", context -> {
+                started.countDown();
+                release.await();
+            });
+            started.await(3, TimeUnit.SECONDS);
+            TimeUnit.MILLISECONDS.sleep(2200);   // two more seconds come round
+            pending = executor.pending();
+            release.countDown();
+        }
+        assertEquals(1, pending, "the running one alone");
+    }
+
+    @Test void aPeriodicTimerGoesOnAfterAnInterceptorRefusesAFiring() throws Exception {
+        AtomicInteger befores = new AtomicInteger();
+        TaskInterceptor gate = new TaskInterceptor() {
+            @Override public boolean before(Context context) { return befores.incrementAndGet() > 3; }
+        };
+        CountDownLatch fired = new CountDownLatch(1);
+        try (GameRuntime gated = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads()).intercept(List.of(gate)).build();
+             GameTimer fast = new GameTimer(gated, Duration.ofMillis(1))) {
+            fast.every(GameContext.of(PLAYER, 7), Duration.ofMillis(5), context -> fired.countDown());
+            assertTrue(fired.await(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void aFiringTheRuntimeRefusesEndsAOneShotTimer() throws Exception {
+        GameContext route = GameContext.of(PLAYER, 7);
+        AtomicInteger fired = new AtomicInteger();
+        CountDownLatch release = new CountDownLatch(1);
+        Scheduled expiry;
+        try (GameRuntime full = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads(1, Duration.ofSeconds(60))).build();
+             GameTimer fast = new GameTimer(full, Duration.ofMillis(1))) {
+            full.execute(route, context -> release.await());
+            full.execute(route, context -> {});
+            expiry = fast.after(route, Duration.ofMillis(5), context -> fired.incrementAndGet());
+            for (int i = 0; i < 500 && !expiry.isDone(); i++) TimeUnit.MILLISECONDS.sleep(10);
+            release.countDown();
+        }
+        assertTrue(expiry.isDone());
+        assertFalse(expiry.cancel());
         assertEquals(0, fired.get());
     }
 

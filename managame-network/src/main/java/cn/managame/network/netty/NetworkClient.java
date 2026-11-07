@@ -18,9 +18,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * A connection to one remote address that stays up: the client connects at once, and whenever connecting fails
- * or the connection closes it tries again, waiting twice as long after each failure up to a maximum, and from
- * the minimum again after a success. What each connection does is its handler, normally a
- * {@link ConnectionInitializer}, whose ConnectionHandler sees every connection come and go:
+ * or the connection closes it tries again, waiting twice as long each time up to a maximum, and from the minimum
+ * again once a connection has stayed up for that maximum, so a server that accepts and closes at once, as one
+ * refusing a handshake does, is not dialed at the shortest wait for ever. What each connection does is its handler,
+ * normally a {@link ConnectionInitializer}, whose ConnectionHandler sees every connection come and go:
  *
  * <pre>{@code
  * NetworkClient client = NetworkClient.connect(new InetSocketAddress("10.0.0.2", 7001), initializer);
@@ -100,10 +101,11 @@ public final class NetworkClient implements AutoCloseable {
                 return;
             }
             channel = current;
-            retryNanos = minRetryNanos;
+            long connectedAt = System.nanoTime();
             LOG.log(Level.INFO, () -> "Connected to " + remote);
             current.closeFuture().addListener(gone -> {
                 if (!closed) LOG.log(Level.INFO, () -> "Connection to " + remote + " closed; connecting again");
+                if (System.nanoTime() - connectedAt >= maxRetryNanos) retryNanos = minRetryNanos;
                 retryLater();
             });
         });

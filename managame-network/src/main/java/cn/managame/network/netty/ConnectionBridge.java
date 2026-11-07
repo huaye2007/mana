@@ -85,14 +85,18 @@ final class ConnectionBridge extends ChannelInboundHandlerAdapter {
         }
     }
 
-    /** Before establishment, or once unmapped, an exception closes the channel; a handshake failure ends here. */
+    /**
+     * To onException while the connection is up. Before establishment, or once unmapped, an exception closes the
+     * channel, and a handshake failure ends here. A closed channel reports nothing: each write left waiting fails on
+     * its own, hundreds on a busy connection, and onInActive says all there is to say.
+     */
     @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        if (mapper.get(ctx.channel()) != null) {
+        if (ctx.channel().isActive() && mapper.get(ctx.channel()) != null) {
             report(ctx, cause);
             return;
         }
         if (LOG.isLoggable(Level.DEBUG))
-            LOG.log(Level.DEBUG, "Closing unestablished connection; peer=" + ctx.channel().remoteAddress() + "; " + cause);
+            LOG.log(Level.DEBUG, "Exception on a connection that is not up; peer=" + ctx.channel().remoteAddress() + "; " + cause);
         ctx.close();
     }
 

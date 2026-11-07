@@ -25,6 +25,9 @@ public interface ConnectionHandler {
     /** User events from the pipeline, for example IdleStateEvent; establishment events are not delivered. */
     default void onEvent(Connection connection, Object event) {}
 
-    /** Exceptions after onActive, including those thrown by the other callbacks. The connection stays open. */
+    /**
+     * Exceptions while the connection is up, and what the other callbacks throw. The connection stays open. Writes still
+     * waiting when it closes fail without coming here, however many there were: onInActive tells it is gone.
+     */
     void onException(Connection connection, Throwable cause);
 }

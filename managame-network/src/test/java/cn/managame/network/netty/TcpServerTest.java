@@ -15,11 +15,14 @@ import cn.managame.network.error.NetworkException;
 import cn.managame.network.netty.TestSupport.RecordingHandler;
 import cn.managame.network.netty.TestSupport.TestClient;
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -141,6 +144,27 @@ class TcpServerTest {
             client.send("ok");
             assertEquals("read:ok", handler.next());
             assertEquals("echo:ok", client.next());
+        }
+    }
+
+    @Test void aLostConnectionReportsNoExceptionPerWriteItLeftBehind() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        try (NetworkServer server = NetworkServer.start(new ServerBootstrap().childOption(ChannelOption.SO_SNDBUF, 2048)
+                .childHandler(ConnectionInitializer.tcp().handler(handler).build()), TestSupport.LOCAL);
+             Socket client = new Socket()) {
+            client.setReceiveBufferSize(2048);
+            client.connect(server.localAddress());
+            assertEquals("active", handler.next());
+            Connection connection = handler.connections.take();
+            int written = 0;
+            for (ByteBuf message = Unpooled.wrappedBuffer(new byte[100]); connection.write(message) == WriteStatus.ACCEPTED;
+                    message = Unpooled.wrappedBuffer(new byte[100])) written++;
+            assertTrue(written > 100, "the client reads nothing, so writes wait; " + written + " did");
+            client.setSoLinger(true, 0);   // closing resets the connection
+            client.close();
+            int reported = 0;
+            while (!handler.next().equals("inactive")) reported++;
+            assertTrue(reported <= 1, "one lost connection, " + reported + " exceptions");
         }
     }
 

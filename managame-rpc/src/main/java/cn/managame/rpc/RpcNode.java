@@ -3,6 +3,7 @@ package cn.managame.rpc;
 import static cn.managame.FrameworkErrorCodes.HANDLER_NOT_FOUND;
 
 import cn.managame.Metadata;
+import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.netty.ConnectionInitializer;
 import cn.managame.network.netty.NetworkClient;
@@ -82,6 +83,7 @@ public final class RpcNode implements AutoCloseable {
     private final RpcListener listener;
     private final Duration timeout, redialMin, redialMax;
     private final int maxFrameLength, maxPendingCalls;
+    private final Metrics metrics;
     private final ConcurrentHashMap<Integer, RpcPeer> peers = new ConcurrentHashMap<>();
     /** Every connection, dialed or accepted, to close them all on close whoever owns their EventLoops. */
     private final ChannelGroup channels = new DefaultChannelGroup("rpc", GlobalEventExecutor.INSTANCE);
@@ -107,6 +109,7 @@ public final class RpcNode implements AutoCloseable {
         redialMax = b.redialMax;
         maxFrameLength = b.maxFrameLength;
         maxPendingCalls = b.maxPendingCalls;
+        metrics = b.metrics;
         timer = new HashedWheelTimer(Thread.ofPlatform().name("rpc-timer-" + nodeId).daemon().factory(), TICK_MILLIS, TimeUnit.MILLISECONDS);
         RpcConnectionHandler connections = new RpcConnectionHandler(this, b.handler, b.authenticator);
         long heartbeatMillis = b.heartbeatInterval.toMillis();
@@ -193,10 +196,10 @@ public final class RpcNode implements AutoCloseable {
         if (connections < 1 || connections > 65535) throw new IllegalArgumentException("connections must be 1 to 65535");
         synchronized (lifecycle) {
             if (closed) throw new IllegalStateException("The node is closed");
-            RpcPeer peer = new RpcPeer(this, nodeId, true, connections);
-            RpcPeer known = peers.putIfAbsent(nodeId, peer);
-            if (known != null)
-                throw new IllegalStateException("Node " + nodeId + " is a peer already, " + (known.isOutbound() ? "dialed by this node" : "dialing in"));
+            RpcPeer[] created = new RpcPeer[1]; // a peer reports as it is made, so none is made for an id already known
+            RpcPeer peer = peers.computeIfAbsent(nodeId, id -> created[0] = new RpcPeer(this, id, true, connections));
+            if (created[0] == null)
+                throw new IllegalStateException("Node " + nodeId + " is a peer already, " + (peer.isOutbound() ? "dialed by this node" : "dialing in"));
             Bootstrap bootstrap = dialing.clone().attr(RpcConnectionHandler.DIALED, peer);
             List<NetworkClient> clients = new ArrayList<>(connections);
             for (int slot = 0; slot < connections; slot++)
@@ -279,6 +282,8 @@ public final class RpcNode implements AutoCloseable {
 
     int maxPendingCalls() { return maxPendingCalls; }
 
+    Metrics metrics() { return metrics; }
+
     /** The time wheel for call timeouts; stopped once the node closes. */
     Timer timer() { return timer; }
 
@@ -342,6 +347,7 @@ public final class RpcNode implements AutoCloseable {
         private Duration timeout = DEFAULT_TIMEOUT, heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
         private Duration redialMin = NetworkClient.DEFAULT_MIN_RETRY, redialMax = NetworkClient.DEFAULT_MAX_RETRY;
         private int maxFrameLength = DEFAULT_MAX_FRAME_LENGTH, maxPendingCalls = DEFAULT_MAX_PENDING_CALLS;
+        private Metrics metrics = Metrics.noop();
 
         private Builder() {}
 
@@ -389,7 +395,11 @@ public final class RpcNode implements AutoCloseable {
             return this;
         }
 
-        /** How long a dialed connection waits before dialing again: from {@code min}, doubling up to {@code max}. */
+        /**
+         * How long a dialed connection waits before dialing again: from {@code min}, doubling up to {@code max}, and
+         * from {@code min} again once a connection has stayed up for {@code max}, so a node refused in its handshake
+         * dials ever less often.
+         */
         public Builder redialDelay(Duration min, Duration max) {
             if (min.toMillis() < 1 || max.compareTo(min) < 0)
                 throw new IllegalArgumentException("Redial delays must be at least one millisecond, the maximum no less than the minimum");
@@ -430,12 +440,22 @@ public final class RpcNode implements AutoCloseable {
         }
 
         /**
-         * How many calls to one peer may wait for their answer at a time; further calls fail with RPC_UNAVAILABLE
+         * How many calls to one peer may wait for their answer at a time; further calls fail with RPC_OVERLOADED
          * until some end. 4096 by default. Each peer has a table of a reference per call allowed.
          */
         public Builder maxPendingCalls(int calls) {
             if (calls < 1 || calls > 1 << 30) throw new IllegalArgumentException("maxPendingCalls must be 1 to 2^30");
             maxPendingCalls = calls;
+            return this;
+        }
+
+        /**
+         * Where the node reports, by peer: its connections and the calls waiting for an answer, read when the backend
+         * collects, and calls that failed, by the framework's code; {@link Metrics#noop()} by default. A call that
+         * succeeds reports nothing, so metrics cost it nothing.
+         */
+        public Builder metrics(Metrics metrics) {
+            this.metrics = Objects.requireNonNull(metrics, "metrics");
             return this;
         }
 

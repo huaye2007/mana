@@ -7,7 +7,7 @@
 - `Metadata` 与 `MetadataKey`：随每个游戏上下文传递的少量带类型的键值数据，例如 trace id、请求来自哪台服务器。
 - `IdGenerator`：生成唯一 long id 的接口，只有 `generateId()` 一个方法；自带 `SnowflakeIdGenerator`（跨服、合服也唯一，按时间递增，可以在 id 里存一部分应用自己的数据，布局由 `IdLayout` 定）和 `SequenceIdGenerator`（进程内自增）。
 - `FrameworkErrorCodes`：框架应答失败时使用的错误码。
-- `Metrics`：计数器、gauge 和计时器，框架和业务都通过它上报指标，由应用接到自己的后端（Micrometer、Prometheus、
+- `Metrics`：计数器和 gauge，框架和业务都通过它上报指标，由应用接到自己的后端（Micrometer、Prometheus、
   OpenTelemetry），在 `cn.managame.metrics` 包中。
 
 ## Metadata
@@ -152,10 +152,11 @@ observable gauge。
 
 | 错误码 | 名称 | 含义 |
 | --- | --- | --- |
-| 2002 | `RPC_UNAVAILABLE` | 对端没有可用连接、连接繁忙、等待应答的调用太多、对端的新实例替换了被调用的实例，或对端被移除、发起调用的节点已关闭 |
+| 2002 | `RPC_UNAVAILABLE` | 对端没有可用连接、对端的新实例替换了被调用的实例，或对端被移除、发起调用的节点已关闭 |
 | 2003 | `RPC_TIMEOUT` | 在调用的超时时间内没有收到应答 |
 | 2006 | `RPC_HANDLER_ERROR` | 对端的 RPC 处理器抛出了异常 |
 | 2007 | `RPC_PROTOCOL_ERROR` | 请求超过对端能接收的长度，或应答超过调用方能接收的长度 |
+| 2008 | `RPC_OVERLOADED` | 对端的连接繁忙，或等待应答的调用太多 |
 | 3001 | `RUNTIME_CLOSED` | runtime 已关闭，不再接受新任务 |
 | 3002 | `HANDLER_NOT_FOUND` | 没有处理该消息的处理器 |
 | 3005 | `INVALID_ROUTE_KEY` | 处理器所在的 domain 无法为该消息找到路由键 |

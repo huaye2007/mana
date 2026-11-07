@@ -14,6 +14,7 @@ public final class FrameworkErrorCodes {
     public static final int RPC_TIMEOUT = 2003;
     public static final int RPC_HANDLER_ERROR = 2006;
     public static final int RPC_PROTOCOL_ERROR = 2007;
+    public static final int RPC_OVERLOADED = 2008;
 
     // Runtime 3001..3999
     public static final int RUNTIME_CLOSED = 3001;

@@ -345,8 +345,12 @@ timer.close();
   there are, which suits a timer per player. A timer fires within one tick after it is due.
 - The wheel's thread only hands due tasks to the runtime; business logic runs on the route like any other task.
 - Delays use the monotonic clock and are unaffected by `GameTime`.
-- `every` keeps a fixed rate and fires first after one period. A firing the runtime refuses (a full route) is
-  logged and skipped; once the runtime shuts down, the timer stops.
+- `every` keeps a fixed rate and fires first after one period. A firing whose last one has not finished is logged and
+  skipped, so a task slower than its period lags instead of filling its route: business code that ticks reads how much
+  time went by rather than counting firings. A firing the runtime refuses (a full route) is logged and skipped too;
+  once the runtime shuts down, the timer stops.
+- A timer cancelled on its own route does not run afterwards, even when a firing already waits there, so a task closing
+  a dungeon can cancel its tick and be done. From another thread, a firing may be beginning as `cancel` returns.
 
 ### Cron
 
@@ -375,7 +379,7 @@ timer.cron(GameContext.of(WORLD, 0), activity.cron(), context -> activity.open()
   just due; when the clock or zone has changed, it finds its next time again on the new one, so `setClock`, `setZone`
   and `resetClock` reschedule it within a second, with nothing to cancel or register again. A local time daylight
   saving skips does not fire and one it repeats fires once. A late firing runs once, times while the process was down
-  are not made up, and a firing the runtime refuses is logged and skipped.
+  are not made up, and a firing whose last one has not finished, or that the runtime refuses, is logged and skipped.
 
 ## HTTP
 
@@ -482,9 +486,10 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
 - `execute` throws `GameRuntimeException` with `RUNTIME_CLOSED` after shutdown or `ROUTE_EXECUTOR_OVERLOADED` when
   the domain's executor is full, and the task never runs; a request is first failed with that code. An unregistered
   domain throws `IllegalArgumentException`.
-- `execute(context, task, finished)` also runs `finished` once however the task ends: when it returned or threw, when
-  an interceptor stopped it, or when it was refused. An entry that holds something for its task, as `HttpRoutes` holds
-  the request's buffer, gives it back there rather than in the task, which may never run.
+- A task that will not run has its `refused(context)` called instead of `run`: when an interceptor refused it or threw
+  before it, or when the runtime did not accept it. A task that holds something, as the one `HttpRoutes` gives the
+  runtime holds the request's buffer, gives it back at the end of `run` and in `refused`. A lambda holds nothing, and has
+  neither to think of.
 - What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
 - Limits and shutdown are for what comes in from outside. `execute` called from a game task is never refused for load
   or shutdown, so what was accepted finishes what it began. Any other caller is an entry, an RPC callback too, and its
@@ -523,7 +528,7 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 | `cn.managame.runtime.dispatch` | INFO: the Dispatcher's handlers. DEBUG: each message's handler, each rejected message. ERROR: a handler that could not run. |
 | `cn.managame.runtime.event` | INFO: the event bus's subscribers. DEBUG: each event's subscribers. |
 | `cn.managame.runtime.http` | INFO: the HTTP endpoints. DEBUG: each endpoint, each bad request. ERROR: a request that could not run or be answered. |
-| `cn.managame.runtime.timer` | INFO: each `@Cron` method scheduled. DEBUG: each `timer.cron`. WARNING: a firing refused. ERROR: a firing that failed. |
+| `cn.managame.runtime.timer` | INFO: each `@Cron` method scheduled. DEBUG: each `timer.cron`. WARNING: a firing refused or skipped. ERROR: a firing that failed. |
 
 ## Metrics
 

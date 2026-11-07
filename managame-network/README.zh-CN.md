@@ -147,7 +147,7 @@ ConnectionInitializer.tcp().connectionMapper(new SessionTable()).handler(gameHan
 - `onRead`：消息在回调返回后被 release；需要异步保留的 `ByteBuf` 请先 `retain()`。
 - `onInActive`：每个 `onActive` 过的连接最多一次；只有映射已不再返回 Connection 时才会跳过。
 - `onEvent`：管线中的用户事件（如 `IdleStateEvent`），不含 TLS / WebSocket 握手事件。
-- `onException`：`onActive` 之后的异常（包括其它回调抛出的异常）。连接不会自动关闭，由业务决定。
+- `onException`：连接存活期间的异常（包括其它回调抛出的异常）。连接不会自动关闭，由业务决定。连接关闭时还在等待的写入失败后不会走到这里，不管有多少条：`onInActive` 会告知连接已断开。
 - `Connection.write` 返回 `ACCEPTED` / `INACTIVE` / `NOT_WRITABLE`（超过写缓冲高水位），不阻塞。
 
 ## HTTP 服务
@@ -191,7 +191,7 @@ addFront… | [ssl] | http-codec, http-flow, http-exchange, http-keep-alive, htt
 
 ## 客户端
 
-`NetworkClient` 维持到一个远端地址的连接：立即发起连接，之后连接失败或连接断开都会自动重连，每次失败后等待时间翻倍，直到上限，成功一次后从下限重新开始。每条连接做什么由传入的 handler 决定，通常就是一个 `ConnectionInitializer`，于是客户端连接和服务端连接用的是同一套 `ConnectionHandler` 语义：每次连上触发 `onActive`，断开触发 `onInActive`。
+`NetworkClient` 维持到一个远端地址的连接：立即发起连接，之后连接失败或连接断开都会自动重连，每次等待时间翻倍，直到上限；连接稳定存活到上限时长后，才从下限重新开始，所以接受后立刻关闭的服务端（比如拒绝握手）被重连得越来越慢。每条连接做什么由传入的 handler 决定，通常就是一个 `ConnectionInitializer`，于是客户端连接和服务端连接用的是同一套 `ConnectionHandler` 语义：每次连上触发 `onActive`，断开触发 `onInActive`。
 
 ```java
 ConnectionInitializer upstream = ConnectionInitializer.tcp()

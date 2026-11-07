@@ -42,8 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * which suits a timer per player. A timer fires within one tick after it is due; the tick is 10 ms by default.
  * The wheel's single thread only hands due tasks to the runtime, so business logic never runs on it and
  * ordering with the route's other tasks holds. Delays use the monotonic clock, unaffected by changes to
- * GameTime; cron times are read on GameTime. A periodic timer keeps a fixed rate; a firing the runtime refuses, for
- * example because the route is full, is logged and skipped, and once the runtime is shut down the timer stops.
+ * GameTime; cron times are read on GameTime. A periodic timer keeps a fixed rate; a firing whose last one has not
+ * finished is logged and skipped, so a task slower than its period lags instead of filling its route, a firing the
+ * runtime refuses, for example because the route is full, is too, and once the runtime is shut down the timer stops.
+ * A timer cancelled on its own route does not run afterwards, even when a firing already waits there.
  */
 public final class GameTimer implements AutoCloseable {
     public static final Duration DEFAULT_TICK = Duration.ofMillis(10);
@@ -108,7 +110,8 @@ public final class GameTimer implements AutoCloseable {
      * one, after the later of now and the time just due; when GameTime's clock or zone has changed since, it finds its
      * next time again on the new one, so {@code setClock}, {@code setZone} and {@code resetClock} reschedule it within a
      * second. A local time daylight saving skips does not fire, one it repeats fires once, a firing late for a pause runs
-     * once, times while the process was down are not made up, and a firing the runtime refuses is logged and skipped.
+     * once, times while the process was down are not made up, and a firing whose last one has not finished, or that the
+     * runtime refuses, is logged and skipped.
      */
     public <C extends Context> Scheduled cron(C context, String expression, GameTask<? super C> task) {
         runtime.checkDomain(context.domain());
@@ -139,7 +142,7 @@ public final class GameTimer implements AutoCloseable {
         return scheduled;
     }
 
-    /** Cancels every timer; firings already handed to the runtime still run. Timers cannot be added afterwards. */
+    /** Cancels every timer; a firing already handed to the runtime may still run. Timers cannot be added afterwards. */
     @Override public void close() {
         for (Timeout pending : wheel.stop()) ((Firing<?>) pending.task()).state.set(Firing.CANCELLED);
     }
@@ -182,7 +185,7 @@ public final class GameTimer implements AutoCloseable {
         return duration.toNanos();
     }
 
-    private final class Firing<C extends Context> implements TimerTask, Scheduled {
+    private final class Firing<C extends Context> implements TimerTask, Scheduled, GameTask<C> {
         static final int ACTIVE = 0, FIRED = 1, CANCELLED = 2;
         final AtomicInteger state = new AtomicInteger(ACTIVE);
         private final C context;
@@ -198,6 +201,8 @@ public final class GameTimer implements AutoCloseable {
         /** When the next cron firing is due on that clock, in epoch milliseconds. */
         private long dueMillis;
         private volatile Timeout timeout;
+        /** Whether the last firing was handed to the runtime and has not finished: set on the wheel's thread, cleared on the route. */
+        private volatile boolean handed;
 
         Firing(C context, GameTask<? super C> task, long periodNanos, CronExpression cron) {
             this.context = Objects.requireNonNull(context, "context");
@@ -223,7 +228,7 @@ public final class GameTimer implements AutoCloseable {
                 clock = now;
                 dueMillis = cron.next(nowMillis, now.getZone());
             } else if (nowMillis >= dueMillis) {
-                fire(false);
+                fire();
                 if (state.get() != ACTIVE) return;
                 dueMillis = cron.next(Math.max(nowMillis, dueMillis), now.getZone());
             }
@@ -231,15 +236,14 @@ public final class GameTimer implements AutoCloseable {
         }
 
         @Override public void run(Timeout expired) {
-            boolean once = periodNanos == 0 && cron == null;
-            if (once ? !state.compareAndSet(ACTIVE, FIRED) : state.get() != ACTIVE) return;
+            if (state.get() != ACTIVE) return;
             try {
                 if (cron != null) {
                     wakeCron();
                     return;
                 }
-                fire(once);
-                if (once || state.get() != ACTIVE) return;
+                fire();
+                if (once() || state.get() != ACTIVE) return;
                 nextDue += periodNanos; // a fixed rate: late firings do not shift later ones
                 arm(Math.max(0, nextDue - System.nanoTime()));
             } catch (IllegalStateException stopped) { // the timer was closed meanwhile
@@ -247,20 +251,46 @@ public final class GameTimer implements AutoCloseable {
             }
         }
 
-        /** Hands the task to the runtime; a refusal is logged, and one because the runtime is closed stops the timer. */
-        private void fire(boolean once) {
+        private boolean once() { return periodNanos == 0 && cron == null; }
+
+        /**
+         * Hands the task to the runtime, unless the last firing has not finished; a refusal is logged, and one because
+         * the runtime is closed stops the timer.
+         */
+        private void fire() {
+            if (handed) {
+                LOG.log(Level.WARNING, "Timer firing skipped, the last one has not finished; domain=" + context.domain()
+                        + ", routeKey=" + context.routeKey());
+                return;
+            }
+            handed = true;
             try {
-                runtime.execute(context, task);
+                runtime.execute(context, this);
             } catch (GameRuntimeException refused) {
                 if (refused.errorCode() == RUNTIME_CLOSED) {
                     cancel();
                     return;
                 }
                 LOG.log(Level.WARNING, "Timer firing refused; domain=" + context.domain()
-                        + ", routeKey=" + context.routeKey() + (once ? "" : "; skipped once"), refused);
+                        + ", routeKey=" + context.routeKey() + (once() ? "" : "; skipped once"), refused);
             } catch (RuntimeException e) {
                 LOG.log(Level.ERROR, "Timer firing failed; domain=" + context.domain(), e);
             }
+        }
+
+        /** The firing on its route, where a cancel made by an earlier task of the route has the last word. */
+        @Override public void run(C context) throws Exception {
+            try {
+                if (once() ? state.compareAndSet(ACTIVE, FIRED) : state.get() == ACTIVE) task.run(context);
+            } finally {
+                handed = false;
+            }
+        }
+
+        /** A firing that will not run: a later one may, and a one-shot has none. */
+        @Override public void refused(C context) {
+            handed = false;
+            if (once()) state.compareAndSet(ACTIVE, FIRED);
         }
 
         @Override public boolean cancel() {
