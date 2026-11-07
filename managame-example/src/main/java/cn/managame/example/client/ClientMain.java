@@ -3,6 +3,7 @@ package cn.managame.example.client;
 import cn.managame.example.GamePacket;
 import cn.managame.example.Protocols;
 import cn.managame.example.proto.Login;
+import cn.managame.example.proto.World;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
@@ -27,7 +28,12 @@ public class ClientMain {
             System.out.println("登录成功，roleId " + res.getRoleId());
 
             // 之后的消息一样发：client.request(message) 等应答，client.send(message) 不等。
-            // 例如 GamePacket bag = client.request(Bag.BagReq.getDefaultInstance()).get(5, TimeUnit.SECONDS);
+            GamePacket world = client.request(World.EnterWorldReq.getDefaultInstance()).get(10, TimeUnit.SECONDS);
+            if (world.getCode() != 0) {
+                System.out.println("进入世界失败，错误码 " + world.getCode());
+                return;
+            }
+            System.out.println("进入世界，在线人数 " + ((World.JoinWorldRes) world.getBody()).getOnline());
         }
     }
 }

@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+option java_package = "cn.managame.example.proto";
+
+// 客户端发给所在的游戏服，应答是世界服的 JoinWorldRes
+message EnterWorldReq {
+}
+
+// 游戏服经 RPC 发给世界服
+message JoinWorldReq {
+   int64 roleId = 1;
+}
+
+message JoinWorldRes {
+   int32 online = 1;
+}

@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+option java_package = "cn.managame.example.proto";
+
+// 失败应答的 body：错误码的动态参数
+message FailureArgs {
+   repeated string args = 1;
+}

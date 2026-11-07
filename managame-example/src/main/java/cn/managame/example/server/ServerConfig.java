@@ -35,6 +35,7 @@ public class ServerConfig {
         return GameRuntime.builder()
                 .domain(DomainConstant.PLAYER, RouteExecutors.virtualThreads(), RouteKeys.businessId())
                 .domain(DomainConstant.LOGIN, RouteExecutors.virtualThreads())   // 登录处理方法用 routeKey = "userId"
+                .domain(DomainConstant.WORLD, RouteExecutors.virtualThreads(), RouteKeys.constant(0))
                 .build();
     }
 

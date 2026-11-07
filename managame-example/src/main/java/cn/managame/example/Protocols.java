@@ -1,6 +1,7 @@
 package cn.managame.example;
 
 import cn.managame.example.proto.Login;
+import cn.managame.example.proto.World;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Message;
 import com.google.protobuf.Parser;
@@ -25,7 +26,10 @@ public final class Protocols {
     public static Protocols game() {
         return of(Map.of(
                 1001, Login.LoginReq.getDefaultInstance(),
-                1002, Login.LoginRes.getDefaultInstance()));
+                1002, Login.LoginRes.getDefaultInstance(),
+                1003, World.EnterWorldReq.getDefaultInstance(),
+                1004, World.JoinWorldReq.getDefaultInstance(),
+                1005, World.JoinWorldRes.getDefaultInstance()));
     }
 
     /** 协议号到消息类（用它的默认实例表示）的表；一个消息类绑定两个协议号时抛 IllegalArgumentException。 */
