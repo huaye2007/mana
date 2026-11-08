@@ -17,7 +17,7 @@ RpcNode world = RpcNode.builder()
         .nodeId(1).listen(7001)
         .handler((rpcPeer, connection, msg) -> {
             if (msg instanceof RpcRequest request && request.command() == RANK_OF)
-                RpcResponse.of(request.requestId(), rankOf(request.body())).writeTo(connection);
+                rpcPeer.reply(connection, RpcResponse.of(request.requestId(), rankOf(request.body())));
         })
         .start();
 
@@ -104,7 +104,7 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
             Object query = protocol.decode(request.command(), request.body());   // 在这里解码
             executor.execute(() -> {                                              // 之后在别的线程上应答
                 if (request.isExpired()) return;                                  // 调用方已经放弃了
-                RpcResponse.of(request.requestId(), protocol.encode(handle(query))).writeTo(connection);
+                rpcPeer.reply(connection, RpcResponse.of(request.requestId(), protocol.encode(handle(query))));
             });
         }
         case RpcNotify notify -> handle(rpcPeer, protocol.decode(notify.command(), notify.body()));
@@ -113,8 +113,8 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
 };
 ```
 
-- `rpcPeer` 是发送消息的节点，可以用它回调对方；`connection` 是消息到达的那条 network `Connection`。应答请求时，用请求的 `requestId` 构造 `RpcResponse`，写到这条连接上，可以立即写，也可以之后在任意线程写。只有第一个应答有效，调用方会丢弃后面的应答。
-- **`response.writeTo(connection)`** 在连接繁忙时也会写出应答：应答对应的工作已经做完，丢掉它只会让调用方无法确定结果。如果那条连接到这时已经断开，它会改用这个对端同一个运行实例的另一条可用连接写出。它返回 `ACCEPTED`；这个实例没有可用连接时（比如唯一的连接正在重连），返回 `INACTIVE` 并释放这个应答，调用方的那个调用在最后一条连接断开时就已经以 `RPC_UNAVAILABLE` 失败了。应答超过本节点的最大帧长度时，改为发出 `RPC_PROTOCOL_ERROR`。
+- `rpcPeer` 是发送消息的节点，可以用它回调对方；`connection` 是消息到达的那条 network `Connection`。应答请求时，用请求的 `requestId` 构造 `RpcResponse`，连同这条连接交给 `rpcPeer.reply`，可以立即写，也可以之后在任意线程写。只有第一个应答有效，调用方会丢弃后面的应答。
+- **`rpcPeer.reply(connection, response)`** 在连接繁忙时也会写出应答：应答对应的工作已经做完，丢掉它只会让调用方无法确定结果。如果那条连接到这时已经断开，它会改用这个对端同一个运行实例的另一条可用连接写出。它返回 `ACCEPTED`；这个实例没有可用连接时（比如唯一的连接正在重连），返回 `INACTIVE` 并释放这个应答，调用方的那个调用在最后一条连接断开时就已经以 `RPC_UNAVAILABLE` 失败了。应答超过本节点的最大帧长度时，改为发出 `RPC_PROTOCOL_ERROR`。
 - 握手、心跳和本节点自己调用的应答都不会交给处理器：节点自己处理它们，每个应答交给对应调用的回调。
 - 处理器在该连接的 EventLoop 上按消息到达顺序执行，不能阻塞。
 - 处理器抛出异常时：对于请求，如果还没应答过，就以 `RPC_HANDLER_ERROR` 失败；对于通知，只记日志。没有设置处理器的节点，对请求回复 `HANDLER_NOT_FOUND`，通知直接丢弃。
@@ -123,7 +123,7 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
 
 body 是 Netty 的 `ByteBuf`，一路都不拷贝。三种记录遵循 Netty 的规则：
 
-1. **交给节点的消息就归节点所有**：传给 `call` 的请求、传给 `notify` 或 `broadcast` 的通知、调用 `writeTo` 的应答。节点在发出后释放它们；发不出去，或因参数错误抛异常时，也由节点释放。交出之后就不要再使用。
+1. **交给节点的消息就归节点所有**：传给 `call` 的请求、传给 `notify` 或 `broadcast` 的通知、传给 `reply` 的应答。节点在发出后释放它们；发不出去，或因参数错误抛异常时，也由节点释放。交出之后就不要再使用。
 2. **节点交给你的消息，只在你的方法执行期间有效**：`handleMessage` 里的消息和 `onResponse` 里的应答，方法返回后就会被释放。要留得更久，比如带到别的线程上用，先 `retain()`，用完再 `release()`。
 3. **回调里的请求 body 为空**：请求发出后 body 就被释放了，其余字段都还在。
 4. **转发收到的消息前，先 `retain()`**。比如网关把请求转给下一个节点：规则 1 和规则 2 各会释放一次。
@@ -143,7 +143,7 @@ body 是 Netty 的 `ByteBuf`，一路都不拷贝。三种记录遵循 Netty 的
 
 | 方法 | 何时调用 |
 | --- | --- |
-| `onConnected(peer, restarted)` | 对端一个运行实例的全部连接都完成了握手 |
+| `onConnected(peer)` | 对端一个运行实例的全部连接都完成了握手 |
 | `onDisconnected(peer)` | 对端的最后一条连接断开，包括被移除、被新实例替换的情况 |
 
 只断了部分连接的对端仍算连着，不发事件；它的 key 改走剩下的连接。只要还有一条连接，`peer.isConnected()` 就为 true。同一个对端的回调不会重叠，并且按顺序到达；它们在发生变化的那条连接的 EventLoop 上执行，不能阻塞。监听器里可以调用、通知、应答任何对端：调用、通知和应答都不加锁，监听器不会去等另一个对端的锁。
@@ -153,7 +153,7 @@ body 是 Netty 的 `ByteBuf`，一路都不拷贝。三种记录遵循 Netty 的
 对端还没连上时，调用会立即以 `RPC_UNAVAILABLE` 失败（回调不在调用线程上执行），不会排队。如果一个节点必须等另一个节点连上才能开始服务（比如游戏服要先在世界服注册，才能放玩家进来），就在监听器里启动这部分工作：
 
 ```java
-public void onConnected(RpcPeer peer, boolean restarted) {
+public void onConnected(RpcPeer peer) {
     if (peer.nodeId() == WORLD) executor.execute(this::registerAndOpen);
 }
 ```
@@ -162,7 +162,15 @@ public void onConnected(RpcPeer peer, boolean restarted) {
 
 节点的每个运行实例都有一个**实例号**（incarnation），值为启动时间的毫秒数乘以 1000 再加一个随机数，随每次握手发给对端。本节点的实例号用 `node.incarnation()` 读，对端的用 `peer.incarnation()` 读。
 
-- 监听器能区分重启和重连：实例号与上次见到的不同时，`onConnected(peer, restarted)` 里的 `restarted` 为 true。重启之后，本节点掌握的关于该对端的状态（比如某个游戏服上的玩家）都已失效；如果只是重连，这些状态仍然有效。
+- 实例号能区分重启和重连。重启之后实例号会变，本节点掌握的关于该对端的状态（比如某个游戏服上的玩家）都已失效；如果只是重连，实例号不变，这些状态仍然有效。保存这类状态的应用把实例号一起记下：
+
+  ```java
+  public void onConnected(RpcPeer peer) {
+      Long last = seen.put(peer.nodeId(), peer.incarnation());
+      if (last != null && last != peer.incarnation()) clearPlayersOn(peer.nodeId());
+  }
+  ```
+
 - **同一个对端同一时刻只连接一个实例。** 更新的实例会替换当前已连接的实例：旧实例的连接被关闭，其上等待中的调用立即以 `RPC_UNAVAILABLE` 失败，因为它已经不可能再应答了。这样，两个用同一 id 启动的进程不会分摊流量。如果已经有更新的实例在线，较旧的实例再来连接会被拒绝。这依赖于各台机器的时钟大致一致。
 
 ### 节点的用途
@@ -179,7 +187,7 @@ RpcNode game = RpcNode.builder().nodeId(101)
 // 在世界服上：按对端自报的用途分组
 Map<Integer, Set<RpcPeer>> byService = new ConcurrentHashMap<>();
 RpcListener grouping = new RpcListener() {
-    public void onConnected(RpcPeer peer, boolean restarted) {
+    public void onConnected(RpcPeer peer) {
         byService.computeIfAbsent(peer.metadata().get(SERVICE), s -> ConcurrentHashMap.newKeySet()).add(peer);
     }
     public void onDisconnected(RpcPeer peer) { byService.get(peer.metadata().get(SERVICE)).remove(peer); }
@@ -210,7 +218,7 @@ RpcNode.builder()
 
 ## 背压与上限
 
-- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（`RPC_OVERLOADED`）和通知（`NOT_WRITABLE`），这样慢对端不会撑爆本节点的内存；但通过 `writeTo` 写出的应答照样接收。从其他线程发出的消息在等待连接的 EventLoop 时，按实际大小计入水位：除非 bootstrap 自己设置了 Netty 的 `MESSAGE_SIZE_ESTIMATOR`，节点会设置一个认识调用、通知和应答的估算器。
+- 一条连接排队的数据超过高水位后，会被视为繁忙。水位默认取 `DEFAULT_WRITE_BUFFER_WATER_MARK`（低 1 MiB，高 4 MiB），除非 bootstrap 设置了 Netty 的 `WRITE_BUFFER_WATER_MARK`。繁忙的连接会立即拒绝新调用（`RPC_OVERLOADED`）和通知（`NOT_WRITABLE`），这样慢对端不会撑爆本节点的内存；但通过 `reply` 写出的应答照样接收。从其他线程发出的消息在等待连接的 EventLoop 时，按实际大小计入水位：除非 bootstrap 自己设置了 Netty 的 `MESSAGE_SIZE_ESTIMATOR`，节点会设置一个认识调用、通知和应答的估算器。
 - **被调用方靠暂停读取来反压。** 处理器总是立即返回，socket 一直被读空，所以对端发得比本节点业务处理得快时，光靠 TCP 不会让它慢下来。业务队列快满时，在消息到达的那条连接上关掉 Netty 自带的开关，处理完积压后再打开：
 
   ```java
@@ -237,7 +245,7 @@ RpcNode.builder()
 ## 可观测性
 
 - `peer.pendingCount()`：发往该对端、还在等待应答的调用数。
-- `peer.connectionCount()`、`peer.isConnected()`、`peer.incarnation()`，以及通过监听器获知的连接和重启事件。
+- `peer.connectionCount()`、`peer.isConnected()`、`peer.incarnation()`，以及通过监听器获知的连接和断开事件。
 - 每个调用的结果都会和它的请求一起交给回调；业务在自己的回调适配器里按对端和 command 统计延迟、超时和失败，对接自己使用的任何监控系统。
 - `metrics(Metrics)` 按对端上报运维需要处理的情况：标签 `node` 是对端的 id。成功的调用不上报，所以指标不增加它的开销。
 
@@ -254,7 +262,7 @@ RpcNode.builder()
 | `RpcHandler.handleMessage`、`RpcAuthenticator` | 该连接的 EventLoop，按到达顺序 |
 | `RpcListener` | 发生变化的那条连接的 EventLoop |
 | `RpcCallback` | 应答到达的那条连接的 EventLoop；超时时：节点的时间轮线程；调用发出前就失败时：节点主动连接所用的某个 EventLoop，按 route key 选；对端的最后一条连接断开时：那条连接的 EventLoop；对端的新实例替换旧实例时：带来新实例的那条连接的 EventLoop；移除对端或关闭节点时：执行该操作的线程。永远不会在 `call` 内部、在调用线程上执行 |
-| `call`、`notify`、`broadcast`、`writeTo`、`createPeer` | 任意线程 |
+| `call`、`notify`、`broadcast`、`reply`、`createPeer` | 任意线程 |
 | `removePeer`、`close` | 节点的 EventLoop 以外的任意线程，`close` 还不能在时间轮线程上调用（它们会阻塞到连接关闭；在那些线程上调用会抛 `IllegalStateException`） |
 
 以上回调都不能阻塞，业务逻辑应放在业务自己的线程上，比如它的 `GameRuntime`。
@@ -267,7 +275,7 @@ RpcNode.builder()
 | `metadata(Metadata)` | 空 | 握手时告诉每个对端的信息 |
 | `listen(port)` / `listen(InetSocketAddress)` | 不监听 | 允许其他节点连接本节点；端口 0 会绑定一个临时端口（用 `node.port()` 读） |
 | `handler(RpcHandler)` | 请求以 `HANDLER_NOT_FOUND` 失败 | 处理对端发来的消息 |
-| `listener(RpcListener)` | 无 | 接收对端连接、断开和重启的通知 |
+| `listener(RpcListener)` | 无 | 接收对端连接和断开的通知 |
 | `authenticator(RpcAuthenticator)` | 全部放行 | 决定谁能加入 |
 | `bootstrap(Bootstrap)` / `serverBootstrap(ServerBootstrap)` | 节点自己的 EventLoop | 用于主动连接和监听的 Netty bootstrap，可设置 EventLoop、channel 类型和 socket 选项。handler 由节点设置；没设置的项，节点会在副本上补全 |
 | `redialDelay(min, max)` | 100 毫秒、10 秒 | 主动建立的连接断开后，等多久再重连 |

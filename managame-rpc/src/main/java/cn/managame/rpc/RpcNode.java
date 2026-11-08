@@ -75,7 +75,7 @@ public final class RpcNode implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
     private static final long TICK_MILLIS = 10;
     private static final RpcHandler NO_HANDLER = (rpcPeer, connection, msg) -> {
-        if (msg instanceof RpcRequest request) RpcResponse.failure(request.requestId(), HANDLER_NOT_FOUND).writeTo(connection);
+        if (msg instanceof RpcRequest request) rpcPeer.reply(connection, RpcResponse.failure(request.requestId(), HANDLER_NOT_FOUND));
     };
     private final int nodeId;
     private final long incarnation;
@@ -305,11 +305,11 @@ public final class RpcNode implements AutoCloseable {
         }
     }
 
-    void fireConnected(RpcPeer peer, boolean restarted) {
-        LOG.log(Level.INFO, () -> "Node " + peer.nodeId() + " connected" + (restarted ? ", a new instance of it" : ""));
+    void fireConnected(RpcPeer peer) {
+        LOG.log(Level.INFO, () -> "Node " + peer.nodeId() + " connected, incarnation " + peer.incarnation());
         if (listener == null) return;
         try {
-            listener.onConnected(peer, restarted);
+            listener.onConnected(peer);
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "The RPC listener failed on " + peer + " connecting", e);
         }
@@ -366,7 +366,7 @@ public final class RpcNode implements AutoCloseable {
         /** Handles what peers send. Without one, requests fail with HANDLER_NOT_FOUND and notifies are dropped. */
         public Builder handler(RpcHandler handler) { this.handler = Objects.requireNonNull(handler, "handler"); return this; }
 
-        /** Hears peers come, go and restart; none by default. */
+        /** Hears peers come and go; none by default. */
         public Builder listener(RpcListener listener) { this.listener = Objects.requireNonNull(listener, "listener"); return this; }
 
         /** Admits the nodes on the other side of each connection; all by default. */

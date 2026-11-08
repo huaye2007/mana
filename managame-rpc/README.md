@@ -23,7 +23,7 @@ RpcNode world = RpcNode.builder()
         .nodeId(1).listen(7001)
         .handler((rpcPeer, connection, msg) -> {
             if (msg instanceof RpcRequest request && request.command() == RANK_OF)
-                RpcResponse.of(request.requestId(), rankOf(request.body())).writeTo(connection);
+                rpcPeer.reply(connection, RpcResponse.of(request.requestId(), rankOf(request.body())));
         })
         .start();
 
@@ -138,7 +138,7 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
             Object query = protocol.decode(request.command(), request.body());   // decode here
             executor.execute(() -> {                                              // answer later, elsewhere
                 if (request.isExpired()) return;                                  // the caller gave up
-                RpcResponse.of(request.requestId(), protocol.encode(handle(query))).writeTo(connection);
+                rpcPeer.reply(connection, RpcResponse.of(request.requestId(), protocol.encode(handle(query))));
             });
         }
         case RpcNotify notify -> handle(rpcPeer, protocol.decode(notify.command(), notify.body()));
@@ -148,9 +148,9 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
 ```
 
 - `rpcPeer` is the node that sent the message, for instance to call it back; `connection` is the network
-  `Connection` it came on. Answer a request with an `RpcResponse` under its `requestId` written to that
-  connection, at once or later from any thread. Only the first answer counts; the caller drops later ones.
-- **`response.writeTo(connection)`** writes the answer even when the connection is busy: the work behind it is
+  `Connection` it came on. Answer a request by handing that connection and an `RpcResponse` under its `requestId`
+  to `rpcPeer.reply`, at once or later from any thread. Only the first answer counts; the caller drops later ones.
+- **`rpcPeer.reply(connection, response)`** writes the answer even when the connection is busy: the work behind it is
   done, and dropping it would leave the caller unsure whether it was. When that connection has closed by then, it
   writes the answer on another connection up of the same running instance of the peer. It returns `ACCEPTED`, or
   `INACTIVE` and releases the answer when that instance has no connection up, as while its only connection is
@@ -167,7 +167,7 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
 Bodies are Netty `ByteBuf`s and are never copied on the way. The three records follow Netty's rules:
 
 1. **What is handed to the node becomes the node's**: the request passed to `call`, the notify passed to `notify`
-   or `broadcast`, the answer `writeTo` writes. The node releases them once sent, also when they cannot be sent
+   or `broadcast`, the answer passed to `reply`. The node releases them once sent, also when they cannot be sent
    or the call throws for a bad argument. Do not use them afterwards.
 2. **What the node hands over lives for the method**: the message in `handleMessage` and the answer in
    `onResponse` are released when the method returns. To keep one longer, for example to use it on another
@@ -198,7 +198,7 @@ The application drives membership from its own configuration or service discover
 
 | Method | When |
 | --- | --- |
-| `onConnected(peer, restarted)` | Every connection of a running instance of the peer completed its handshake |
+| `onConnected(peer)` | Every connection of a running instance of the peer completed its handshake |
 | `onDisconnected(peer)` | The peer's last connection closed, also when it was removed or a new instance took over |
 
 A peer that loses some of its connections stays connected, with no event; its keys take the connections left.
@@ -213,7 +213,7 @@ queued. A node that must reach another before it serves, such as a game server r
 before letting players in, starts that work from its listener:
 
 ```java
-public void onConnected(RpcPeer peer, boolean restarted) {
+public void onConnected(RpcPeer peer) {
     if (peer.nodeId() == WORLD) executor.execute(this::registerAndOpen);
 }
 ```
@@ -223,9 +223,17 @@ public void onConnected(RpcPeer peer, boolean restarted) {
 Each running instance of a node has an **incarnation**: its start time in milliseconds times 1000 plus a random
 number, sent in every handshake. `node.incarnation()` is this node's, `peer.incarnation()` the peer's.
 
-- The listener tells a restart from a reconnect: `onConnected(peer, restarted)` has `restarted` true when the
-  incarnation differs from the one seen before. After a restart, what this node knew about the peer, such as the
-  players on a game server, is gone; after a reconnect it still holds.
+- The incarnation tells a restart from a reconnect. After a restart it differs and what this node knew about the
+  peer, such as the players on a game server, is gone; after a reconnect it is the same and all of that still holds.
+  An application that keeps such state keeps the incarnation with it:
+
+  ```java
+  public void onConnected(RpcPeer peer) {
+      Long last = seen.put(peer.nodeId(), peer.incarnation());
+      if (last != null && last != peer.incarnation()) clearPlayersOn(peer.nodeId());
+  }
+  ```
+
 - **One instance of a peer is connected at a time.** A newer instance replaces the connected one: the old one's
   connections close and its waiting calls fail with `RPC_UNAVAILABLE` at once, as it can no longer answer them.
   Two processes started with one id therefore do not share the traffic. An older instance dialing while a newer
@@ -246,7 +254,7 @@ RpcNode game = RpcNode.builder().nodeId(101)
 // on the world server: group peers by what they say they are
 Map<Integer, Set<RpcPeer>> byService = new ConcurrentHashMap<>();
 RpcListener grouping = new RpcListener() {
-    public void onConnected(RpcPeer peer, boolean restarted) {
+    public void onConnected(RpcPeer peer) {
         byService.computeIfAbsent(peer.metadata().get(SERVICE), s -> ConcurrentHashMap.newKeySet()).add(peer);
     }
     public void onDisconnected(RpcPeer peer) { byService.get(peer.metadata().get(SERVICE)).remove(peer); }
@@ -292,7 +300,7 @@ RpcNode.builder()
 - A connection with more data queued than its high water mark is busy. The mark is
   `DEFAULT_WRITE_BUFFER_WATER_MARK` (1 MiB low, 4 MiB high) unless a bootstrap sets Netty's `WRITE_BUFFER_WATER_MARK`.
   A busy connection refuses new calls (`RPC_OVERLOADED`) and notifies (`NOT_WRITABLE`) at once, so that a slow
-  peer cannot fill this node's memory, but takes answers written with `writeTo`. Messages from other threads
+  peer cannot fill this node's memory, but takes answers written with `reply`. Messages from other threads
   count by their size while they wait for the connection's EventLoop: the node sets an estimator that knows calls,
   notifies and answers, unless a bootstrap sets Netty's `MESSAGE_SIZE_ESTIMATOR`.
 - **A callee pushes back by pausing reads.** The handler returns at once and the socket is read empty, so TCP
@@ -338,7 +346,7 @@ heartbeat. The heartbeat itself runs on the connection's EventLoop.
 ## Observability
 
 - `peer.pendingCount()`: the calls to the peer waiting for their answer.
-- `peer.connectionCount()`, `peer.isConnected()`, `peer.incarnation()`, and the listener's connections and restarts.
+- `peer.connectionCount()`, `peer.isConnected()`, `peer.incarnation()`, and the peers the listener hears connect and disconnect.
 - Every call's outcome reaches its callback with the request it answers; an application measures latency, timeouts
   and failures by peer and command in its own callback adapter, for whatever monitoring it uses.
 - `metrics(Metrics)` reports what operators act on, by peer: the tag `node` is the peer's id. A call that succeeds
@@ -357,7 +365,7 @@ heartbeat. The heartbeat itself runs on the connection's EventLoop.
 | `RpcHandler.handleMessage`, `RpcAuthenticator` | the connection's EventLoop, in arrival order |
 | `RpcListener` | the EventLoop of the connection that changed |
 | `RpcCallback` | the EventLoop of the connection the answer came on; the node's time wheel thread when the call timed out; a dialing EventLoop of the node, picked by the route key, when the call failed before it was sent; the EventLoop of the peer's last connection when that closed; the EventLoop of the connection that brought a new instance of the peer; the thread that removed the peer or closed the node. Never the calling thread inside `call` |
-| `call`, `notify`, `broadcast`, `writeTo`, `createPeer` | any thread |
+| `call`, `notify`, `broadcast`, `reply`, `createPeer` | any thread |
 | `removePeer`, `close` | any thread but the node's EventLoops, and for `close` its time wheel (they block until connections close; there they throw `IllegalStateException`) |
 
 None of them may block: business logic belongs on the application's own threads, such as its `GameRuntime`.
@@ -370,7 +378,7 @@ None of them may block: business logic belongs on the application's own threads,
 | `metadata(Metadata)` | empty | What this node tells every peer in the handshake |
 | `listen(port)` / `listen(InetSocketAddress)` | none | Lets other nodes dial this one; port 0 binds an ephemeral port (`node.port()`) |
 | `handler(RpcHandler)` | requests fail with `HANDLER_NOT_FOUND` | Handles what peers send |
-| `listener(RpcListener)` | none | Hears peers connect, disconnect and restart |
+| `listener(RpcListener)` | none | Hears peers connect and disconnect |
 | `authenticator(RpcAuthenticator)` | admit all | Decides who may join |
 | `bootstrap(Bootstrap)` / `serverBootstrap(ServerBootstrap)` | the node's own EventLoops | Netty bootstraps for dialing and listening: EventLoops, channel type, socket options. The handler is the node's; what is unset is filled in on a copy |
 | `redialDelay(min, max)` | 100 ms, 10 s | How long a dialed connection waits before dialing again |

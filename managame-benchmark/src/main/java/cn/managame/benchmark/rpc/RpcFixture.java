@@ -45,7 +45,7 @@ final class RpcFixture implements AutoCloseable {
         world = otherProcess ? null : RpcNode.builder().nodeId(1).listen(new InetSocketAddress("127.0.0.1", 0))
                 .handler((rpcPeer, connection, msg) -> {
                     switch (msg) {
-                        case RpcRequest request -> RpcResponse.of(request.requestId(), request.body().retain()).writeTo(connection);
+                        case RpcRequest request -> rpcPeer.reply(connection, RpcResponse.of(request.requestId(), request.body().retain()));
                         case RpcNotify notify -> notified.release();
                         default -> {}
                     }

@@ -36,7 +36,7 @@ final class RpcGateway implements RpcHandler {
         if (!(msg instanceof RpcRequest request)) return;
         int requestId = request.requestId();
         GameContext source = new GameContext(0, request.routeKey(), request.businessType(), request.businessId(), request.metadata());
-        dispatcher.dispatch(source, decode(request), result -> response(requestId, result).writeTo(connection));
+        dispatcher.dispatch(source, decode(request), result -> rpcPeer.reply(connection, response(requestId, result)));
     }
 
     /** 解析不了时抛异常，rpc 以 RPC_HANDLER_ERROR 应答并记日志。 */

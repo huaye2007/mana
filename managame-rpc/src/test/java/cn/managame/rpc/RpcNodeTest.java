@@ -113,18 +113,18 @@ class RpcNodeTest {
         int id = request.requestId();
         String text = text(request.body()); // decoded here: the request is released when the handler returns
         switch (request.command()) {
-            case ECHO -> RpcResponse.of(id, request.metadata(), text(name + " got " + text + " from " + rpcPeer.nodeId())).writeTo(connection);
-            case FIELDS -> RpcResponse.of(id, text(request.routeKey() + " " + request.businessType() + " " + request.businessId()
-                    + " " + request.metadata().get(TRACE) + " " + (id != 0) + " " + (request.deadline() != 0))).writeTo(connection);
+            case ECHO -> rpcPeer.reply(connection, RpcResponse.of(id, request.metadata(), text(name + " got " + text + " from " + rpcPeer.nodeId())));
+            case FIELDS -> rpcPeer.reply(connection, RpcResponse.of(id, text(request.routeKey() + " " + request.businessType() + " " + request.businessId()
+                    + " " + request.metadata().get(TRACE) + " " + (id != 0) + " " + (request.deadline() != 0))));
             case LATER -> Thread.ofVirtual().start(() -> {
                 sleep(200);
-                RpcResponse.of(id, text(name + " later " + text)).writeTo(connection);
+                rpcPeer.reply(connection, RpcResponse.of(id, text(name + " later " + text)));
             });
             case KEEP -> { // keeps the request past the handler: retains it, and releases it when done
                 request.retain();
                 Thread.ofVirtual().start(() -> {
                     try {
-                        RpcResponse.of(id, text(name + " kept " + text(request.body()))).writeTo(connection);
+                        rpcPeer.reply(connection, RpcResponse.of(id, text(name + " kept " + text(request.body()))));
                     } finally {
                         request.release();
                     }
@@ -133,31 +133,35 @@ class RpcNodeTest {
             case BOOM -> throw new IllegalStateException("boom");
             case SILENT -> {}
             case TWICE -> {
-                RpcResponse.of(id, text("first")).writeTo(connection);
-                RpcResponse.of(id, text("second")).writeTo(connection);
+                rpcPeer.reply(connection, RpcResponse.of(id, text("first")));
+                rpcPeer.reply(connection, RpcResponse.of(id, text("second")));
             }
-            case BIG -> RpcResponse.of(id, text("y".repeat(2000))).writeTo(connection);
+            case BIG -> rpcPeer.reply(connection, RpcResponse.of(id, text("y".repeat(2000))));
             case HOLD -> held.add(new Held(connection, id, text));
             case CLOSE -> {
-                RpcResponse.of(id, text(name + " closing")).writeTo(connection);
+                rpcPeer.reply(connection, RpcResponse.of(id, text(name + " closing")));
                 connection.close();
             }
-            case REFUSE -> RpcResponse.failure(id, SOLD_OUT, Metadata.builder().put(TRACE, "t-1").build(), text("3 of 5")).writeTo(connection);
+            case REFUSE -> rpcPeer.reply(connection, RpcResponse.failure(id, SOLD_OUT, Metadata.builder().put(TRACE, "t-1").build(), text("3 of 5")));
             case DROP -> { // the connection drops before the answer is ready, which then goes on another connection
                 connection.close();
                 Thread.ofVirtual().start(() -> {
                     await(() -> !connection.isActive());
                     sleep(100);
-                    seen.add(name + " answered after the drop: " + RpcResponse.of(id, text(name + " still got " + text)).writeTo(connection));
+                    seen.add(name + " answered after the drop: " + rpcPeer.reply(connection, RpcResponse.of(id, text(name + " still got " + text))));
                 });
             }
-            default -> RpcResponse.failure(id, 999).writeTo(connection);
+            default -> rpcPeer.reply(connection, RpcResponse.failure(id, 999));
         }
     }
 
+    /** Tells a restart as an application does: by the incarnation it saw last. */
     private RpcListener listener(String name) {
+        Map<Integer, Long> seen = new ConcurrentHashMap<>();
         return new RpcListener() {
-            @Override public void onConnected(RpcPeer peer, boolean restarted) {
+            @Override public void onConnected(RpcPeer peer) {
+                Long last = seen.put(peer.nodeId(), peer.incarnation());
+                boolean restarted = last != null && last != peer.incarnation();
                 events.add(name + " connected " + peer.nodeId() + (restarted ? " restarted" : "") + " with " + peer.connectionCount());
             }
 
@@ -348,7 +352,7 @@ class RpcNodeTest {
         assertEquals(0, peer.pendingCount());
         await(() -> !world.peer(2).isConnected());
         ByteBuf lost = text("lost");
-        assertEquals(WriteStatus.INACTIVE, RpcResponse.of(request.requestId(), lost).writeTo(request.connection()));
+        assertEquals(WriteStatus.INACTIVE, world.peer(2).reply(request.connection(), RpcResponse.of(request.requestId(), lost)));
         assertEquals(0, lost.refCnt());
     }
 
@@ -376,7 +380,7 @@ class RpcNodeTest {
     @Test void theApplicationGroupsPeersByWhatTheySayInTheirHandshake() throws Exception {
         Map<Integer, List<Integer>> byService = new ConcurrentHashMap<>();
         world = start(node(1, "world").listen(LOOPBACK).listener(new RpcListener() {
-            @Override public void onConnected(RpcPeer peer, boolean restarted) {
+            @Override public void onConnected(RpcPeer peer) {
                 byService.computeIfAbsent(peer.metadata().get(SERVICE), service -> new CopyOnWriteArrayList<>()).add(peer.nodeId());
             }
         }));
@@ -733,7 +737,7 @@ class RpcNodeTest {
         CyclicBarrier together = new CyclicBarrier(2);
         world = start(node(1, "world").serverBootstrap(new ServerBootstrap().group(boss, workers)).listen(LOOPBACK)
                 .listener(new RpcListener() {
-                    @Override public void onConnected(RpcPeer peer, boolean restarted) {
+                    @Override public void onConnected(RpcPeer peer) {
                         try {
                             together.await(5, TimeUnit.SECONDS); // both listeners run at once
                         } catch (Exception e) {
@@ -765,7 +769,7 @@ class RpcNodeTest {
 
         CountDownLatch release = new CountDownLatch(1);
         worker.execute(() -> { try { release.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } });
-        assertEquals(WriteStatus.ACCEPTED, RpcResponse.of(request.requestId(), text("bye")).writeTo(request.connection()));
+        assertEquals(WriteStatus.ACCEPTED, world.peer(2).reply(request.connection(), RpcResponse.of(request.requestId(), text("bye"))));
         Thread closing = Thread.ofVirtual().start(world::close); // queued behind the answer while the EventLoop is held
         sleep(200);
         release.countDown();
@@ -796,7 +800,7 @@ class RpcNodeTest {
 
     @Test void exceptionsInCallbacksAndListenersAreOnlyLogged() throws Exception {
         world = start(node(1, "world").listen(LOOPBACK).listener(new RpcListener() {
-            @Override public void onConnected(RpcPeer peer, boolean restarted) { throw new IllegalStateException("listener"); }
+            @Override public void onConnected(RpcPeer peer) { throw new IllegalStateException("listener"); }
         }));
         game = start(node(2, "game"));
         RpcPeer peer = game.createPeer(1, at(world));

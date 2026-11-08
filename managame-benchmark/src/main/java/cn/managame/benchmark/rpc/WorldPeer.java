@@ -36,10 +36,10 @@ public final class WorldPeer {
         switch (msg) {
             case RpcRequest request when request.command() == RpcFixture.FLUSH -> {
                 int[] count = unacknowledged(connection);
-                RpcResponse.of(request.requestId(), Unpooled.copyInt(count[0])).writeTo(connection);
+                game.reply(connection, RpcResponse.of(request.requestId(), Unpooled.copyInt(count[0])));
                 count[0] = 0;
             }
-            case RpcRequest request -> RpcResponse.of(request.requestId(), request.body().retain()).writeTo(connection);
+            case RpcRequest request -> game.reply(connection, RpcResponse.of(request.requestId(), request.body().retain()));
             case RpcNotify notify -> {
                 int[] count = unacknowledged(connection);
                 if (++count[0] >= BATCH && game.notify(new RpcNotify(RpcFixture.HANDLED, 0, (byte) 0, count[0],

@@ -2,8 +2,6 @@ package cn.managame.rpc;
 
 import cn.managame.FrameworkErrorCodes;
 import cn.managame.Metadata;
-import cn.managame.network.connection.Connection;
-import cn.managame.network.connection.WriteStatus;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.ReferenceCounted;
@@ -12,11 +10,11 @@ import java.util.Objects;
 /**
  * The answer to one call, under the call's {@code requestId}: {@code code} zero with the metadata and body the
  * callee replied with, or a failure code, from the callee, with whatever metadata and body it gave it, or from the
- * calling node itself (see {@link RpcPeer#call}), with neither. The callee writes it to the connection the request
- * came on:
+ * calling node itself (see {@link RpcPeer#call}), with neither. The callee hands it to the peer that asked, with the
+ * connection the request came on:
  *
  * <pre>{@code
- * RpcResponse.of(request.requestId(), body).writeTo(connection);
+ * rpcPeer.reply(connection, RpcResponse.of(request.requestId(), body));
  * }</pre>
  *
  * Reference-counted through its body, like a request. Only the first answer to a request counts; the caller drops
@@ -52,17 +50,6 @@ public record RpcResponse(int requestId, int code, Metadata metadata, ByteBuf bo
     }
 
     public boolean isSuccess() { return code == FrameworkErrorCodes.SUCCESS; }
-
-    /**
-     * Writes this answer, from any thread, to {@code connection}, the one its request came on, or, once that has
-     * closed, to another connection up of the same running instance of the peer, so that an answer outlives the
-     * connection its request came on. It writes even when the connection is busy: the work behind an answer is
-     * done, and dropping it would leave the caller unsure whether it was. Returns ACCEPTED, or INACTIVE, releasing
-     * the answer, when that instance has no connection up, as while its only one is dialed again; the call failed
-     * with RPC_UNAVAILABLE on the caller when that last connection closed. An answer larger than the largest frame
-     * reaches the caller as RPC_PROTOCOL_ERROR instead.
-     */
-    public WriteStatus writeTo(Connection connection) { return RpcPeer.reply(connection, this); }
 
     @Override public int refCnt() { return body.refCnt(); }
     @Override public RpcResponse retain() { body.retain(); return this; }

@@ -51,9 +51,9 @@ import java.util.concurrent.TimeUnit;
  * waiting calls fail at once. Their timeouts end them too, and so do a new instance of the peer, its removal and
  * the close of the node.
  *
- * <p>A message handed to {@link #call} or {@link #notify(RpcNotify)} becomes the node's, which releases it once
- * sent and also when it cannot be sent, so the caller must not use it afterwards; to pass on a message received in
- * the handler, retain it first.
+ * <p>A message handed to {@link #call}, {@link #notify(RpcNotify)} or {@link #reply} becomes the node's, which
+ * releases it once sent and also when it cannot be sent, so the caller must not use it afterwards; to pass on a
+ * message received in the handler, retain it first.
  *
  * <p>Calls, notifies and answers take no lock: they read the instance connected and its connections from one
  * immutable {@link Instance}, and the waiting calls are lock-free. Only connections joining and leaving lock the
@@ -80,8 +80,8 @@ public final class RpcPeer {
     private volatile Instance instance;
     private volatile Metadata metadata = Metadata.empty();
     private volatile boolean removed;
-    /** Guarded by this: whether the instance connected was announced, and whether it is a restart. */
-    private boolean announced, restarted;
+    /** Guarded by this: whether the instance connected was announced. */
+    private boolean announced;
 
     /**
      * The running instance of the peer connected, 0 before the first, and its connection in each slot, null while
@@ -224,14 +224,18 @@ public final class RpcPeer {
     static RpcPeer of(Connection connection) { return connection.get(KEY); }
 
     /**
-     * Writes {@code response} to {@code connection} or, once that has closed, to a connection up of the same
-     * instance of the peer; see {@link RpcResponse#writeTo}.
+     * Writes {@code response}, from any thread, to {@code connection}, the one its request came on, or, once that has
+     * closed, to another connection up of the same running instance of the peer, so that an answer outlives the
+     * connection its request came on. It writes even when the connection is busy: the work behind an answer is
+     * done, and dropping it would leave the caller unsure whether it was. Returns ACCEPTED, or INACTIVE, releasing
+     * the answer, when that instance has no connection up, as while its only one is dialed again; the call failed
+     * with RPC_UNAVAILABLE on the caller when that last connection closed. An answer larger than the largest frame
+     * reaches the caller as RPC_PROTOCOL_ERROR instead.
      */
-    static WriteStatus reply(Connection connection, RpcResponse response) {
+    public WriteStatus reply(Connection connection, RpcResponse response) {
         Objects.requireNonNull(response, "response");
-        if (!connection.isActive() && of(connection) instanceof RpcPeer peer
-                && connection.get(INCARNATION) instanceof Long incarnation && incarnation == peer.instance.incarnation()) {
-            Connection other = peer.connection(response.requestId());
+        if (!connection.isActive() && connection.get(INCARNATION) instanceof Long incarnation && incarnation == instance.incarnation()) {
+            Connection other = connection(response.requestId());
             if (other != null) return RpcCodec.writeEvenIfBusy(other, response);
         }
         return RpcCodec.writeEvenIfBusy(connection, response);
@@ -274,7 +278,7 @@ public final class RpcPeer {
                     return "an older instance of node " + nodeId + " dials while a newer one is connected";
                 if (current.incarnation() != 0) {
                     if (!dropped.isEmpty()) LOG.log(Level.WARNING, "A new instance of node " + nodeId + " replaces the connected one");
-                    replaced = restarted = true;
+                    replaced = true;
                 }
                 current = new Instance(theirs.incarnation(), new Connection[outbound ? current.slots().length : theirs.slots()]);
                 instance = current;
@@ -295,9 +299,7 @@ public final class RpcPeer {
             instance = new Instance(current.incarnation(), slots);
             if (!announced && connectionCount() == slots.length) {
                 announced = true;
-                boolean restart = restarted;
-                restarted = false;
-                node.fireConnected(this, restart);
+                node.fireConnected(this);
             }
         }
         for (Connection old : dropped) old.close();

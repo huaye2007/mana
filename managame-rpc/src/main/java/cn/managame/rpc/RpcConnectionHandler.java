@@ -104,7 +104,7 @@ final class RpcConnectionHandler implements ConnectionHandler {
             handler.handleMessage(peer, connection, msg);
         } catch (RuntimeException e) {
             LOG.log(Level.ERROR, "The RPC handler failed on " + msg + " from node " + peer.nodeId(), e);
-            if (msg instanceof RpcRequest request) RpcResponse.failure(request.requestId(), RPC_HANDLER_ERROR).writeTo(connection);
+            if (msg instanceof RpcRequest request) peer.reply(connection, RpcResponse.failure(request.requestId(), RPC_HANDLER_ERROR));
         }
     }
 

@@ -7,11 +7,12 @@ package cn.managame.rpc;
  */
 public interface RpcListener {
     /**
-     * Every connection of a running instance of the peer completed its handshake. {@code restarted} tells a new
-     * instance of the peer, whose state is gone, from the same instance coming back after its connections dropped:
-     * it is true when the peer's {@link RpcPeer#incarnation() incarnation} differs from the one seen before.
+     * Every connection of a running instance of the peer completed its handshake. An application that keeps state
+     * about its peers keeps the peer's {@link RpcPeer#incarnation() incarnation} with it: when that differs here, a
+     * new instance came and the state is gone; when it is the same, the instance only came back after its
+     * connections dropped.
      */
-    default void onConnected(RpcPeer peer, boolean restarted) {}
+    default void onConnected(RpcPeer peer) {}
 
     /**
      * The last connection of the peer closed, also when the peer was removed or a new instance of it took over.

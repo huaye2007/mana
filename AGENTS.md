@@ -157,7 +157,7 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   (without) / `RpcResponse` (`requestId`, `code`, `metadata`, `body`), `node.createPeer` / `removePeer`,
   `node.peer(id).call(request, callback)` with `RpcCallback.onResponse(request, response)`, `peer.notify(notify)`,
   `node.broadcast(peers, notify)`, `RpcHandler.handleMessage(RpcPeer rpcPeer, Connection connection, Object msg)`
-  answered with `response.writeTo(connection)`, `RpcListener.onConnected(peer, restarted)`, `incarnation` (a
+  answered with `rpcPeer.reply(connection, response)`, `RpcListener.onConnected(peer)`, `incarnation` (a
   running instance of a node), `node.close()`, `RpcAuthenticator`, handshake and heartbeat (the internal frames).
 - rpc decisions the maintainer made: TCP only; waiting calls belong to the `RpcPeer`, under its own request ids,
   so an answer may come back on any connection of the same instance, and they fail at once when the peer's last
@@ -198,7 +198,7 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).
 - A method that sends one message returns network's `WriteStatus` (`connection.write`, `peer.notify`,
-  `response.writeTo`), not a boolean; one that sends to many returns how many accepted it.
+  `peer.reply`), not a boolean; one that sends to many returns how many accepted it.
 - Builders validate eagerly, and `build()` / `start()` return a ready object with no "not started" state.
 - What a builder registers in bulk (handlers, interceptors, repositories) it takes as a `Collection`, never as
   varargs, so an application, or a container that scans annotations, hands over what it gathered as is:
