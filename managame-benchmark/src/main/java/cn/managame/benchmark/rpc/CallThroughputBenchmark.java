@@ -1,6 +1,7 @@
 package cn.managame.benchmark.rpc;
 
 import cn.managame.FrameworkErrorCodes;
+import cn.managame.metrics.Metrics;
 import cn.managame.rpc.RpcCallback;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -46,7 +47,7 @@ public class CallThroughputBenchmark {
     private RpcCallback done;
 
     @Setup(Level.Trial) public void start() throws Exception {
-        fixture = new RpcFixture(payload, connections, otherProcess());
+        fixture = new RpcFixture(payload, connections, otherProcess(), metrics());
         inFlight = new Semaphore(window);
         done = (request, response) -> {
             if (response.code() != FrameworkErrorCodes.SUCCESS) failures.incrementAndGet();
@@ -65,6 +66,9 @@ public class CallThroughputBenchmark {
 
     /** Whether the world server runs in a process of its own; here it does not. */
     protected boolean otherProcess() { return false; }
+
+    /** Where the nodes report; here nowhere. */
+    protected Metrics metrics() { return Metrics.noop(); }
 
     @Benchmark public void call(ThreadParams thread) throws InterruptedException {
         inFlight.acquire();

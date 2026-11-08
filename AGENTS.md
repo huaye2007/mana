@@ -10,7 +10,7 @@ Java 25. The root `pom.xml` only aggregates them, to build all in one command; n
 | Project | Depends on | What it is |
 | --- | --- | --- |
 | `managame-common` | nothing | `Metadata`, `MetadataKey`, `IdGenerator` (`SnowflakeIdGenerator`, `SequenceIdGenerator`), `FrameworkErrorCodes`, `Metrics` (`cn.managame.metrics`) |
-| `managame-network` | Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
+| `managame-network` | common, Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
 | `managame-data` | common, Caffeine | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
@@ -115,7 +115,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
   (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routeKey)` run one at a time in submission order.
   Work that comes back from another thread or route (an RPC callback, a visit to another player's route) goes on
-  through `GameRuntime.execute(context, task)` with the context to continue on, with no API of its own. Called from a
+  through `GameRuntime.execute(context, task)` with the context to continue on; a game task that needs a result from
+  another route uses `GameRuntime.call(target, work, then)`, which is the same two steps and never waits, as business
+  code must not depend on the kind of thread under it. Called from a
   game task it is never refused, for load or shutdown, so what was accepted finishes what it began; any other caller is
   an entry, an RPC callback too, and shutdown refuses entries first and shuts executors down once none has work. A
   request is answered whether its task is accepted or refused. What runs around business logic (a trace id in the logs, saving
@@ -219,13 +221,15 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   in a Supplier, so a level that is off costs nothing.
 - Report metrics through common's `Metrics`, never a metrics library: the application binds it to its backend as it
   bridges `System.Logger`. A component takes it as a builder setting, `metrics(Metrics)`, `Metrics.noop()` by default,
-  never from a global. Metrics are named `managame.<component>.<area>.<what>`, after the loggers. Meters are created
+  never from a global (a network listener also takes a name, its `listener` tag). Metrics are named `managame.<component>.<area>.<what>`, after the loggers. Meters are created
   at build, or when what they measure is added (a domain, a peer), and kept in fields, so an event costs one call with
   no tags built; tag values come from small sets (a domain, an error code's name, a node id), never player ids or
   route keys. What a component already counts or holds is reported as a gauge or a counter read when the backend
-  collects, not counted again on the hot path. There is no timer: a component reports what it refuses, what fails and
-  what it holds, what a game server's operators act on, and nothing per task that runs and returns; an application
-  times the calls it cares about with its own backend.
+  collects, not counted again on the hot path. Every component reports what it refuses, what fails and what it holds.
+  network and rpc also report what goes through them, and the runtime each task by its kind (a handler, or for a task
+  written by hand the class it was written in), whose meters are made once, so a task builds no name or tag. Who a task
+  was for goes in the log, never in a tag. There is no timer: everything is read as a running total, so rpc and the
+  runtime add up latency in common's `LatencyBuckets`, reported as counters, and read no clock under `Metrics.noop()`.
 - Keep test fixtures small and readable; tests double as usage examples (for instance
   `PlayerGatewayExampleTest` shows an application-defined player gateway).
 

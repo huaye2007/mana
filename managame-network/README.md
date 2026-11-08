@@ -54,9 +54,11 @@ interface.
 Each connection's pipeline has this fixed order (names in `PipelineNames`):
 
 ```
-addFront… | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
+[metrics] | addFront… | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
 ws-messages | flush | addLast… | customize | connection → ConnectionHandler
 ```
+
+`metrics` is present only on a listener that [reports](#metrics).
 
 `flush` is Netty's `FlushConsolidationHandler`. Every `connection.write` flushes, and it gathers those flushes: the
 writes of one read, or of one EventLoop turn when business threads write, leave in one system call. Without it every
@@ -333,6 +335,34 @@ without a socket. HTTP tests use the JDK's `HttpClient` and raw sockets for sync
 500, 413, pipelining order, a front handler answering itself, and HTTPS. Client tests cover a server that starts
 late, reconnecting after the connection drops, and closing a client that never connected.
 
+## Metrics
+
+A listener reports through common's `Metrics` when given one, with a name for its `listener` tag; `HttpInitializer`
+takes the same setting. What belongs to no one listener, EventLoops and direct memory, is bound once by the
+application, and costs nothing until the backend collects:
+
+```java
+ConnectionInitializer game = ConnectionInitializer.ws("/game").handler(gameHandler).metrics(metrics, "game").build();
+NetworkServer server = NetworkServer.start(9001, game);
+Meter loops = NetworkMetrics.eventLoops(metrics, server.eventLoops(), "game");
+Meter memory = NetworkMetrics.directMemory(metrics);
+```
+
+A listener that reports has a `metrics` handler first in its pipeline, which counts each read and write. One that
+does not has no such handler and pays nothing per message.
+
+| Metric | Kind | Tells |
+| --- | --- | --- |
+| `managame.network.connections.active` | gauge | TCP connections open now |
+| `managame.network.connections.opened` | counter | TCP connections accepted |
+| `managame.network.connections.busy` | counter | Times a connection went over its high water mark, so that writes return `NOT_WRITABLE`: a client too slow to read |
+| `managame.network.bytes.read`, `managame.network.bytes.written` | counter | Bytes on the wire, TLS included |
+| `managame.network.handshakes.failed` | counter | TLS handshakes that failed, WebSocket handshakes that timed out |
+| `managame.network.exceptions` | counter | Exceptions on open connections, with the tag `kind`: `io`, `decode` or `other`, which includes what a handler threw |
+| `managame.network.http.responses` | counter | HTTP responses, with the tag `status`: `2xx`, `3xx`, `4xx` or `5xx` |
+| `managame.network.eventloop.pending_tasks` | gauge | Tasks waiting on the EventLoop furthest behind in a group, tagged `group`: above zero for long, its threads cannot keep up |
+| `managame.network.memory.direct_used` | gauge | Direct memory Netty's default allocator uses, in bytes |
+
 ## Logging
 
 Through `System.Logger`, so any backend can take it; see the workspace README.
@@ -344,7 +374,7 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 
 ## Build
 
-It depends on the Netty modules it uses, never `netty-all`: common, buffer, transport, handler, codec-base,
+It depends on managame-common for `Metrics` and on the Netty modules it uses, never `netty-all`: common, buffer, transport, handler, codec-base,
 codec-http and epoll's classes, with epoll's native library for Linux x86-64 and AArch64 at run time (NIO elsewhere).
 An application adds any other Netty module it wants at the same version, which managame-bom pins.
 

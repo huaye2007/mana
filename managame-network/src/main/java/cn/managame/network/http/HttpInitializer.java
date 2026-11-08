@@ -1,6 +1,9 @@
 package cn.managame.network.http;
 
+import cn.managame.metrics.Counter;
+import cn.managame.metrics.Metrics;
 import cn.managame.network.netty.HandlerChain;
+import cn.managame.network.netty.ListenerMetrics;
 import cn.managame.network.netty.PipelineNames;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -44,19 +47,27 @@ import java.util.function.Supplier;
  */
 public final class HttpInitializer extends ChannelInitializer<Channel> {
     public static final int DEFAULT_MAX_CONTENT_LENGTH = 1024 * 1024;
-    private static final Set<String> RESERVED = Set.of(PipelineNames.SSL, PipelineNames.HTTP_CODEC, PipelineNames.HTTP_FLOW,
+    private static final Set<String> RESERVED = Set.of(PipelineNames.METRICS, PipelineNames.SSL, PipelineNames.HTTP_CODEC, PipelineNames.HTTP_FLOW,
             PipelineNames.HTTP_EXCHANGE, PipelineNames.HTTP_KEEP_ALIVE, PipelineNames.HTTP_AGGREGATOR, PipelineNames.HTTP_HANDLER);
+    private static final String[] STATUS_CLASSES = {"2xx", "3xx", "4xx", "5xx"};
     private final SslContext ssl;
     private final int maxContentLength;
     private final HandlerChain front, application;
     private final HttpDispatchHandler dispatcher;
+    private final ListenerMetrics metrics;
+    private final Counter tooLarge;
 
     private HttpInitializer(Builder b) {
         ssl = b.ssl;
         maxContentLength = b.maxContentLength;
         front = b.front.build();
         application = b.application.build();
-        dispatcher = new HttpDispatchHandler(b.handler, b.contextPath);
+        metrics = ListenerMetrics.of(b.metrics, b.metricsName);
+        Counter[] responses = new Counter[STATUS_CLASSES.length];
+        for (int i = 0; i < responses.length; i++)
+            responses[i] = b.metrics.counter("managame.network.http.responses", "listener", b.metricsName, "status", STATUS_CLASSES[i]);
+        tooLarge = responses[2];
+        dispatcher = new HttpDispatchHandler(b.handler, b.contextPath, metrics, responses);
     }
 
     public static Builder http() { return new Builder(null); }
@@ -69,13 +80,14 @@ public final class HttpInitializer extends ChannelInitializer<Channel> {
 
     @Override protected void initChannel(Channel channel) {
         ChannelPipeline pipeline = channel.pipeline();
+        if (metrics != ListenerMetrics.NONE) pipeline.addLast(PipelineNames.METRICS, metrics);
         front.addTo(pipeline);
         if (ssl != null) pipeline.addLast(PipelineNames.SSL, ssl.newHandler(channel.alloc()));
         pipeline.addLast(PipelineNames.HTTP_CODEC, new HttpServerCodec());
         pipeline.addLast(PipelineNames.HTTP_FLOW, new FlowControlHandler());
         pipeline.addLast(PipelineNames.HTTP_EXCHANGE, new HttpExchangeGate());
         pipeline.addLast(PipelineNames.HTTP_KEEP_ALIVE, new HttpServerKeepAliveHandler());
-        pipeline.addLast(PipelineNames.HTTP_AGGREGATOR, new Aggregator(maxContentLength));
+        pipeline.addLast(PipelineNames.HTTP_AGGREGATOR, new Aggregator(maxContentLength, tooLarge));
         application.addTo(pipeline);
         pipeline.addLast(PipelineNames.HTTP_HANDLER, dispatcher);
     }
@@ -84,9 +96,15 @@ public final class HttpInitializer extends ChannelInitializer<Channel> {
 
     /** Closes after 413 and after a refused 100-continue, so no request body is left half read. */
     private static final class Aggregator extends HttpObjectAggregator {
-        Aggregator(int maxContentLength) { super(maxContentLength, true); }
+        private final Counter tooLarge;
+
+        Aggregator(int maxContentLength, Counter tooLarge) {
+            super(maxContentLength, true);
+            this.tooLarge = tooLarge;
+        }
 
         @Override protected void handleOversizedMessage(ChannelHandlerContext ctx, HttpMessage oversized) {
+            tooLarge.increment();
             FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
                     HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE, Unpooled.EMPTY_BUFFER);
             HttpUtil.setContentLength(response, 0);
@@ -107,6 +125,8 @@ public final class HttpInitializer extends ChannelInitializer<Channel> {
         private int maxContentLength = DEFAULT_MAX_CONTENT_LENGTH;
         private final HandlerChain.Builder front = HandlerChain.builder(), application = HandlerChain.builder();
         private final Set<String> names = new HashSet<>();
+        private Metrics metrics = Metrics.noop();
+        private String metricsName = "none";
 
         private Builder(SslContext ssl) { this.ssl = ssl; }
 
@@ -141,6 +161,18 @@ public final class HttpInitializer extends ChannelInitializer<Channel> {
         public Builder addLast(String name, ChannelHandler sharable) { application.addLast(name(name), sharable); return this; }
         public Builder addLast(String name, Supplier<? extends ChannelHandler> factory) { application.addLast(name(name), factory); return this; }
         public Builder addLast(HandlerChain chain) { chain.names().forEach(this::name); application.addLast(chain); return this; }
+
+        /**
+         * Where this listener reports, its meters tagged {@code listener} with {@code name}, as
+         * {@link cn.managame.network.netty.ConnectionInitializer.Builder#metrics} says, and its responses by status
+         * class; {@link Metrics#noop()} by default.
+         */
+        public Builder metrics(Metrics metrics, String name) {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("The listener's name must not be blank");
+            this.metrics = Objects.requireNonNull(metrics, "metrics");
+            metricsName = name;
+            return this;
+        }
 
         public HttpInitializer build() {
             if (handler == null) throw new IllegalStateException("handler is required");

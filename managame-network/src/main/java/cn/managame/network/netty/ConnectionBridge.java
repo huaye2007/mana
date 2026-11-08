@@ -26,10 +26,12 @@ final class ConnectionBridge extends ChannelInboundHandlerAdapter {
     private static final System.Logger LOG = System.getLogger("cn.managame.network");
     private final ConnectionHandler handler;
     private final ConnectionMapper mapper;
+    private final ListenerMetrics metrics;
 
-    ConnectionBridge(ConnectionHandler handler, ConnectionMapper mapper) {
+    ConnectionBridge(ConnectionHandler handler, ConnectionMapper mapper, ListenerMetrics metrics) {
         this.handler = handler;
         this.mapper = mapper;
+        this.metrics = metrics;
     }
 
     @Override public void channelActive(ChannelHandlerContext ctx) {
@@ -44,7 +46,10 @@ final class ConnectionBridge extends ChannelInboundHandlerAdapter {
             establish(ctx);
         } else if (event instanceof SslHandshakeCompletionEvent tls) {
             // A failed handshake is closed by SslHandler itself.
-            if (tls.isSuccess() && !isWebSocket(ctx)) establish(ctx);
+            if (!tls.isSuccess()) metrics.handshakeFailed();
+            else if (!isWebSocket(ctx)) establish(ctx);
+        } else if (event == WebSocketServerProtocolHandler.ServerHandshakeStateEvent.HANDSHAKE_TIMEOUT) {
+            metrics.handshakeFailed();
         } else if (!(event instanceof WebSocketServerProtocolHandler.ServerHandshakeStateEvent)) {
             try {
                 Connection connection = mapper.get(ctx.channel());
@@ -95,6 +100,7 @@ final class ConnectionBridge extends ChannelInboundHandlerAdapter {
             report(ctx, cause);
             return;
         }
+        if (ctx.channel().isActive()) metrics.exception(cause);
         if (LOG.isLoggable(Level.DEBUG))
             LOG.log(Level.DEBUG, "Exception on a connection that is not up; peer=" + ctx.channel().remoteAddress() + "; " + cause);
         ctx.close();
@@ -118,6 +124,7 @@ final class ConnectionBridge extends ChannelInboundHandlerAdapter {
 
     /** To onException of the mapped connection; logged when there is none or onException itself fails. */
     private void report(ChannelHandlerContext ctx, Throwable cause) {
+        metrics.exception(cause);
         try {
             Connection connection = mapper.get(ctx.channel());
             if (connection != null) {

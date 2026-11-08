@@ -8,9 +8,9 @@ package cn.managame.runtime;
 @FunctionalInterface
 public interface RouteKeyResolver {
     /**
-     * The route key for {@code message} arriving from {@code source}: the context of the connection, the
-     * publishing task, the calling node or the HTTP request. Runs on the receiving thread and must not block; an
-     * exception means the message cannot be routed.
+     * The route key for {@code message} arriving from {@code source}: the context of the connection, the publishing
+     * task or the calling node, and an empty one for an HTTP request. Runs on the receiving thread and must not block;
+     * an exception means the message cannot be routed.
      */
     long routeKey(Context source, Object message);
 }

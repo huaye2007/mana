@@ -63,7 +63,7 @@ public final class EventBus {
         for (AnnotatedMethod subscriber : targets) {
             try {
                 GameContext context = new GameContext(subscriber.route(runtime, publisher, event), publisher.metadata());
-                runtime.execute(context, task -> subscriber.invoke(task, event));
+                runtime.execute(subscriber.kind(), context, task -> subscriber.invoke(task, event));
             } catch (RuntimeException e) {
                 if (failure == null) failure = e;
                 else failure.addSuppressed(e);
@@ -85,7 +85,7 @@ public final class EventBus {
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
-                for (AnnotatedMethod subscriber : AnnotatedMethod.scan(target, EventMethod.class, EventMethod::routeKey)) {
+                for (AnnotatedMethod subscriber : AnnotatedMethod.scan(runtime, target, EventMethod.class, EventMethod::routeKey)) {
                     subscriber.requireContext(GameContext.class);
                     runtime.checkDomain(subscriber.domain());
                     subscribers.computeIfAbsent(subscriber.messageType(), type -> new ArrayList<>()).add(subscriber);

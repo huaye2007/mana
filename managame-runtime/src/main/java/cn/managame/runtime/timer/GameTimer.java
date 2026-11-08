@@ -7,6 +7,7 @@ import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeException;
 import cn.managame.runtime.GameTask;
+import cn.managame.runtime.TaskKind;
 import cn.managame.runtime.annotation.AnnotatedMethod;
 import cn.managame.runtime.time.GameTime;
 import io.netty.util.HashedWheelTimer;
@@ -77,7 +78,7 @@ public final class GameTimer implements AutoCloseable {
 
     /** Runs {@code task} once after {@code delay} with {@code context}. */
     public <C extends Context> Scheduled after(C context, Duration delay, GameTask<? super C> task) {
-        Firing<C> firing = new Firing<>(context, task, 0, null);
+        Firing<C> firing = new Firing<>(context, task, 0, null, runtime.taskKind(task.getClass()));
         firing.arm(nanos(delay));
         return firing;
     }
@@ -91,7 +92,7 @@ public final class GameTimer implements AutoCloseable {
     public <C extends Context> Scheduled every(C context, Duration period, GameTask<? super C> task) {
         long nanos = nanos(period);
         if (nanos <= 0) throw new IllegalArgumentException("period must be positive");
-        Firing<C> firing = new Firing<>(context, task, nanos, null);
+        Firing<C> firing = new Firing<>(context, task, nanos, null, runtime.taskKind(task.getClass()));
         firing.nextDue = System.nanoTime() + nanos;
         firing.arm(nanos);
         return firing;
@@ -115,7 +116,7 @@ public final class GameTimer implements AutoCloseable {
      */
     public <C extends Context> Scheduled cron(C context, String expression, GameTask<? super C> task) {
         runtime.checkDomain(context.domain());
-        Firing<C> firing = new Firing<>(context, task, 0, CronExpression.parse(expression));
+        Firing<C> firing = new Firing<>(context, task, 0, CronExpression.parse(expression), runtime.taskKind(task.getClass()));
         firing.wakeCron();
         LOG.log(Level.DEBUG, () -> "Scheduled a task at '" + expression + "' in domain " + context.domain() + ", route key " + context.routeKey());
         return firing;
@@ -133,7 +134,7 @@ public final class GameTimer implements AutoCloseable {
             for (Method method : AnnotatedMethod.methods(target, Cron.class)) jobs.add(CronJob.of(runtime, target, method));
         List<Scheduled> scheduled = new ArrayList<>(jobs.size());
         for (CronJob job : jobs) {
-            Firing<GameContext> firing = new Firing<>(job.context(), job.task(), 0, job.cron());
+            Firing<GameContext> firing = new Firing<>(job.context(), job.task(), 0, job.cron(), runtime.taskKind(job.name()));
             firing.wakeCron();
             scheduled.add(firing);
             LOG.log(Level.INFO, () -> "Scheduled " + job.name() + " at '" + job.cron() + "' in domain " + job.context().domain()
@@ -194,6 +195,7 @@ public final class GameTimer implements AutoCloseable {
         private final long periodNanos;
         /** Null unless a cron timer. */
         private final CronExpression cron;
+        private final TaskKind kind;
         /** When the next periodic firing is due on the monotonic clock; used by the wheel's thread only. */
         long nextDue;
         /** The GameTime clock a cron timer's next time was found on; null before its first wake-up. */
@@ -204,11 +206,12 @@ public final class GameTimer implements AutoCloseable {
         /** Whether the last firing was handed to the runtime and has not finished: set on the wheel's thread, cleared on the route. */
         private volatile boolean handed;
 
-        Firing(C context, GameTask<? super C> task, long periodNanos, CronExpression cron) {
+        Firing(C context, GameTask<? super C> task, long periodNanos, CronExpression cron, TaskKind kind) {
             this.context = Objects.requireNonNull(context, "context");
             this.task = Objects.requireNonNull(task, "task");
             this.periodNanos = periodNanos;
             this.cron = cron;
+            this.kind = kind;
         }
 
         void arm(long delayNanos) {
@@ -265,7 +268,7 @@ public final class GameTimer implements AutoCloseable {
             }
             handed = true;
             try {
-                runtime.execute(context, this);
+                runtime.execute(kind, context, this);
             } catch (GameRuntimeException refused) {
                 if (refused.errorCode() == RUNTIME_CLOSED) {
                     cancel();

@@ -18,6 +18,8 @@ final class Call implements ReferenceCounted, TimerTask {
     final PendingCalls calls;
     final RpcRequest request;
     final RpcCallback callback;
+    /** When the call was made, on {@link System#nanoTime()}. */
+    final long start;
     /** A {@link System#nanoTime()} value, never 0. */
     final long deadline;
     /** Assigned by {@link PendingCalls#add}, before the call joins them, which publishes it. */
@@ -25,10 +27,11 @@ final class Call implements ReferenceCounted, TimerTask {
     /** Set once the call waits in its table, and cancelled when it ends otherwise. */
     Timeout timeout;
 
-    Call(PendingCalls calls, RpcRequest request, RpcCallback callback, long deadline) {
+    Call(PendingCalls calls, RpcRequest request, RpcCallback callback, long start, long deadline) {
         this.calls = calls;
         this.request = request;
         this.callback = callback;
+        this.start = start;
         this.deadline = deadline != 0 ? deadline : 1;
     }
 

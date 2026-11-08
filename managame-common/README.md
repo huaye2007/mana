@@ -133,9 +133,9 @@ Rules:
   through `Metrics` into a LongAdder, the kind of striped adder Micrometer counts in, as fast as into the LongAdder alone, by one thread or by
   four sharing it. `Metrics.noop()` is one empty meter, whose methods the JIT inlines away; a gauge and a counter kept
   elsewhere cost nothing until the backend reads them.
-- There is no timer. Reading the clock around every task or call costs a hot path most of its time, for an average that
-  finds nothing, so a component reports what it refuses, what fails and what it holds. An application times the calls
-  it cares about with its own backend.
+- There is no timer, as everything here is read as a running total. A component that times something, as rpc its
+  calls and the runtime its tasks, adds it up in `LatencyBuckets` and reports them as counters, so that two readings
+  give the distribution in between. It reads no clock under `Metrics.noop()`.
 - `close()` removes a gauge or a counter kept elsewhere from the backend and lets go of what it reads, for one of
   something that goes away, such as a peer. Counters last as long as the backend: a peer back under the same node id
   reports to the same series again.
@@ -169,6 +169,42 @@ public final class MicrometerMetrics implements Metrics {
 
 Micrometer converts names for each backend: for Prometheus, dots into underscores. Over OpenTelemetry, the same
 methods map to its counter, observable counter and observable gauge.
+
+### Logged on a schedule
+
+An application without a monitoring system can log everything it is told, every minute say. Counters are running
+totals, so the difference between two lines is what happened in between:
+
+```java
+public final class LoggedMetrics implements Metrics {
+    private static final System.Logger LOG = System.getLogger("game.metrics");
+    private final Map<String, LongAdder> counts = new ConcurrentSkipListMap<>();
+    private final Map<String, DoubleSupplier> readings = new ConcurrentSkipListMap<>();
+
+    public LoggedMetrics(ScheduledExecutorService scheduler) {
+        scheduler.scheduleAtFixedRate(this::log, 1, 1, TimeUnit.MINUTES);
+    }
+
+    private void log() {
+        counts.forEach((name, count) -> LOG.log(Level.INFO, name + " = " + count.sum()));
+        readings.forEach((name, value) -> LOG.log(Level.INFO, name + " = " + value.getAsDouble()));
+    }
+
+    @Override public Counter counter(String name, String... tags) {
+        return counts.computeIfAbsent(key(name, tags), key -> new LongAdder())::add;
+    }
+
+    @Override public Meter counter(String name, LongSupplier count, String... tags) { return gauge(name, count::getAsLong, tags); }
+
+    @Override public Meter gauge(String name, DoubleSupplier value, String... tags) {
+        String key = key(name, tags);
+        readings.put(key, value);
+        return () -> readings.remove(key);
+    }
+
+    private static String key(String name, String... tags) { return tags.length == 0 ? name : name + List.of(tags); }
+}
+```
 
 ## Error codes
 

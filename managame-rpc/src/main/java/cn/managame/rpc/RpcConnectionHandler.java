@@ -4,6 +4,7 @@ import static cn.managame.FrameworkErrorCodes.RPC_HANDLER_ERROR;
 
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
+import cn.managame.rpc.Refusal.Reason;
 import cn.managame.rpc.RpcCodec.Handshake;
 import cn.managame.rpc.RpcCodec.Heartbeat;
 import io.netty.util.AttributeKey;
@@ -43,12 +44,18 @@ final class RpcConnectionHandler implements ConnectionHandler {
         if (frame instanceof Handshake theirs) {
             handshake(connection, peer, theirs);
         } else if (peer == null) {
-            refuse(connection, "a frame came before the handshake");
+            refuse(connection, new Refusal(Reason.PROTOCOL, "a frame came before the handshake"));
         } else {
             switch (frame) {
                 case RpcResponse response -> peer.answer(response);
-                case RpcRequest request -> dispatch(peer, connection, request);
-                case RpcNotify notify -> dispatch(peer, connection, notify);
+                case RpcRequest request -> {
+                    peer.meters().requestsReceived.increment();
+                    dispatch(peer, connection, request);
+                }
+                case RpcNotify notify -> {
+                    peer.meters().notifiesReceived.increment();
+                    dispatch(peer, connection, notify);
+                }
                 case Heartbeat heartbeat -> {
                     if (connection.get(DIALED) == null) RpcCodec.writeEvenIfBusy(connection, Heartbeat.INSTANCE);
                 }
@@ -67,18 +74,18 @@ final class RpcConnectionHandler implements ConnectionHandler {
     private void handshake(Connection connection, RpcPeer joined, Handshake theirs) {
         int id = theirs.nodeId();
         RpcPeer dialed = connection.get(DIALED);
-        String refusal = joined != null ? "a second handshake"
-                : theirs.version() != RpcCodec.VERSION ? "node " + id + " speaks protocol version " + theirs.version() + ", this node " + RpcCodec.VERSION
-                : dialed != null && id != dialed.nodeId() ? "node " + id + " answered instead of node " + dialed.nodeId()
-                : dialed == null && id == node.nodeId() ? "the other side claims this node's id " + id
-                : dialed == null && theirs.slot() >= theirs.slots() ? "node " + id + " names slot " + theirs.slot() + " of " + theirs.slots()
-                : node.isClosed() ? "this node is closed"
-                : !authenticate(connection, theirs) ? "node " + id + " was not admitted"
+        Refusal refusal = joined != null ? new Refusal(Reason.PROTOCOL, "a second handshake")
+                : theirs.version() != RpcCodec.VERSION ? new Refusal(Reason.VERSION, "node " + id + " speaks protocol version " + theirs.version() + ", this node " + RpcCodec.VERSION)
+                : dialed != null && id != dialed.nodeId() ? new Refusal(Reason.IDENTITY, "node " + id + " answered instead of node " + dialed.nodeId())
+                : dialed == null && id == node.nodeId() ? new Refusal(Reason.IDENTITY, "the other side claims this node's id " + id)
+                : dialed == null && theirs.slot() >= theirs.slots() ? new Refusal(Reason.PROTOCOL, "node " + id + " names slot " + theirs.slot() + " of " + theirs.slots())
+                : node.isClosed() ? new Refusal(Reason.CLOSED, "this node is closed")
+                : !authenticate(connection, theirs) ? new Refusal(Reason.ADMISSION, "node " + id + " was not admitted")
                 : null;
         if (refusal == null) {
             RpcPeer peer = dialed != null ? dialed : node.inboundPeer(id);
             refusal = peer.isOutbound() && dialed == null
-                    ? "node " + id + " dials in, but this node dials it; only one of two nodes may dial the other"
+                    ? new Refusal(Reason.IDENTITY, "node " + id + " dials in, but this node dials it; only one of two nodes may dial the other")
                     : dialed != null ? peer.addConnection(connection, theirs, connection.get(SLOT), () -> {})
                     : peer.addConnection(connection, theirs, theirs.slot(), () -> sendHandshake(connection, theirs.slot(), theirs.slots()));
         }
@@ -104,6 +111,7 @@ final class RpcConnectionHandler implements ConnectionHandler {
             handler.handleMessage(peer, connection, msg);
         } catch (RuntimeException e) {
             LOG.log(Level.ERROR, "The RPC handler failed on " + msg + " from node " + peer.nodeId(), e);
+            peer.meters().handlerFailed.increment();
             if (msg instanceof RpcRequest request) peer.reply(connection, RpcResponse.failure(request.requestId(), RPC_HANDLER_ERROR));
         }
     }
@@ -123,8 +131,9 @@ final class RpcConnectionHandler implements ConnectionHandler {
         connection.close();
     }
 
-    private static void refuse(Connection connection, String reason) {
-        LOG.log(Level.WARNING, "Closing RPC connection " + connection + ": " + reason);
+    private void refuse(Connection connection, Refusal refusal) {
+        node.meters().refused(refusal.reason());
+        LOG.log(Level.WARNING, "Closing RPC connection " + connection + ": " + refusal.text());
         connection.close();
     }
 }

@@ -14,6 +14,11 @@
   <!-- The Netty modules network uses, not netty-all, so an application gets these few and keeps its own choice of others. -->
   <dependencies>
     <dependency>
+      <groupId>cn.managame</groupId>
+      <artifactId>managame-common</artifactId>
+      <version>1.0.0-SNAPSHOT</version>
+    </dependency>
+    <dependency>
       <groupId>io.netty</groupId>
       <artifactId>netty-common</artifactId>
       <version>${netty.version}</version>

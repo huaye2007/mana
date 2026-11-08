@@ -5,7 +5,7 @@ import io.netty.handler.codec.http.QueryStringDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-/** Reading HTTP requests in source functions and handlers. */
+/** Reading HTTP requests in codecs and handlers. */
 public final class HttpRequests {
     private HttpRequests() {}
 
@@ -16,8 +16,8 @@ public final class HttpRequests {
     }
 
     /**
-     * A query parameter as a long. IllegalArgumentException when it is absent or not a number, which a source
-     * function lets HttpRoutes answer with 400.
+     * A query parameter as a long. IllegalArgumentException when it is absent or not a number, which a codec lets
+     * HttpRoutes answer with 400.
      */
     public static long longQuery(FullHttpRequest request, String name) {
         String value = query(request, name);

@@ -8,7 +8,7 @@ ones it needs:
 | Project | Depends on | What it is |
 | --- | --- | --- |
 | [managame-common](managame-common/README.md) | nothing | `Metadata`, `MetadataKey`, unique id generators, the shared error codes, and `Metrics`: counters, gauges and timers an application binds to its own backend |
-| [managame-network](managame-network/README.md) | Netty, the modules it uses | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
+| [managame-network](managame-network/README.md) | common, Netty (the modules it uses) | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
 | [managame-runtime](managame-runtime/README.md) | common, network | Every piece of business logic through one entry, with tasks of one domain and route key run one at a time: routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |
 | [managame-rpc](managame-rpc/README.md) | common, network | Calls and notifies between server processes: `RpcNode`, `RpcPeer`, symmetric connections over TCP, restart detection, admission |
 | [managame-data](managame-data/README.md) | common, Caffeine | Game data in memory, written behind it in batches wherever the application chooses: entities by id (`SingleRepository`), groups of entities (`GroupRepository`) and logs (`LogRepository`), through an `EntityMapper` and a `LogWriter` |

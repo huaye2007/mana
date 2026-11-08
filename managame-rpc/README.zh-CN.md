@@ -247,13 +247,38 @@ RpcNode.builder()
 - `peer.pendingCount()`：发往该对端、还在等待应答的调用数。
 - `peer.connectionCount()`、`peer.isConnected()`、`peer.incarnation()`，以及通过监听器获知的连接和断开事件。
 - 每个调用的结果都会和它的请求一起交给回调；业务在自己的回调适配器里按对端和 command 统计延迟、超时和失败，对接自己使用的任何监控系统。
-- `metrics(Metrics)` 按对端上报运维需要处理的情况：标签 `node` 是对端的 id。成功的调用不上报，所以指标不增加它的开销。
+- `metrics(Metrics)` 上报经过节点的消息、失败的情况和节点持有的状态。默认的 `Metrics.noop()` 下，每个事件只多一次空方法调用，不读时钟；接了后端时，调用在应答到达时多读一次时钟。
+
+按对端上报，标签 `node` 是对端的 id：
 
 | 指标 | 类型 | 回答的问题 |
 | --- | --- | --- |
 | `managame.rpc.peer.connections` | gauge | 对端还在吗？它可用的连接数 |
+| `managame.rpc.peer.disconnects` | counter | 到它的连接断开的次数：线路是否抖动 |
+| `managame.rpc.peer.restarts` | counter | 它的新实例替换已知实例的次数 |
+| `managame.rpc.peer.write_queue_bytes` | gauge | 排队等待发给它的字节数：长时间大于零，说明它读得太慢 |
+| `managame.rpc.calls.sent` | counter | 发给它的调用数 |
 | `managame.rpc.calls.pending` | gauge | 对端跟得上吗？等待它应答的调用数 |
+| `managame.rpc.calls.latency_bucket` | counter | 它在 `le` 毫秒内应答的调用数，成功失败都算，带 `le` 标签：`0.5`、`1`、`5`、`10`、`50`、`100`、`500` 或 `+Inf`（计入全部）。超时或在本节点失败的调用不计入 |
+| `managame.rpc.calls.latency_nanos` | counter | 这些调用的总耗时；两次读数的差除以 `le="+Inf"` 的差，就是这段时间的平均耗时 |
 | `managame.rpc.calls.failed` | counter | 失败的调用，带 `code` 标签：`RPC_UNAVAILABLE`、`RPC_OVERLOADED`、`RPC_TIMEOUT`、`RPC_HANDLER_ERROR` 或 `RPC_PROTOCOL_ERROR`。业务自己的错误码由业务自己统计 |
+| `managame.rpc.notifies.sent` | counter | 连接接受的通知数 |
+| `managame.rpc.notifies.refused` | counter | 被拒绝的通知，带 `status` 标签：`NOT_WRITABLE` 或 `INACTIVE` |
+| `managame.rpc.requests.received`、`managame.rpc.notifies.received` | counter | 它发给本节点的请求和通知数 |
+| `managame.rpc.handler.failed` | counter | 本节点的处理器处理它发来的消息时抛异常的次数 |
+| `managame.rpc.replies.lost` | counter | 它的这个实例没有连接可以写出的应答数 |
+
+节点自身的指标，除注明的以外没有标签：
+
+| 指标 | 类型 | 回答的问题 |
+| --- | --- | --- |
+| `managame.rpc.bytes.read`、`managame.rpc.bytes.written` | counter | 所有连接上 RPC 帧的字节数 |
+| `managame.rpc.handshakes.refused` | counter | 被拒绝的连接，带 `reason` 标签：`protocol`、`version`、`identity`、`admission`、`instance` 或 `closed` |
+| `managame.rpc.connections.heartbeat_lost` | counter | 因连续三个心跳间隔没收到数据而关闭的连接数 |
+| `managame.rpc.timer.pending` | gauge | 时间轮上等待的超时任务数 |
+| `managame.network.eventloop.pending_tasks` | gauge | 积压最多的 EventLoop 的待执行任务数，带 `group` 标签：`rpc`，接受连接用单独的 EventLoop 时还有 `rpc-accept` |
+
+managame-network 的 `NetworkMetrics.directMemory(metrics)` 上报 Netty 的直接内存，由应用为整个进程绑定一次。
 
 ## 线程
 

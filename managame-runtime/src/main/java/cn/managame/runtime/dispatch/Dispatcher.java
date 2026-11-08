@@ -80,7 +80,7 @@ public final class Dispatcher {
             reject(message, onAnswer, INVALID_ROUTE_KEY, String.valueOf(e));
             return;
         }
-        HandleContext context = new HandleContext(route, source.metadata(), onAnswer);
+        HandleContext context = new HandleContext(route, source.metadata(), onAnswer, handler.kind());
         try {
             runtime.execute(context, task -> {
                 Object result = handler.invoke(task, message);
@@ -113,7 +113,7 @@ public final class Dispatcher {
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
-                for (AnnotatedMethod handler : AnnotatedMethod.scan(target, HandleMethod.class, HandleMethod::routeKey)) {
+                for (AnnotatedMethod handler : AnnotatedMethod.scan(runtime, target, HandleMethod.class, HandleMethod::routeKey)) {
                     Class<?> returned = handler.method().getReturnType();
                     if (returned != HandleResult.class && returned != void.class)
                         throw new IllegalArgumentException(handler + " must return HandleResult, or void to answer through its HandleContext");

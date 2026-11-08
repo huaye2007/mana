@@ -80,12 +80,12 @@ class RouteKeysTest {
     @Test void aMemberTheMessageLacksOrThatIsNotIntegralFailsAtRegistration() {
         @Domain(GUILD) class Misspelt { @HandleMethod(routeKey = "guild") void donate(Donate donate) {} }
         @Domain(GUILD) class NotIntegral { @HandleMethod(routeKey = "guildId") void named(Named named) {} }
-        assertThrows(IllegalArgumentException.class, () -> AnnotatedMethod.scan(new Misspelt(), HandleMethod.class, HandleMethod::routeKey));
-        assertThrows(IllegalArgumentException.class, () -> AnnotatedMethod.scan(new NotIntegral(), HandleMethod.class, HandleMethod::routeKey));
+        assertThrows(IllegalArgumentException.class, () -> AnnotatedMethod.scan(runtime, new Misspelt(), HandleMethod.class, HandleMethod::routeKey));
+        assertThrows(IllegalArgumentException.class, () -> AnnotatedMethod.scan(runtime, new NotIntegral(), HandleMethod.class, HandleMethod::routeKey));
     }
 
-    private static AnnotatedMethod handler(String name) {
-        List<AnnotatedMethod> methods = AnnotatedMethod.scan(new Guild(), HandleMethod.class, HandleMethod::routeKey);
+    private AnnotatedMethod handler(String name) {
+        List<AnnotatedMethod> methods = AnnotatedMethod.scan(runtime, new Guild(), HandleMethod.class, HandleMethod::routeKey);
         return methods.stream().filter(method -> method.method().getName().equals(name)).findFirst().orElseThrow();
     }
 }

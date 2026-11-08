@@ -47,9 +47,11 @@ wssServer.close();
 每个连接的管线固定为以下顺序（名称见 `PipelineNames`）：
 
 ```
-addFront… | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
+[metrics] | addFront… | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
 ws-messages | flush | addLast… | customize | connection → ConnectionHandler
 ```
+
+`metrics` 只出现在[上报指标](#指标)的监听器上。
 
 `flush` 是 Netty 的 `FlushConsolidationHandler`。每次 `connection.write` 都会 flush，它把这些 flush 合并：一次读里的写，或者业务线程在 EventLoop 一轮里的写，用一次系统调用发出去。没有它时每条消息单独一次系统调用，实测 echo 吞吐只有有它时的四分之一到五分之一。需要每条单独 flush 时，用 `customize(p -> p.remove(PipelineNames.FLUSH))` 去掉它。
 
@@ -248,6 +250,31 @@ client.close();         // 停止重连并关闭当前连接
 
 测试位于 `src/test/java/cn/managame/network`，使用真实回环连接覆盖回显、生命周期顺序、握手超时、路径 404、错误帧类型、超长消息、TLS 失败、handler 复用与校验、自定义 Connection 映射，并用 `EmbeddedChannel` 验证 `ConnectionInitializer` 可脱离 socket 使用；HTTP 测试用 JDK 自带的 `HttpClient` 和原始 socket 覆盖同步/异步应答、500、413、流水线顺序、前置 handler 自行应答和 HTTPS；客户端测试覆盖服务端晚启动、连接断开后的重连，以及关闭从未连上的客户端。
 
+## 指标
+
+给监听器传入 common 的 `Metrics` 和一个名字（作为 `listener` 标签）后，它就会上报指标；`HttpInitializer` 也有同样的设置。不属于某个监听器的 EventLoop 和直接内存，由应用绑定一次，后端采集之前没有任何开销：
+
+```java
+ConnectionInitializer game = ConnectionInitializer.ws("/game").handler(gameHandler).metrics(metrics, "game").build();
+NetworkServer server = NetworkServer.start(9001, game);
+Meter loops = NetworkMetrics.eventLoops(metrics, server.eventLoops(), "game");
+Meter memory = NetworkMetrics.directMemory(metrics);
+```
+
+上报指标的监听器在管线最前面有一个 `metrics` handler，统计每次读和写。不上报的监听器没有这个 handler，每条消息没有额外开销。
+
+| 指标 | 类型 | 回答的问题 |
+| --- | --- | --- |
+| `managame.network.connections.active` | gauge | 当前打开的 TCP 连接数 |
+| `managame.network.connections.opened` | counter | 接受过的 TCP 连接数 |
+| `managame.network.connections.busy` | counter | 连接超过高水位的次数，此时写入返回 `NOT_WRITABLE`：客户端读得太慢 |
+| `managame.network.bytes.read`、`managame.network.bytes.written` | counter | 线上的字节数，包含 TLS |
+| `managame.network.handshakes.failed` | counter | 失败的 TLS 握手、超时的 WebSocket 握手 |
+| `managame.network.exceptions` | counter | 打开的连接上发生的异常，带 `kind` 标签：`io`、`decode` 或 `other`（包含 handler 抛出的异常） |
+| `managame.network.http.responses` | counter | HTTP 响应，带 `status` 标签：`2xx`、`3xx`、`4xx` 或 `5xx` |
+| `managame.network.eventloop.pending_tasks` | gauge | 一组 EventLoop 里积压最多的那个的待执行任务数，带 `group` 标签：长时间大于零，说明线程跟不上 |
+| `managame.network.memory.direct_used` | gauge | Netty 默认分配器使用的直接内存字节数 |
+
 ## 日志
 
 经 `System.Logger` 输出，可以接任意日志实现，见工作区 README。
@@ -259,7 +286,7 @@ client.close();         // 停止重连并关闭当前连接
 
 ## 构建
 
-只依赖用到的 Netty 模块，不用 `netty-all`：common、buffer、transport、handler、codec-base、codec-http 和 epoll 的类，运行时
+`Metrics` 来自 managame-common；此外只依赖用到的 Netty 模块，不用 `netty-all`：common、buffer、transport、handler、codec-base、codec-http 和 epoll 的类，运行时
 带 Linux x86-64 与 AArch64 的 epoll 原生库（其它平台用 NIO）。业务需要别的 Netty 模块时按同一版本自行加入，managame-bom 会
 锁定这个版本。
 

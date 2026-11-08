@@ -2,6 +2,7 @@ package cn.managame.benchmark.network;
 
 import cn.managame.benchmark.CountingSocketChannel;
 import cn.managame.benchmark.PeerProcess;
+import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.ConnectionHandler;
 import cn.managame.network.connection.WriteStatus;
@@ -41,14 +42,18 @@ final class EchoFixture implements AutoCloseable {
     final ByteBuf payload;
 
     EchoFixture(int payloadSize, int connections, boolean otherProcess, Runnable onEcho) throws IOException, InterruptedException {
+        this(payloadSize, connections, otherProcess, Metrics.noop(), onEcho);
+    }
+
+    EchoFixture(int payloadSize, int connections, boolean otherProcess, Metrics metrics, Runnable onEcho) throws IOException, InterruptedException {
         payload = Unpooled.directBuffer(payloadSize).writeZero(payloadSize);
-        server = otherProcess ? null : startServer();
+        server = otherProcess ? null : startServer(metrics);
         peer = otherProcess ? PeerProcess.start(EchoPeer.class) : null;
         int port = otherProcess ? peer.port() : server.port();
         clientGroup = CountingSocketChannel.newGroup("echo-client");
         Bootstrap bootstrap = new Bootstrap().group(clientGroup).channel(CountingSocketChannel.class)
                 .option(ChannelOption.WRITE_BUFFER_WATER_MARK, WATER_MARK)
-                .handler(pipeline(new Handler() {
+                .handler(pipeline(Metrics.noop(), new Handler() {
                     @Override public void onActive(Connection connection) { open.add(connection); }
 
                     @Override public void onRead(Connection connection, Object message) { onEcho.run(); }
@@ -63,9 +68,11 @@ final class EchoFixture implements AutoCloseable {
     }
 
     /** The echo server, on a free loopback port. */
-    static NetworkServer startServer() {
+    static NetworkServer startServer() { return startServer(Metrics.noop()); }
+
+    private static NetworkServer startServer(Metrics metrics) {
         return NetworkServer.start(new ServerBootstrap().childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, WATER_MARK)
-                .childHandler(pipeline(new Handler() {
+                .childHandler(pipeline(metrics, new Handler() {
                     @Override public void onRead(Connection connection, Object message) {
                         ByteBuf frame = ((ByteBuf) message).retain();
                         if (connection.write(frame) != WriteStatus.ACCEPTED) frame.release();
@@ -73,10 +80,11 @@ final class EchoFixture implements AutoCloseable {
                 })), new InetSocketAddress("127.0.0.1", 0));
     }
 
-    private static ConnectionInitializer pipeline(ConnectionHandler handler) {
+    private static ConnectionInitializer pipeline(Metrics metrics, ConnectionHandler handler) {
         return ConnectionInitializer.tcp()
                 .addLast(NetworkHandlers.lengthFieldFraming(MAX_FRAME))
                 .handler(handler)
+                .metrics(metrics, "echo")
                 .build();
     }
 

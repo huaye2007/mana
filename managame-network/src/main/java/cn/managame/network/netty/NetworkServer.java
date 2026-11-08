@@ -45,10 +45,12 @@ import java.util.concurrent.TimeUnit;
 public final class NetworkServer implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger("cn.managame.network");
     private final Channel listener;
+    private final EventLoopGroup workers;
     private final List<EventLoopGroup> ownedGroups;
 
-    private NetworkServer(Channel listener, List<EventLoopGroup> ownedGroups) {
+    private NetworkServer(Channel listener, EventLoopGroup workers, List<EventLoopGroup> ownedGroups) {
         this.listener = listener;
+        this.workers = workers;
         this.ownedGroups = ownedGroups;
     }
 
@@ -87,7 +89,7 @@ public final class NetworkServer implements AutoCloseable {
                 completed.channelFactory(NetworkTransports.serverChannelFactory(completed.config().group()));
             if (!config.childOptions().containsKey(ChannelOption.TCP_NODELAY))
                 completed.childOption(ChannelOption.TCP_NODELAY, true);
-            NetworkServer server = new NetworkServer(bind(completed, address), owned);
+            NetworkServer server = new NetworkServer(bind(completed, address), completed.config().childGroup(), owned);
             LOG.log(Level.INFO, () -> "Listening on " + server.localAddress() + " (" + config.childHandler() + ")");
             return server;
         } catch (Throwable cause) {
@@ -108,6 +110,9 @@ public final class NetworkServer implements AutoCloseable {
     public InetSocketAddress localAddress() { return (InetSocketAddress) listener.localAddress(); }
 
     public int port() { return localAddress().getPort(); }
+
+    /** The EventLoops the server's connections run on, its own or the application's, for instance to report them. */
+    public EventLoopGroup eventLoops() { return workers; }
 
     /**
      * Idempotent; see the class description. Must not run on the server's EventLoops: Netty refuses to wait

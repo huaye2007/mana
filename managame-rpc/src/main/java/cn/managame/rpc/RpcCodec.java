@@ -11,6 +11,7 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelOutboundHandler;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultMessageSizeEstimator;
@@ -73,14 +74,16 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
     private final Timer timer;
     private final long heartbeatNanos;
     private final boolean dialing;
+    private final NodeMetrics meters;
     private boolean read, handshakeSent;
     private int missedHeartbeats;
     private Timeout nextHeartbeat;
 
-    RpcCodec(int maxFrameLength, Timer timer, long heartbeatMillis, boolean dialing) {
+    RpcCodec(int maxFrameLength, Timer timer, long heartbeatMillis, boolean dialing, NodeMetrics meters) {
         this.maxFrameLength = maxFrameLength;
         this.timer = timer;
         this.dialing = dialing;
+        this.meters = meters;
         heartbeatNanos = TimeUnit.MILLISECONDS.toNanos(heartbeatMillis);
     }
 
@@ -115,6 +118,13 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
         return status;
     }
 
+    /** The bytes queued on {@code connection} for its socket, from any thread; 0 for a connection other than network's. */
+    static long queuedBytes(Connection connection) {
+        if (!(connection instanceof NettyConnection netty)) return 0;
+        ChannelOutboundBuffer buffer = netty.channel().unsafe().outboundBuffer();
+        return buffer == null ? 0 : buffer.totalPendingWriteBytes();
+    }
+
     /** Whether {@code frame}, with its length, is no larger than {@code maxFrameLength}. */
     static boolean fits(Object frame, int maxFrameLength) { return size(frame) <= maxFrameLength; }
 
@@ -138,6 +148,7 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
 
     @Override public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         read = true;
+        if (msg instanceof ByteBuf bytes) meters.bytesRead.increment(bytes.readableBytes());
         super.channelRead(ctx, msg);
     }
 
@@ -161,6 +172,7 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
         missedHeartbeats = read ? 0 : missedHeartbeats + 1;
         read = false;
         if (missedHeartbeats >= MISSED_HEARTBEATS) {
+            meters.heartbeatsLost.increment();
             LOG.log(Level.WARNING, "Closing RPC connection " + ctx.channel() + ": nothing received for "
                     + MISSED_HEARTBEATS + " heartbeat intervals of " + TimeUnit.NANOSECONDS.toMillis(heartbeatNanos) + " ms");
             ctx.close();
@@ -237,7 +249,9 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
                 }
                 case Handshake handshake -> {
                     handshakeSent = true;
-                    ctx.write(handshake(ctx.alloc(), handshake), promise);
+                    ByteBuf frame = handshake(ctx.alloc(), handshake);
+                    meters.bytesWritten.increment(frame.readableBytes());
+                    ctx.write(frame, promise);
                 }
                 case Heartbeat heartbeat -> ctx.write(heartbeatFrame(ctx.alloc()), promise);
                 default -> ctx.write(msg, promise);
@@ -249,7 +263,8 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
     }
 
     /** The header, then the body unless it is empty; the header shares the promise only through the body's write. */
-    private static void send(ChannelHandlerContext ctx, ByteBuf header, ByteBuf body, ChannelPromise promise) {
+    private void send(ChannelHandlerContext ctx, ByteBuf header, ByteBuf body, ChannelPromise promise) {
+        meters.bytesWritten.increment(header.readableBytes() + (long) body.readableBytes());
         if (body.isReadable()) {
             ctx.write(header, ctx.voidPromise());
             ctx.write(body, promise);
@@ -300,7 +315,8 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
                 .writeShort(metadata.length).writeBytes(metadata);
     }
 
-    private static ByteBuf heartbeatFrame(ByteBufAllocator alloc) {
+    private ByteBuf heartbeatFrame(ByteBufAllocator alloc) {
+        meters.bytesWritten.increment(LENGTH_FIELD + HEARTBEAT_LENGTH);
         return alloc.buffer(LENGTH_FIELD + HEARTBEAT_LENGTH).writeInt(HEARTBEAT_LENGTH).writeByte(HEARTBEAT);
     }
 

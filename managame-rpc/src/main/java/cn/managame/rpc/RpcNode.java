@@ -84,6 +84,7 @@ public final class RpcNode implements AutoCloseable {
     private final Duration timeout, redialMin, redialMax;
     private final int maxFrameLength, maxPendingCalls;
     private final Metrics metrics;
+    private final NodeMetrics meters;
     private final ConcurrentHashMap<Integer, RpcPeer> peers = new ConcurrentHashMap<>();
     /** Every connection, dialed or accepted, to close them all on close whoever owns their EventLoops. */
     private final ChannelGroup channels = new DefaultChannelGroup("rpc", GlobalEventExecutor.INSTANCE);
@@ -111,6 +112,7 @@ public final class RpcNode implements AutoCloseable {
         maxPendingCalls = b.maxPendingCalls;
         metrics = b.metrics;
         timer = new HashedWheelTimer(Thread.ofPlatform().name("rpc-timer-" + nodeId).daemon().factory(), TICK_MILLIS, TimeUnit.MILLISECONDS);
+        meters = new NodeMetrics(metrics, timer);
         RpcConnectionHandler connections = new RpcConnectionHandler(this, b.handler, b.authenticator);
         long heartbeatMillis = b.heartbeatInterval.toMillis();
         EventLoopGroup shared = null;
@@ -121,6 +123,7 @@ public final class RpcNode implements AutoCloseable {
         if (!client.config().options().containsKey(ChannelOption.MESSAGE_SIZE_ESTIMATOR))
             client.option(ChannelOption.MESSAGE_SIZE_ESTIMATOR, RpcCodec.SIZES);
         loops.add(client.config().group());
+        meters.eventLoops(client.config().group(), "rpc");
         List<EventExecutor> executors = new ArrayList<>();
         client.config().group().forEach(executors::add);
         dialingLoops = executors.toArray(EventExecutor[]::new);
@@ -138,10 +141,12 @@ public final class RpcNode implements AutoCloseable {
         if (!accepting.config().childOptions().containsKey(ChannelOption.MESSAGE_SIZE_ESTIMATOR))
             accepting.childOption(ChannelOption.MESSAGE_SIZE_ESTIMATOR, RpcCodec.SIZES);
         loops.add(accepting.config().childGroup());
+        if (accepting.config().childGroup() != client.config().group()) meters.eventLoops(accepting.config().childGroup(), "rpc-accept");
         try {
             server = NetworkServer.start(accepting, b.listen);
         } catch (RuntimeException e) {
             timer.stop();
+            meters.close();
             ownedGroups.forEach(RpcNode::shutdown);
             throw e;
         }
@@ -150,7 +155,7 @@ public final class RpcNode implements AutoCloseable {
     /** Every connection's pipeline: network's flush consolidation, then the codec. */
     private ConnectionInitializer initializer(boolean accepting, long heartbeatMillis, RpcConnectionHandler connections) {
         return ConnectionInitializer.tcp()
-                .addLast("rpc-codec", () -> new RpcCodec(maxFrameLength, timer, heartbeatMillis, !accepting))
+                .addLast("rpc-codec", () -> new RpcCodec(maxFrameLength, timer, heartbeatMillis, !accepting, meters))
                 .customize(created -> channels.add(created.channel()))
                 .handler(connections)
                 .build();
@@ -218,7 +223,8 @@ public final class RpcNode implements AutoCloseable {
      */
     public boolean removePeer(int nodeId) {
         checkNotOnEventLoop();
-        RpcPeer peer = peers.remove(nodeId);
+        RpcPeer peer;
+        synchronized (lifecycle) { peer = peers.remove(nodeId); } // after a createPeer in progress has its dialers
         if (peer == null) return false;
         peer.remove();
         LOG.log(Level.INFO, () -> "Removed node " + nodeId);
@@ -270,6 +276,7 @@ public final class RpcNode implements AutoCloseable {
             for (RpcPeer peer : peers.values()) peer.close();
             channels.close().awaitUninterruptibly();
             ownedGroups.forEach(RpcNode::shutdown);
+            meters.close();
         }
         LOG.log(Level.INFO, () -> "RPC node " + nodeId + " closed");
     }
@@ -283,6 +290,8 @@ public final class RpcNode implements AutoCloseable {
     int maxPendingCalls() { return maxPendingCalls; }
 
     Metrics metrics() { return metrics; }
+
+    NodeMetrics meters() { return meters; }
 
     /** The time wheel for call timeouts; stopped once the node closes. */
     Timer timer() { return timer; }
@@ -450,9 +459,9 @@ public final class RpcNode implements AutoCloseable {
         }
 
         /**
-         * Where the node reports, by peer: its connections and the calls waiting for an answer, read when the backend
-         * collects, and calls that failed, by the framework's code; {@link Metrics#noop()} by default. A call that
-         * succeeds reports nothing, so metrics cost it nothing.
+         * Where the node reports, by peer and for the node, what goes through it, what fails and what it holds, and
+         * how long calls take; {@link Metrics#noop()} by default, which reads no clock and costs a message an empty
+         * method per event.
          */
         public Builder metrics(Metrics metrics) {
             this.metrics = Objects.requireNonNull(metrics, "metrics");

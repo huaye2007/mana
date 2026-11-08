@@ -1,5 +1,6 @@
 package cn.managame.benchmark.network;
 
+import cn.managame.metrics.Metrics;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -44,7 +45,7 @@ public class EchoThroughputBenchmark {
 
     @Setup(Level.Trial) public void start() throws Exception {
         inFlight = new Semaphore(window);
-        fixture = new EchoFixture(payload, connections, otherProcess(), inFlight::release);
+        fixture = new EchoFixture(payload, connections, otherProcess(), metrics(), inFlight::release);
     }
 
     /** Lets the messages of an iteration come back before the next starts or the connections close. */
@@ -58,6 +59,9 @@ public class EchoThroughputBenchmark {
 
     /** Whether the server runs in a process of its own; here it does not. */
     protected boolean otherProcess() { return false; }
+
+    /** Where the listener reports; here nowhere. */
+    protected Metrics metrics() { return Metrics.noop(); }
 
     @Benchmark public void echo(ThreadParams thread) throws InterruptedException {
         inFlight.acquire();

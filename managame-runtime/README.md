@@ -64,26 +64,28 @@ another thread or another route, hand the rest to `runtime.execute(context, task
 the task's own or its request.
 
 ```java
-// A call to another server: the answer arrives on the RPC thread, the rest runs on the player's route
-peer.call(rpcRequest, (call, response) -> runtime.execute(context, _ -> rank.update(response)));
-
 // A trade: take from the other player on their route, then give to this player back on its own
 @HandleMethod void trade(HandleContext request, Trade trade) {
-    runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // on the other player's route
-        boolean taken = bags.get(trade.with()).take(trade.item());
-        runtime.execute(request, _ -> {                               // back on this player's route
-            if (!taken) { request.fail(NOT_ENOUGH); return; }
-            bags.get(request.businessId()).add(trade.item());
-            request.reply("traded");
-        });
-    });
+    runtime.call(GameContext.of(PLAYER, trade.with()),
+            () -> bags.get(trade.with()).take(trade.item()),          // on the other player's route
+            taken -> {                                                // back on this player's route
+                if (!taken) { request.fail(NOT_ENOUGH); return; }
+                bags.get(request.businessId()).add(trade.item());
+                request.reply("traded");
+            });
 }
 
 // Only reading another player: an answer may come from any thread, so there is no way back to take
 runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(target)));
 ```
 
-The framework's part is `runtime.execute`, `GameContext.of` and the request's `reply` and `fail`; `Trade`, `bags`,
+`runtime.call(target, work, then)` is for a game task that needs a result from another route: `work` runs there, and
+`then` gets its result back in this task's route queue. Neither step waits for the other, so it works alike on virtual
+and platform threads and two routes calling each other cannot deadlock. The steps of one call run in order, but other
+tasks of this route may run between them, so `then` goes by the state as it is by then. If `work` throws or an
+interceptor refuses it, `then` does not run and the request fails with `RUNTIME_EXECUTION_ERROR`.
+
+The framework's part is `runtime.execute`, `runtime.call`, `GameContext.of` and the request's `reply` and `fail`; `Trade`, `bags`,
 `profiles` and `NOT_ENOUGH` are the game's own, and a task that does not use its context names it `_`. The continued
 task sees `Context.current()` as that context, answers its request once, and, if it throws or is refused, fails the
 request with a code: nothing more to remember. A task handing work on is never refused, for load or shutdown, so steps
@@ -405,10 +407,6 @@ class GuildAdmin {
 }
 
 HttpRoutes routes = HttpRoutes.builder(runtime)
-        .source(request -> {                                    // whom a request acts for, as the application decides
-            String role = HttpRequests.query(request, "roleId");
-            return role == null ? GameContext.of(0, 0) : GameContext.of(0, 0, ROLE, Long.parseLong(role));
-        })
         .codec(new JsonCodec())
         .register(List.of(new PlayerAdmin(), new GuildAdmin()))
         .build();
@@ -423,11 +421,10 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 - Endpoints rarely need their context. When one does, `HttpRequestContext.current()` returns it, or the endpoint
   declares it first: `(HttpRequestContext context, SendMail mail)`. It gives `request()` for headers and query
   (readable until the endpoint returns), `remoteAddress()`, and `reply` / `fail` to answer later.
-- `source(request -> context)` decides whom a request acts for; it runs on the connection's EventLoop and must not
-  block. By default requests act for an empty context.
+- A request acts for no one: its `businessType` and `businessId` are 0, and an endpoint reads whom it is about from
+  its argument. A codec may fill the argument from the query as well as the body, since it is given the whole request.
 - Statuses: unknown path 404; another method 405 with `Allow`; an argument the codec cannot read 400, as is an
-  `IllegalArgumentException` from the source or the routing; a refused task (shut down, overloaded) 503; an
-  endpoint that throws 500.
+  `IllegalArgumentException` from the routing; a refused task (shut down, overloaded) 503; an endpoint that throws 500.
 - Helpers: `HttpRequests.query`, `longQuery`, `text`.
 
 **Results.** What an endpoint returns is its answer, of whichever type suits it:
@@ -524,7 +521,7 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 
 | Logger | Logs |
 | --- | --- |
-| `cn.managame.runtime` | INFO: the runtime started (each domain and its executor, and how many task interceptors), shutting down and closed. DEBUG: each refused task, idle route queues retired. ERROR: a task that failed, from the default error handler. |
+| `cn.managame.runtime` | INFO: the runtime started (each domain and its executor, and how many task interceptors), shutting down and closed. DEBUG: each refused task, idle route queues retired. WARNING: a slow task, with `slowTask` set. ERROR: a task that failed, from the default error handler. |
 | `cn.managame.runtime.dispatch` | INFO: the Dispatcher's handlers. DEBUG: each message's handler, each rejected message. ERROR: a handler that could not run. |
 | `cn.managame.runtime.event` | INFO: the event bus's subscribers. DEBUG: each event's subscribers. |
 | `cn.managame.runtime.http` | INFO: the HTTP endpoints. DEBUG: each endpoint, each bad request. ERROR: a request that could not run or be answered. |
@@ -532,20 +529,48 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 
 ## Metrics
 
-`GameRuntime.builder().metrics(metrics)` reports through common's `Metrics`, `Metrics.noop()` by default. All are tagged
-with the `domain`, and a task that runs and returns reports nothing, so metrics add nothing to its cost:
+`GameRuntime.builder().metrics(metrics)` reports through common's `Metrics`, `Metrics.noop()` by default, under which no
+clock is read and a task costs what it does without metrics. With a backend, every task reads the clock three times and
+adds to a few counters. Business code does not change. By domain, tagged `domain`:
 
 | Metric | Kind | What it answers |
 | --- | --- | --- |
 | `managame.runtime.tasks.refused` | counter | Is the server overloaded? Tasks not accepted, tagged `code`: `RUNTIME_CLOSED`, `ROUTE_EXECUTOR_OVERLOADED` or `ROUTE_EXECUTOR_CLOSED` |
 | `managame.runtime.tasks.failed` | counter | Is there a bug? Tasks that threw |
 | `managame.runtime.tasks.pending` | gauge | How much is waiting? Tasks accepted and not finished |
+| `managame.runtime.tasks.wait_bucket` | counter | Are routes keeping up? Tasks that waited on their route within `le` milliseconds, tagged `le`: `0.5`, `1`, `5`, `10`, `50`, `100`, `500` or `+Inf`, which counts them all |
+| `managame.runtime.tasks.wait_nanos` | counter | How long they waited in all; its difference between two readings, over that of `le="+Inf"`, is their mean |
 | `managame.runtime.routes.max_pending` | gauge | Is a route stuck? The most tasks on one route key, or on one thread of a striped domain |
 | `managame.runtime.routes.active` | gauge | How near is `maxKeys`? Route keys with a queue; 0 for a striped domain, which keeps nothing per key |
 
+By what ran, tagged `handler`:
+
+| Metric | Kind | What it answers |
+| --- | --- | --- |
+| `managame.runtime.handler.calls` | counter | How often does it run? |
+| `managame.runtime.handler.run_nanos` | counter | Where does the time go? Sort by this for what costs the most |
+| `managame.runtime.handler.failed` | counter | Tasks of it that threw |
+| `managame.runtime.handler.business_failed` | counter | Requests it answered with a failure of the business's own, such as `HandleResult.fail(GOLD_SHORT)` |
+
+The `handler` tag names:
+
+- a handler, subscriber, HTTP endpoint or `@Cron` method: its class and method, `com.game.ShopHandle#buy`;
+- work continued on a request's context, such as an RPC callback: the handler of that request, so a request with one
+  callback counts as two tasks;
+- a task written by hand, a lambda, method reference or anonymous class given to `execute` or a timer: the class it was
+  written in, `com.game.TradeHandle`;
+- a task written as a named class: that class, `com.game.TradeHandle$Settle`, for one worth a line of its own.
+
+A handler or a class is one series however often it runs, so no name can grow the series, and a task builds no name or
+tag. Who a task was for goes in the log, never in a tag: `GameRuntime.builder().slowTask(Duration.ofMillis(100))` logs
+each task that runs that long, also without a backend:
+
+```
+WARNING Slow task; handler=com.game.GuildHandle#donate, domain=3, routeKey=88, businessType=1, businessId=10001, wait=12ms, run=340ms
+```
+
 Gauges read the executor's own state when the backend collects, and `close()` removes them. A stuck route shows in
-`routes.max_pending` while tasks keep joining it; one that gets no new tasks does not show. There is no timer: to find a
-slow message, time it in its handler with your own backend.
+`routes.max_pending` while tasks keep joining it; one that gets no new tasks does not show.
 
 ## Build and tests
 

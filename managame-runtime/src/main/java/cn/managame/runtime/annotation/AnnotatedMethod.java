@@ -3,6 +3,7 @@ package cn.managame.runtime.annotation;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.Route;
+import cn.managame.runtime.TaskKind;
 import java.lang.annotation.Annotation;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -34,9 +35,11 @@ public final class AnnotatedMethod {
 
     /** Reads the route key from the message, {@code (Object) long}; null to route by the domain's resolver. */
     private final MethodHandle routeKey;
+    private final TaskKind kind;
 
     private AnnotatedMethod(Object target, Method method, int domain, Class<?> contextType, Class<?> messageType, MethodHandle handle,
-            MethodHandle routeKey) {
+            MethodHandle routeKey, TaskKind kind) {
+        this.kind = kind;
         this.target = target;
         this.method = method;
         this.domain = domain;
@@ -50,11 +53,12 @@ public final class AnnotatedMethod {
      * The methods of {@code target} and its superclasses carrying {@code annotation}, in name order; a method
      * overridden in a subclass counts once. {@code routeKey} gives the annotation's routeKey, the message member to
      * route by, or empty for the domain's resolver. Throws IllegalArgumentException for a static method, a method
-     * taking other parameters, one without a domain, or one whose message lacks its routeKey member.
+     * taking other parameters, one without a domain, or one whose message lacks its routeKey member. Each counts as its
+     * own {@link TaskKind} of {@code runtime}.
      */
-    public static <A extends Annotation> List<AnnotatedMethod> scan(Object target, Class<A> annotation, Function<? super A, String> routeKey) {
+    public static <A extends Annotation> List<AnnotatedMethod> scan(GameRuntime runtime, Object target, Class<A> annotation, Function<? super A, String> routeKey) {
         List<AnnotatedMethod> found = new ArrayList<>();
-        for (Method method : methods(target, annotation)) found.add(compile(target, method, routeKey.apply(method.getAnnotation(annotation))));
+        for (Method method : methods(target, annotation)) found.add(compile(runtime, target, method, routeKey.apply(method.getAnnotation(annotation))));
         return List.copyOf(found);
     }
 
@@ -76,7 +80,7 @@ public final class AnnotatedMethod {
         return found;
     }
 
-    private static AnnotatedMethod compile(Object target, Method method, String routeKey) {
+    private static AnnotatedMethod compile(GameRuntime runtime, Object target, Method method, String routeKey) {
         if (Modifier.isStatic(method.getModifiers())) throw invalid(method, "must not be static");
         Class<?>[] parameters = method.getParameterTypes();
         if (parameters.length == 0 || parameters.length > 2) throw invalid(method, "must take (message) or (context, message)");
@@ -93,7 +97,7 @@ public final class AnnotatedMethod {
             if (parameters.length == 1) handle = MethodHandles.dropArguments(handle, 0, Context.class);
             handle = handle.asType(MethodType.methodType(Object.class, Context.class, Object.class));
             return new AnnotatedMethod(target, method, domain.value(), parameters.length == 2 ? parameters[0] : Context.class,
-                    messageType, handle, routeKeyReader);
+                    messageType, handle, routeKeyReader, runtime.taskKind(describe(method)));
         } catch (IllegalAccessException | RuntimeException e) {
             throw new IllegalArgumentException("Cannot use " + describe(method), e);
         }
@@ -140,6 +144,9 @@ public final class AnnotatedMethod {
     private static String describe(Method method) { return method.getDeclaringClass().getName() + "#" + method.getName(); }
 
     public int domain() { return domain; }
+
+    /** What the tasks of this method count as. */
+    public TaskKind kind() { return kind; }
 
     /**
      * Where {@code message}, arriving from {@code source}, runs: in the method's domain, on the key its routeKey member

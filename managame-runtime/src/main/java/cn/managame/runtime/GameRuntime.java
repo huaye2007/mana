@@ -7,6 +7,7 @@ import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 
 import cn.managame.FrameworkErrorCodes;
 import cn.managame.metrics.Counter;
+import cn.managame.metrics.LatencyBuckets;
 import cn.managame.metrics.Meter;
 import cn.managame.metrics.Metrics;
 import cn.managame.runtime.executor.RouteExecutor;
@@ -20,8 +21,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /**
  * The single entry for business logic. {@link #execute} runs a GameTask on its context's route: tasks with the
@@ -44,9 +48,21 @@ public final class GameRuntime implements AutoCloseable {
     private final Map<Integer, RouteDomain> domains;
     private final BiConsumer<? super Context, ? super Throwable> errorHandler;
     private final TaskInterceptor[] interceptors;
+    private final Metrics metrics;
+    /** Whether tasks are timed: a backend is bound, or slow tasks are logged. Otherwise no clock is read. */
+    private final boolean observing;
+    private final long slowNanos;
+    private final ConcurrentHashMap<String, TaskKind> kinds = new ConcurrentHashMap<>();
+    /** The kind of a task written by hand, found once per class. */
+    private final ClassValue<TaskKind> kindsOfClasses = new ClassValue<>() {
+        @Override protected TaskKind computeValue(Class<?> type) { return taskKind(ownerName(type)); }
+    };
     private volatile boolean shutdown;
 
     private GameRuntime(Builder b) {
+        metrics = b.metrics;
+        observing = b.metrics != Metrics.noop() || b.slowTask != null;
+        slowNanos = b.slowTask == null ? Long.MAX_VALUE : b.slowTask.toNanos();
         Map<Integer, RouteDomain> built = new HashMap<>();
         b.executors.forEach((domain, executor) -> built.put(domain, RouteDomain.of(domain, executor, b.resolvers.get(domain), b.metrics)));
         domains = Map.copyOf(built);
@@ -93,14 +109,91 @@ public final class GameRuntime implements AutoCloseable {
      * have none. Close the entries that hand it work (servers, RPC, timers and the like) first, so nothing races with
      * shutdown.
      */
-    public <C extends Context> void execute(C context, GameTask<? super C> task) {
+    public <C extends Context> void execute(C context, GameTask<? super C> task) { execute(null, context, task); }
+
+    /** {@link #execute(Context, GameTask)} of a task an entry knows the kind of, or null when it does not. Not API. */
+    public <C extends Context> void execute(TaskKind kind, C context, GameTask<? super C> task) {
         Objects.requireNonNull(task, "task");
         try {
-            submit(context, () -> run(context, task));
+            submit(context, observing ? observed(kind, context, task) : () -> run(context, task));
         } catch (RuntimeException notAccepted) {
             task.refused(context);
             throw notAccepted;
         }
+    }
+
+    /**
+     * Runs {@code work} on the route of {@code target}, then {@code then} with its result back on the route of the task
+     * calling this, whose context stays {@link Context#current()} there:
+     *
+     * <pre>{@code
+     * runtime.call(GameContext.of(PLAYER, other), () -> bags.get(other).take(item), taken -> request.reply(taken));
+     * }</pre>
+     *
+     * Neither step waits for the other, so it works alike on every executor and two routes calling each other cannot
+     * deadlock. Other tasks of this route may run between the steps, so {@code then} goes by the state as it is by then.
+     * Both steps are handed on from a game task, so neither is refused for load or shutdown. When {@code work} throws or
+     * an interceptor refuses it, {@code then} does not run and a request of the calling task fails with
+     * RUNTIME_EXECUTION_ERROR; what it threw goes to the error handler. Both steps count as the calling task's kind.
+     *
+     * @throws IllegalStateException outside a game task
+     */
+    public <R> void call(Context target, Callable<R> work, Consumer<? super R> then) {
+        Objects.requireNonNull(work, "work");
+        Objects.requireNonNull(then, "then");
+        Context back = Context.current();
+        TaskKind kind = kindOf(back, work);
+        execute(kind, target, new GameTask<Context>() {
+            @Override public void run(Context context) throws Exception {
+                R result;
+                try {
+                    result = work.call();
+                } catch (Throwable cause) {
+                    failRequest(back);
+                    throw cause;
+                }
+                execute(kind, back, _ -> then.accept(result));
+            }
+
+            @Override public void refused(Context context) { failRequest(back); }
+        });
+    }
+
+    private static void failRequest(Context context) {
+        if (context instanceof RequestContext request) request.fail(RUNTIME_EXECUTION_ERROR);
+    }
+
+    /** What a task of {@code context} counts as: the handler of its request, or the class that wrote {@code task}. */
+    private TaskKind kindOf(Context context, Object task) {
+        TaskKind known = context instanceof RequestContext request ? request.taskKind() : null;
+        return known != null ? known : taskKind(task.getClass());
+    }
+
+    /** The kind an entry knows by its name, such as a handler's, made once. Not API. */
+    public TaskKind taskKind(String name) { return kinds.computeIfAbsent(name, key -> new TaskKind(key, metrics)); }
+
+    /** The kind of a task of class {@code type}, written by hand: the class that wrote it. Not API. */
+    public TaskKind taskKind(Class<?> type) { return kindsOfClasses.get(type); }
+
+    /** The class a lambda or an anonymous class was written in; a named class is its own. */
+    private static String ownerName(Class<?> type) {
+        return type.getName().replaceFirst("\\$\\$Lambda.*$", "").replaceFirst("(\\$\\d+)+$", "");
+    }
+
+    /** Runs the task as {@link #run} does, timing how long it waited and ran, and counting it under its kind. */
+    private <C extends Context> Runnable observed(TaskKind given, C context, GameTask<? super C> task) {
+        TaskKind kind = given != null ? given : kindOf(context, task);
+        long submitted = System.nanoTime();
+        return () -> {
+            long started = System.nanoTime();
+            boolean completed = run(context, task);
+            long ran = System.nanoTime() - started, waited = started - submitted;
+            kind.ran(ran, completed);
+            domains.get(context.domain()).waits().record(waited);
+            if (ran >= slowNanos) LOG.log(Level.WARNING, "Slow task; handler=" + kind.name() + ", domain=" + context.domain()
+                    + ", routeKey=" + context.routeKey() + ", businessType=" + context.businessType() + ", businessId=" + context.businessId()
+                    + ", wait=" + TimeUnit.NANOSECONDS.toMillis(waited) + "ms, run=" + TimeUnit.NANOSECONDS.toMillis(ran) + "ms");
+        };
     }
 
     private void submit(Context context, Runnable work) {
@@ -136,13 +229,15 @@ public final class GameRuntime implements AutoCloseable {
         return refusal;
     }
 
-    private <C extends Context> void run(C context, GameTask<? super C> task) {
+    /** Whether it completed: false when it threw. */
+    private <C extends Context> boolean run(C context, GameTask<? super C> task) {
         try {
             ScopedValue.where(CURRENT, context).call(() -> {
                 if (interceptors.length == 0) task.run(context);
                 else intercept(context, task);
                 return null;
             });
+            return true;
         } catch (Throwable cause) {
             domains.get(context.domain()).failed().increment();
             // An accepted request is always answered; fail does nothing if the task had already answered it.
@@ -159,6 +254,7 @@ public final class GameRuntime implements AutoCloseable {
                 error.addSuppressed(cause);
                 LOG.log(Level.ERROR, "Game task error handler failed", error);
             }
+            return false;
         }
     }
 
@@ -285,18 +381,21 @@ public final class GameRuntime implements AutoCloseable {
 
     /** What the runtime keeps per domain: who runs its tasks, how a message finds its key, and its meters. */
     private record RouteDomain(RouteExecutor executor, RouteKeyResolver resolver, Counter failed, Map<Integer, Counter> refusals,
-                               List<Meter> gauges) {
+                               LatencyBuckets waits, List<Meter> gauges) {
         private static final String REFUSED = "managame.runtime.tasks.refused";
 
         static RouteDomain of(int domain, RouteExecutor executor, RouteKeyResolver resolver, Metrics metrics) {
             String id = String.valueOf(domain);
+            LatencyBuckets waits = new LatencyBuckets();
+            List<Meter> gauges = new ArrayList<>(waits.report(metrics, "managame.runtime.tasks.wait", "domain", id));
+            gauges.add(metrics.gauge("managame.runtime.tasks.pending", executor::pending, "domain", id));
+            gauges.add(metrics.gauge("managame.runtime.routes.max_pending", executor::maxPending, "domain", id));
+            gauges.add(metrics.gauge("managame.runtime.routes.active", executor::routes, "domain", id));
             return new RouteDomain(executor, resolver, metrics.counter("managame.runtime.tasks.failed", "domain", id),
                     Map.of(RUNTIME_CLOSED, metrics.counter(REFUSED, "domain", id, "code", "RUNTIME_CLOSED"),
                             ROUTE_EXECUTOR_OVERLOADED, metrics.counter(REFUSED, "domain", id, "code", "ROUTE_EXECUTOR_OVERLOADED"),
                             ROUTE_EXECUTOR_CLOSED, metrics.counter(REFUSED, "domain", id, "code", "ROUTE_EXECUTOR_CLOSED")),
-                    List.of(metrics.gauge("managame.runtime.tasks.pending", executor::pending, "domain", id),
-                            metrics.gauge("managame.runtime.routes.max_pending", executor::maxPending, "domain", id),
-                            metrics.gauge("managame.runtime.routes.active", executor::routes, "domain", id)));
+                    waits, gauges);
         }
 
         void refused(int errorCode) {
@@ -313,6 +412,7 @@ public final class GameRuntime implements AutoCloseable {
         private final Map<RouteExecutor, Integer> owners = new IdentityHashMap<>();
         private final List<TaskInterceptor> interceptors = new ArrayList<>();
         private Metrics metrics = Metrics.noop();
+        private Duration slowTask;
         private BiConsumer<? super Context, ? super Throwable> errorHandler = (context, cause) ->
                 LOG.log(Level.ERROR, "Game task failed; domain=" + context.domain() + ", routeKey=" + context.routeKey()
                         + ", businessType=" + context.businessType() + ", businessId=" + context.businessId(), cause);
@@ -361,12 +461,22 @@ public final class GameRuntime implements AutoCloseable {
         }
 
         /**
-         * Where the runtime reports, by domain: tasks refused, by error code, tasks that threw, and what its executor
-         * holds, read when the backend collects; {@link Metrics#noop()} by default. A task that runs and returns reports
-         * nothing, so metrics cost it nothing.
+         * Where the runtime reports: by domain the tasks refused, by error code, those that threw, what its executor holds
+         * and how long tasks waited; by handler, or by the class that wrote a task by hand, how many ran, failed and for
+         * how long. {@link Metrics#noop()} by default, which reads no clock, so a task costs what it did without metrics.
          */
         public Builder metrics(Metrics metrics) {
             this.metrics = Objects.requireNonNull(metrics, "metrics");
+            return this;
+        }
+
+        /**
+         * Logs a warning for each task that runs for {@code threshold} or longer, with its handler, route and business;
+         * none by default. Reads the clock around every task, as a backend does.
+         */
+        public Builder slowTask(Duration threshold) {
+            if (threshold.toNanos() <= 0) throw new IllegalArgumentException("The slow task threshold must be positive");
+            slowTask = threshold;
             return this;
         }
 

@@ -349,14 +349,41 @@ heartbeat. The heartbeat itself runs on the connection's EventLoop.
 - `peer.connectionCount()`, `peer.isConnected()`, `peer.incarnation()`, and the peers the listener hears connect and disconnect.
 - Every call's outcome reaches its callback with the request it answers; an application measures latency, timeouts
   and failures by peer and command in its own callback adapter, for whatever monitoring it uses.
-- `metrics(Metrics)` reports what operators act on, by peer: the tag `node` is the peer's id. A call that succeeds
-  reports nothing, so metrics cost it nothing.
+- `metrics(Metrics)` reports what goes through the node, what fails and what it holds. By default, `Metrics.noop()`,
+  a message pays an empty method per event and no clock is read; with a backend, a call also reads the clock once
+  more when its answer arrives.
+
+By peer, with the tag `node` for the peer's id:
 
 | Metric | Kind | Tells |
 | --- | --- | --- |
 | `managame.rpc.peer.connections` | gauge | Is the peer there? Its connections up |
+| `managame.rpc.peer.disconnects` | counter | Connections to it that closed: a line that flaps |
+| `managame.rpc.peer.restarts` | counter | New instances of it that replaced the one known |
+| `managame.rpc.peer.write_queue_bytes` | gauge | Bytes queued for its connections: above zero for long, it reads too slowly |
+| `managame.rpc.calls.sent` | counter | Calls made to it |
 | `managame.rpc.calls.pending` | gauge | Is the peer keeping up? Calls waiting for its answer |
+| `managame.rpc.calls.latency_bucket` | counter | Calls it answered within `le` milliseconds, success or failure, with the tag `le`: `0.5`, `1`, `5`, `10`, `50`, `100`, `500` or `+Inf`, which counts them all. A call that timed out or failed on this node is not in it |
+| `managame.rpc.calls.latency_nanos` | counter | How long those calls took in all; its difference between two readings, over that of `le="+Inf"`, is their mean |
 | `managame.rpc.calls.failed` | counter | Calls that failed, with the tag `code`: `RPC_UNAVAILABLE`, `RPC_OVERLOADED`, `RPC_TIMEOUT`, `RPC_HANDLER_ERROR` or `RPC_PROTOCOL_ERROR`. An application's own codes are its own to count |
+| `managame.rpc.notifies.sent` | counter | Notifies a connection accepted |
+| `managame.rpc.notifies.refused` | counter | Notifies refused, with the tag `status`: `NOT_WRITABLE` or `INACTIVE` |
+| `managame.rpc.requests.received`, `managame.rpc.notifies.received` | counter | What it sent this node |
+| `managame.rpc.handler.failed` | counter | Times this node's handler threw on what it sent |
+| `managame.rpc.replies.lost` | counter | Answers no connection of its instance could take |
+
+For the node, with no tag but where said:
+
+| Metric | Kind | Tells |
+| --- | --- | --- |
+| `managame.rpc.bytes.read`, `managame.rpc.bytes.written` | counter | Bytes of RPC frames on all its connections |
+| `managame.rpc.handshakes.refused` | counter | Connections refused, with the tag `reason`: `protocol`, `version`, `identity`, `admission`, `instance` or `closed` |
+| `managame.rpc.connections.heartbeat_lost` | counter | Connections closed because nothing arrived for three heartbeat intervals |
+| `managame.rpc.timer.pending` | gauge | Timeouts waiting on the time wheel |
+| `managame.network.eventloop.pending_tasks` | gauge | Tasks waiting on the EventLoop furthest behind, tagged `group`: `rpc`, and `rpc-accept` when accepting runs on EventLoops of its own |
+
+`NetworkMetrics.directMemory(metrics)` in managame-network reports Netty's direct memory; an application binds it once
+for the whole process.
 
 ## Threads
 

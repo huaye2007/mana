@@ -9,7 +9,6 @@ import cn.managame.FrameworkErrorCodes;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.runtime.Context;
-import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.TaskInterceptor;
@@ -38,34 +37,33 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 class HttpRoutesTest {
-    private static final int PLAYER = 1, GUILD = 2, WORLD = 3;
-    private static final byte ROLE = 1;
+    private static final int PLAYER = 1, GUILD = 2, WORLD = 3, ROOM = 4;
     private static final int SOLD_OUT = 10_001;   // the game's own code
     private static final HttpClient CLIENT = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
 
+    record Mail(long roleId, String text) {}
     record Notice(long guildId, String text) {}
     record Posted(long guild, String text) {}
     record PayAck(String result) {}
 
     private final GameRuntime runtime = GameRuntime.builder()
-            .domain(PLAYER, RouteExecutors.virtualThreads(), (source, message) -> {
-                if (source.businessId() == 0) throw new IllegalArgumentException("Which role?");
-                return source.businessId();
-            })
+            .domain(PLAYER, RouteExecutors.virtualThreads())
             .domain(GUILD, RouteExecutors.virtualThreads())
-            .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0)).build();
+            .domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))
+            .domain(ROOM, RouteExecutors.striped(1), (source, message) -> { throw new IllegalArgumentException("Which room?"); })
+            .build();
     private NetworkServer server;
 
     @Domain(PLAYER)
     class PlayerAdmin {
-        @HttpMethod("/mail") String mail(String text) {
+        @HttpMethod(value = "/mail", routeKey = "roleId") String mail(Mail mail) {
             Context context = Context.current();
-            return "mail " + text + " to " + context.routeKey() + " on domain " + context.domain();
+            return "mail " + mail.text() + " to " + context.routeKey() + " on domain " + context.domain();
         }
-        @HttpMethod("/rank") void rank(String body) {
+        @HttpMethod(value = "/rank", routeKey = "roleId") void rank(Mail mail) {
             HttpRequestContext context = HttpRequestContext.current();
             // As with a call to another server: the answer comes from a callback after the endpoint returned.
-            Thread.ofVirtual().start(() -> runtime.execute(context, later -> later.reply("rank of " + context.businessId())));
+            Thread.ofVirtual().start(() -> runtime.execute(context, later -> later.reply("rank of " + mail.roleId() + " for " + context.businessId())));
         }
     }
 
@@ -82,11 +80,13 @@ class HttpRoutesTest {
         @HttpMethod("/sold-out") void soldOut(HttpRequestContext context, String item) { context.fail(SOLD_OUT, item); }
     }
 
-    /** The role a request acts for comes from its query, as the application decides. */
-    private static Context source(FullHttpRequest request) {
-        String role = HttpRequests.query(request, "roleId");
-        return role == null ? GameContext.of(0, 0) : GameContext.of(0, 0, ROLE, Long.parseLong(role));
-    }
+    /** Reads a Mail from the query and the body, as an application's codec does, and anything else as the basic codec. */
+    private static final HttpCodec MAILS = new HttpCodec() {
+        @Override public Object decode(FullHttpRequest request, Type type) throws Exception {
+            return type == Mail.class ? new Mail(HttpRequests.longQuery(request, "roleId"), HttpRequests.text(request)) : HttpCodec.basic().decode(request, type);
+        }
+        @Override public FullHttpResponse encode(Object result) throws Exception { return HttpCodec.basic().encode(result); }
+    };
 
     @AfterEach void stop() {
         if (server != null) server.close();
@@ -99,7 +99,7 @@ class HttpRoutesTest {
     }
 
     private HttpRoutes.Builder routes() {
-        return HttpRoutes.builder(runtime).source(HttpRoutesTest::source).register(List.of(new PlayerAdmin(), new WorldAdmin()));
+        return HttpRoutes.builder(runtime).codec(MAILS).register(List.of(new PlayerAdmin(), new WorldAdmin()));
     }
 
     private HttpResponse<String> send(String method, String path, String body) throws Exception {
@@ -144,6 +144,12 @@ class HttpRoutesTest {
         assertEquals(400, send("POST", "/mail?roleId=abc", "x").statusCode(), "not a number");
     }
 
+    @Test void aRouteThatCannotBeFoundIsAnswered400() throws Exception {
+        @Domain(ROOM) class RoomAdmin { @HttpMethod("/room") String room(String body) { return "unreachable"; } }
+        serve(HttpRoutes.builder(runtime).register(List.of(new RoomAdmin())).build());
+        assertEquals(400, send("POST", "/room", "x").statusCode());
+    }
+
     @Test void aFailingEndpointIsAnswered500() throws Exception {
         serve(routes().build());
         HttpResponse<String> response = send("POST", "/boom", "x");
@@ -153,7 +159,7 @@ class HttpRoutesTest {
 
     @Test void anEndpointMayAnswerLaterThroughTheCurrentContext() throws Exception {
         serve(routes().build());
-        assertEquals("rank of 7", send("POST", "/rank?roleId=7", "").body());
+        assertEquals("rank of 7 for 0", send("POST", "/rank?roleId=7", "").body(), "a request acts for no one");
     }
 
     @Test void requestsTheRuntimeRefusesAreAnswered503() throws Exception {
@@ -283,10 +289,14 @@ class HttpRoutesTest {
         AtomicReference<FullHttpRequest> seen = new AtomicReference<>();
         try (GameRuntime gated = GameRuntime.builder().domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))
                 .intercept(List.of(gate)).errorHandler((context, cause) -> {}).build()) {
-            serve(HttpRoutes.builder(gated).source(request -> {
-                seen.set(request);
-                return GameContext.of(0, 0);
-            }).register(List.of(new WorldAdmin())).build());
+            HttpCodec seeing = new HttpCodec() {   // sees every request, also one the runtime refuses
+                @Override public Object decode(FullHttpRequest request, Type type) throws Exception {
+                    seen.set(request);
+                    return HttpCodec.basic().decode(request, type);
+                }
+                @Override public FullHttpResponse encode(Object result) throws Exception { return HttpCodec.basic().encode(result); }
+            };
+            serve(HttpRoutes.builder(gated).codec(seeing).register(List.of(new WorldAdmin())).build());
             assertEquals(200, send("POST", "/size", "abc").statusCode());
             assertReleased(seen.get());
             assertEquals(500, send("POST", "/boom", "x").statusCode());

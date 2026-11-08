@@ -1,27 +1,19 @@
 package cn.managame.rpc;
 
-import static cn.managame.FrameworkErrorCodes.RPC_HANDLER_ERROR;
 import static cn.managame.FrameworkErrorCodes.RPC_OVERLOADED;
-import static cn.managame.FrameworkErrorCodes.RPC_PROTOCOL_ERROR;
-import static cn.managame.FrameworkErrorCodes.RPC_TIMEOUT;
 import static cn.managame.FrameworkErrorCodes.RPC_UNAVAILABLE;
 
-import cn.managame.FrameworkErrorCodes;
 import cn.managame.Metadata;
-import cn.managame.metrics.Counter;
-import cn.managame.metrics.Meter;
-import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.Connection;
 import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.netty.NetworkClient;
+import cn.managame.rpc.Refusal.Reason;
 import cn.managame.rpc.RpcCodec.Handshake;
 import io.netty.util.AttributeKey;
 import java.lang.System.Logger.Level;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
@@ -66,14 +58,11 @@ public final class RpcPeer {
     private static final AttributeKey<RpcPeer> KEY = AttributeKey.valueOf("cn.managame.rpc.peer");
     /** The incarnation of the instance of the peer a connection joined. */
     private static final AttributeKey<Long> INCARNATION = AttributeKey.valueOf("cn.managame.rpc.incarnation");
-    /** The failures counted, the framework's own; an application's codes make no series of their own. */
-    private static final int[] FAILURES = {RPC_UNAVAILABLE, RPC_OVERLOADED, RPC_TIMEOUT, RPC_HANDLER_ERROR, RPC_PROTOCOL_ERROR};
     private final RpcNode node;
     private final int nodeId;
     private final boolean outbound;
     private final PendingCalls pending;
-    private final Map<Integer, Counter> failures;
-    private final List<Meter> gauges;
+    private final PeerMetrics meters;
     /** The dialers keeping the connections to an outbound peer up. */
     private volatile List<NetworkClient> clients = List.of();
     /** Replaced whole, under this, as connections join and leave. */
@@ -95,14 +84,17 @@ public final class RpcPeer {
         this.outbound = outbound;
         pending = new PendingCalls(node.maxPendingCalls(), this::failed);
         instance = new Instance(0, new Connection[slots]);
-        Metrics metrics = node.metrics();
-        String id = String.valueOf(nodeId);
-        Map<Integer, Counter> counters = new HashMap<>();
-        for (int code : FAILURES) counters.put(code, metrics.counter("managame.rpc.calls.failed", "node", id, "code", FrameworkErrorCodes.name(code)));
-        failures = Map.copyOf(counters);
-        gauges = List.of(metrics.gauge("managame.rpc.peer.connections", this::connectionCount, "node", id),
-                metrics.gauge("managame.rpc.calls.pending", pending::size, "node", id));
+        meters = new PeerMetrics(node.metrics(), nodeId, pending::sent, pending::size, this::connectionCount, this::queuedBytes);
     }
+
+    /** The bytes written to the peer's connections and not yet taken by their sockets; read when the backend collects. */
+    private long queuedBytes() {
+        long queued = 0;
+        for (Connection connection : instance.slots()) if (connection != null) queued += RpcCodec.queuedBytes(connection);
+        return queued;
+    }
+
+    PeerMetrics meters() { return meters; }
 
     public int nodeId() { return nodeId; }
 
@@ -164,7 +156,8 @@ public final class RpcPeer {
             request.release();
             throw e;
         }
-        Call call = new Call(pending, request, callback, System.nanoTime() + timeoutNanos);
+        long start = System.nanoTime();
+        Call call = new Call(pending, request, callback, start, start + timeoutNanos);
         Connection connection = removed || node.isClosed() ? null : connection(request.routeKey());
         if (connection == null || !connection.isWritable() || !pending.add(call)) {
             call.release();
@@ -200,9 +193,11 @@ public final class RpcPeer {
                     + node.maxFrameLength() + " bytes");
         }
         Connection connection = removed || node.isClosed() ? null : connection(notify.routeKey());
-        if (connection != null) return RpcCodec.write(connection, notify);
-        notify.release();
-        return WriteStatus.INACTIVE;
+        WriteStatus status = WriteStatus.INACTIVE;
+        if (connection != null) status = RpcCodec.write(connection, notify);
+        else notify.release();
+        meters.notified(status);
+        return status;
     }
 
     /** The connection of the slot {@code routeKey} hashes to or, while that is down, the next one up; null for none. */
@@ -234,25 +229,26 @@ public final class RpcPeer {
      */
     public WriteStatus reply(Connection connection, RpcResponse response) {
         Objects.requireNonNull(response, "response");
+        Connection target = connection;
         if (!connection.isActive() && connection.get(INCARNATION) instanceof Long incarnation && incarnation == instance.incarnation()) {
             Connection other = connection(response.requestId());
-            if (other != null) return RpcCodec.writeEvenIfBusy(other, response);
+            if (other != null) target = other;
         }
-        return RpcCodec.writeEvenIfBusy(connection, response);
+        WriteStatus status = RpcCodec.writeEvenIfBusy(target, response);
+        if (status != WriteStatus.ACCEPTED) meters.repliesLost.increment();
+        return status;
     }
 
     /** An answer from the peer: it ends its call, if that still waits. */
     void answer(RpcResponse response) {
         Call call = pending.remove(response.requestId());
         if (call == null) return;
+        meters.answered(call.start);
         if (!response.isSuccess()) failed(response.code());
         call.complete(response);
     }
 
-    private void failed(int code) {
-        Counter counter = failures.get(code);
-        if (counter != null) counter.increment();
-    }
+    private void failed(int code) { meters.failed(code); }
 
     /** The connections the dialing side opens: fixed for a peer this node dials. */
     int slotCount() { return instance.slots().length; }
@@ -266,19 +262,20 @@ public final class RpcPeer {
      * old one's connections close and its waiting calls fail, as it cannot answer them. {@code beforeJoining} runs
      * once the connection is accepted and before anyone can use it. Returns why the connection was refused, or null.
      */
-    String addConnection(Connection connection, Handshake theirs, int slot, Runnable beforeJoining) {
+    Refusal addConnection(Connection connection, Handshake theirs, int slot, Runnable beforeJoining) {
         List<Connection> dropped = new ArrayList<>(0);
         boolean replaced = false;
         synchronized (this) {
-            if (removed || node.isClosed()) return "node " + nodeId + " was removed, or this node closed";
+            if (removed || node.isClosed()) return new Refusal(Reason.CLOSED, "node " + nodeId + " was removed, or this node closed");
             Instance current = instance;
             if (theirs.incarnation() != current.incarnation()) {
                 for (Connection old : current.slots()) if (old != null) dropped.add(old);
                 if (!dropped.isEmpty() && theirs.incarnation() < current.incarnation())
-                    return "an older instance of node " + nodeId + " dials while a newer one is connected";
+                    return new Refusal(Reason.INSTANCE, "an older instance of node " + nodeId + " dials while a newer one is connected");
                 if (current.incarnation() != 0) {
                     if (!dropped.isEmpty()) LOG.log(Level.WARNING, "A new instance of node " + nodeId + " replaces the connected one");
                     replaced = true;
+                    meters.restarts.increment();
                 }
                 current = new Instance(theirs.incarnation(), new Connection[outbound ? current.slots().length : theirs.slots()]);
                 instance = current;
@@ -287,7 +284,7 @@ public final class RpcPeer {
                     node.fireDisconnected(this);
                 }
             } else if (!outbound && theirs.slots() != current.slots().length) {
-                return "node " + nodeId + " opens " + theirs.slots() + " connections, after " + current.slots().length;
+                return new Refusal(Reason.INSTANCE, "node " + nodeId + " opens " + theirs.slots() + " connections, after " + current.slots().length);
             }
             metadata = theirs.metadata();
             beforeJoining.run();
@@ -318,6 +315,7 @@ public final class RpcPeer {
             Connection[] slots = current.slots();
             for (int i = 0; i < slots.length; i++) {
                 if (slots[i] != connection) continue;
+                meters.disconnects.increment();
                 slots = slots.clone();
                 slots[i] = null;
                 instance = new Instance(current.incarnation(), slots);
@@ -347,7 +345,7 @@ public final class RpcPeer {
     void close() {
         pending.failAll(RPC_UNAVAILABLE);
         for (NetworkClient client : clients) client.close();
-        gauges.forEach(Meter::close);
+        meters.close();
     }
 
     @Override public String toString() {

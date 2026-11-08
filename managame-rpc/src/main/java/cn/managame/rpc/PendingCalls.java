@@ -1,6 +1,7 @@
 package cn.managame.rpc;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.function.IntConsumer;
 
@@ -16,7 +17,8 @@ final class PendingCalls {
     private final AtomicReferenceArray<Call> slots;
     /** The calls kept at most, and the number of slots less one: slots are the power of two no smaller than that. */
     private final int limit, mask;
-    private final AtomicInteger lastId = new AtomicInteger();
+    /** Ids are its low 32 bits; the whole of it counts the calls that joined, and so never falls. */
+    private final AtomicLong lastId = new AtomicLong();
     private final AtomicInteger size = new AtomicInteger();
 
     /** At most {@code limit} calls at a time, at least one. */
@@ -29,6 +31,9 @@ final class PendingCalls {
     }
 
     int size() { return size.get(); }
+
+    /** The ids handed out, which are the calls sent, but for the rare id skipped. */
+    long sent() { return lastId.get(); }
 
     /** Gives {@code call} its id and keeps it; false when as many calls as the limit wait already. */
     boolean add(Call call) {
@@ -43,8 +48,8 @@ final class PendingCalls {
     }
 
     private int nextId() {
-        int id = lastId.incrementAndGet();
-        return id != 0 ? id : lastId.incrementAndGet();
+        int id = (int) lastId.incrementAndGet();
+        return id != 0 ? id : (int) lastId.incrementAndGet();
     }
 
     /** Takes out the call waiting under {@code id}; null when none does, as it ended or the id is unknown. */

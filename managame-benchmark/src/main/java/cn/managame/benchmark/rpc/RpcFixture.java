@@ -2,6 +2,7 @@ package cn.managame.benchmark.rpc;
 
 import cn.managame.benchmark.CountingSocketChannel;
 import cn.managame.benchmark.PeerProcess;
+import cn.managame.metrics.Metrics;
 import cn.managame.rpc.RpcNode;
 import cn.managame.rpc.RpcNotify;
 import cn.managame.rpc.RpcPeer;
@@ -41,8 +42,12 @@ final class RpcFixture implements AutoCloseable {
     final Semaphore notified = new Semaphore(0);
 
     RpcFixture(int payloadSize, int connections, boolean otherProcess) throws IOException, InterruptedException {
+        this(payloadSize, connections, otherProcess, Metrics.noop());
+    }
+
+    RpcFixture(int payloadSize, int connections, boolean otherProcess, Metrics metrics) throws IOException, InterruptedException {
         this.connections = connections;
-        world = otherProcess ? null : RpcNode.builder().nodeId(1).listen(new InetSocketAddress("127.0.0.1", 0))
+        world = otherProcess ? null : RpcNode.builder().nodeId(1).listen(new InetSocketAddress("127.0.0.1", 0)).metrics(metrics)
                 .handler((rpcPeer, connection, msg) -> {
                     switch (msg) {
                         case RpcRequest request -> rpcPeer.reply(connection, RpcResponse.of(request.requestId(), request.body().retain()));
@@ -52,7 +57,7 @@ final class RpcFixture implements AutoCloseable {
                 }).start();
         worldProcess = otherProcess ? PeerProcess.start(WorldPeer.class) : null;
         int port = otherProcess ? worldProcess.port() : world.port();
-        game = RpcNode.builder().nodeId(2).bootstrap(new Bootstrap().group(gameLoops).channel(CountingSocketChannel.class))
+        game = RpcNode.builder().nodeId(2).metrics(metrics).bootstrap(new Bootstrap().group(gameLoops).channel(CountingSocketChannel.class))
                 .handler((rpcPeer, connection, msg) -> {
                     if (msg instanceof RpcNotify handled && handled.command() == HANDLED) notified.release((int) handled.businessId());
                 }).start();

@@ -1,5 +1,6 @@
 package cn.managame.network.netty;
 
+import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.ConnectionHandler;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
@@ -43,6 +44,7 @@ public final class ConnectionInitializer extends ChannelInitializer<Channel> {
     private final HandlerChain front, application;
     private final List<Consumer<ChannelPipeline>> customizers;
     private final ConnectionBridge bridge;
+    private final ListenerMetrics metrics;
 
     private ConnectionInitializer(Builder b) {
         ssl = b.ssl;
@@ -51,7 +53,8 @@ public final class ConnectionInitializer extends ChannelInitializer<Channel> {
         front = b.front.build();
         application = b.application.build();
         customizers = List.copyOf(b.customizers);
-        bridge = new ConnectionBridge(b.handler, b.mapper);
+        metrics = ListenerMetrics.of(b.metrics, b.metricsName);
+        bridge = new ConnectionBridge(b.handler, b.mapper, metrics);
     }
 
     /** Raw TCP: handlers receive the byte stream, so add framing such as {@link NetworkHandlers#lengthFieldFraming}. */
@@ -69,6 +72,7 @@ public final class ConnectionInitializer extends ChannelInitializer<Channel> {
 
     @Override protected void initChannel(Channel channel) {
         ChannelPipeline pipeline = channel.pipeline();
+        if (metrics != ListenerMetrics.NONE) pipeline.addLast(PipelineNames.METRICS, metrics);
         front.addTo(pipeline);
         if (ssl != null) {
             SslHandler tls = ssl.newHandler(channel.alloc());
@@ -108,6 +112,8 @@ public final class ConnectionInitializer extends ChannelInitializer<Channel> {
         private final Set<String> names = new HashSet<>();
         private final List<Consumer<ChannelPipeline>> customizers = new ArrayList<>();
         private Duration handshakeTimeout = DEFAULT_HANDSHAKE_TIMEOUT;
+        private Metrics metrics = Metrics.noop();
+        private String metricsName = "none";
 
         private Builder(WebSocketConfig webSocket) { this.webSocket = webSocket; }
 
@@ -150,6 +156,18 @@ public final class ConnectionInitializer extends ChannelInitializer<Channel> {
         public Builder handshakeTimeout(Duration timeout) {
             if (timeout.toMillis() <= 0) throw new IllegalArgumentException("handshakeTimeout must be at least one millisecond");
             handshakeTimeout = timeout;
+            return this;
+        }
+
+        /**
+         * Where this listener reports, its meters tagged {@code listener} with {@code name}, which tells it from the
+         * process's other listeners; {@link Metrics#noop()} by default, which adds nothing to the pipeline. Reporting
+         * adds a handler ahead of every other that counts each read and write, and is built once per name.
+         */
+        public Builder metrics(Metrics metrics, String name) {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("The listener's name must not be blank");
+            this.metrics = Objects.requireNonNull(metrics, "metrics");
+            metricsName = name;
             return this;
         }
 

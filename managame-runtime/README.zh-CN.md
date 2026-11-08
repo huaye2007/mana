@@ -55,26 +55,24 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 那个 context**，也就是任务自己的或它的请求。
 
 ```java
-// 调用另一台服务器：应答在 RPC 线程上到达，剩下的回到玩家的路由执行
-peer.call(rpcRequest, (call, response) -> runtime.execute(context, _ -> rank.update(response)));
-
 // 交易：先在对方的路由上扣对方的物品，再回到自己的路由上加给自己
 @HandleMethod void trade(HandleContext request, Trade trade) {
-    runtime.execute(GameContext.of(PLAYER, trade.with()), _ -> {     // 在对方的路由上
-        boolean taken = bags.get(trade.with()).take(trade.item());
-        runtime.execute(request, _ -> {                               // 回到自己的路由上
-            if (!taken) { request.fail(NOT_ENOUGH); return; }
-            bags.get(request.businessId()).add(trade.item());
-            request.reply("traded");
-        });
-    });
+    runtime.call(GameContext.of(PLAYER, trade.with()),
+            () -> bags.get(trade.with()).take(trade.item()),          // 在对方的路由上
+            taken -> {                                                // 回到自己的路由上
+                if (!taken) { request.fail(NOT_ENOUGH); return; }
+                bags.get(request.businessId()).add(trade.item());
+                request.reply("traded");
+            });
 }
 
 // 只读别的玩家：应答可以在任意线程上发出，不用再回来
 runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(target)));
 ```
 
-框架提供的只有 `runtime.execute`、`GameContext.of` 和请求的 `reply`、`fail`；`Trade`、`bags`、`profiles`、`NOT_ENOUGH`
+`runtime.call(target, work, then)` 用于游戏任务需要从别的路由拿结果的情况：`work` 在目标路由上执行，`then` 带着结果排回当前任务的路由队列。两段互不等待，所以虚拟线程和普通线程上行为一样，两条路由互相调用也不会死锁。一次调用的两段按顺序执行，但两段之间这条路由的其他任务可能插进来，所以 `then` 要以当时的状态为准。`work` 抛异常或被拦截器拒绝时，`then` 不执行，请求以 `RUNTIME_EXECUTION_ERROR` 失败。
+
+框架提供的只有 `runtime.execute`、`runtime.call`、`GameContext.of` 和请求的 `reply`、`fail`；`Trade`、`bags`、`profiles`、`NOT_ENOUGH`
 都是游戏自己的，任务用不到的 context 写成 `_`。继续执行的任务里 `Context.current()` 就是这个 context，请求只应答一次，任务
 抛异常或被拒绝时请求会以错误码失败：不需要再记别的。任务里交出去的工作不会因为过载或关闭被拒绝，所以两条路由上的两步都会执行。RPC 回调这类从任务之外回来的工作算入口，路由满时可能被拒绝：这时请求以拒绝的错误码
 失败，把第一步已经做完的事还原是游戏自己的事。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
@@ -323,10 +321,6 @@ class GuildAdmin {
 }
 
 HttpRoutes routes = HttpRoutes.builder(runtime)
-        .source(request -> {                                    // 请求以谁的身份执行，由业务决定
-            String role = HttpRequests.query(request, "roleId");
-            return role == null ? GameContext.of(0, 0) : GameContext.of(0, 0, ROLE, Long.parseLong(role));
-        })
         .codec(new JsonCodec())
         .register(List.of(new PlayerAdmin(), new GuildAdmin()))
         .build();
@@ -336,8 +330,8 @@ NetworkServer.start(8080, HttpInitializer.http().contextPath("/admin").handler(r
 - 接口只有一个参数，由编解码器从请求中读出，通常就是请求体。路径在监听的 contextPath 之下精确匹配；方法默认为 POST，需要其它方法时用 `method` 指定，例如 `@HttpMethod(value = "/status", method = "GET")`。
 - `routeKey` 读的就是这个参数，所以 `@HttpMethod(value = "/notice", routeKey = "guildId")` 按请求体上的那个成员路由；没写时由 domain 的 resolver 路由。
 - 接口一般用不到上下文。需要时在接口内调用 `HttpRequestContext.current()`，或者把它声明为第一个参数：`(HttpRequestContext context, SendMail mail)`。通过它可以取 `request()`（读请求头和查询参数，接口返回前可读）、`remoteAddress()`，以及用 `reply` / `fail` 稍后应答。
-- `source(request -> context)` 决定请求以谁的身份执行；它在连接的 EventLoop 上运行，不能阻塞。默认以空上下文执行。
-- 状态码：未知路径 404；方法不对 405 并带 `Allow`；编解码器读不出参数 400，source 或路由抛 `IllegalArgumentException` 也是 400；任务被拒绝（已关闭、过载）503；接口抛异常 500。
+- 请求不代表任何人：`businessType` 和 `businessId` 都是 0，业务归属由接口从参数里读。编解码器拿得到整个请求，所以既可以从请求体、也可以从查询参数填充参数对象。
+- 状态码：未知路径 404；方法不对 405 并带 `Allow`；编解码器读不出参数 400，路由抛 `IllegalArgumentException` 也是 400；任务被拒绝（已关闭、过载）503；接口抛异常 500。
 - 辅助方法：`HttpRequests.query`、`longQuery`、`text`。
 
 **返回值**：接口的返回值就是它的应答，类型按需要选：
@@ -407,7 +401,7 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 
 | Logger | 内容 |
 | --- | --- |
-| `cn.managame.runtime` | INFO：runtime 启动（每个 domain 及其执行器，以及任务拦截器的数量）、开始关闭、关闭完成。DEBUG：每个被拒绝的任务、回收的空闲路由队列。ERROR：默认错误处理器记录的失败任务。 |
+| `cn.managame.runtime` | INFO：runtime 启动（每个 domain 及其执行器，以及任务拦截器的数量）、开始关闭、关闭完成。DEBUG：每个被拒绝的任务、回收的空闲路由队列。WARNING：设置了 `slowTask` 时的慢任务。ERROR：默认错误处理器记录的失败任务。 |
 | `cn.managame.runtime.dispatch` | INFO：Dispatcher 的处理器数量。DEBUG：每种消息对应的处理器、每条被拒绝的消息。ERROR：无法执行的处理器。 |
 | `cn.managame.runtime.event` | INFO：事件总线的订阅者数量。DEBUG：每种事件的订阅者。 |
 | `cn.managame.runtime.http` | INFO：HTTP 接口数量。DEBUG：每个接口、每个错误请求。ERROR：无法执行或无法应答的请求。 |
@@ -415,17 +409,41 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 
 ## 指标
 
-`GameRuntime.builder().metrics(metrics)` 通过 common 的 `Metrics` 上报，默认 `Metrics.noop()`。所有指标都带 `domain` 标签；正常执行完的任务不上报任何东西，所以指标不增加它的开销：
+`GameRuntime.builder().metrics(metrics)` 通过 common 的 `Metrics` 上报，默认 `Metrics.noop()`，此时不读时钟，任务的开销和没有指标时一样。接了后端时，每个任务读三次时钟，并累加几个计数器。业务代码不用改。按 domain 上报，带 `domain` 标签：
 
 | 指标 | 类型 | 回答的问题 |
 | --- | --- | --- |
 | `managame.runtime.tasks.refused` | counter | 扛不住了吗？没有被接受的任务，带 `code` 标签：`RUNTIME_CLOSED`、`ROUTE_EXECUTOR_OVERLOADED` 或 `ROUTE_EXECUTOR_CLOSED` |
 | `managame.runtime.tasks.failed` | counter | 有 bug 吗？抛异常的任务 |
 | `managame.runtime.tasks.pending` | gauge | 积压多少？已接受、尚未结束的任务 |
+| `managame.runtime.tasks.wait_bucket` | counter | 路由跟得上吗？在路由上排队不超过 `le` 毫秒的任务数，带 `le` 标签：`0.5`、`1`、`5`、`10`、`50`、`100`、`500` 或 `+Inf`（计入全部） |
+| `managame.runtime.tasks.wait_nanos` | counter | 这些任务的总排队时间；两次读数的差除以 `le="+Inf"` 的差，就是这段时间的平均值 |
 | `managame.runtime.routes.max_pending` | gauge | 有路由卡住吗？单个路由键上最多的任务数，striped 的 domain 是单个线程上的 |
 | `managame.runtime.routes.active` | gauge | 离 `maxKeys` 还有多远？有队列的路由键；striped 的 domain 不保存键的状态，始终为 0 |
 
-gauge 在采集时才读取执行器自己的状态，`close()` 时移除。路由卡住后只要还有任务进来，就会体现在 `routes.max_pending` 上；没有新任务进来时看不出来。这里不提供计时器：要查慢消息，在它的处理器里用自己的后端计时。
+按执行的内容上报，带 `handler` 标签：
+
+| 指标 | 类型 | 回答的问题 |
+| --- | --- | --- |
+| `managame.runtime.handler.calls` | counter | 执行得多频繁？ |
+| `managame.runtime.handler.run_nanos` | counter | 时间花在哪？按它排序就是最耗时的处理器 |
+| `managame.runtime.handler.failed` | counter | 抛异常的任务 |
+| `managame.runtime.handler.business_failed` | counter | 以业务自己的失败应答的请求，比如 `HandleResult.fail(GOLD_SHORT)` |
+
+`handler` 标签的取值：
+
+- 处理器、事件订阅者、HTTP 接口或 `@Cron` 方法：类名加方法名，`com.game.ShopHandle#buy`；
+- 用请求的 context 继续执行的工作，比如 RPC 回调：这个请求的处理器，所以带一个回调的请求算两个任务；
+- 手写的任务，也就是交给 `execute` 或定时器的 lambda、方法引用或匿名类：写它的那个类，`com.game.TradeHandle`；
+- 写成具名类的任务：这个类本身，`com.game.TradeHandle$Settle`，用于需要单独统计的任务。
+
+一个处理器或一个类不管执行多少次都只有一条序列，所以名字不会让序列数增长，任务也不用构造名字或标签。任务是谁的只写进日志，不做标签：`GameRuntime.builder().slowTask(Duration.ofMillis(100))` 会为每个执行这么久的任务写一行日志，不接后端时也有效：
+
+```
+WARNING Slow task; handler=com.game.GuildHandle#donate, domain=3, routeKey=88, businessType=1, businessId=10001, wait=12ms, run=340ms
+```
+
+gauge 在采集时才读取执行器自己的状态，`close()` 时移除。路由卡住后只要还有任务进来，就会体现在 `routes.max_pending` 上；没有新任务进来时看不出来。
 
 ## 构建与测试
 

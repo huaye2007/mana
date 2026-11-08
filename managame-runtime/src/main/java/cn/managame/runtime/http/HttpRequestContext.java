@@ -8,6 +8,7 @@ import cn.managame.network.http.HttpExchange;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.RequestContext;
 import cn.managame.runtime.Route;
+import cn.managame.runtime.TaskKind;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -26,12 +27,23 @@ public final class HttpRequestContext implements RequestContext {
     private final Metadata metadata;
     private final HttpExchange exchange;
     private final HttpCodec codec;
+    private final TaskKind kind;
 
-    HttpRequestContext(Route route, Metadata metadata, HttpExchange exchange, HttpCodec codec) {
+    HttpRequestContext(Route route, Metadata metadata, HttpExchange exchange, HttpCodec codec, TaskKind kind) {
         this.route = route;
         this.metadata = metadata;
         this.exchange = exchange;
         this.codec = codec;
+        this.kind = kind;
+    }
+
+    @Override public TaskKind taskKind() { return kind; }
+
+    /** Sends {@code response}, which answers with {@code code}, and counts it if it was the first answer. */
+    private boolean respond(FullHttpResponse response, int code) {
+        boolean answered = exchange.respond(response);
+        if (answered) kind.answered(code);
+        return answered;
     }
 
     /** The context of the HTTP endpoint running on this thread; IllegalStateException in any other task or outside one. */
@@ -67,7 +79,7 @@ public final class HttpRequestContext implements RequestContext {
             LOG.log(Level.ERROR, "Cannot encode the HTTP result " + result.getClass().getName(), cause);
             return fail(RUNTIME_EXECUTION_ERROR);
         }
-        return exchange.respond(response);
+        return respond(response, result instanceof HttpResult answer ? answer.code() : FrameworkErrorCodes.SUCCESS);
     }
 
     @Override public boolean fail(int errorCode) { return fail(errorCode, NO_ARGS); }
@@ -85,6 +97,6 @@ public final class HttpRequestContext implements RequestContext {
             LOG.log(Level.ERROR, "Cannot encode the HTTP failure " + FrameworkErrorCodes.describe(errorCode), cause);
             return exchange.respond(HttpResponseStatus.INTERNAL_SERVER_ERROR);
         }
-        return exchange.respond(response);
+        return respond(response, errorCode);
     }
 }

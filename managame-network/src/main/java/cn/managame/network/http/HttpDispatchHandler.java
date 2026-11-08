@@ -1,5 +1,7 @@
 package cn.managame.network.http;
 
+import cn.managame.metrics.Counter;
+import cn.managame.network.netty.ListenerMetrics;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
@@ -11,6 +13,7 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpStatusClass;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import java.lang.System.Logger.Level;
 import java.net.SocketAddress;
 import java.util.Objects;
@@ -25,16 +28,26 @@ final class HttpDispatchHandler extends SimpleChannelInboundHandler<FullHttpRequ
     private static final System.Logger LOG = System.getLogger("cn.managame.network.http");
     private final HttpHandler handler;
     private final String contextPath;
+    private final ListenerMetrics metrics;
+    /** Responses by status class, from 2xx to 5xx. */
+    private final Counter[] responses;
 
     /** @param contextPath empty for the root, otherwise like {@code /admin} */
-    HttpDispatchHandler(HttpHandler handler, String contextPath) {
+    HttpDispatchHandler(HttpHandler handler, String contextPath, ListenerMetrics metrics, Counter[] responses) {
         this.handler = handler;
         this.contextPath = contextPath;
+        this.metrics = metrics;
+        this.responses = responses;
+    }
+
+    @Override public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+        if (event instanceof SslHandshakeCompletionEvent tls && !tls.isSuccess()) metrics.handshakeFailed();
+        ctx.fireUserEventTriggered(event);
     }
 
     @Override protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
         String path = request.decoderResult().isSuccess() ? pathBelowContext(request.uri()) : null;
-        Exchange exchange = new Exchange(ctx, request, path);
+        Exchange exchange = new Exchange(ctx, request, path, responses);
         if (!request.decoderResult().isSuccess()) {
             FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.BAD_REQUEST);
             HttpUtil.setKeepAlive(response, false);
@@ -74,6 +87,7 @@ final class HttpDispatchHandler extends SimpleChannelInboundHandler<FullHttpRequ
     }
 
     @Override public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        if (ctx.channel().isActive()) metrics.exception(cause);
         if (LOG.isLoggable(Level.DEBUG))
             LOG.log(Level.DEBUG, "Closing HTTP connection; peer=" + ctx.channel().remoteAddress() + "; " + cause);
         ctx.close();
@@ -83,12 +97,14 @@ final class HttpDispatchHandler extends SimpleChannelInboundHandler<FullHttpRequ
         private final ChannelHandlerContext ctx;
         private final FullHttpRequest request;
         private final String path;
+        private final Counter[] responses;
         private final AtomicBoolean responded = new AtomicBoolean();
 
-        Exchange(ChannelHandlerContext ctx, FullHttpRequest request, String path) {
+        Exchange(ChannelHandlerContext ctx, FullHttpRequest request, String path, Counter[] responses) {
             this.ctx = ctx;
             this.request = request;
             this.path = path;
+            this.responses = responses;
         }
 
         @Override public FullHttpRequest request() { return request; }
@@ -105,6 +121,8 @@ final class HttpDispatchHandler extends SimpleChannelInboundHandler<FullHttpRequ
                 return false;
             }
             int code = response.status().code();
+            int statusClass = code / 100 - 2;
+            if (statusClass >= 0 && statusClass < responses.length) responses[statusClass].increment();
             if (code != 204 && code != 304 && !HttpUtil.isContentLengthSet(response))
                 HttpUtil.setContentLength(response, response.content().readableBytes());
             ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE_ON_FAILURE);

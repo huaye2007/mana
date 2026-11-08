@@ -26,9 +26,9 @@ import java.util.function.LongSupplier;
  * value: keys follow the rule of names, and values must come from a small set (a domain, an error code's name, a
  * node id), never a player id or route key, since every value makes a series of its own.
  *
- * <p>There is no timer. Reading the clock around every task or call costs a hot path most of its time, for an average
- * that finds nothing: a component reports what it refuses, what fails and what it holds, and an application times the
- * calls it cares about with its own backend.
+ * <p>There is no timer, as everything here is read as a running total. A component that times something, as rpc its
+ * calls and the runtime its tasks, adds it up in {@link LatencyBuckets} and reports them as counters, so that two
+ * readings give the distribution in between. It reads no clock under {@link #noop()}.
  */
 public interface Metrics {
     /** A counter of events, which the caller increments. */

@@ -111,8 +111,8 @@ sent.close();   // 读取的对象不在了：从后端移除
 - 指标创建一次，存在字段里，每个名字加 tag 组合只创建一次。所有指标都可以在任意线程使用。
 - 上报的开销就是后端自己的指标的开销，不多一分：managame-benchmark 的 `MetricsBenchmark` 经 `Metrics` 往 LongAdder 计数（Micrometer
   也用这类分段累加器计数），单线程和四线程共用时都和直接用 LongAdder 一样快。`Metrics.noop()` 是同一个空指标，方法被 JIT 内联掉；gauge 和别处在数的计数器在后端读取之前没有任何开销。
-- 不提供计时器。给每个任务或调用读时钟，会占掉热路径的大部分时间，换来的平均值却定位不到问题，所以组件上报的是拒绝了什么、什么失败了、手里积压了什么。
-  应用要给关心的调用计时，直接用自己的后端。
+- 不提供计时器，这里的指标都按累计值读取。需要计时的组件（比如 rpc 的调用、runtime 的任务）用 `LatencyBuckets` 分桶累加，再作为计数器上报，两次读数相减就是这段时间的分布。
+  组件在 `Metrics.noop()` 下不读时钟。
 - `close()` 把 gauge 或别处在数的计数器从后端移除，并放开它读取的对象；用于会消失的东西，比如一个对端。计数器与后端同寿：
   对端用同一个 node id 回来后，还是上报到同一条序列。
 
@@ -145,6 +145,41 @@ public final class MicrometerMetrics implements Metrics {
 
 Micrometer 会按各个后端转换名字：对 Prometheus，点换成下划线。接 OpenTelemetry 时，这几个方法分别对应它的 counter、observable counter 和
 observable gauge。
+
+### 定时输出到日志
+
+没有监控系统的应用，可以定时（比如每分钟）把收到的指标全部写进日志。计数器都是累计值，两行日志相减就是这段时间发生的事：
+
+```java
+public final class LoggedMetrics implements Metrics {
+    private static final System.Logger LOG = System.getLogger("game.metrics");
+    private final Map<String, LongAdder> counts = new ConcurrentSkipListMap<>();
+    private final Map<String, DoubleSupplier> readings = new ConcurrentSkipListMap<>();
+
+    public LoggedMetrics(ScheduledExecutorService scheduler) {
+        scheduler.scheduleAtFixedRate(this::log, 1, 1, TimeUnit.MINUTES);
+    }
+
+    private void log() {
+        counts.forEach((name, count) -> LOG.log(Level.INFO, name + " = " + count.sum()));
+        readings.forEach((name, value) -> LOG.log(Level.INFO, name + " = " + value.getAsDouble()));
+    }
+
+    @Override public Counter counter(String name, String... tags) {
+        return counts.computeIfAbsent(key(name, tags), key -> new LongAdder())::add;
+    }
+
+    @Override public Meter counter(String name, LongSupplier count, String... tags) { return gauge(name, count::getAsLong, tags); }
+
+    @Override public Meter gauge(String name, DoubleSupplier value, String... tags) {
+        String key = key(name, tags);
+        readings.put(key, value);
+        return () -> readings.remove(key);
+    }
+
+    private static String key(String name, String... tags) { return tags.length == 0 ? name : name + List.of(tags); }
+}
+```
 
 ## 错误码
 

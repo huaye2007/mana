@@ -25,4 +25,10 @@ public interface RequestContext extends Context {
      * source with no use for them answers as {@link #fail(int)}. False when the request was already answered.
      */
     default boolean fail(int errorCode, String... args) { return fail(errorCode); }
+
+    /**
+     * The handler this request is for, which what continues it on a route is counted under too; null for a request no
+     * handler took. For the runtime's own entries; not API.
+     */
+    default TaskKind taskKind() { return null; }
 }

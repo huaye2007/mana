@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 /** The table of waiting calls on its own: ids, the limit, and ending each call once. */
 class PendingCallsTest {
     private static Call call(PendingCalls calls, RpcCallback callback) {
-        return new Call(calls, RpcRequest.of(1, Unpooled.EMPTY_BUFFER), callback, Long.MAX_VALUE);
+        return new Call(calls, RpcRequest.of(1, Unpooled.EMPTY_BUFFER), callback, 0, Long.MAX_VALUE);
     }
 
     private static Call call(PendingCalls calls) { return call(calls, (request, response) -> {}); }

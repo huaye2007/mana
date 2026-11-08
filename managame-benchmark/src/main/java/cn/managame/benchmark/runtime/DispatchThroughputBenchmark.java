@@ -2,6 +2,7 @@ package cn.managame.benchmark.runtime;
 
 import static cn.managame.FrameworkErrorCodes.SUCCESS;
 
+import cn.managame.metrics.Metrics;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.RouteKeys;
@@ -76,6 +77,7 @@ public class DispatchThroughputBenchmark {
         runtime = GameRuntime.builder()
                 .domain(PLAYER, ExecuteThroughputBenchmark.executor(executor), RouteKeys.businessId())
                 .domain(GUILD, ExecuteThroughputBenchmark.executor(executor))
+                .metrics(metrics())
                 .build();
         dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop(), new Guild())).build();
         for (int id = 0; id < PLAYERS; id++) players[id] = GameContext.of(PLAYER, id, ExecuteThroughputBenchmark.ROLE, id);
@@ -88,6 +90,9 @@ public class DispatchThroughputBenchmark {
     }
 
     @TearDown(Level.Trial) public void stop() { runtime.close(); }
+
+    /** Where the runtime reports; here nowhere. */
+    protected Metrics metrics() { return Metrics.noop(); }
 
     @Benchmark public void dispatch(ExecuteThroughputBenchmark.Player player) throws InterruptedException {
         inFlight.acquire();

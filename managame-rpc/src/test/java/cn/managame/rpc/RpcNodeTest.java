@@ -337,7 +337,8 @@ class RpcNodeTest {
 
     /** One connection, cut while a request waits: the call fails at once, and the answer written meanwhile is lost. */
     @Test void callsFailAtOnceWhenThePeersLastConnectionCloses() throws Exception {
-        world = start(node(1, "world").listen(LOOPBACK));
+        Backend metrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK).metrics(metrics));
         Proxy proxy = new Proxy(world.port());
         closeables.add(proxy);
         game = start(node(2, "game").redialDelay(Duration.ofMillis(300), Duration.ofMillis(300)));
@@ -354,6 +355,7 @@ class RpcNodeTest {
         ByteBuf lost = text("lost");
         assertEquals(WriteStatus.INACTIVE, world.peer(2).reply(request.connection(), RpcResponse.of(request.requestId(), lost)));
         assertEquals(0, lost.refCnt());
+        assertEquals(1, metrics.count("managame.rpc.replies.lost", "node", "2"));
     }
 
     @Test void withNoConnectionUpCallsFailAndTheirCallbacksLeaveTheCaller() throws Exception {
@@ -395,7 +397,8 @@ class RpcNodeTest {
         world = start(node(1, "world").listen(LOOPBACK));
         Proxy proxy = new Proxy(world.port());
         closeables.add(proxy);
-        game = start(node(2, "game").redialDelay(Duration.ofMillis(50), Duration.ofMillis(50)));
+        Backend metrics = new Backend();
+        game = start(node(2, "game").redialDelay(Duration.ofMillis(50), Duration.ofMillis(50)).metrics(metrics));
         RpcPeer peer = game.createPeer(1, new InetSocketAddress("127.0.0.1", proxy.port()));
         assertEquals(List.of("game connected 1 with 1", "world connected 2 with 1"), sorted(next(events), next(events)));
         long first = peer.incarnation();
@@ -410,6 +413,8 @@ class RpcNodeTest {
         proxy.cut(); // a restart: a new instance
         await(() -> peer.isConnected() && peer.incarnation() == restarted.incarnation());
         assertTrue(drain(events).contains("game connected 1 restarted with 1"));
+        assertEquals(1, metrics.count("managame.rpc.peer.restarts", "node", "1"));
+        assertEquals(2, metrics.count("managame.rpc.peer.disconnects", "node", "1"), "the reconnect and the restart");
         peer.call(RpcRequest.of(ECHO, text("again")), recorder());
         assertEquals("ok world got again from 2", next(answers));
     }
@@ -664,7 +669,7 @@ class RpcNodeTest {
         assertEquals(SOLD_OUT + " t-1 3 of 5", next(failures));
     }
 
-    /** Stands in for a backend: adds up counters, and holds gauges until they are closed. */
+    /** Stands in for a backend: adds up counters, and holds what it reads until it is closed. */
     private static final class Backend implements Metrics {
         final Map<String, LongAdder> counts = new ConcurrentHashMap<>();
         final Map<String, DoubleSupplier> gauges = new ConcurrentHashMap<>();
@@ -673,16 +678,19 @@ class RpcNodeTest {
 
         @Override public Counter counter(String name, String... tags) { return counts.computeIfAbsent(key(name, tags), key -> new LongAdder())::add; }
 
-        @Override public Meter counter(String name, LongSupplier count, String... tags) { throw new UnsupportedOperationException(); }
+        @Override public Meter counter(String name, LongSupplier count, String... tags) { return gauge(name, count::getAsLong, tags); }
 
         @Override public Meter gauge(String name, DoubleSupplier value, String... tags) {
             gauges.put(key(name, tags), value);
             return () -> gauges.remove(key(name, tags));
         }
 
-        long failed(int node, int code) {
-            return counts.get(key("managame.rpc.calls.failed", "node", String.valueOf(node), "code", FrameworkErrorCodes.name(code))).sum();
-        }
+        /** The calls to {@code node} answered, the last latency bucket counting them all. */
+        double answered(int node) { return gauges.get(key("managame.rpc.calls.latency_bucket", "node", String.valueOf(node), "le", "+Inf")).getAsDouble(); }
+
+        long failed(int node, int code) { return count("managame.rpc.calls.failed", "node", String.valueOf(node), "code", FrameworkErrorCodes.name(code)); }
+
+        long count(String name, String... tags) { return counts.get(key(name, tags)).sum(); }
 
         double gauge(String name, int node) { return gauges.get(key(name, "node", String.valueOf(node))).getAsDouble(); }
     }
@@ -706,7 +714,7 @@ class RpcNodeTest {
         assertEquals(1, metrics.failed(1, RPC_TIMEOUT));
         assertEquals(1, metrics.failed(1, RPC_OVERLOADED));
         assertEquals(2, metrics.failed(1, RPC_UNAVAILABLE), "the two that waited");
-        assertTrue(metrics.gauges.isEmpty(), "a peer removed lets go of its gauges");
+        assertTrue(metrics.gauges.keySet().stream().noneMatch(key -> key.contains("node, 1")), "a peer removed lets go of its gauges");
     }
 
     @Test void failuresFromTheCalleeAreCountedTooButNotAnApplicationsOwn() throws Exception {
@@ -720,7 +728,86 @@ class RpcNodeTest {
         peer.call(RpcRequest.of(99, text("")), recorder());
         assertEquals("fail 999", next(answers));
         assertEquals(1, metrics.failed(1, RPC_HANDLER_ERROR));
-        assertEquals(5, metrics.counts.size(), "the framework's codes, none made for the application's");
+        assertEquals(5, metrics.counts.keySet().stream().filter(key -> key.startsWith("managame.rpc.calls.failed")).count(), "the framework's codes, none made for the application's");
+    }
+
+    @Test void bothSidesReportWhatGoesThroughThem() throws Exception {
+        Backend worldMetrics = new Backend(), gameMetrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK).metrics(worldMetrics));
+        game = start(node(2, "game").metrics(gameMetrics));
+        RpcPeer peer = game.createPeer(1, at(world));
+        await(peer::isConnected);
+
+        peer.call(RpcRequest.of(ECHO, text("hi")), recorder());
+        assertEquals("ok world got hi from 2", next(answers));
+        assertEquals(WriteStatus.ACCEPTED, peer.notify(RpcNotify.of(NOTE, text("news"))));
+        assertEquals("world notified news from 2", next(seen));
+
+        assertEquals(1, gameMetrics.gauge("managame.rpc.calls.sent", 1));
+        assertEquals(1, gameMetrics.answered(1));
+        assertTrue(gameMetrics.gauge("managame.rpc.calls.latency_nanos", 1) > 0, "how long the call took");
+        assertEquals(1, gameMetrics.count("managame.rpc.notifies.sent", "node", "1"));
+        assertEquals(1, worldMetrics.count("managame.rpc.requests.received", "node", "2"));
+        assertEquals(1, worldMetrics.count("managame.rpc.notifies.received", "node", "2"));
+        assertEquals(gameMetrics.count("managame.rpc.bytes.written"), worldMetrics.count("managame.rpc.bytes.read"));
+        assertEquals(worldMetrics.count("managame.rpc.bytes.written"), gameMetrics.count("managame.rpc.bytes.read"));
+        await(() -> gameMetrics.gauge("managame.rpc.peer.write_queue_bytes", 1) == 0);
+
+        world.close();
+        await(() -> !peer.isConnected());
+        assertEquals(WriteStatus.INACTIVE, peer.notify(RpcNotify.of(NOTE, text(""))));
+        assertEquals(1, gameMetrics.count("managame.rpc.notifies.refused", "node", "1", "status", "INACTIVE"));
+        assertEquals(1, gameMetrics.count("managame.rpc.peer.disconnects", "node", "1"));
+    }
+
+    @Test void aCallThatFailsHereIsNotTimed() throws Exception {
+        Backend metrics = new Backend();
+        game = start(node(2, "game").metrics(metrics));
+        RpcPeer peer = game.createPeer(1, new InetSocketAddress("127.0.0.1", 1));
+        peer.call(RpcRequest.of(ECHO, text("")), recorder());
+        assertEquals("fail " + RPC_UNAVAILABLE, next(answers));
+        assertEquals(0, metrics.answered(1));
+    }
+
+    @Test void theCalleeCountsAHandlerThatThrows() throws Exception {
+        Backend metrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK).metrics(metrics));
+        game = start(node(2, "game"));
+        RpcPeer peer = game.createPeer(1, at(world));
+        await(peer::isConnected);
+        peer.call(RpcRequest.of(BOOM, text("")), recorder());
+        assertEquals("fail " + RPC_HANDLER_ERROR, next(answers));
+        assertEquals(1, metrics.count("managame.rpc.handler.failed", "node", "2"));
+    }
+
+    @Test void aRefusedConnectionIsCountedByItsReason() {
+        Backend metrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK).metrics(metrics).authenticator((connection, nodeId, about) -> false));
+        game = start(node(2, "game"));
+        game.createPeer(1, at(world));
+        await(() -> metrics.count("managame.rpc.handshakes.refused", "reason", "admission") > 0);
+    }
+
+    @Test void aConnectionThatFallsSilentIsCounted() throws Exception {
+        heartbeat = Duration.ofMillis(100);
+        Backend metrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK).metrics(metrics));
+        try (Socket socket = socket(world)) {
+            writeHandshake(socket, 1, 3, 0, 1);
+            DataInputStream in = new DataInputStream(socket.getInputStream());
+            assertEquals(0, readFrame(in)[0]);
+            assertThrows(IOException.class, () -> readFrame(in));
+        }
+        assertEquals(1, metrics.count("managame.rpc.connections.heartbeat_lost"));
+    }
+
+    @Test void aNodeReportsItsTimerAndItsEventLoopsUntilItCloses() {
+        Backend metrics = new Backend();
+        game = start(node(2, "game").metrics(metrics));
+        assertEquals(0, metrics.gauges.get("managame.rpc.timer.pending[]").getAsDouble());
+        assertEquals(0, metrics.gauges.get("managame.network.eventloop.pending_tasks[group, rpc]").getAsDouble());
+        game.close();
+        assertTrue(metrics.gauges.isEmpty());
     }
 
     /**
@@ -781,7 +868,8 @@ class RpcNodeTest {
         EventLoopGroup loop = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         closeables.add(() -> loop.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly());
         world = start(node(1, "world").listen(LOOPBACK));
-        game = start(node(2, "game").bootstrap(new Bootstrap().group(loop).channel(NioSocketChannel.class)
+        Backend metrics = new Backend();
+        game = start(node(2, "game").metrics(metrics).bootstrap(new Bootstrap().group(loop).channel(NioSocketChannel.class)
                 .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(1000, 2000))));
         RpcPeer peer = game.createPeer(1, at(world));
         await(peer::isConnected);
@@ -790,6 +878,8 @@ class RpcNodeTest {
         try {
             for (int i = 0; i < 5; i++) peer.notify(RpcNotify.of(NOTE, text("n".repeat(1000)))); // queued while the EventLoop is held
             assertEquals(WriteStatus.NOT_WRITABLE, peer.notify(RpcNotify.of(NOTE, text(""))));
+            assertEquals(4, metrics.count("managame.rpc.notifies.refused", "node", "1", "status", "NOT_WRITABLE"), "two fit under the high mark, the others did not");
+            assertTrue(metrics.gauge("managame.rpc.peer.write_queue_bytes", 1) >= 2000, "what waits for the EventLoop");
             peer.call(RpcRequest.of(ECHO, text("")), recorder());
         } finally {
             release.countDown();

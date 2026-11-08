@@ -7,20 +7,22 @@ import java.util.Set;
  * application handlers cannot use them. Server pipelines are laid out as:
  *
  * <pre>
- * front handlers | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
+ * [metrics] | front handlers | ssl | http-codec, http-aggregator, ws-path, [ws-compression], ws-protocol, ws-aggregator,
  * ws-messages | flush | application handlers | customizers | connection
  * </pre>
  *
- * TLS and WebSocket sections are present only when configured. {@code ws-path} removes itself once the path
- * matched, and Netty swaps the HTTP handlers for WebSocket frame codecs after the handshake. HTTP server
- * pipelines are laid out as:
+ * The metrics handler is present only when the listener reports, TLS and WebSocket sections only when configured.
+ * {@code ws-path} removes itself once the path matched, and Netty swaps the HTTP handlers for WebSocket frame codecs
+ * after the handshake. HTTP server pipelines are laid out as:
  *
  * <pre>
- * front handlers | [ssl] | http-codec, http-flow, http-exchange, http-keep-alive, http-aggregator |
+ * [metrics] | front handlers | [ssl] | http-codec, http-flow, http-exchange, http-keep-alive, http-aggregator |
  * application handlers | http-handler
  * </pre>
  */
 public final class PipelineNames {
+    /** Counts the listener's connections and the bytes on the wire, first in the pipeline. */
+    public static final String METRICS = "metrics";
     public static final String SSL = "ssl";
     public static final String HTTP_CODEC = "http-codec";
     public static final String HTTP_AGGREGATOR = "http-aggregator";
@@ -46,7 +48,7 @@ public final class PipelineNames {
     public static final String HTTP_HANDLER = "http-handler";
 
     /** Includes the frame codec names Netty installs during the WebSocket handshake. */
-    static final Set<String> RESERVED = Set.of(SSL, HTTP_CODEC, HTTP_AGGREGATOR, WEBSOCKET_PATH, WEBSOCKET_COMPRESSION,
+    static final Set<String> RESERVED = Set.of(METRICS, SSL, HTTP_CODEC, HTTP_AGGREGATOR, WEBSOCKET_PATH, WEBSOCKET_COMPRESSION,
             WEBSOCKET_PROTOCOL, WEBSOCKET_AGGREGATOR, WEBSOCKET_MESSAGES, FLUSH, CONNECTION,
             HTTP_FLOW, HTTP_EXCHANGE, HTTP_KEEP_ALIVE, HTTP_HANDLER, "wsencoder", "wsdecoder");
 

@@ -4,7 +4,6 @@ import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 
 import cn.managame.network.http.HttpExchange;
 import cn.managame.network.http.HttpHandler;
-import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeException;
@@ -25,7 +24,6 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -38,7 +36,6 @@ import java.util.stream.Collectors;
  *     @HttpMethod("/mail") String mail(SendMail mail) { ... }
  * }
  * HttpRoutes routes = HttpRoutes.builder(runtime)
- *         .source(request -> GameContext.of(0, 0, ROLE, HttpRequests.longQuery(request, "roleId")))
  *         .codec(json)
  *         .register(List.of(playerAdmin))
  *         .build();
@@ -48,10 +45,10 @@ import java.util.stream.Collectors;
  * The codec reads an endpoint's argument from the request, normally its body; an endpoint taking a FullHttpRequest
  * gets the request itself, without the codec. The request then runs in the
  * endpoint's domain, on the route key its routeKey member of the argument holds, or else the domain's resolver
- * finds for the argument and the source the application builds from the request. Unknown paths are answered with 404, other methods with 405, an argument
- * the codec cannot read with 400, and so is a source or route that cannot be found because of
- * IllegalArgumentException, such as a missing parameter. The request stays readable until the endpoint returns. A
- * request the runtime refuses is answered with the codec's failure response.
+ * finds for the argument. It acts for no one, its business type and id being 0: an endpoint reads whom it is about from
+ * its argument. Unknown paths are answered with 404, other methods with 405, an argument the codec cannot read with
+ * 400, and so is a route that cannot be found because of IllegalArgumentException. The request stays readable until
+ * the endpoint returns. A request the runtime refuses is answered with the codec's failure response.
  */
 public final class HttpRoutes implements HttpHandler {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime.http");
@@ -59,7 +56,6 @@ public final class HttpRoutes implements HttpHandler {
     private final GameRuntime runtime;
     private final Map<String, Map<String, Endpoint>> endpoints;
     private final Map<String, String> allowedMethods;
-    private final Function<? super FullHttpRequest, ? extends Context> source;
     private final HttpCodec codec;
 
     private HttpRoutes(Builder b) {
@@ -69,7 +65,6 @@ public final class HttpRoutes implements HttpHandler {
         endpoints = Map.copyOf(copy);
         allowedMethods = b.endpoints.entrySet().stream().collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
                 entry -> String.join(", ", entry.getValue().keySet())));
-        source = b.source;
         codec = b.codec;
         LOG.log(Level.INFO, () -> "HTTP routes with " + endpoints.values().stream().mapToInt(Map::size).sum() + " endpoints");
         endpoints.forEach((path, methods) -> methods.forEach((verb, endpoint) ->
@@ -100,11 +95,9 @@ public final class HttpRoutes implements HttpHandler {
             badRequest(exchange, unreadable);
             return;
         }
-        Context from;
         Route route;
         try {
-            from = Objects.requireNonNull(source.apply(request), "The source function returned null");
-            route = endpoint.method().route(runtime, from, argument);
+            route = endpoint.method().route(runtime, NO_SOURCE, argument);
         } catch (IllegalArgumentException invalid) {
             badRequest(exchange, invalid);
             return;
@@ -113,7 +106,7 @@ public final class HttpRoutes implements HttpHandler {
             exchange.respond(HttpResponseStatus.INTERNAL_SERVER_ERROR);
             return;
         }
-        HttpRequestContext context = new HttpRequestContext(route, from.metadata(), exchange, codec);
+        HttpRequestContext context = new HttpRequestContext(route, NO_SOURCE.metadata(), exchange, codec, endpoint.method().kind());
         request.retain(); // the exchange releases its reference when this returns; the task keeps its own
         try {
             runtime.execute(context, new EndpointTask(endpoint.method(), argument, request));
@@ -151,7 +144,6 @@ public final class HttpRoutes implements HttpHandler {
     public static final class Builder {
         private final GameRuntime runtime;
         private final Map<String, Map<String, Endpoint>> endpoints = new HashMap<>();
-        private Function<? super FullHttpRequest, ? extends Context> source = request -> NO_SOURCE;
         private HttpCodec codec = HttpCodec.basic();
 
         private Builder(GameRuntime runtime) { this.runtime = Objects.requireNonNull(runtime, "runtime"); }
@@ -163,7 +155,7 @@ public final class HttpRoutes implements HttpHandler {
          */
         public Builder register(Collection<?> targets) {
             for (Object target : targets) {
-                for (AnnotatedMethod method : AnnotatedMethod.scan(target, HttpMethod.class, HttpMethod::routeKey)) {
+                for (AnnotatedMethod method : AnnotatedMethod.scan(runtime, target, HttpMethod.class, HttpMethod::routeKey)) {
                     method.requireContext(HttpRequestContext.class);
                     runtime.checkDomain(method.domain());
                     HttpMethod mapping = method.method().getAnnotation(HttpMethod.class);
@@ -176,16 +168,6 @@ public final class HttpRoutes implements HttpHandler {
                         throw new IllegalArgumentException(verb + " " + path + " is handled by both " + existing.method() + " and " + method);
                 }
             }
-            return this;
-        }
-
-        /**
-         * The source context of a request, whose business identity and metadata the endpoint acts with and from
-         * which the domain's resolver may take the route key; an empty context by default. It runs on the
-         * connection's EventLoop and must not block; IllegalArgumentException answers 400.
-         */
-        public Builder source(Function<? super FullHttpRequest, ? extends Context> source) {
-            this.source = Objects.requireNonNull(source, "source");
             return this;
         }
 

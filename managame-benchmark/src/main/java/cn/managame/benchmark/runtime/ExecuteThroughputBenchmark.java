@@ -1,5 +1,6 @@
 package cn.managame.benchmark.runtime;
 
+import cn.managame.metrics.Metrics;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameTask;
@@ -53,11 +54,14 @@ public class ExecuteThroughputBenchmark {
     @Setup(Level.Trial) public void start() {
         inFlight = new Semaphore(window);
         task = context -> inFlight.release();
-        runtime = GameRuntime.builder().domain(PLAYER, executor(executor), RouteKeys.businessId()).build();
+        runtime = GameRuntime.builder().domain(PLAYER, executor(executor), RouteKeys.businessId()).metrics(metrics()).build();
         intercepted = GameRuntime.builder().domain(PLAYER, executor(executor), RouteKeys.businessId())
                 .intercept(List.of(new TaskInterceptor() {})).build();
         for (int id = 0; id < PLAYERS; id++) players[id] = GameContext.of(PLAYER, id, ROLE, id);
     }
+
+    /** Where the runtime reports; here nowhere. */
+    protected Metrics metrics() { return Metrics.noop(); }
 
     static RouteExecutor executor(String name) {
         return name.equals("striped") ? RouteExecutors.striped(Runtime.getRuntime().availableProcessors()) : RouteExecutors.virtualThreads();
@@ -81,6 +85,13 @@ public class ExecuteThroughputBenchmark {
     @Benchmark public void executeIntercepted(Player player) throws InterruptedException {
         inFlight.acquire();
         intercepted.execute(players[player.next()], task);
+    }
+
+    /** A task that calls the next player's route and comes back: three tasks, the cost of {@code call}. */
+    @Benchmark public void executeAndCall(Player player) throws InterruptedException {
+        inFlight.acquire();
+        int id = player.next();
+        runtime.execute(players[id], context -> runtime.call(players[(id + 1) & (PLAYERS - 1)], () -> id, done -> inFlight.release()));
     }
 
     /** Sixteen submitting threads, as many business threads handing work on: how far the runtime's shared state scales. */
