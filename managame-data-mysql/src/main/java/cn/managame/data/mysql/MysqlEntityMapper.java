@@ -144,6 +144,14 @@ public final class MysqlEntityMapper implements EntityMapper {
         }
     }
 
+    /**
+     * What every mapper tries again, a lost or refused connection, a timeout, a deadlock or lock wait, and what MySQL
+     * cannot do now, which says nothing about the rows: read-only, as a primary is once another took over, the disk or a
+     * table full, out of memory or resources, the user's connections used up, a statement killed. Those wait for the
+     * next round, where a failure of the data splits the batch and gives up the rows that still fail.
+     */
+    @Override public boolean isRetryable(Throwable failure) { return Jdbc.isRetryable(failure); }
+
     private TableMapping mappingOf(EntityType type) {
         TableMapping mapping = tables.get(type);
         if (mapping == null) throw new IllegalStateException(type + " was not prepared by this mapper");

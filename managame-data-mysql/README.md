@@ -57,6 +57,12 @@ SELECT once per hundred ids on one connection, filling the last hundred by repea
   another unique key, a row taking a unique value another row still holds updates that other row instead, as MySQL
   documents for this statement; that happens only when two rows swap a unique value within one round.
 - **DELETEs** are a JDBC batch of the DELETE by id.
+- **What is tried again.** A lost or refused connection, a timeout, a deadlock or lock wait, as with every mapper, and
+  what MySQL cannot do now, which says nothing about the rows: read-only, as a primary is once another took over (errors
+  1290, 1792, 1836), the disk or a table full (1021, 1114), out of memory or resources (1037, 1038, 1041), the user's
+  connections or resources used up (1203, 1226) and a statement killed (1317). Such a batch waits for the next round.
+  Any other failure is the data's: the batch is split into single rows, and those that still fail go to the
+  `DataErrorHandler`. `MysqlLogWriter` tells the two apart the same way.
 - Keep the pool larger than GameData's `writeThreads` plus the loads that run at once.
 
 ## Driver settings

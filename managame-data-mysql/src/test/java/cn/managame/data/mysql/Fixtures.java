@@ -151,6 +151,8 @@ final class Fixtures {
         private final JdbcDataSource h2;
         volatile boolean refuseConnections;
         volatile boolean failAfterNextCommit;
+        /** A MySQL error code every write fails with, as a server that cannot write now answers; 0 for none. */
+        volatile int serverError;
         /** Every SQL text a connection prepared. */
         final Set<String> prepared = ConcurrentHashMap.newKeySet();
 
@@ -189,6 +191,8 @@ final class Fixtures {
                     connection.commit();
                     throw new SQLRecoverableException("connection lost before the commit was acknowledged");
                 }
+                if (method.getName().equals("commit") && serverError != 0)
+                    throw new SQLException("MySQL error " + serverError, "HY000", serverError);
                 if (method.getName().equals("prepareStatement")) prepared.add((String) arguments[0]);
                 try {
                     return method.invoke(connection, arguments);

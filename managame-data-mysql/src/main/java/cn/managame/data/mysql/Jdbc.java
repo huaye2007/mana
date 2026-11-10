@@ -4,11 +4,15 @@ import static cn.managame.FrameworkErrorCodes.DATA_LOAD_FAILED;
 
 import cn.managame.data.DataException;
 import cn.managame.data.spi.EntityType;
+import cn.managame.data.spi.RetryableFailures;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -17,7 +21,38 @@ import javax.sql.DataSource;
 
 /** What the MySQL entity mapper and log writer both do with JDBC. */
 final class Jdbc {
+    /**
+     * MySQL errors that say what the server cannot do now and nothing about the rows: the disk or a table full (1021,
+     * 1114), out of memory or resources (1037, 1038, 1041), the user's connections or resources used up (1203, 1226),
+     * read-only, as a primary is once another took over (1290, 1792, 1836), and a statement killed (1317).
+     */
+    private static final Set<Integer> SERVER_CANNOT_NOW = Set.of(1021, 1037, 1038, 1041, 1114, 1203, 1226, 1290, 1317, 1792, 1836);
+
     private Jdbc() {}
+
+    /**
+     * Whether a write that failed may succeed when tried again: what {@link RetryableFailures} finds, a lost connection,
+     * a timeout, a deadlock, or, anywhere in the causes, a MySQL error that says what the server cannot do now. Split
+     * into single rows and given up on, as a failure of the data is, a whole round's changes would be lost to a server
+     * that only went read-only.
+     */
+    static boolean isRetryable(Throwable failure) {
+        if (RetryableFailures.isRetryable(failure)) return true;
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> causes = new ArrayDeque<>();
+        causes.add(failure);
+        while (!causes.isEmpty()) {
+            Throwable cause = causes.poll();
+            if (!seen.add(cause)) continue;
+            if (cause instanceof SQLException sql) {
+                if (SERVER_CANNOT_NOW.contains(sql.getErrorCode())) return true;
+                if (sql.getNextException() != null) causes.add(sql.getNextException());
+            }
+            if (cause.getCause() != null) causes.add(cause.getCause());
+            Collections.addAll(causes, cause.getSuppressed());
+        }
+        return false;
+    }
 
     interface SqlWork {
         void run(Connection connection) throws SQLException;

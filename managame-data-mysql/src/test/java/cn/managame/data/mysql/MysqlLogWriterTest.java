@@ -62,4 +62,18 @@ class MysqlLogWriterTest {
         assertEquals(1, database.rows("SELECT * FROM item_log_20261030").size());
         assertEquals(1, reported.all().size());
     }
+
+    @Test
+    void keepsLogsWhileTheServerCannotWrite() {
+        try (GameData data = start(new MysqlLogWriter(database))) {
+            data.repository(ItemLogs.class).insert(new ItemLog(100, 5001, 1, OCT_30));
+            database.serverError = 1290;   // read-only, as after a failover
+            assertThrows(DataException.class, data::flushLogs);
+            assertEquals(List.of(), reported.all(), "a server that cannot write now is no reason to give a log up");
+            database.serverError = 0;
+            data.flushLogs();
+        }
+        assertEquals(1, database.rows("SELECT * FROM item_log_20261030").size());
+        assertEquals(List.of(), reported.all());
+    }
 }

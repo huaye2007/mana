@@ -2,9 +2,11 @@ package cn.managame.data.mysql;
 
 import static cn.managame.FrameworkErrorCodes.DATA_LOAD_FAILED;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.data.DataException;
 import cn.managame.data.GameData;
@@ -19,7 +21,9 @@ import cn.managame.data.mysql.Fixtures.Player;
 import cn.managame.data.mysql.Fixtures.Players;
 import cn.managame.data.mysql.Fixtures.ReportedFailures;
 import cn.managame.data.mysql.annotation.Table;
+import java.sql.BatchUpdateException;
 import java.sql.SQLException;
+import java.sql.SQLTransientConnectionException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -164,6 +168,38 @@ class MysqlEntityMapperTest {
         data.flush();
         assertEquals(1, players().size());
         assertEquals(List.of(), reported.all());
+    }
+
+    @Test
+    void keepsChangesWhileTheServerCannotWrite() {
+        players.insert(new Player(1, "ann"));
+        players.insert(new Player(2, "bob"));
+        // Read-only after a failover, read-only again, the disk full, the query killed: none says anything about the rows.
+        for (int error : List.of(1290, 1836, 1021, 1317)) {
+            database.serverError = error;
+            assertThrows(DataException.class, data::flush);
+            assertEquals(List.of(), reported.all(), "MySQL error " + error + " is no reason to give a row up");
+        }
+        database.serverError = 0;
+        data.flush();
+        assertEquals(2, players().size());
+        assertEquals(List.of(), reported.all());
+    }
+
+    @Test
+    void tellsWhatTheServerCannotDoNowFromWhatTheDataBreaks() {
+        MysqlEntityMapper mapper = new MysqlEntityMapper(database);
+        for (int error : List.of(1021, 1037, 1038, 1041, 1114, 1203, 1226, 1290, 1317, 1792, 1836))
+            assertTrue(mapper.isRetryable(new SQLException("the server cannot now", "HY000", error)), "MySQL error " + error);
+        BatchUpdateException inABatch = new BatchUpdateException("batch", new int[0]);
+        inABatch.setNextException(new SQLException("read-only", "HY000", 1290));
+        assertTrue(mapper.isRetryable(inABatch), "as a batch's next exception");
+        assertTrue(mapper.isRetryable(new IllegalStateException(new SQLException("read-only", "HY000", 1290))), "as a cause");
+        assertTrue(mapper.isRetryable(new SQLTransientConnectionException("no connection")), "what every mapper tries again");
+        assertTrue(mapper.isRetryable(new SQLException("lock wait", "HY000", 1205)));
+        assertFalse(mapper.isRetryable(new SQLException("Data too long for column", "22001", 1406)));
+        assertFalse(mapper.isRetryable(new SQLException("Duplicate entry", "23000", 1062)));
+        assertFalse(mapper.isRetryable(new IllegalArgumentException("cannot encode")));
     }
 
     @Test

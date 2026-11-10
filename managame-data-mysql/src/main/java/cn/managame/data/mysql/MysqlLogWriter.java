@@ -77,6 +77,9 @@ public final class MysqlLogWriter implements LogWriter {
         }
     }
 
+    /** As {@link MysqlEntityMapper#isRetryable}: also what MySQL cannot do now, such as write while it is read-only. */
+    @Override public boolean isRetryable(Throwable failure) { return Jdbc.isRetryable(failure); }
+
     private void insert(LogTable table, Map<String, List<Object[]>> rowsByTable) throws SQLException {
         Jdbc.inTransaction(dataSource, connection -> {
             for (Map.Entry<String, List<Object[]>> rows : rowsByTable.entrySet())
