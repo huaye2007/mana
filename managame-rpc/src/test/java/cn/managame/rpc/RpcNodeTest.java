@@ -419,6 +419,26 @@ class RpcNodeTest {
         assertEquals("ok world got again from 2", next(answers));
     }
 
+    @Test void aCallMadeAsARestartedPeerConnectsReachesTheNewInstance() throws Exception {
+        world = start(node(1, "world").listen(LOOPBACK));
+        Proxy proxy = new Proxy(world.port());
+        closeables.add(proxy);
+        RpcCallback recorder = recorder();
+        // A game server registering with the world server whenever it connects, straight from its listener.
+        game = start(RpcNode.builder().nodeId(2).handler(handler("game")).redialDelay(Duration.ofMillis(50), Duration.ofMillis(50))
+                .listener(new RpcListener() {
+                    @Override public void onConnected(RpcPeer peer) { peer.call(RpcRequest.of(ECHO, text("register")), recorder); }
+                }));
+        RpcPeer peer = game.createPeer(1, new InetSocketAddress("127.0.0.1", proxy.port()));
+        assertEquals("ok world got register from 2", next(answers));
+
+        RpcNode restarted = start(node(1, "world").listen(LOOPBACK));
+        proxy.target(restarted.port());
+        proxy.cut();
+        assertEquals("ok world got register from 2", next(answers), "the new instance was asked, and its answer counts");
+        assertEquals(restarted.incarnation(), peer.incarnation());
+    }
+
     @Test void aNewerInstanceReplacesTheConnectedOneAndAnOlderOneIsRefused() throws Exception {
         world = start(node(1, "world").listen(LOOPBACK));
         RpcNode older = start(node(2, "older").redialDelay(Duration.ofMillis(50), Duration.ofMillis(50)));

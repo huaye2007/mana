@@ -50,7 +50,8 @@ import java.util.concurrent.TimeUnit;
  * <p>Calls, notifies and answers take no lock: they read the instance connected and its connections from one
  * immutable {@link Instance}, and the waiting calls are lock-free. Only connections joining and leaving lock the
  * peer, and the listener runs under that lock, so it hears one peer's changes in order and may still call or
- * notify any peer.
+ * notify any peer. The calls a new instance cannot answer fail under it too, before that instance has a connection,
+ * so what the listener asks as it hears the new instance connect is asked of that one and waits for its answer.
  */
 public final class RpcPeer {
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
@@ -263,18 +264,18 @@ public final class RpcPeer {
      * once the connection is accepted and before anyone can use it. Returns why the connection was refused, or null.
      */
     Refusal addConnection(Connection connection, Handshake theirs, int slot, Runnable beforeJoining) {
-        List<Connection> dropped = new ArrayList<>(0);
-        boolean replaced = false;
+        Connection lingering;
         synchronized (this) {
             if (removed || node.isClosed()) return new Refusal(Reason.CLOSED, "node " + nodeId + " was removed, or this node closed");
             Instance current = instance;
             if (theirs.incarnation() != current.incarnation()) {
-                for (Connection old : current.slots()) if (old != null) dropped.add(old);
-                if (!dropped.isEmpty() && theirs.incarnation() < current.incarnation())
+                List<Connection> old = new ArrayList<>(0);
+                for (Connection up : current.slots()) if (up != null) old.add(up);
+                if (!old.isEmpty() && theirs.incarnation() < current.incarnation())
                     return new Refusal(Reason.INSTANCE, "an older instance of node " + nodeId + " dials while a newer one is connected");
-                if (current.incarnation() != 0) {
-                    if (!dropped.isEmpty()) LOG.log(Level.WARNING, "A new instance of node " + nodeId + " replaces the connected one");
-                    replaced = true;
+                boolean replaced = current.incarnation() != 0;
+                if (replaced) {
+                    if (!old.isEmpty()) LOG.log(Level.WARNING, "A new instance of node " + nodeId + " replaces the connected one");
                     meters.restarts.increment();
                 }
                 current = new Instance(theirs.incarnation(), new Connection[outbound ? current.slots().length : theirs.slots()]);
@@ -283,6 +284,10 @@ public final class RpcPeer {
                     announced = false;
                     node.fireDisconnected(this);
                 }
+                // The old instance's connections and calls end here, while the new one has no connection yet: a call
+                // made from now on, as by the listener hearing it connect, is the new instance's and stays.
+                for (Connection up : old) up.close();
+                if (replaced) pending.failAll(RPC_UNAVAILABLE);
             } else if (!outbound && theirs.slots() != current.slots().length) {
                 return new Refusal(Reason.INSTANCE, "node " + nodeId + " opens " + theirs.slots() + " connections, after " + current.slots().length);
             }
@@ -291,7 +296,7 @@ public final class RpcPeer {
             connection.set(INCARNATION, current.incarnation());
             connection.set(KEY, this);
             Connection[] slots = current.slots().clone();
-            if (slots[slot] != null) dropped.add(slots[slot]); // the slot dialed again while its old connection lingers
+            lingering = slots[slot]; // the slot dialed again while its old connection lingers
             slots[slot] = connection;
             instance = new Instance(current.incarnation(), slots);
             if (!announced && connectionCount() == slots.length) {
@@ -299,8 +304,7 @@ public final class RpcPeer {
                 node.fireConnected(this);
             }
         }
-        for (Connection old : dropped) old.close();
-        if (replaced) pending.failAll(RPC_UNAVAILABLE);
+        if (lingering != null) lingering.close();
         return null;
     }
 
