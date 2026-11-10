@@ -190,6 +190,34 @@ for (EntityStats stats : data.stats().entities())
 
 `LogStats` 有 `queued`、`written`、`refused`（队列满被拒）、`failures` 和 `dropped`。每个数各自读取，彼此不保证同一时刻。
 
+## 指标
+
+`metrics(Metrics)` 把同样的数字通过 common 的 `Metrics` 报给应用的监控，应用把它接到自己的后端，和桥接 `System.Logger` 一样；默认是 `Metrics.noop()`。这些数字缓存、变更集和日志队列本来就在数，后端采集时才去读，所以读、改、写的开销和不接指标时一样。`close()` 会移除这些指标。
+
+按实体 Repository 上报，标签 `entity` 是实体类的类名：
+
+| 指标 | 类型 | 回答的问题 |
+| --- | --- | --- |
+| `managame.data.changes.waiting` | gauge | 等待写入的修改，含正在写的这一轮：一直上涨说明数据库跟不上 |
+| `managame.data.changes.written` | counter | 写入的修改 |
+| `managame.data.changes.write_failures` | counter | 失败的写入，一批或拆开后的一条各算一次，不论是否重试：它在涨而没有修改被放弃，说明数据库连不上，或者某一行一直失败 |
+| `managame.data.changes.dropped` | counter | 被放弃并交给 `DataErrorHandler` 的修改：处理器不保存就丢了 |
+| `managame.data.cache.entries` | gauge | 内存里的实体数（GroupRepository 为组数），含记住"不存在"的 id |
+| `managame.data.cache.hits`、`managame.data.cache.misses` | counter | 从内存读到的次数，和没读到的次数 |
+| `managame.data.cache.loads`、`managame.data.cache.load_failures` | counter | 从数据库加载成功和抛异常的次数；`getAll` 的读取不计在内 |
+| `managame.data.cache.load_nanos` | counter | 加载花的时间：除以 `loads` 就是业务线程等数据库的平均时长 |
+| `managame.data.cache.evictions` | counter | 因为没人用而离开内存的实体或组 |
+
+按日志 Repository 上报，标签 `log` 是日志类的类名：
+
+| 指标 | 类型 | 回答的问题 |
+| --- | --- | --- |
+| `managame.data.logs.queued` | gauge | 队列里等待的日志：接近 `logQueueCapacity` 说明日志的去处跟不上 |
+| `managame.data.logs.written` | counter | 写入的日志 |
+| `managame.data.logs.refused` | counter | 队列满被拒的日志，已交给 `DataErrorHandler` |
+| `managame.data.logs.write_failures` | counter | 失败的写入，不论是否重试 |
+| `managame.data.logs.dropped` | counter | 一轮写入放弃并交给 `DataErrorHandler` 的日志 |
+
 ## 自己的 EntityMapper
 
 一个 `EntityMapper`（在 `cn.managame.data.spi` 包里）服务注册给它的所有实体类型：build 时每种类型调用一次
@@ -215,6 +243,7 @@ key 字段，并能创建新实例。失败后重写同一批必须无害：一�
 | `shutdownTimeout` | 30 秒 | close 最多尝试多久 |
 | `logQueueCapacity` | 100,000 | 每个 LogRepository 最多等待的日志数 |
 | `errorHandler` | 必填 | 接收被放弃的数据，由应用保存 |
+| `metrics` | `Metrics.noop()` | Repository 上报指标的去处，见[指标](#指标) |
 
 `build` 在启动任何东西之前读取所有实体类，并让每个 Mapper 和 Writer 做准备：类不合适抛 `IllegalArgumentException`，缺少
 设置抛 `IllegalStateException`，Mapper 或 Writer 准备时抛出的异常原样抛出。加载失败抛 `DataException`（`DATA_LOAD_FAILED`）。

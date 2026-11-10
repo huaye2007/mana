@@ -232,7 +232,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   route keys. What a component already counts or holds is reported as a gauge or a counter read when the backend
   collects, not counted again on the hot path. Every component reports what it refuses, what fails and what it holds.
   network and rpc also report what goes through them, and the runtime each task by its kind (a handler, or for a task
-  written by hand the class it was written in), whose meters are made once, so a task builds no name or tag. Who a task
+  written by hand the class it was written in), whose meters are made once, so a task builds no name or tag; data
+  reports by entity and log type what its caches, change sets and log queues count anyway, the numbers of `stats()`,
+  all read when the backend collects. Who a task
   was for goes in the log, never in a tag. There is no timer: everything is read as a running total, so rpc and the
   runtime add up latency in common's `LatencyBuckets`, reported as counters, and read no clock under `Metrics.noop()`.
 - Keep test fixtures small and readable; tests double as usage examples (for instance

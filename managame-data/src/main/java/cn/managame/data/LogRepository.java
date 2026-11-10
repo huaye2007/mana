@@ -4,6 +4,9 @@ import static cn.managame.FrameworkErrorCodes.DATA_LOG_SAVE_FAILED;
 
 import cn.managame.data.internal.ChangeWriter;
 import cn.managame.data.internal.LogQueue;
+import cn.managame.metrics.Meter;
+import cn.managame.metrics.Metrics;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -41,4 +44,7 @@ public abstract class LogRepository<E> {
     final LogStats stats() {
         return new LogStats(queue.type(), queue.queued(), queue.written(), queue.refused(), queue.failures(), queue.dropped());
     }
+
+    /** Reports what {@link #stats} reads to {@code metrics}; GameData closes the meters. */
+    final List<Meter> report(Metrics metrics) { return DataMetrics.log(metrics, queue); }
 }

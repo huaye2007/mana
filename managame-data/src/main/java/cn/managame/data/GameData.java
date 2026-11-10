@@ -10,6 +10,8 @@ import cn.managame.data.internal.LogQueue;
 import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
 import cn.managame.data.spi.LogWriter;
+import cn.managame.metrics.Meter;
+import cn.managame.metrics.Metrics;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.ParameterizedType;
@@ -63,6 +65,8 @@ public final class GameData implements AutoCloseable {
     private final List<SingleRepository<?, ?>> singleRepositories;
     private final List<GroupRepository<?, ?>> groupRepositories;
     private final List<LogRepository<?>> logRepositories;
+    /** What the repositories report to the builder's Metrics, removed from it on close. */
+    private final List<Meter> meters = new ArrayList<>();
     /** Write the entities' changes and the logs, each in rounds of its own, on threads of its own. */
     private final ChangeWriter writer, logWriter;
     private final ScheduledThreadPoolExecutor scheduler, logScheduler;
@@ -82,6 +86,9 @@ public final class GameData implements AutoCloseable {
         singleRepositories = List.copyOf(singles);
         groupRepositories = List.copyOf(groups);
         logRepositories = List.copyOf(logs);
+        for (SingleRepository<?, ?> repository : singles) meters.addAll(repository.report(builder.metrics));
+        for (GroupRepository<?, ?> repository : groups) meters.addAll(repository.report(builder.metrics));
+        for (LogRepository<?> repository : logs) meters.addAll(repository.report(builder.metrics));
         this.writer = writer;
         this.logWriter = logWriter;
         flushIntervalNanos = builder.flushInterval.toNanos();
@@ -152,7 +159,8 @@ public final class GameData implements AutoCloseable {
      * Refuses further changes and logs, then writes what is waiting, trying again every flush interval for up to
      * {@code shutdownTimeout} while writes fail; entities and logs at once, on threads of their own, so neither takes
      * the other's time. What is still not written then goes, one by one, to the DataErrorHandler, and close throws
-     * {@link DataException} ({@code DATA_SAVE_FAILED}). Reads keep working.
+     * {@link DataException} ({@code DATA_SAVE_FAILED}). Reads keep working, and {@link #stats()} too; what was reported
+     * to the builder's Metrics is removed from it.
      * <p>
      * Close it once the business threads have stopped changing data and inserting logs, as the last step of shutting
      * down. A change made while it closes is written or refused, but a log inserted meanwhile may be left unwritten.
@@ -182,6 +190,7 @@ public final class GameData implements AutoCloseable {
         }
         if (interrupted) Thread.currentThread().interrupt();
         if (logs.state() == Future.State.SUCCESS) notWritten += logs.resultNow();
+        meters.forEach(Meter::close);
         if (notWritten > 0)
             throw new DataException(DATA_SAVE_FAILED, notWritten + " changes and logs were not written before close; each went to the DataErrorHandler", null);
         LOG.log(System.Logger.Level.INFO, "Game data closed; every change and log written");
@@ -236,6 +245,7 @@ public final class GameData implements AutoCloseable {
                 shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
         private int batchSize = DEFAULT_BATCH_SIZE, writeThreads = DEFAULT_WRITE_THREADS, logQueueCapacity = DEFAULT_LOG_QUEUE_CAPACITY;
         private DataErrorHandler errorHandler;
+        private Metrics metrics = Metrics.noop();
 
         private Builder() {}
 
@@ -307,6 +317,17 @@ public final class GameData implements AutoCloseable {
          */
         public Builder errorHandler(DataErrorHandler handler) {
             errorHandler = Objects.requireNonNull(handler, "handler");
+            return this;
+        }
+
+        /**
+         * Where the repositories report, by entity type and by log type, what {@link GameData#stats()} reads: what each
+         * cache holds, hits, misses, loads and drops, and the changes and logs waiting, written, refused, failed and
+         * given up on. {@link Metrics#noop()} by default. All of it is counted already and read when the backend
+         * collects, so a read, a change or a write costs what it did without metrics.
+         */
+        public Builder metrics(Metrics metrics) {
+            this.metrics = Objects.requireNonNull(metrics, "metrics");
             return this;
         }
 

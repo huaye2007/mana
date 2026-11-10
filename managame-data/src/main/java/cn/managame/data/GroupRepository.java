@@ -10,6 +10,8 @@ import cn.managame.data.internal.EntityKeys;
 import cn.managame.data.internal.PendingChange;
 import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
+import cn.managame.metrics.Meter;
+import cn.managame.metrics.Metrics;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import java.time.Duration;
@@ -171,6 +173,9 @@ public abstract class GroupRepository<K, E> {
         return new EntityStats(entityType.entityClass(), groups.estimatedSize(), changes.waiting(), changes.written(),
                 changes.failures(), changes.dropped(), groups.stats());
     }
+
+    /** Reports what {@link #stats} reads to {@code metrics}; GameData closes the meters. */
+    final List<Meter> report(Metrics metrics) { return DataMetrics.entity(metrics, entityType.entityClass(), groups, changes); }
 
     private void delete(ConcurrentHashMap<K, E> group, GroupKeys groupKey, K mapKey) {
         group.computeIfPresent(mapKey, (key, existing) -> {

@@ -215,6 +215,37 @@ for (EntityStats stats : data.stats().entities())
 `LogStats` has `queued`, `written`, `refused` (by a full queue), `failures` and `dropped`. Each number is read on its
 own, so they need not be from the same instant.
 
+## Metrics
+
+`metrics(Metrics)` reports the same numbers to the application's monitoring, through common's `Metrics`, which the
+application binds to its backend as it bridges `System.Logger`; `Metrics.noop()` by default. Everything is counted
+already, by the caches, the change sets and the log queues, and read when the backend collects, so a read, a change or
+a write costs what it did without metrics. `close()` removes the meters.
+
+By entity repository, with the tag `entity` for the entity class's name:
+
+| Metric | Kind | Tells |
+| --- | --- | --- |
+| `managame.data.changes.waiting` | gauge | Changes waiting to be written, the round in progress included: one that keeps growing means the database falls behind |
+| `managame.data.changes.written` | counter | Changes written |
+| `managame.data.changes.write_failures` | counter | Writes that failed, a batch or a single change each counting once, tried again or not: rising with nothing dropped, the database cannot be reached or a row keeps failing |
+| `managame.data.changes.dropped` | counter | Changes given up on and handed to the `DataErrorHandler`: data lost unless the handler keeps it |
+| `managame.data.cache.entries` | gauge | Entities in memory, or groups for a GroupRepository, ids remembered as missing among them |
+| `managame.data.cache.hits`, `managame.data.cache.misses` | counter | Reads answered from memory, and those that were not |
+| `managame.data.cache.loads`, `managame.data.cache.load_failures` | counter | Loads from the database that returned, and those that threw; `getAll`'s reads are not among them |
+| `managame.data.cache.load_nanos` | counter | Time spent loading: over `loads`, how long a business thread waits for the database |
+| `managame.data.cache.evictions` | counter | Entities or groups that left memory unused |
+
+By log repository, with the tag `log` for the log class's name:
+
+| Metric | Kind | Tells |
+| --- | --- | --- |
+| `managame.data.logs.queued` | gauge | Logs waiting in the queue: near `logQueueCapacity`, the destination falls behind |
+| `managame.data.logs.written` | counter | Logs written |
+| `managame.data.logs.refused` | counter | Logs refused by a full queue, which went to the `DataErrorHandler` |
+| `managame.data.logs.write_failures` | counter | Writes that failed, tried again or not |
+| `managame.data.logs.dropped` | counter | Logs a round gave up on and handed to the `DataErrorHandler` |
+
 ## Your own EntityMapper
 
 An `EntityMapper` (in `cn.managame.data.spi`) serves the entity types registered with it: `prepare(EntityType)` once
@@ -241,6 +272,7 @@ is missing may write the row again (MySQL's mapper does) or fail (MongoDB's does
 | `shutdownTimeout` | 30 s | how long close keeps trying |
 | `logQueueCapacity` | 100,000 | logs one LogRepository holds waiting |
 | `errorHandler` | required | receives what is given up on, to save it |
+| `metrics` | `Metrics.noop()` | where the repositories report, see [Metrics](#metrics) |
 
 `build` reads every entity class and lets each mapper and writer prepare before anything starts: a class that does not
 fit throws `IllegalArgumentException`, a missing setting `IllegalStateException`, and what a mapper or writer throws

@@ -10,6 +10,8 @@ import cn.managame.data.internal.EntityKeys;
 import cn.managame.data.internal.PendingChange;
 import cn.managame.data.spi.EntityMapper;
 import cn.managame.data.spi.EntityType;
+import cn.managame.metrics.Meter;
+import cn.managame.metrics.Metrics;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import java.time.Duration;
@@ -206,6 +208,9 @@ public abstract class SingleRepository<K, E> {
         return new EntityStats(entityType.entityClass(), entities.estimatedSize(), changes.waiting(), changes.written(),
                 changes.failures(), changes.dropped(), entities.stats());
     }
+
+    /** Reports what {@link #stats} reads to {@code metrics}; GameData closes the meters. */
+    final List<Meter> report(Metrics metrics) { return DataMetrics.entity(metrics, entityType.entityClass(), entities, changes); }
 
     /**
      * The entity's newest state: its change not yet written, or else what the database has. Runs inside the cache, so
