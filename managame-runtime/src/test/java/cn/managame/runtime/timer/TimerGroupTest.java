@@ -2,9 +2,12 @@ package cn.managame.runtime.timer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import cn.managame.Metadata;
+import cn.managame.MetadataKey;
 import cn.managame.metrics.Counter;
 import cn.managame.metrics.Meter;
 import cn.managame.metrics.Metrics;
@@ -12,6 +15,7 @@ import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameTask;
+import cn.managame.runtime.RequestContext;
 import cn.managame.runtime.executor.RouteExecutors;
 import java.time.Duration;
 import java.util.List;
@@ -31,18 +35,25 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class TimerGroupTest {
-    private static final int PLAYER = 1;
+    private static final int PLAYER = 1, WORLD = 2;
     private static final byte PLAYER_ID = 1;
 
     /** A buff's expiry, as a game would key it. */
     private record BuffExpiry(int buffId) {}
 
-    /** What a player's in-memory object keeps: its timers, by what they are for. */
+    private static final MetadataKey<String> TRACE = MetadataKey.stringKey(1);
+
+    private record Request(int domain, long routeKey, byte businessType, long businessId, Metadata metadata) implements RequestContext {
+        @Override public boolean reply(Object result) { return true; }
+        @Override public boolean fail(int errorCode) { return true; }
+    }
+
     private final GameContext player = GameContext.of(PLAYER, 1001, PLAYER_ID, 1001);
     private final List<Throwable> errors = new CopyOnWriteArrayList<>();
     private final Map<String, LongAdder> calls = new ConcurrentHashMap<>();
     private GameRuntime runtime;
     private GameTimer timer;
+    /** What a player's in-memory object keeps: its timers, by what they are for. */
     private TimerGroup timers;
 
     /** Counts the tasks run by handler. */
@@ -58,10 +69,10 @@ class TimerGroupTest {
     }
 
     @BeforeEach void start() {
-        runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads())
+        runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads()).domain(WORLD, RouteExecutors.striped(1))
                 .errorHandler((context, cause) -> errors.add(cause)).metrics(new Backend()).build();
         timer = new GameTimer(runtime, Duration.ofMillis(1));
-        timers = timer.group(player);
+        timers = timer.group();
     }
 
     @AfterEach void stop() {
@@ -83,10 +94,37 @@ class TimerGroupTest {
         assertTrue(done.await(5, TimeUnit.SECONDS));
     }
 
-    @Test void aTimerRunsOnTheGroupsRouteWithItsContext() throws Exception {
+    @Test void aTimerRunsWithAPlainCopyOfTheContextOfTheTaskThatSetIt() throws Exception {
+        BlockingQueue<Context> seen = new LinkedBlockingQueue<>();
+        CountDownLatch set = new CountDownLatch(2);
+        // Two requests of the player, each with its own metadata: the group keeps neither.
+        List<Request> requests = List.of(new Request(PLAYER, 1001, PLAYER_ID, 1001, Metadata.builder().put(TRACE, "t1").build()),
+                new Request(PLAYER, 1001, PLAYER_ID, 1001, Metadata.builder().put(TRACE, "t2").build()));
+        for (Request request : requests) {
+            runtime.execute(request, context -> {
+                boolean first = request == requests.getFirst();
+                timers.after(first ? "first" : "second", Duration.ofMillis(first ? 10 : 40), later -> seen.add(Context.current()));
+                set.countDown();
+            });
+        }
+        assertTrue(set.await(5, TimeUnit.SECONDS));
+        for (Request request : requests) {
+            Context fired = seen.poll(5, TimeUnit.SECONDS);
+            assertEquals(GameContext.copyOf(request), fired, "the context of the task that set it, its metadata too");
+            assertFalse(fired instanceof RequestContext, "a timer cannot answer the request that set it");
+        }
+    }
+
+    @Test void aTimerSetWithAContextRunsWithIt() throws Exception {
         BlockingQueue<Object> seen = new LinkedBlockingQueue<>();
-        onRoute(context -> timers.after(new BuffExpiry(7), Duration.ofMillis(10), later -> seen.add(Context.current())));
-        assertEquals(player, seen.poll(5, TimeUnit.SECONDS));
+        GameContext given = new GameContext(PLAYER, 1001, PLAYER_ID, 1001, Metadata.builder().put(TRACE, "given").build());
+        onRoute(context -> {
+            timers.after(given, "once", Duration.ofMillis(10), later -> seen.add(later));
+            timers.every(given, "tick", Duration.ofMillis(30), later -> seen.add(Context.current()));
+        });
+        assertSame(given, seen.poll(5, TimeUnit.SECONDS));
+        assertSame(given, seen.poll(5, TimeUnit.SECONDS));
+        onRoute(context -> timers.cancelAll());
     }
 
     @Test void aKeySetAgainReplacesItsTimer() throws Exception {
@@ -141,21 +179,27 @@ class TimerGroupTest {
         assertEquals(List.of(false, false, false), cancelled);
     }
 
-    @Test void aGroupIsUsedFromTasksOfItsRouteOnly() throws Exception {
+    @Test void aGroupIsUsedFromTasksAndItsTimersRunOnTheirRoute() throws Exception {
         assertThrows(IllegalStateException.class, () -> timers.after("k", Duration.ofMillis(5), later -> {}), "outside a task");
+        assertThrows(IllegalStateException.class, () -> timers.after(player, "k", Duration.ofMillis(5), later -> {}));
         assertThrows(IllegalStateException.class, () -> timers.cancel("k"));
         assertThrows(IllegalStateException.class, timers::cancelAll);
         BlockingQueue<Throwable> thrown = new LinkedBlockingQueue<>();
-        runtime.execute(GameContext.of(PLAYER, 2002), context -> {
-            try {
-                timers.every("k", Duration.ofMillis(5), later -> {});
-                thrown.add(new AssertionError("another player's task used the group"));
-            } catch (IllegalStateException expected) {
-                thrown.add(expected);
+        AtomicInteger fired = new AtomicInteger();
+        onRoute(context -> {
+            for (GameContext elsewhere : List.of(GameContext.of(PLAYER, 2002), GameContext.of(WORLD, 1001))) {
+                try {
+                    timers.after(elsewhere, "k", Duration.ofMillis(5), later -> fired.incrementAndGet());
+                    thrown.add(new AssertionError("a timer of the group was set for another route"));
+                } catch (IllegalArgumentException expected) {
+                    thrown.add(expected);
+                }
             }
         });
-        assertEquals(IllegalStateException.class, thrown.poll(5, TimeUnit.SECONDS).getClass());
-        assertThrows(IllegalArgumentException.class, () -> timer.group(GameContext.of(99, 1)), "an unregistered domain");
+        assertEquals(IllegalArgumentException.class, thrown.poll(5, TimeUnit.SECONDS).getClass());
+        assertEquals(IllegalArgumentException.class, thrown.poll(5, TimeUnit.SECONDS).getClass());
+        TimeUnit.MILLISECONDS.sleep(50);
+        assertEquals(0, fired.get());
     }
 
     @Test void aGroupsTimerIsCountedAsTheTaskTheApplicationWrote() throws Exception {

@@ -288,19 +288,21 @@ timer.close();
 record BuffExpiry(int buffId) {}                                              // 键：record 或字符串都可以
 
 // 放在应用保存玩家内存状态的地方，玩家上线时创建
-TimerGroup timers = timer.group(GameContext.of(PLAYER, playerId, PLAYER_ID, playerId));
+TimerGroup timers = timer.group();
 
-// 在玩家的任务里
+// 在玩家的任务里：带着当前任务上下文的普通副本
 timers.after(new BuffExpiry(buffId), buff.duration(), context -> buffs.expire(buffId));   // 再设一次就重新计时
 timers.every("regen", Duration.ofSeconds(5), context -> player.regenerate());
+// 或者带上自己构造的上下文，路由要和当前任务相同
+timers.after(GameContext.of(PLAYER, playerId, PLAYER_ID, playerId), "offline", Duration.ofMinutes(5), context -> player.unload());
 timers.cancel(new BuffExpiry(buffId));                                        // buff 被驱散
 timers.cancelAll();                                                           // 玩家下线
 ```
 
-- 一个组是一条路由上的定时器：都在这条路由上、带着组的上下文执行。`after`、`every`、`cron` 就是定时器自己的那三个，前面多一个键。
+- `after`、`every`、`cron` 就是定时器自己的那三个，前面多一个键。组和定时器一样不保存上下文：每个定时器在设定时拿到自己的上下文，是当前任务的，或者一起传进来的，runtime 就用它执行任务，和执行其它任务一样。上下文如果跟着玩家在线一直留着，那就成了会话。
 - 一个键对应一个定时器。同一个键再设一次，原来的那个会被取消，所以给 buff 续期就是重新设它的定时器。只触发一次的定时器在任务开始时离开组，所以任务里可以再设自己的键。
 - 组由应用持有，和连接一样：放在这条路由的内存状态里，比如在线玩家或开着的副本的对象。`GameTimer` 不保存任何组，定时器都取消后丢掉组没有任何代价。
-- 组只能在它那条路由的任务里使用，所以不加锁也不会乱；其它调用方会得到 `IllegalStateException`。在路由上取消是精确的：被取消或被替换的定时器之后不会再执行。
+- 组只能在同一条路由的任务里使用，所以不加锁也不会乱，它的定时器也都在这条路由上执行：在任务之外调用会抛 `IllegalStateException`，传入别的路由的上下文会抛 `IllegalArgumentException`。在路由上取消是精确的：被取消或被替换的定时器之后不会再执行。
 
 ### 定时任务
 

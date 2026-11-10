@@ -366,24 +366,28 @@ Business code cancels a timer by what it is for, and a player's all at once, wit
 record BuffExpiry(int buffId) {}                                              // a key: a record or a string
 
 // Kept where the application keeps the player's state in memory, made when the player comes online
-TimerGroup timers = timer.group(GameContext.of(PLAYER, playerId, PLAYER_ID, playerId));
+TimerGroup timers = timer.group();
 
-// In the player's tasks
+// In the player's tasks: with a plain copy of the task's context
 timers.after(new BuffExpiry(buffId), buff.duration(), context -> buffs.expire(buffId));   // set again, it starts anew
 timers.every("regen", Duration.ofSeconds(5), context -> player.regenerate());
+// Or with a context of your own, on the task's route
+timers.after(GameContext.of(PLAYER, playerId, PLAYER_ID, playerId), "offline", Duration.ofMinutes(5), context -> player.unload());
 timers.cancel(new BuffExpiry(buffId));                                        // the buff was dispelled
 timers.cancelAll();                                                           // the player logs out
 ```
 
-- A group is the timers of one route: each runs on that route with the group's context. `after`, `every` and `cron`
-  are the timer's own, with a key before them.
+- `after`, `every` and `cron` are the timer's own with a key before them, and a group keeps no context, as the timer
+  keeps none: each timer takes its context as it is set, the calling task's or one passed with it, and the runtime runs
+  its task with that one, as it runs every task. A context kept for as long as a player is online would be a session.
 - A key names one timer. Setting it again cancels the one it named, so renewing a buff is setting its timer. A timer
   due once leaves the group as its task begins, so the task can set its key again.
 - The application keeps the group, as it keeps its connections: with the route's state in memory, such as its object
   for a player online or an open dungeon. `GameTimer` keeps no groups, so one that is dropped costs nothing once its
   timers are cancelled.
-- A group is used from tasks of its route only, which keeps it in order with nothing locked; any other caller gets
-  `IllegalStateException`. Cancelling there is exact: a timer cancelled or replaced does not run afterwards.
+- A group is used from the tasks of one route only, which keeps it in order with nothing locked, and its timers run on
+  that route: outside a task its methods throw `IllegalStateException`, and a context of another route
+  `IllegalArgumentException`. Cancelling there is exact: a timer cancelled or replaced does not run afterwards.
 
 ### Cron
 

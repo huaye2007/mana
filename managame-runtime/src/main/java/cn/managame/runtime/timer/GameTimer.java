@@ -152,14 +152,11 @@ public final class GameTimer implements AutoCloseable {
     }
 
     /**
-     * The timers of the route of {@code context} by key, which run with a plain copy of it: for the application to keep
-     * with that route's state in memory, such as a player online, and cancel by key or all at once; see
-     * {@link TimerGroup}. The timer keeps no groups. An unregistered domain throws IllegalArgumentException.
+     * Timers by key, for the application to keep with the state of one route in memory, such as a player online, and
+     * cancel by key or all at once; see {@link TimerGroup}. It keeps no context, as the timer keeps none: each of its
+     * timers takes one as it is set. The timer keeps no groups.
      */
-    public TimerGroup group(Context context) {
-        runtime.checkDomain(context.domain());
-        return new TimerGroup(this, GameContext.copyOf(context));
-    }
+    public TimerGroup group() { return new TimerGroup(this); }
 
     /**
      * Cancels every timer; a firing already handed to the runtime may still run. A timer added afterwards is cancelled
