@@ -46,6 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * GameTime; cron times are read on GameTime. A periodic timer keeps a fixed rate; a firing whose last one has not
  * finished is logged and skipped, so a task slower than its period lags instead of filling its route, a firing the
  * runtime refuses, for example because the route is full, is too, and once the runtime is shut down the timer stops.
+ * A timer due once has no later firing, so it runs however full its route is, and is lost only to a runtime shut down.
  * A timer cancelled on its own route does not run afterwards, even when a firing already waits there.
  */
 public final class GameTimer implements AutoCloseable {
@@ -77,8 +78,11 @@ public final class GameTimer implements AutoCloseable {
     }
 
     /** Runs {@code task} once after {@code delay} with {@code context}. */
-    public <C extends Context> Scheduled after(C context, Duration delay, GameTask<? super C> task) {
-        Firing<C> firing = new Firing<>(context, task, 0, null, runtime.taskKind(task.getClass()));
+    public <C extends Context> Scheduled after(C context, Duration delay, GameTask<? super C> task) { return after(context, delay, task, task); }
+
+    /** {@link #after(Context, Duration, GameTask)}, counted as {@code written}: the task as the application wrote it, which a group wraps. */
+    <C extends Context> Scheduled after(C context, Duration delay, GameTask<? super C> task, GameTask<?> written) {
+        Firing<C> firing = new Firing<>(context, task, 0, null, runtime.taskKind(written.getClass()));
         firing.arm(nanos(delay));
         return firing;
     }
@@ -89,10 +93,12 @@ public final class GameTimer implements AutoCloseable {
     }
 
     /** Runs {@code task} every {@code period}, first after one period, with {@code context}. */
-    public <C extends Context> Scheduled every(C context, Duration period, GameTask<? super C> task) {
+    public <C extends Context> Scheduled every(C context, Duration period, GameTask<? super C> task) { return every(context, period, task, task); }
+
+    <C extends Context> Scheduled every(C context, Duration period, GameTask<? super C> task, GameTask<?> written) {
         long nanos = nanos(period);
         if (nanos <= 0) throw new IllegalArgumentException("period must be positive");
-        Firing<C> firing = new Firing<>(context, task, nanos, null, runtime.taskKind(task.getClass()));
+        Firing<C> firing = new Firing<>(context, task, nanos, null, runtime.taskKind(written.getClass()));
         firing.nextDue = System.nanoTime() + nanos;
         firing.arm(nanos);
         return firing;
@@ -114,9 +120,11 @@ public final class GameTimer implements AutoCloseable {
      * once, times while the process was down are not made up, and a firing whose last one has not finished, or that the
      * runtime refuses, is logged and skipped.
      */
-    public <C extends Context> Scheduled cron(C context, String expression, GameTask<? super C> task) {
+    public <C extends Context> Scheduled cron(C context, String expression, GameTask<? super C> task) { return cron(context, expression, task, task); }
+
+    <C extends Context> Scheduled cron(C context, String expression, GameTask<? super C> task, GameTask<?> written) {
         runtime.checkDomain(context.domain());
-        Firing<C> firing = new Firing<>(context, task, 0, CronExpression.parse(expression), runtime.taskKind(task.getClass()));
+        Firing<C> firing = new Firing<>(context, task, 0, CronExpression.parse(expression), runtime.taskKind(written.getClass()));
         firing.wakeCron();
         LOG.log(Level.DEBUG, () -> "Scheduled a task at '" + expression + "' in domain " + context.domain() + ", route key " + context.routeKey());
         return firing;
@@ -143,7 +151,20 @@ public final class GameTimer implements AutoCloseable {
         return scheduled;
     }
 
-    /** Cancels every timer; a firing already handed to the runtime may still run. Timers cannot be added afterwards. */
+    /**
+     * The timers of the route of {@code context} by key, which run with a plain copy of it: for the application to keep
+     * with that route's state in memory, such as a player online, and cancel by key or all at once; see
+     * {@link TimerGroup}. The timer keeps no groups. An unregistered domain throws IllegalArgumentException.
+     */
+    public TimerGroup group(Context context) {
+        runtime.checkDomain(context.domain());
+        return new TimerGroup(this, GameContext.copyOf(context));
+    }
+
+    /**
+     * Cancels every timer; a firing already handed to the runtime may still run. A timer added afterwards is cancelled
+     * as it is made and never fires, so a task still finishing while the application shuts down sets its timers as ever.
+     */
     @Override public void close() {
         for (Timeout pending : wheel.stop()) ((Firing<?>) pending.task()).state.set(Firing.CANCELLED);
     }
@@ -215,7 +236,12 @@ public final class GameTimer implements AutoCloseable {
         }
 
         void arm(long delayNanos) {
-            timeout = wheel.newTimeout(this, delayNanos, TimeUnit.NANOSECONDS);
+            try {
+                timeout = wheel.newTimeout(this, delayNanos, TimeUnit.NANOSECONDS);
+            } catch (IllegalStateException closed) { // the wheel takes none once stopped
+                state.set(CANCELLED);
+                return;
+            }
             // A cancel racing with re-arming may have missed the new timeout.
             if (state.get() == CANCELLED) timeout.cancel();
         }
@@ -240,25 +266,22 @@ public final class GameTimer implements AutoCloseable {
 
         @Override public void run(Timeout expired) {
             if (state.get() != ACTIVE) return;
-            try {
-                if (cron != null) {
-                    wakeCron();
-                    return;
-                }
-                fire();
-                if (once() || state.get() != ACTIVE) return;
-                nextDue += periodNanos; // a fixed rate: late firings do not shift later ones
-                arm(Math.max(0, nextDue - System.nanoTime()));
-            } catch (IllegalStateException stopped) { // the timer was closed meanwhile
-                state.set(CANCELLED);
+            if (cron != null) {
+                wakeCron();
+                return;
             }
+            fire();
+            if (once() || state.get() != ACTIVE) return;
+            nextDue += periodNanos; // a fixed rate: late firings do not shift later ones
+            arm(Math.max(0, nextDue - System.nanoTime()));
         }
 
         private boolean once() { return periodNanos == 0 && cron == null; }
 
         /**
          * Hands the task to the runtime, unless the last firing has not finished; a refusal is logged, and one because
-         * the runtime is closed stops the timer.
+         * the runtime is closed stops the timer. A one-shot timer goes past the limits on load, as it has no later firing
+         * to make up for one refused; a periodic or cron timer keeps to them and skips.
          */
         private void fire() {
             if (handed) {
@@ -268,7 +291,8 @@ public final class GameTimer implements AutoCloseable {
             }
             handed = true;
             try {
-                runtime.execute(kind, context, this);
+                if (once()) runtime.handOn(kind, context, this);
+                else runtime.execute(kind, context, this);
             } catch (GameRuntimeException refused) {
                 if (refused.errorCode() == RUNTIME_CLOSED) {
                     cancel();

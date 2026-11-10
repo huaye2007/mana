@@ -112,10 +112,19 @@ public final class GameRuntime implements AutoCloseable {
     public <C extends Context> void execute(C context, GameTask<? super C> task) { execute(null, context, task); }
 
     /** {@link #execute(Context, GameTask)} of a task an entry knows the kind of, or null when it does not. Not API. */
-    public <C extends Context> void execute(TaskKind kind, C context, GameTask<? super C> task) {
+    public <C extends Context> void execute(TaskKind kind, C context, GameTask<? super C> task) { execute(kind, context, task, false); }
+
+    /**
+     * {@link #execute(TaskKind, Context, GameTask)} past every limit on load, as from a game task: for an entry holding
+     * what was accepted earlier and happens only now, such as a timer due once. Still refused with RUNTIME_CLOSED after
+     * shutdown, when no executor may be left to run it. Not API.
+     */
+    public <C extends Context> void handOn(TaskKind kind, C context, GameTask<? super C> task) { execute(kind, context, task, true); }
+
+    private <C extends Context> void execute(TaskKind kind, C context, GameTask<? super C> task, boolean pastLimits) {
         Objects.requireNonNull(task, "task");
         try {
-            submit(context, observing ? observed(kind, context, task) : () -> run(context, task));
+            submit(context, observing ? observed(kind, context, task) : () -> run(context, task), pastLimits);
         } catch (RuntimeException notAccepted) {
             task.refused(context);
             throw notAccepted;
@@ -196,7 +205,8 @@ public final class GameRuntime implements AutoCloseable {
         };
     }
 
-    private void submit(Context context, Runnable work) {
+    /** {@code pastLimits} takes the work past the executor's limits on load, as a game task's own always is. */
+    private void submit(Context context, Runnable work, boolean pastLimits) {
         Objects.requireNonNull(context, "context");
         RouteDomain domain = domains.get(context.domain());
         if (domain == null) throw new IllegalArgumentException("Unknown domain " + context.domain());
@@ -206,7 +216,7 @@ public final class GameRuntime implements AutoCloseable {
             try {
                 executor.execute(context.routeKey(), work);
             } catch (GameRuntimeException full) {
-                if (!CURRENT.isBound()) throw full;
+                if (!pastLimits && !CURRENT.isBound()) throw full;
                 executor.handOn(context.routeKey(), work);
             }
         } catch (GameRuntimeException refused) {

@@ -276,7 +276,31 @@ timer.close();
 - 时间轮的线程只负责把到期任务交给 runtime，业务逻辑和其它任务一样在路由上执行。
 - 延迟使用单调时钟，不受 `GameTime` 影响。
 - `every` 按固定频率执行，第一次在一个周期之后。上一次还没结束时，这一次会记录日志并跳过，所以任务比周期慢时只会变慢，不会占满路由：做 tick 的业务要读实际过了多久，不要数触发次数。被 runtime 拒绝（路由已满）的那一次同样记录日志并跳过；runtime 关闭后定时器停止。
+- `after` 只触发一次，被拒绝了没有下一次可补，所以路由再满它也会执行：任务为之设定时器的事，比如 buff 结束、建筑完工，一定会发生。只有到期时 runtime 已经关闭，它才会丢。
+- `close()` 之后仍然可以设定时器：拿到的是已取消的定时器，永远不会触发，所以应用关闭期间还在收尾的任务不会因为定时器先关了而失败。
 - 在定时器自己的路由上取消后，它不会再执行，已经排在路由上的那次也不会，所以关闭副本的任务取消心跳后就不用再管了。在别的线程上取消时，`cancel` 返回的同时可能正好有一次开始执行。
+
+### 按键管理的定时器
+
+业务代码按"这个定时器是干什么的"来取消，玩家下线时一次全部取消，不用为每个定时器保存一个 `Scheduled`：
+
+```java
+record BuffExpiry(int buffId) {}                                              // 键：record 或字符串都可以
+
+// 放在应用保存玩家内存状态的地方，玩家上线时创建
+TimerGroup timers = timer.group(GameContext.of(PLAYER, playerId, PLAYER_ID, playerId));
+
+// 在玩家的任务里
+timers.after(new BuffExpiry(buffId), buff.duration(), context -> buffs.expire(buffId));   // 再设一次就重新计时
+timers.every("regen", Duration.ofSeconds(5), context -> player.regenerate());
+timers.cancel(new BuffExpiry(buffId));                                        // buff 被驱散
+timers.cancelAll();                                                           // 玩家下线
+```
+
+- 一个组是一条路由上的定时器：都在这条路由上、带着组的上下文执行。`after`、`every`、`cron` 就是定时器自己的那三个，前面多一个键。
+- 一个键对应一个定时器。同一个键再设一次，原来的那个会被取消，所以给 buff 续期就是重新设它的定时器。只触发一次的定时器在任务开始时离开组，所以任务里可以再设自己的键。
+- 组由应用持有，和连接一样：放在这条路由的内存状态里，比如在线玩家或开着的副本的对象。`GameTimer` 不保存任何组，定时器都取消后丢掉组没有任何代价。
+- 组只能在它那条路由的任务里使用，所以不加锁也不会乱；其它调用方会得到 `IllegalStateException`。在路由上取消是精确的：被取消或被替换的定时器之后不会再执行。
 
 ### 定时任务
 

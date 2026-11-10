@@ -351,8 +351,39 @@ timer.close();
   skipped, so a task slower than its period lags instead of filling its route: business code that ticks reads how much
   time went by rather than counting firings. A firing the runtime refuses (a full route) is logged and skipped too;
   once the runtime shuts down, the timer stops.
+- `after` has no later firing to make up for one refused, so it runs however full its route is: what a task set a timer
+  for, a buff ending or a building finished, happens. It is lost only when it comes due after the runtime shut down.
+- After `close()` a timer can still be set: it comes back cancelled and never fires, so a task still finishing while
+  the application shuts down is not failed by a timer closed before it.
 - A timer cancelled on its own route does not run afterwards, even when a firing already waits there, so a task closing
   a dungeon can cancel its tick and be done. From another thread, a firing may be beginning as `cancel` returns.
+
+### Timers by key
+
+Business code cancels a timer by what it is for, and a player's all at once, without keeping a `Scheduled` for each:
+
+```java
+record BuffExpiry(int buffId) {}                                              // a key: a record or a string
+
+// Kept where the application keeps the player's state in memory, made when the player comes online
+TimerGroup timers = timer.group(GameContext.of(PLAYER, playerId, PLAYER_ID, playerId));
+
+// In the player's tasks
+timers.after(new BuffExpiry(buffId), buff.duration(), context -> buffs.expire(buffId));   // set again, it starts anew
+timers.every("regen", Duration.ofSeconds(5), context -> player.regenerate());
+timers.cancel(new BuffExpiry(buffId));                                        // the buff was dispelled
+timers.cancelAll();                                                           // the player logs out
+```
+
+- A group is the timers of one route: each runs on that route with the group's context. `after`, `every` and `cron`
+  are the timer's own, with a key before them.
+- A key names one timer. Setting it again cancels the one it named, so renewing a buff is setting its timer. A timer
+  due once leaves the group as its task begins, so the task can set its key again.
+- The application keeps the group, as it keeps its connections: with the route's state in memory, such as its object
+  for a player online or an open dungeon. `GameTimer` keeps no groups, so one that is dropped costs nothing once its
+  timers are cancelled.
+- A group is used from tasks of its route only, which keeps it in order with nothing locked; any other caller gets
+  `IllegalStateException`. Cancelling there is exact: a timer cancelled or replaced does not run afterwards.
 
 ### Cron
 

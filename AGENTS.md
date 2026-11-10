@@ -120,6 +120,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   code must not depend on the kind of thread under it. Called from a
   game task it is never refused, for load or shutdown, so what was accepted finishes what it began; any other caller is
   an entry, an RPC callback too, and shutdown refuses entries first and shuts executors down once none has work. A
+  timer due once is the exception among entries: it has no later firing to make up for one refused, so it passes the
+  limits on load, and is lost only to a runtime shut down. Timers by key are a `TimerGroup` (`timer.group(context)`)
+  that the application keeps with a route's state in memory and uses from that route's tasks; `GameTimer` keeps none. A
   request is answered whether its task is accepted or refused. What runs around business logic (a trace id in the logs, saving
   what a task changed, a login check) is a `TaskInterceptor` of the runtime (`GameRuntime.builder().intercept`),
   around every task whatever its entry, a continuation included; entries have no interceptors of their own, and checks

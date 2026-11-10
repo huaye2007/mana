@@ -12,6 +12,7 @@ import cn.managame.MetadataKey;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
+import cn.managame.runtime.GameRuntimeException;
 import cn.managame.runtime.RequestContext;
 import cn.managame.runtime.TaskInterceptor;
 import cn.managame.runtime.executor.RouteExecutor;
@@ -174,7 +175,7 @@ class GameTimerTest {
         }
     }
 
-    @Test void aFiringTheRuntimeRefusesEndsAOneShotTimer() throws Exception {
+    @Test void aOneShotTimerDueOnAFullRouteStillRuns() throws Exception {
         GameContext route = GameContext.of(PLAYER, 7);
         AtomicInteger fired = new AtomicInteger();
         CountDownLatch release = new CountDownLatch(1);
@@ -183,12 +184,50 @@ class GameTimerTest {
              GameTimer fast = new GameTimer(full, Duration.ofMillis(1))) {
             full.execute(route, context -> release.await());
             full.execute(route, context -> {});
+            assertThrows(GameRuntimeException.class, () -> full.execute(route, context -> {}), "the route takes no more from outside");
             expiry = fast.after(route, Duration.ofMillis(5), context -> fired.incrementAndGet());
-            for (int i = 0; i < 500 && !expiry.isDone(); i++) TimeUnit.MILLISECONDS.sleep(10);
+            TimeUnit.MILLISECONDS.sleep(100);   // due meanwhile, with the route still full
             release.countDown();
+            for (int i = 0; i < 500 && fired.get() == 0; i++) TimeUnit.MILLISECONDS.sleep(10);
         }
+        assertEquals(1, fired.get(), "what a timer was set for happens, however full its route");
         assertTrue(expiry.isDone());
-        assertFalse(expiry.cancel());
+    }
+
+    @Test void aOneShotTimerDueAfterTheRuntimeShutDownNeverRuns() throws Exception {
+        AtomicInteger fired = new AtomicInteger();
+        Scheduled expiry = timer.after(GameContext.of(WORLD, 0), Duration.ofMillis(50), context -> fired.incrementAndGet());
+        runtime.close();
+        for (int i = 0; i < 100 && !expiry.isDone(); i++) TimeUnit.MILLISECONDS.sleep(10);
+        assertTrue(expiry.isDone(), "the timer ended");
+        assertEquals(0, fired.get());
+    }
+
+    @Test void aTimerSetAfterCloseIsCancelledAndNeverFires() throws Exception {
+        GameContext world = GameContext.of(WORLD, 0);
+        AtomicInteger fired = new AtomicInteger();
+        List<Throwable> errors = new CopyOnWriteArrayList<>();
+        CountDownLatch set = new CountDownLatch(1);
+        try (GameRuntime closing = GameRuntime.builder().domain(WORLD, RouteExecutors.striped(1))
+                .errorHandler((context, cause) -> errors.add(cause)).build()) {
+            GameTimer closed = new GameTimer(closing, Duration.ofMillis(1));
+            closed.close();
+            List<Scheduled> late = new CopyOnWriteArrayList<>();
+            // A task still finishing while the application shuts down, after its timers were closed.
+            closing.execute(world, context -> {
+                late.add(closed.after(Duration.ofMillis(5), later -> fired.incrementAndGet()));
+                late.add(closed.every(Duration.ofMillis(5), later -> fired.incrementAndGet()));
+                late.add(closed.cron(world, "* * * * * *", later -> fired.incrementAndGet()));
+                set.countDown();
+            });
+            assertTrue(set.await(5, TimeUnit.SECONDS), "the task was not failed by a closed timer: " + errors);
+            for (Scheduled scheduled : late) {
+                assertTrue(scheduled.isDone());
+                assertFalse(scheduled.cancel());
+            }
+            TimeUnit.MILLISECONDS.sleep(100);
+        }
+        assertEquals(List.of(), errors);
         assertEquals(0, fired.get());
     }
 
