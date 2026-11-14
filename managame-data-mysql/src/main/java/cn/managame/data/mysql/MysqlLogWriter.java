@@ -107,7 +107,7 @@ public final class MysqlLogWriter implements LogWriter {
             Table annotation = type.entityClass().getAnnotation(Table.class);
             if (annotation == null) throw new IllegalArgumentException(type + " needs @Table to be written to MySQL");
             baseTable = MysqlColumn.checkName(annotation.name());
-            columns = Jdbc.columns(type, jsonCodec);
+            columns = Jdbc.columns(type, jsonCodec, field -> null);
             List<EntityField> partitionFields = type.fields().stream().filter(field -> field.field().isAnnotationPresent(PartitionKey.class)).toList();
             if (partitionFields.size() > 1) throw new IllegalArgumentException(type + " has more than one @PartitionKey");
             partitionField = partitionFields.isEmpty() ? null : partitionFields.getFirst();

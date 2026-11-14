@@ -30,13 +30,91 @@ public class Player {
 
 - An entity or log needs `@Table(name)`. Each saved field is a column named after the field in snake case
   (`configId` is `config_id`), or by `@Column(name)`. The annotations are in `cn.managame.data.mysql.annotation`; the
-  mappers and `JsonCodec` in `cn.managame.data.mysql`.
+  mappers, `JsonCodec` and `ColumnCodec` in `cn.managame.data.mysql`.
 - The primitives, their boxes, String, char and byte[] are columns of their own. Anything else (collections, maps,
   objects, enums) is a JSON column through the `JsonCodec` given to the mapper or writer, which the application
-  provides, for example over Jackson; a JSON column decodes into the class its field is initialized with.
-- The tables belong to the application, which creates and migrates them; `prepare` reads each once at build, so a
-  missing table or column fails the build with `DataException` (`DATA_LOAD_FAILED`), a class without `@Table` with
-  `IllegalArgumentException`, and a JSON field without a codec with `IllegalStateException`.
+  provides, for example over Jackson; a JSON column decodes into the class its field is initialized with. A field the
+  application wants kept otherwise gets a codec of its own, see [Fields kept your way](#fields-kept-your-way).
+- A column that is NULL leaves its field as the entity's constructor made it, so a field added to a class reads, in the
+  rows stored before, as a new entity has it.
+- A class without `@Table` fails the build with `IllegalArgumentException`, and a JSON field without a codec with
+  `IllegalStateException`.
+
+## Tables created for you
+
+While GameData is built, `MysqlEntityMapper` creates what an entity's table lacks, so a new entity class, or a field
+added to one, needs no SQL written by hand:
+
+- **The table**, when there is none, with the `@Id` column as its primary key.
+- **The columns of fields added since**, each with `ALTER TABLE ... ADD COLUMN`.
+- **A grouped type's unique key** on its `@GroupKey` and `@MapKey` columns, unless an index of the table already starts
+  with the group columns. Every load of a group searches by them, and a group with two rows at one map key could not be
+  loaded at all.
+
+It never drops or changes anything: a column of another type, or one no field has any more, stays as it is. Each thing
+created is logged at INFO. A column is created as its field's type:
+
+| Field | Column |
+| --- | --- |
+| long, int, short, byte | `BIGINT`, `INT`, `SMALLINT`, `TINYINT` |
+| boolean, double, float, char | `TINYINT(1)`, `DOUBLE`, `FLOAT`, `CHAR(1)` |
+| String | `VARCHAR(255)` |
+| byte[] | `MEDIUMBLOB` |
+| saved as JSON | `MEDIUMTEXT`: no length to think of, and written faster than MySQL's `JSON` type, see [Driver settings](#driver-settings) |
+| with a `ColumnCodec` | the codec's `columnType()` |
+
+- **Keys and primitives are `NOT NULL`**; any other column may be NULL.
+- **A primitive's column defaults to the value the no-argument constructor gives the field**, so `int level = 1` added
+  to a class is 1 in the rows stored before.
+- **`@Column` says otherwise for one field**, each attribute optional:
+
+```java
+@Column(type = "VARCHAR(64)") private String name;                        // the column's type
+@Column(type = "JSON") private Map<Integer, Long> items = ...;            // MySQL's JSON type, for a field the database queries into
+@Column(defaultValue = "'none'") private String title;                    // the column's DEFAULT, as written in SQL
+@Column(name = "lv", type = "SMALLINT", defaultValue = "1") private int level;
+```
+
+An application that keeps its tables itself builds the mapper with `createMissing(false)`. The mapper then creates
+nothing: a missing table or column fails the build with `DataException` (`DATA_LOAD_FAILED`), as does a statement the
+account has no right to when it does create, and a grouped type's table without an index on its group columns is warned
+of. Either way a JDBC URL without `rewriteBatchedStatements=true` is warned of once.
+
+```java
+MysqlEntityMapper mapper = MysqlEntityMapper.builder(dataSource).json(json).createMissing(false).build();
+```
+
+Log tables are not created: the application makes the table of a log class, and `MysqlLogWriter` checks at build that
+its columns can be read, as before.
+
+## Fields kept your way
+
+A field the rules would keep as JSON, or as a column of another type than the application wants, gets a `ColumnCodec`:
+the column's type, the value JDBC binds for the field, and the field's value from the column.
+
+```java
+/** An enum kept as its name. */
+record EnumAsName(Class<? extends Enum<?>> type) implements ColumnCodec {
+    public String columnType() { return "VARCHAR(32)"; }
+    public Object encode(Object value) { return ((Enum<?>) value).name(); }
+    public Object decode(ResultSet resultSet, int index) throws SQLException {
+        String name = resultSet.getString(index);
+        return name == null ? null : Enum.valueOf((Class) type, name);
+    }
+}
+
+MysqlEntityMapper mapper = MysqlEntityMapper.builder(dataSource)
+        .json(json)                                              // still keeps what has no codec and is no scalar
+        .columnCodecs(field -> field.type().isEnum() ? new EnumAsName((Class<? extends Enum<?>>) field.type()) : null)
+        .build();
+```
+
+- **One function for every field**, asked once for each field of each entity type while GameData is built. It gets
+  the `EntityField`: the field's name, its type, and the Java field for an annotation of the application's own, so it
+  picks by any of them. Null leaves the field to the rules.
+- **Not asked for the `@Id` or a group or map key**, which are bound as they are where rows are looked for by them.
+- **`decode` returning null**, for a column that is NULL, leaves the field as the constructor made it.
+- A codec is called from write and load threads at once. `MysqlLogWriter` keeps logs by the rules only.
 
 ## Reading entities
 
@@ -113,8 +191,10 @@ public class ItemLog {
 
 ## Logging
 
-`cn.managame.data.mysql`, through `System.Logger`: INFO for each log partition table created. Rounds and failures are
-logged by managame-data's `cn.managame.data`.
+`cn.managame.data.mysql`, through `System.Logger`: INFO for each table, column and unique key the entity mapper created,
+and for each log partition table created. WARNING for a JDBC URL without `rewriteBatchedStatements=true`, and, from a
+mapper told to create nothing, for a grouped type's table without an index on its group columns. Rounds and failures
+are logged by managame-data's `cn.managame.data`.
 
 ## Build and test
 
@@ -130,8 +210,11 @@ in one batch, groups and a unique slot reused through deletes first, items that 
 batch ends, a bad row dropped and the others written,
 changes kept while the database refuses connections, every row kept when the server refuses them all for a reason the
 mapper does not know, an insert whose commit was not acknowledged written again without
-a duplicate, an updated row no longer stored written again, mappings refused at build, and logs in day partitions cut in the
-partition zone, in one batch. `MysqlIntegrationTest` runs against a real MySQL when given a database that can be
+a duplicate, an updated row no longer stored written again, mappings refused at build, a table created for an entity
+that has none, the columns of fields added since with the constructor's values in the rows stored before, a grouped
+type's unique key created and an index the table has on its group left as it is, nothing created by a mapper told to
+leave the tables alone, a field kept by a codec of the application's, a column created as its annotation says, and
+logs in day partitions cut in the partition zone, in one batch. `MysqlIntegrationTest` runs against a real MySQL when given a database that can be
 thrown away:
 
 ```bash

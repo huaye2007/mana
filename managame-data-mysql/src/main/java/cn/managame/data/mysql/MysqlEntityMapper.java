@@ -20,15 +20,20 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import javax.sql.DataSource;
 
 /**
  * Keeps entities in one MySQL database, each entity type in its {@link Table}, a column per saved field named after
- * the field in snake case or by {@link Column}. The application owns the tables; {@link #prepare} reads each once to
- * check that every column exists. Add {@code rewriteBatchedStatements=true}, {@code cachePrepStmts=true} and
- * {@code prepStmtCacheSqlLimit=1000000} to the JDBC URL (the README has the measurements), and keep the pool larger
- * than GameData's write threads plus the loads that run at once.
+ * the field in snake case or by {@link Column}. While GameData is built, {@link #prepare} creates what a table lacks:
+ * the table itself, the columns of fields added since, and a grouped type's unique key on its group and map key
+ * columns; it never drops or changes anything, and a mapper built with {@code createMissing(false)} creates nothing
+ * and leaves the tables to the application. A field is kept by the rules, a scalar as a column of its own type and
+ * anything else as JSON, unless the application's {@code columnCodecs} gives it a {@link ColumnCodec}. Add
+ * {@code rewriteBatchedStatements=true}, {@code cachePrepStmts=true} and {@code prepStmtCacheSqlLimit=1000000} to the
+ * JDBC URL (the README has the measurements), and keep the pool larger than GameData's write threads plus the loads
+ * that run at once.
  *
  * <p>Each table's statements are built once, when it is prepared: an INSERT, an upsert, a DELETE by id, a SELECT by
  * id, by group, of the whole table and of a hundred ids. Batches of INSERTs, UPDATEs and DELETEs are JDBC batches of
@@ -46,25 +51,88 @@ public final class MysqlEntityMapper implements EntityMapper {
     private static final int IDS_PER_SELECT = 100;
     private final DataSource dataSource;
     private final JsonCodec jsonCodec;
+    private final Function<EntityField, ColumnCodec> columnCodecs;
+    private final boolean createMissing;
     private final ConcurrentHashMap<EntityType, TableMapping> tables = new ConcurrentHashMap<>();
+    /** Whether the JDBC URL has been looked at; read and set while GameData is built, on its one thread. */
+    private boolean urlChecked;
 
-    /** For entities whose fields are all scalars. */
+    /** For entities whose fields are all scalars; creates what its tables lack. */
     public MysqlEntityMapper(DataSource dataSource) { this(dataSource, null); }
 
-    /** @param jsonCodec encodes the fields that are not scalars, or null when no entity has one */
-    public MysqlEntityMapper(DataSource dataSource, JsonCodec jsonCodec) {
+    /**
+     * Creates what its tables lack; {@link #builder} has the other settings.
+     *
+     * @param jsonCodec encodes the fields that are not scalars, or null when no entity has one
+     */
+    public MysqlEntityMapper(DataSource dataSource, JsonCodec jsonCodec) { this(dataSource, jsonCodec, field -> null, true); }
+
+    private MysqlEntityMapper(DataSource dataSource, JsonCodec jsonCodec, Function<EntityField, ColumnCodec> columnCodecs, boolean createMissing) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.jsonCodec = jsonCodec;
+        this.columnCodecs = columnCodecs;
+        this.createMissing = createMissing;
+    }
+
+    /** A mapper with settings the constructors leave at their defaults: codecs of its own for fields, tables it does not touch. */
+    public static Builder builder(DataSource dataSource) { return new Builder(Objects.requireNonNull(dataSource, "dataSource")); }
+
+    public static final class Builder {
+        private final DataSource dataSource;
+        private JsonCodec jsonCodec;
+        private Function<EntityField, ColumnCodec> columnCodecs = field -> null;
+        private boolean createMissing = true;
+
+        private Builder(DataSource dataSource) { this.dataSource = dataSource; }
+
+        /** Encodes the fields that are neither scalars nor have a codec of their own; none by default, for entities without such a field. */
+        public Builder json(JsonCodec codec) {
+            jsonCodec = Objects.requireNonNull(codec, "codec");
+            return this;
+        }
+
+        /**
+         * How fields are kept otherwise than by the rules: asked once for each field of each entity type while GameData
+         * is built, with the field's name, type and Java field, so it can go by any of them or by an annotation of the
+         * application's own; it returns the field's {@link ColumnCodec}, or null for a field kept by the rules. Not
+         * asked for the id or a group or map key, which are always kept as they are.
+         */
+        public Builder columnCodecs(Function<EntityField, ColumnCodec> codecs) {
+            columnCodecs = Objects.requireNonNull(codecs, "codecs");
+            return this;
+        }
+
+        /**
+         * Whether the mapper creates what its tables lack while GameData is built: a table, the columns of fields added
+         * since, a grouped type's unique key on its group and map key columns. True by default. It never drops or
+         * changes anything. With false the tables are the application's alone: a missing table or column fails the
+         * build, and a grouped type's table without an index on its group columns is warned of.
+         */
+        public Builder createMissing(boolean create) {
+            createMissing = create;
+            return this;
+        }
+
+        public MysqlEntityMapper build() { return new MysqlEntityMapper(dataSource, jsonCodec, columnCodecs, createMissing); }
     }
 
     /**
-     * Builds the statements of {@code type}'s table and reads it once. IllegalArgumentException when the class has no
-     * {@code @Table} or two columns of one name, IllegalStateException for a JSON field without a JsonCodec, and
-     * DataException ({@code DATA_LOAD_FAILED}) when the table or a column cannot be read.
+     * Builds the statements of {@code type}'s table, creates what the table lacks unless told not to, and reads it
+     * once. IllegalArgumentException when the class has no {@code @Table} or two columns of one name,
+     * IllegalStateException for a JSON field without a JsonCodec, and DataException ({@code DATA_LOAD_FAILED}) when the
+     * table or a column cannot be created or read.
      */
     @Override public void prepare(EntityType type) {
         TableMapping mapping = new TableMapping(type);
+        if (!urlChecked) {
+            urlChecked = true;
+            Jdbc.warnUnlessBatchesAreRewritten(dataSource);
+        }
+        List<MysqlColumn> groupColumns = type.groupKeys().stream().map(mapping::columnOf).toList();
+        if (createMissing)
+            Jdbc.createMissing(dataSource, mapping.table, mapping.columns, mapping.idColumn, groupColumns, type.mapKeys().stream().map(mapping::columnOf).toList());
         Jdbc.checkColumnsExist(dataSource, mapping.table, mapping.columns);
+        if (!createMissing) Jdbc.warnWithoutGroupIndex(dataSource, mapping.table, groupColumns);
         tables.put(type, mapping);
     }
 
@@ -172,7 +240,7 @@ public final class MysqlEntityMapper implements EntityMapper {
             Table annotation = type.entityClass().getAnnotation(Table.class);
             if (annotation == null) throw new IllegalArgumentException(type + " needs @Table to be kept in MySQL");
             table = MysqlColumn.checkName(annotation.name());
-            columns = Jdbc.columns(type, jsonCodec);
+            columns = Jdbc.columns(type, jsonCodec, columnCodecs);
             idColumn = columnOf(type.id());
             Set<EntityField> keys = new HashSet<>(type.groupKeys());
             keys.addAll(type.mapKeys());

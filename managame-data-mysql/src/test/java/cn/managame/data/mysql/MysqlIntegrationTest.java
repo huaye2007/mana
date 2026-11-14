@@ -2,6 +2,8 @@ package cn.managame.data.mysql;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.data.GameData;
 import cn.managame.data.GroupKeys;
@@ -91,14 +93,7 @@ class MysqlIntegrationTest {
 
     @Test
     void writesToMysql() throws SQLException {
-        MysqlDataSource source = new MysqlDataSource();
-        source.setURL(System.getenv("MANAGAME_DATA_MYSQL_URL"));
-        source.setUser(System.getenv("MANAGAME_DATA_MYSQL_USER"));
-        source.setPassword(System.getenv("MANAGAME_DATA_MYSQL_PASSWORD"));
-        try (Connection connection = source.getConnection(); ResultSet tables = connection.getMetaData()
-                .getTables(connection.getCatalog(), null, "managame_it_%", null)) {
-            if (tables.next()) throw new IllegalStateException("managame_it_* tables exist; use a database that can be thrown away");
-        }
+        MysqlDataSource source = scratchDatabase();
         execute(source, "CREATE TABLE managame_it_player (id BIGINT PRIMARY KEY, name VARCHAR(16), level INT NOT NULL, items JSON)");
         execute(source, "CREATE TABLE managame_it_item (uid BIGINT PRIMARY KEY, player_id BIGINT NOT NULL, slot INT NOT NULL,"
                 + " amount INT NOT NULL, UNIQUE KEY (player_id, slot))");
@@ -136,6 +131,81 @@ class MysqlIntegrationTest {
             for (String table : List.of("managame_it_player", "managame_it_item", "managame_it_log", "managame_it_log_20261031"))
                 execute(source, "DROP TABLE IF EXISTS " + table);
         }
+    }
+
+    @Table(name = "managame_it_made")
+    static class Made {
+        @Id long id;
+        String name;
+        int level = 1;
+        boolean active = true;
+        Map<Integer, Long> items = new ConcurrentHashMap<>();
+        byte[] avatar;
+
+        Made() {}
+    }
+
+    @Table(name = "managame_it_made_item")
+    static class MadeItem {
+        @Id long uid;
+        @GroupKey long playerId;
+        @MapKey int slot;
+
+        MadeItem() {}
+
+        MadeItem(long uid, long playerId, int slot) {
+            this.uid = uid;
+            this.playerId = playerId;
+            this.slot = slot;
+        }
+    }
+
+    static final class Mades extends SingleRepository<Long, Made> {}
+
+    static final class MadeItems extends GroupRepository<Integer, MadeItem> {}
+
+    /** What the mapper creates, on MySQL itself: columns added to a table, a table with its unique key, and nothing twice. */
+    @Test
+    void createsWhatTheTablesLack() throws SQLException {
+        MysqlDataSource source = scratchDatabase();
+        try {
+            execute(source, "CREATE TABLE managame_it_made (id BIGINT PRIMARY KEY, name VARCHAR(32))");
+            execute(source, "INSERT INTO managame_it_made VALUES (7, 'old')");
+            try (GameData data = GameData.builder().errorHandler(new Fixtures.ReportedFailures())
+                    .repositories(new MysqlEntityMapper(source, new Fixtures.Json()), List.of(Mades.class, MadeItems.class))
+                    .flushInterval(Duration.ofMinutes(1)).build()) {
+                Made stored = data.repository(Mades.class).get(7L);
+                assertEquals("old", stored.name);
+                assertEquals(1, stored.level, "the column added for it defaults to what the constructor gives the field");
+                assertTrue(stored.active);
+                assertEquals(Map.of(), stored.items, "NULL in the row: as the constructor made it");
+                MadeItems items = data.repository(MadeItems.class);
+                items.insert(new MadeItem(1, 100, 0));
+                items.insert(new MadeItem(2, 100, 1));
+                data.flush();
+                items.evict(GroupKeys.of(100L));
+                assertEquals(2, items.getGroup(GroupKeys.of(100L)).size());
+            }
+            assertThrows(SQLException.class, () -> execute(source, "INSERT INTO managame_it_made_item VALUES (3, 100, 0)"), "the unique key");
+            GameData.builder().errorHandler(new Fixtures.ReportedFailures())
+                    .repositories(new MysqlEntityMapper(source, new Fixtures.Json()), List.of(Mades.class, MadeItems.class)).build().close();
+            assertEquals(2L, count(source, "SELECT COUNT(*) FROM managame_it_made_item"), "built again over what is there");
+        } finally {
+            for (String table : List.of("managame_it_made", "managame_it_made_item")) execute(source, "DROP TABLE IF EXISTS " + table);
+        }
+    }
+
+    /** The database named by the environment, refused when it holds tables this test would take for its own. */
+    private static MysqlDataSource scratchDatabase() throws SQLException {
+        MysqlDataSource source = new MysqlDataSource();
+        source.setURL(System.getenv("MANAGAME_DATA_MYSQL_URL"));
+        source.setUser(System.getenv("MANAGAME_DATA_MYSQL_USER"));
+        source.setPassword(System.getenv("MANAGAME_DATA_MYSQL_PASSWORD"));
+        try (Connection connection = source.getConnection(); ResultSet tables = connection.getMetaData()
+                .getTables(connection.getCatalog(), null, "managame_it_%", null)) {
+            if (tables.next()) throw new IllegalStateException("managame_it_* tables exist; use a database that can be thrown away");
+        }
+        return source;
     }
 
     private static void execute(MysqlDataSource source, String sql) throws SQLException {

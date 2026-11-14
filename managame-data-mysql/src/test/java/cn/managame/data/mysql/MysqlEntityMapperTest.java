@@ -281,7 +281,7 @@ class MysqlEntityMapperTest {
 
     @Test
     void refusesAMappingThatDoesNotFitAtBuild() {
-        MysqlEntityMapper withoutCodec = new MysqlEntityMapper(database);
+        MysqlEntityMapper withoutCodec = MysqlEntityMapper.builder(database).createMissing(false).build();   // the tables are the application's
         assertEquals(DATA_LOAD_FAILED, assertThrows(DataException.class,
                 () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(withoutCodec, List.of(MissingColumns.class)).build()).errorCode());
         assertThrows(IllegalArgumentException.class, () -> GameData.builder().errorHandler(new ReportedFailures()).repositories(withoutCodec, List.of(WithoutTables.class)).build());
