@@ -198,7 +198,13 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   copy and entity collections must be thread-safe. The caches are plain Caffeine, `Caffeine.newBuilder()
   .expireAfterAccess(cacheExpire)` with no further tuning or wrapper: it loads a key once however many threads ask.
   What reads return is handed over as is, without unmodifiable wrappers: it is for reading. Game data has only these two
-  shapes plus logs; the application owns the schema (no DDL but MySQL log partitions created `LIKE` their base table).
+  shapes plus logs. The entity mappers create what a table lacks while GameData is built, by default: MySQL the table,
+  the columns of fields added since and a grouped type's unique key on its group and map key columns, MongoDB that
+  unique index. They never drop or change anything, and `createMissing(false)` leaves it all to the application. Log
+  tables stay the application's, but for MySQL log partitions created `LIKE` their base table. A MySQL column is the
+  type of its field (a field kept as JSON is MEDIUMTEXT), `@Column` naming a type or a DEFAULT for one field, and a NULL
+  column leaves the field as the constructor made it. A field is kept otherwise by a `ColumnCodec` that the mapper's
+  `columnCodecs` function picks, asked once for each field at build with its `EntityField`; no codecs are built in.
   A table kept whole in memory registers with `preloadedRepositories` (read at build by `loadTable`, never leaves
   memory, listed by `all()`). The framework wraps no database API: the application queries its own `DataSource` or
   `MongoDatabase`, calls `flush()` first to read the newest, and changes the rows repositories hold only through them,

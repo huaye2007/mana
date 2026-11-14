@@ -87,7 +87,8 @@ data.close();                                            // writes what is left
 ## Entities
 
 - **Fields.** Every instance field that is neither static nor transient is saved, superclass fields first; none may be
-  final. How a field is named and stored is the mapper's.
+  final. How a field is named and stored is the mapper's, and so is making room for it: the MySQL and MongoDB mappers
+  create what a table or collection lacks while GameData is built, unless told to leave that to the application.
 - **A no-argument constructor**, which may be private. Loads create the entity with it, so a collection field
   initialized there is filled again as the same class: `items = new ConcurrentHashMap<>()` loads as a
   ConcurrentHashMap (`EntityField.valueType()` gives a mapper that type).

@@ -39,6 +39,18 @@ public class Player {
   0.9 µs and 1.5 KB, where it took 2.7 µs and 17.6 KB.
 - A field missing from a document keeps the value the constructor gives it, so fields can be added without migrating.
 
+## The index created for you
+
+MongoDB makes collections and fields by itself; what it does not make is the index every load of a group searches by.
+While GameData is built, the mapper creates, for a grouped type, a unique index on its `@GroupKey` and `@MapKey` fields,
+unless an index of the collection already starts with the group fields, and logs it at INFO (logger
+`cn.managame.data.mongo`). An application that keeps its indexes itself builds the mapper with `createMissing(false)`:
+nothing is created then, and a collection without an index on its group fields is warned of.
+
+```java
+MongoEntityMapper mapper = MongoEntityMapper.builder(database).createMissing(false).build();
+```
+
 ## Reading
 
 `load` finds a document by `_id`, `loadGroup` by the group fields, `loadAll`, behind `getAll`, with one `_id $in`
@@ -68,6 +80,7 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 
 Install managame-common and managame-data first. The tests cover encoding and decoding every kind of field without a
 server, initialized collections kept, a value stored as another type read as the driver reads it, a codec the
-application registered for a class the driver has one for being asked, and a class without `@Collection` refused. `MongoIntegrationTest` runs against a
-real MongoDB when given its address (`MANAGAME_DATA_MONGO_URI=mongodb://127.0.0.1:27017`), in a database of its own
-that it drops.
+application registered for a class the driver has one for being asked, and a class without `@Collection` refused.
+`MongoIntegrationTest` runs against a real MongoDB when given its address
+(`MANAGAME_DATA_MONGO_URI=mongodb://127.0.0.1:27017`), in a database of its own that it drops; it also covers the unique
+index of a grouped type created once, and none created by a mapper told not to.

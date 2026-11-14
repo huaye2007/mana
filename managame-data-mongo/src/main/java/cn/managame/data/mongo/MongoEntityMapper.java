@@ -1,5 +1,8 @@
 package cn.managame.data.mongo;
 
+import static cn.managame.FrameworkErrorCodes.DATA_LOAD_FAILED;
+
+import cn.managame.data.DataException;
 import cn.managame.data.DataOperation;
 import cn.managame.data.GroupKeys;
 import cn.managame.data.mongo.annotation.Collection;
@@ -11,6 +14,7 @@ import cn.managame.data.spi.EntityType;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.ReplaceOneModel;
 import com.mongodb.client.model.ReplaceOptions;
 import com.mongodb.client.model.WriteModel;
@@ -24,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import org.bson.BsonArray;
 import org.bson.BsonDocument;
+import org.bson.BsonInt32;
 import org.bson.BsonValue;
 import org.bson.codecs.configuration.CodecRegistry;
 
@@ -41,25 +46,92 @@ import org.bson.codecs.configuration.CodecRegistry;
 public final class MongoEntityMapper implements EntityMapper {
     private static final Pattern NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final ReplaceOptions REPLACE_EXISTING = new ReplaceOptions(), REPLACE_OR_CREATE = new ReplaceOptions().upsert(true);
+    private static final System.Logger LOG = System.getLogger("cn.managame.data.mongo");
     private final MongoDatabase database;
     private final CodecRegistry codecRegistry;
+    private final boolean createMissing;
     private final ConcurrentHashMap<EntityType, CollectionMapping> collections = new ConcurrentHashMap<>();
 
+    /** Creates the unique index a grouped type's collection lacks; {@link #builder} makes a mapper that creates none. */
     public MongoEntityMapper(MongoDatabase database) {
-        this(Objects.requireNonNull(database, "database"), database.getCodecRegistry());
+        this(Objects.requireNonNull(database, "database"), database.getCodecRegistry(), true);
     }
 
     /** {@code database} may be null for a mapper that only encodes and decodes. */
-    MongoEntityMapper(MongoDatabase database, CodecRegistry codecRegistry) {
+    MongoEntityMapper(MongoDatabase database, CodecRegistry codecRegistry) { this(database, codecRegistry, true); }
+
+    private MongoEntityMapper(MongoDatabase database, CodecRegistry codecRegistry, boolean createMissing) {
         this.database = database;
         this.codecRegistry = codecRegistry;
+        this.createMissing = createMissing;
+    }
+
+    /** A mapper with the setting the constructor leaves at its default. */
+    public static Builder builder(MongoDatabase database) { return new Builder(Objects.requireNonNull(database, "database")); }
+
+    public static final class Builder {
+        private final MongoDatabase database;
+        private boolean createMissing = true;
+
+        private Builder(MongoDatabase database) { this.database = database; }
+
+        /**
+         * Whether the mapper creates, while GameData is built, the unique index on its group and map key fields that a
+         * grouped type's collection lacks: every load of a group searches by the group fields. True by default. With
+         * false the indexes are the application's alone, and a collection without one on its group fields is warned of.
+         * MongoDB creates collections and fields by itself.
+         */
+        public Builder createMissing(boolean create) {
+            createMissing = create;
+            return this;
+        }
+
+        public MongoEntityMapper build() { return new MongoEntityMapper(database, database.getCodecRegistry(), createMissing); }
     }
 
     /**
-     * Maps {@code type}'s fields to document fields. IllegalArgumentException when the class has no {@code @Collection},
-     * two fields of one name, or a field the codec registry cannot save.
+     * Maps {@code type}'s fields to document fields, and for a grouped type creates the unique index its collection
+     * lacks, unless told not to. IllegalArgumentException when the class has no {@code @Collection}, two fields of one
+     * name, or a field the codec registry cannot save; DataException ({@code DATA_LOAD_FAILED}) when the index cannot be
+     * created.
      */
-    @Override public void prepare(EntityType type) { collections.put(type, new CollectionMapping(type)); }
+    @Override public void prepare(EntityType type) {
+        CollectionMapping mapping = new CollectionMapping(type);
+        if (database != null && !mapping.groupFields.isEmpty()) createGroupIndex(mapping);
+        collections.put(type, mapping);
+    }
+
+    /**
+     * Creates a unique index on the group and map key fields, unless an index of the collection already starts with the
+     * group fields; a mapper that creates nothing warns instead.
+     */
+    private void createGroupIndex(CollectionMapping mapping) {
+        Set<String> groupNames = new HashSet<>();
+        for (MongoField field : mapping.groupFields) groupNames.add(field.name);
+        BsonDocument keys = new BsonDocument();
+        for (MongoField field : mapping.groupFields) keys.append(field.name, new BsonInt32(1));
+        for (EntityField mapKey : mapping.type.mapKeys()) keys.append(mapping.fieldOf(mapKey).name, new BsonInt32(1));
+        try {
+            for (BsonDocument index : mapping.collection.listIndexes(BsonDocument.class)) {
+                List<String> fields = new ArrayList<>(index.getDocument("key").keySet());
+                if (fields.size() >= groupNames.size() && groupNames.equals(new HashSet<>(fields.subList(0, groupNames.size())))) return;
+            }
+            if (!createMissing) {
+                LOG.log(System.Logger.Level.WARNING, "Collection " + mapping.name + " has no index that starts with " + groupNames
+                        + ": every load of a group reads the whole collection");
+                return;
+            }
+            mapping.collection.createIndex(keys, new IndexOptions().unique(true));
+            LOG.log(System.Logger.Level.INFO, "Created the unique index of collection " + mapping.name + " on " + keys.keySet());
+        } catch (RuntimeException e) {
+            if (!createMissing) {   // nothing was to be created: the indexes could not be read, which is no reason to fail
+                LOG.log(System.Logger.Level.DEBUG, () -> "cannot read the indexes of collection " + mapping.name + ": " + e);
+                return;
+            }
+            throw new DataException(DATA_LOAD_FAILED, "cannot create the unique index of collection " + mapping.name + " on " + keys.keySet()
+                    + "; give the account the right to, or build the mapper with createMissing(false)", e);
+        }
+    }
 
     @Override public Object load(EntityType type, Object id) {
         CollectionMapping mapping = mappingOf(type);

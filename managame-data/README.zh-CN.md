@@ -84,7 +84,8 @@ data.close();                                            // 写完剩下的修�
 ## 实体
 
 - **字段。** 既不是 static 也不是 transient 的实例字段都会保存，父类字段在前；不能是 final。字段的命名和存储方式由 Mapper
-  决定。
+  决定，给它准备位置也是：MySQL 和 MongoDB 的 Mapper 默认在构建 GameData 时把表或集合缺的东西建出来，也可以设置成交给
+  应用自己管。
 - **无参构造器**，可以是私有的。加载时用它创建实体，因此在构造时初始化的集合字段加载后仍是同一种类：
   `items = new ConcurrentHashMap<>()` 加载回来还是 ConcurrentHashMap（`EntityField.valueType()` 把这个类型告诉 Mapper）。
 - **Key。** `@Id`、`@GroupKey`、`@MapKey` 字段是整数类型或 String，由应用分配（没有自增 id，因为插入是之后才写的），且永不

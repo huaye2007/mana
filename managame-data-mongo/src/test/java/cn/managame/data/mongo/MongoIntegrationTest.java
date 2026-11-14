@@ -6,13 +6,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import cn.managame.data.DataException;
 import cn.managame.data.GameData;
+import cn.managame.data.GroupKeys;
+import cn.managame.data.GroupRepository;
 import cn.managame.data.SingleRepository;
+import cn.managame.data.annotation.GroupKey;
 import cn.managame.data.annotation.Id;
+import cn.managame.data.annotation.MapKey;
 import cn.managame.data.mongo.annotation.Collection;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -70,6 +75,53 @@ class MongoIntegrationTest {
                 players.update(10L, player -> player.level = 2);
                 assertThrows(DataException.class, data::flush, "an update of a document no longer stored fails, and is given up as the other is written");
                 assertEquals(48, database.getCollection("player").countDocuments());
+            } finally {
+                database.drop();
+            }
+        }
+    }
+
+    @Collection(name = "item")
+    static class Item {
+        @Id long uid;
+        @GroupKey long playerId;
+        @MapKey int slot;
+
+        Item() {}
+
+        Item(long uid, long playerId, int slot) {
+            this.uid = uid;
+            this.playerId = playerId;
+            this.slot = slot;
+        }
+    }
+
+    static final class Items extends GroupRepository<Integer, Item> {}
+
+    @Test
+    void createsTheUniqueIndexOfAGroupedTypesCollection() {
+        try (MongoClient client = MongoClients.create(System.getenv("MANAGAME_DATA_MONGO_URI"))) {
+            MongoDatabase database = client.getDatabase("managame_it_" + UUID.randomUUID().toString().replace("-", ""));
+            try {
+                GameData.builder().errorHandler(failure -> {})
+                        .repositories(MongoEntityMapper.builder(database).createMissing(false).build(), List.of(Items.class)).build().close();
+                assertEquals(0, database.getCollection("item").listIndexes().into(new ArrayList<>()).size(), "told to create nothing");
+
+                try (GameData data = GameData.builder().errorHandler(failure -> {}).repositories(new MongoEntityMapper(database), List.of(Items.class))
+                        .flushInterval(Duration.ofMinutes(1)).build()) {
+                    Items items = data.repository(Items.class);
+                    items.insert(new Item(1, 100, 0));
+                    items.insert(new Item(2, 100, 1));
+                    data.flush();
+                    items.evict(GroupKeys.of(100L));
+                    assertEquals(2, items.getGroup(GroupKeys.of(100L)).size());
+                }
+                List<Document> indexes = database.getCollection("item").listIndexes().into(new ArrayList<>());
+                Document unique = indexes.stream().filter(index -> Boolean.TRUE.equals(index.get("unique"))).findFirst().orElseThrow();
+                assertEquals(List.of("player_id", "slot"), List.copyOf(unique.get("key", Document.class).keySet()));
+
+                GameData.builder().errorHandler(failure -> {}).repositories(new MongoEntityMapper(database), List.of(Items.class)).build().close();
+                assertEquals(indexes.size(), database.getCollection("item").listIndexes().into(new ArrayList<>()).size(), "made once");
             } finally {
                 database.drop();
             }

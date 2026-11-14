@@ -35,6 +35,17 @@ public class Player {
   2.7 微秒、17.6 KB）。
 - 文档里缺少的字段保留构造器给的值，所以加字段不需要迁移数据。
 
+## 自动建索引
+
+集合和字段 MongoDB 自己会建；它不会建的，是每次加载一个组都要用到的索引。构建 GameData 时，Mapper 会为分组类型在
+`@GroupKey` 和 `@MapKey` 字段上建一个唯一索引（集合上已经有以组键字段开头的索引时不建），并记一条 INFO（logger 是
+`cn.managame.data.mongo`）。自己管理索引的应用，用 `createMissing(false)` 构建 Mapper：这时什么都不建，集合在组键字段上
+没有索引时记一条 WARNING。
+
+```java
+MongoEntityMapper mapper = MongoEntityMapper.builder(database).createMissing(false).build();
+```
+
 ## 读取
 
 `load` 按 `_id` 查文档，`loadGroup` 按分组字段查，`loadAll`（`getAll` 用它）用一条 `_id $in` 查询，`loadTable`（整表常驻的
@@ -63,4 +74,4 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 先安装 managame-common 和 managame-data。测试在不需要服务器的情况下覆盖各种字段的编码和解码、保留初始化时的集合类、存成另一种类型的值按驱动的方式读出、应用为驱动已有 codec 的类注册的
 codec 会被用到，以及拒绝
 没有 `@Collection` 的类。提供地址时（`MANAGAME_DATA_MONGO_URI=mongodb://127.0.0.1:27017`），`MongoIntegrationTest` 会在真实
-MongoDB 上运行，使用自己新建的库并在结束后删除。
+MongoDB 上运行，使用自己新建的库并在结束后删除；它还覆盖分组类型的唯一索引只建一次，以及被告知不建的 Mapper 不建索引。
