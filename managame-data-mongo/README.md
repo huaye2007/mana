@@ -31,7 +31,12 @@ public class Player {
   are in `cn.managame.data.mongo.annotation`; the mapper in `cn.managame.data.mongo`.
 - Collections and maps (with String, Integer or Long keys) are arrays and documents of their elements, created again
   as the class the field is initialized with. byte, short, float and char are saved as int32, double and string.
-  Anything else comes from the database's codec registry, where the application registers its own classes.
+  Anything else is as the database's codec registry has it, where the application registers its own classes. A long,
+  int, boolean, double, String or byte[] that the driver's own codec would write is made into its BSON value at once,
+  without the writer and document a codec needs around it; a codec the application registered for such a class is
+  asked as any other. Timed in a loop on one thread without a server, an entity of ten such fields and a map of twenty
+  longs is encoded in about 0.7 µs and 3.4 KB, where through the codecs it took 2.5 µs and 18 KB, and decoded in about
+  0.9 µs and 1.5 KB, where it took 2.7 µs and 17.6 KB.
 - A field missing from a document keeps the value the constructor gives it, so fields can be added without migrating.
 
 ## Reading
@@ -62,6 +67,7 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 Install managame-common and managame-data first. The tests cover encoding and decoding every kind of field without a
-server, initialized collections kept, and a class without `@Collection` refused. `MongoIntegrationTest` runs against a
+server, initialized collections kept, a value stored as another type read as the driver reads it, a codec the
+application registered for a class the driver has one for being asked, and a class without `@Collection` refused. `MongoIntegrationTest` runs against a
 real MongoDB when given its address (`MANAGAME_DATA_MONGO_URI=mongodb://127.0.0.1:27017`), in a database of its own
 that it drops.

@@ -12,25 +12,37 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bson.BsonArray;
+import org.bson.BsonBinary;
+import org.bson.BsonBoolean;
 import org.bson.BsonDocument;
 import org.bson.BsonDocumentReader;
 import org.bson.BsonDocumentWriter;
 import org.bson.BsonDouble;
 import org.bson.BsonInt32;
+import org.bson.BsonInt64;
 import org.bson.BsonNull;
 import org.bson.BsonString;
+import org.bson.BsonType;
 import org.bson.BsonValue;
+import org.bson.codecs.BooleanCodec;
+import org.bson.codecs.ByteArrayCodec;
 import org.bson.codecs.Codec;
 import org.bson.codecs.DecoderContext;
+import org.bson.codecs.DoubleCodec;
 import org.bson.codecs.EncoderContext;
+import org.bson.codecs.IntegerCodec;
+import org.bson.codecs.LongCodec;
+import org.bson.codecs.StringCodec;
 import org.bson.codecs.configuration.CodecRegistry;
 
 /**
  * One field's value as BSON. Collections and maps are arrays and documents of their elements, created again as the
- * class the field is initialized with; anything else comes from the database's codec registry, where an application
- * registers its own classes.
+ * class the field is initialized with; anything else is as the database's codec registry has it, where an application
+ * registers its own classes. A long, int, boolean, double, String or byte[] the driver's own codec would write is made
+ * into its BSON value at once, without going through that codec.
  */
 interface MongoValueCodec {
     BsonValue encode(Object value);
@@ -48,7 +60,41 @@ interface MongoValueCodec {
         Class<?> boxed = EntityType.boxed(rawType);
         if (boxed == Byte.class || boxed == Short.class || boxed == Float.class || boxed == Character.class)
             return byteShortFloatOrCharCodec(boxed);
-        return registryCodec(boxed, registry);
+        Codec<?> codec = registry.get(boxed);
+        MongoValueCodec throughCodec = registryCodec(codec);
+        // The values of most fields. The driver's own codec for each writes one BSON value, made here as it would be
+        // written, without the writer and document a codec needs around it; a codec the application registered for the
+        // class is asked as before.
+        if (codec.getClass() == LongCodec.class)
+            return plainCodec(BsonType.INT64, value -> new BsonInt64((Long) value), stored -> stored.asInt64().getValue(), throughCodec);
+        if (codec.getClass() == IntegerCodec.class)
+            return plainCodec(BsonType.INT32, value -> new BsonInt32((Integer) value), stored -> stored.asInt32().getValue(), throughCodec);
+        if (codec.getClass() == BooleanCodec.class)
+            return plainCodec(BsonType.BOOLEAN, value -> BsonBoolean.valueOf((Boolean) value), stored -> stored.asBoolean().getValue(), throughCodec);
+        if (codec.getClass() == DoubleCodec.class)
+            return plainCodec(BsonType.DOUBLE, value -> new BsonDouble((Double) value), stored -> stored.asDouble().getValue(), throughCodec);
+        if (codec instanceof StringCodec strings && strings.getClass() == StringCodec.class && strings.getRepresentation() == BsonType.STRING)
+            return plainCodec(BsonType.STRING, value -> new BsonString((String) value), stored -> stored.asString().getValue(), throughCodec);
+        if (codec.getClass() == ByteArrayCodec.class)
+            return plainCodec(BsonType.BINARY, value -> new BsonBinary((byte[]) value), stored -> stored.asBinary().getData(), throughCodec);
+        return throughCodec;
+    }
+
+    /**
+     * A value that is one BSON value of type {@code stored}, as the driver's own codec for its class writes it. A value
+     * stored as another type, as an int32 read into a field that has become a long, is read by {@code throughCodec},
+     * which converts it or refuses it as the driver does.
+     */
+    private static MongoValueCodec plainCodec(BsonType stored, Function<Object, BsonValue> toBson, Function<BsonValue, Object> fromBson,
+                                              MongoValueCodec throughCodec) {
+        return new MongoValueCodec() {
+            @Override public BsonValue encode(Object value) { return value == null ? BsonNull.VALUE : toBson.apply(value); }
+
+            @Override public Object decode(BsonValue value) {
+                if (value == null || value.isNull()) return null;
+                return value.getBsonType() == stored ? fromBson.apply(value) : throughCodec.decode(value);
+            }
+        };
     }
 
     private static MongoValueCodec collectionCodec(Class<?> rawType, MongoValueCodec elementCodec) {
@@ -138,9 +184,10 @@ interface MongoValueCodec {
         };
     }
 
+    /** A value written and read by a codec of the registry, which needs a writer or reader placed on a value of a document. */
     @SuppressWarnings("unchecked")
-    private static MongoValueCodec registryCodec(Class<?> type, CodecRegistry registry) {
-        Codec<Object> codec = (Codec<Object>) registry.get(type);
+    private static MongoValueCodec registryCodec(Codec<?> ofRegistry) {
+        Codec<Object> codec = (Codec<Object>) ofRegistry;
         return new MongoValueCodec() {
             @Override public BsonValue encode(Object value) {
                 if (value == null) return BsonNull.VALUE;

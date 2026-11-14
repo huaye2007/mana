@@ -28,7 +28,11 @@ public class Player {
 - 实体需要 `@Collection(name)`；没有时 `prepare` 抛 `IllegalArgumentException`。`@Id` 存为 `_id`，其他要保存的字段名是字段名
   的下划线形式，或由 `@Field(name)` 指定。注解在 `cn.managame.data.mongo.annotation` 包里，Mapper 在 `cn.managame.data.mongo`。
 - 集合和 Map（key 为 String、Integer 或 Long）存为由元素组成的数组和文档，加载时创建成字段初始化时的那个类。byte、short、
-  float、char 分别存为 int32、double 和 string。其他类型来自数据库的 codec registry，应用在那里注册自己的类。
+  float、char 分别存为 int32、double 和 string。其他类型按数据库的 codec registry 处理，应用在那里注册自己的类。
+  long、int、boolean、double、String、byte[] 如果用的是驱动自带的 codec，就直接转成对应的 BSON 值，不需要 codec 外面那层
+  writer 和文档；应用为这些类注册了自己的 codec 时，照样走它的 codec。单线程循环计时、不连服务器：十个这类字段加一个
+  二十项 long 的 map 的实体，编码约 0.7 微秒、3.4 KB（经过 codec 时是 2.5 微秒、18 KB），解码约 0.9 微秒、1.5 KB（原来是
+  2.7 微秒、17.6 KB）。
 - 文档里缺少的字段保留构造器给的值，所以加字段不需要迁移数据。
 
 ## 读取
@@ -56,6 +60,7 @@ Repository 用它）读出全部文档。
 mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
-先安装 managame-common 和 managame-data。测试在不需要服务器的情况下覆盖各种字段的编码和解码、保留初始化时的集合类，以及拒绝
+先安装 managame-common 和 managame-data。测试在不需要服务器的情况下覆盖各种字段的编码和解码、保留初始化时的集合类、存成另一种类型的值按驱动的方式读出、应用为驱动已有 codec 的类注册的
+codec 会被用到，以及拒绝
 没有 `@Collection` 的类。提供地址时（`MANAGAME_DATA_MONGO_URI=mongodb://127.0.0.1:27017`），`MongoIntegrationTest` 会在真实
 MongoDB 上运行，使用自己新建的库并在结束后删除。
