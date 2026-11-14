@@ -44,7 +44,8 @@ public class Player {
 ## 写实体
 
 - **每批一个事务**，所以失败的批次不会留下任何东西：重写或拆成单行时都不会产生重复。删除后又插入，在同一个事务里先 DELETE
-  再 INSERT。
+  再 INSERT，一批里所有的删除都在插入之前；managame-data 把同一个组里各行的替换放在同一批，所以在唯一的
+  `(player_id, slot)` 下互换槽位的物品不管有多少都能写入。
 - **INSERT 和 UPDATE 都是普通的 JDBC 批处理**，URL 带 `rewriteBatchedStatements=true` 时由驱动合并成一条多行语句。
 - **UPDATE 用 `INSERT ... ON DUPLICATE KEY UPDATE`** 更新非 key 列，这是 MySQL 自己的批量保存方式。表里已没有的行会被重新
   写入，而不是失败：数据以内存为准。表上除主键外还有别的唯一索引时，一行改成另一行仍在用的唯一值，会更新到那一行上，这是
@@ -109,7 +110,7 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 
 先安装 managame-common 和 managame-data。测试通过 GameData 运行在 MySQL 模式的 H2 上，这是一个真正的内存数据库，覆盖：带
 JSON 列的行，JSON 加载成初始化时的集合，整表常驻，超过一条 SELECT 上限的 `getAll`，在一批里更新大量行，分组以及先删后插使唯一的格子
-可以复用，坏行丢弃而其他照常写入，
+可以复用，互换唯一槽位的物品不管批次在哪里结束都能写入，坏行丢弃而其他照常写入，
 数据库拒绝连接期间保留修改，服务器以 Mapper 不认识的原因拒绝全部行时一行都不丢，提交未确认的插入重写而不产生重复，更新已不存在的行时把它重新写入，构建时拒绝不合适的映射，以及按分区
 时区切分的按天分区日志在一批里写入。提供一个可以丢弃的库时，`MysqlIntegrationTest` 会在真实 MySQL 上运行：
 

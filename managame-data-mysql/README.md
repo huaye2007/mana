@@ -49,7 +49,9 @@ SELECT once per hundred ids on one connection, filling the last hundred by repea
 ## Writing entities
 
 - **Each batch is one transaction**, so a batch that failed left nothing behind: written again, or split into single
-  rows, it cannot leave duplicates. A delete followed by an insert is a DELETE and an INSERT in one transaction.
+  rows, it cannot leave duplicates. A delete followed by an insert is a DELETE and an INSERT in one transaction, all the
+  deletes of the batch before its inserts; managame-data keeps the replacements of one group's rows in one batch, so
+  items that trade slots under a unique `(player_id, slot)` are written whatever their number.
 - **INSERTs and UPDATEs are plain JDBC batches**, which the driver folds into one multi-row statement when the URL has
   `rewriteBatchedStatements=true`.
 - **An UPDATE is `INSERT ... ON DUPLICATE KEY UPDATE`** of the columns that are not keys, MySQL's own way of saving
@@ -124,7 +126,8 @@ Install managame-common and managame-data first. The tests run against H2 in MyS
 through GameData, covering rows with JSON columns, loading JSON into the initialized collection, a preloaded table,
 `getAll` of more ids
 than one SELECT names, updates of many rows
-in one batch, groups and a unique slot reused through deletes first, a bad row dropped and the others written,
+in one batch, groups and a unique slot reused through deletes first, items that trade unique slots written wherever a
+batch ends, a bad row dropped and the others written,
 changes kept while the database refuses connections, every row kept when the server refuses them all for a reason the
 mapper does not know, an insert whose commit was not acknowledged written again without
 a duplicate, an updated row no longer stored written again, mappings refused at build, and logs in day partitions cut in the

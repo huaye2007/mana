@@ -187,6 +187,8 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   is written again one row at a time, and a row is given up only when others of its batch are written, since that
   shows the database works; when none is, all are kept. A change set keeps one change per row and never merges a
   failed write back: a change stays until it is written, and a row changed while it is written gets a new change.
+  The replacements (`DELETE_INSERT`) of one group's rows are never split, between batches or when a batch is written
+  in parts: rows that trade map keys under a unique key only go through together, deletes before inserts.
   Repositories have no hooks, and the builder no settings, for what only some applications need. Every read of the
   database, by either kind of repository, goes through the `EntityMapper` with its `EntityType`, so an application
   that answers some loads itself (the data of a role created minutes ago, which no table has yet) extends

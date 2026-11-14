@@ -148,6 +148,25 @@ class MysqlEntityMapperTest {
     }
 
     @Test
+    void writesItemsThatTradeSlotsWhereverABatchEnds() {
+        database.execute("INSERT INTO item VALUES (1, 100, 0, 5001, 1), (2, 100, 1, 5002, 1), (3, 100, 2, 5003, 1)");
+        try (GameData twoABatch = GameData.builder().repositories(new MysqlEntityMapper(database, new Json()), List.of(Items.class))
+                .errorHandler(reported).flushInterval(Duration.ofMinutes(1)).batchSize(2).build()) {
+            Items bags = twoABatch.repository(Items.class);
+            Map<Integer, Item> bag = bags.getGroup(GroupKeys.of(100L));
+            Item first = bag.get(0), second = bag.get(1), third = bag.get(2);
+            for (Item item : List.of(first, second, third)) bags.delete(item);
+            first.slot = 1;
+            second.slot = 2;
+            third.slot = 0;
+            for (Item item : List.of(first, second, third)) bags.insert(item);
+            twoABatch.flush();   // unique (player_id, slot): none can take its slot before the others have left theirs
+        }
+        assertEquals(List.of(List.of(1L, 1), List.of(2L, 2), List.of(3L, 0)), database.rows("SELECT uid, slot FROM item ORDER BY uid"));
+        assertEquals(List.of(), reported.all());
+    }
+
+    @Test
     void dropsARowItsDataBreaksAndWritesTheOthers() {
         players.insert(new Player(1, "ann"));
         Player longName = new Player(2, "a name longer than the column");

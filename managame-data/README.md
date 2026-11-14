@@ -206,14 +206,17 @@ Every `flushInterval` (1 second) a round writes what changed since the last one:
   throws on the calling thread. A row changed while a round is writing it is written again by the next round.
 - **Types are written in parallel**, each entity type by one of `writeThreads` (4) threads at a time, so the
   changes of a row are written in order. A type's deletes are written first, so a row can take the unique value of one
-  deleted in the same round. Changes go to the mapper in batches of `batchSize` (500), one operation per batch.
+  deleted in the same round. Changes go to the mapper in batches of `batchSize` (500), one operation per batch. The
+  replacements of one group's rows always go in one batch, which grows past `batchSize` for them: rows that trade map
+  keys, such as items moved to each other's slots, only go through together, their deletes before their inserts.
 - **Failures.** A failure the mapper or writer calls retryable (`isRetryable`: by default a lost or refused connection,
   a timeout, a deadlock or lock wait, from JDBC, MongoDB or `java.net`) keeps the batch for the next round; after two
   in a row, the round writes nothing more through that mapper or writer, so an outage costs about two timeouts per
   round. An insert a round could not write is written as `DELETE_INSERT` from then on, since a write that failed may
   have reached the database, so it never meets its own earlier row.
 - **A row's failure or the database's.** Any other failure may be either, and no list of errors tells for sure, so the
-  batch is written again one row at a time. When some rows are written, the database works: each that still fails goes
+  batch is written again one row at a time, the replacements of one group's rows still together. When some rows are
+  written, the database works: each that still fails goes
   to the `DataErrorHandler` and is dropped. When none is written, all are kept for the next round and a WARNING names
   the failure, so a database that answers every write with an error no mapper knows, such as a column missing after a
   migration, loses no change. A row that fails alone in its batch is kept the same way, until a round writes another
@@ -387,7 +390,8 @@ acknowledgement or refuse bad rows. They cover:
 - writing inserts, updates and deletes; loading once and keeping the entity; remembering ids that do not exist;
 - a row changed many times written once, inserted and deleted written not at all, deleted and inserted replaced;
 - groups: loading, changing, keys of several fields, an evicted group coming back with its unwritten changes, an item
-  moved to another slot or to another group with its id coming back where it is now;
+  moved to another slot or to another group with its id coming back where it is now, items that trade slots written
+  wherever a batch ends and together when a batch is written in parts;
 - one load for threads asking for the same id or group at once; unused entries leaving memory, and an evicted entity
   coming back unwritten as the same instance;
 - `getAll`: one load of the ids neither in memory nor changed, a `get` and a `getAll` loading one id at once ending with

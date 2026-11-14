@@ -24,6 +24,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiPredicate;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 
@@ -32,7 +33,9 @@ import java.util.function.Predicate;
  * {@link LogWriter}, in rounds. In a round each change set and log queue with something waiting is written by one of
  * the write threads, so different types are written at once while one type is written by one thread at a time, in the
  * order its changes were made. A type's deletes are written first, so a row can take the unique value of one deleted in
- * the same round, then replacements, inserts and updates, in batches. Rounds never overlap.
+ * the same round, then replacements, inserts and updates, in batches. The replacements of one group's rows are never
+ * split, between batches or within one written in parts: rows that trade map keys only go through together, their
+ * deletes before their inserts. Rounds never overlap.
  *
  * <p>Changes and logs are written by the same rule ({@link #writeBatch}). A failure the mapper or writer calls
  * retryable leaves the batch for the next round, and a mapper or writer that failed so twice in a row gets nothing more
@@ -229,9 +232,12 @@ public final class ChangeWriter {
             for (PendingChange change : taken) byOperation.computeIfAbsent(change.operation, key -> new ArrayList<>()).add(change);
             for (DataOperation operation : WRITE_ORDER) {
                 List<PendingChange> ofOperation = byOperation.getOrDefault(operation, List.of());
-                for (int from = 0; from < ofOperation.size(); from += batchSize) {
+                // Rows of one group that are replaced may trade map keys, which only one write of them all gets through.
+                BiPredicate<PendingChange, PendingChange> together = operation == DELETE_INSERT ? ChangeWriter::inOneGroup : (one, next) -> false;
+                for (int from = 0, to; from < ofOperation.size(); from = to) {
+                    to = endOfPart(ofOperation, Math.min(ofOperation.size(), from + batchSize), together);
                     BatchResult<PendingChange> result = writeBatch(round, mapper, mapper::isRetryable,
-                            batch -> mapper.write(changes.type, operation, batch), ofOperation.subList(from, Math.min(ofOperation.size(), from + batchSize)));
+                            batch -> mapper.write(changes.type, operation, batch), ofOperation.subList(from, to), together);
                     changes.written.addAndGet(result.written.size());
                     changes.failures.addAndGet(result.failures);
                     finished += result.written.size() + result.givenUp.size();
@@ -264,7 +270,7 @@ public final class ChangeWriter {
             List<Object> batch = new ArrayList<>(Math.min(batchSize, remaining));
             for (Object log; batch.size() < batchSize && remaining > 0 && (log = logs.poll()) != null; remaining--) batch.add(log);
             if (batch.isEmpty()) break;
-            BatchResult<Object> result = writeBatch(round, writer, writer::isRetryable, taken -> writer.write(logs.type, taken), batch);
+            BatchResult<Object> result = writeBatch(round, writer, writer::isRetryable, taken -> writer.write(logs.type, taken), batch, (one, next) -> false);
             logs.written.addAndGet(result.written.size());
             logs.failures.addAndGet(result.failures);
             unwritten.addAll(result.kept);
@@ -280,10 +286,12 @@ public final class ChangeWriter {
     /**
      * Writes one batch of changes or logs to {@code target}, the mapper or writer, which stands for the database or
      * service it writes to. A batch that fails for a reason {@code isRetryable} names is kept whole. Any other failure
-     * may be a row's or the database's, so the batch is written again one row at a time: when some are written the
-     * database works, and those that fail are given up; when none is written, all are kept.
+     * may be a row's or the database's, so the batch is written again in its smallest parts, one row at a time unless
+     * {@code together} keeps rows next to each other in one: when some parts are written the database works, and those
+     * that fail are given up; when none is written, all are kept.
      */
-    private <T> BatchResult<T> writeBatch(Round round, Object target, Predicate<Throwable> isRetryable, BatchWrite<T> write, List<T> batch) {
+    private <T> BatchResult<T> writeBatch(Round round, Object target, Predicate<Throwable> isRetryable, BatchWrite<T> write, List<T> batch,
+                                          BiPredicate<T, T> together) {
         BatchResult<T> result = new BatchResult<>();
         if (round.shouldStop(target)) {
             result.kept = batch;
@@ -305,30 +313,32 @@ public final class ChangeWriter {
         round.resetFailures(target);   // the database answered
         List<T> written = new ArrayList<>(), kept = new ArrayList<>(), failed = new ArrayList<>();
         List<Throwable> causes = new ArrayList<>();
-        if (batch.size() == 1) {
-            failed.add(batch.getFirst());
-            causes.add(failure);
+        if (endOfPart(batch, 1, together) == batch.size()) {   // one part already: nothing smaller to try
+            failed.addAll(batch);
+            for (int i = 0; i < batch.size(); i++) causes.add(failure);
         } else {
-            for (T one : batch) {
+            for (int from = 0, to; from < batch.size(); from = to) {
+                to = endOfPart(batch, from + 1, together);
+                List<T> part = batch.subList(from, to);
                 if (round.shouldStop(target)) {
-                    kept.add(one);
+                    kept.addAll(part);
                     continue;
                 }
-                Throwable failureOfOne = failureOf(write, List.of(one));
-                if (failureOfOne == null) {
+                Throwable failureOfPart = failureOf(write, part);
+                if (failureOfPart == null) {
                     round.resetFailures(target);
-                    round.written.incrementAndGet();
-                    written.add(one);
+                    round.written.addAndGet(part.size());
+                    written.addAll(part);
                     continue;
                 }
                 result.failures++;
-                if (isRetryable.test(failureOfOne)) {
+                if (isRetryable.test(failureOfPart)) {
                     round.countFailure(target);
-                    kept.add(one);
+                    kept.addAll(part);
                 } else {
                     round.resetFailures(target);
-                    failed.add(one);
-                    causes.add(failureOfOne);
+                    failed.addAll(part);
+                    for (int i = from; i < to; i++) causes.add(failureOfPart);
                 }
             }
         }
@@ -345,6 +355,15 @@ public final class ChangeWriter {
             kept.addAll(failed);
         }
         return result;
+    }
+
+    /** Whether two changes are of rows of one group. */
+    private static boolean inOneGroup(PendingChange one, PendingChange next) { return one.group != null && one.group.equals(next.group); }
+
+    /** Where a part of {@code items} that would end before {@code end} ends: there, or later while the items around its end go together. */
+    private static <T> int endOfPart(List<T> items, int end, BiPredicate<T, T> together) {
+        while (end < items.size() && together.test(items.get(end - 1), items.get(end))) end++;
+        return end;
     }
 
     /** Why writing {@code rows} failed, or null when they are written. */

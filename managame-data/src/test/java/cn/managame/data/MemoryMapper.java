@@ -17,7 +17,8 @@ import java.util.function.Predicate;
 
 /**
  * An EntityMapper over maps in memory that behaves as a database does: it keeps copies of the rows it is given, loads
- * new instances, writes a batch all or nothing, refuses to insert an id twice or update a missing row, and can be told
+ * new instances, writes a batch all or nothing, refuses to insert an id twice, to update a missing row or to put two
+ * rows of a group at one map key, as a table's unique key does, and can be told
  * to be unreachable, to refuse every write, to lose the acknowledgement of its next write, to refuse rows as bad data,
  * or to hold a write between reading its entities and storing them.
  */
@@ -130,21 +131,38 @@ class MemoryMapper implements EntityMapper {
     private synchronized void store(EntityType type, DataOperation operation, List<? extends Change> batch, List<Map<String, Object>> read) throws ConnectException {
         if (unreachable) throw new ConnectException("the database cannot be reached");
         if (readOnly) throw new IllegalStateException("the database is read-only");
-        Map<Object, Map<String, Object>> rows = tables.get(type);
-        for (Change change : batch) {
-            if (change.entity() != null && operation != DataOperation.DELETE && badRows.test(change.entity()))
-                throw new IllegalArgumentException("bad row " + change.id());
-            if (operation == DataOperation.INSERT && rows.containsKey(change.id())) throw new IllegalStateException("duplicate id " + change.id());
-            if (operation == DataOperation.UPDATE && !rows.containsKey(change.id())) throw new IllegalStateException("no row " + change.id());
-        }
+        // The batch goes into a copy, which becomes the table only when every row of it went in.
+        Map<Object, Map<String, Object>> rows = new LinkedHashMap<>(tables.get(type));
+        // A replacement deletes the batch's rows and then inserts them, as MySQL's mapper does in one transaction.
+        if (operation == DataOperation.DELETE_INSERT) for (Change change : batch) rows.remove(change.id());
         for (int i = 0; i < batch.size(); i++) {
-            if (operation == DataOperation.DELETE) rows.remove(batch.get(i).id());
-            else rows.put(batch.get(i).id(), read.get(i));
+            Object id = batch.get(i).id();
+            if (operation == DataOperation.DELETE) {
+                rows.remove(id);
+                continue;
+            }
+            if (badRows.test(batch.get(i).entity())) throw new IllegalArgumentException("bad row " + id);
+            if (operation == DataOperation.INSERT && rows.containsKey(id)) throw new IllegalStateException("duplicate id " + id);
+            if (operation == DataOperation.UPDATE && !rows.containsKey(id)) throw new IllegalStateException("no row " + id);
+            Map<String, Object> row = read.get(i);
+            for (Map.Entry<Object, Map<String, Object>> other : rows.entrySet())
+                if (!other.getKey().equals(id) && sameMapKeyInOneGroup(type, other.getValue(), row))
+                    throw new IllegalStateException("the map key of " + id + " is that of " + other.getKey() + " in its group");
+            rows.put(id, row);
         }
+        tables.put(type, rows);
         if (failAfterNextWrite) {
             failAfterNextWrite = false;
             throw new ConnectException("connection lost before the write was acknowledged");
         }
+    }
+
+    /** Whether two rows of a grouped type are in one group at one map key, which a table's unique key refuses. */
+    private static boolean sameMapKeyInOneGroup(EntityType type, Map<String, Object> one, Map<String, Object> other) {
+        if (type.groupKeys().isEmpty()) return false;
+        for (EntityField key : type.groupKeys()) if (!one.get(key.name()).equals(other.get(key.name()))) return false;
+        for (EntityField key : type.mapKeys()) if (!one.get(key.name()).equals(other.get(key.name()))) return false;
+        return true;
     }
 
     /** The stored rows of a type, oldest first, each by field name. */

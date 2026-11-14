@@ -143,6 +143,54 @@ class GroupRepositoryTest {
         assertEquals(List.of(200L), database.rows(Item.class).stream().map(row -> row.get("playerId")).toList());
     }
 
+    /** Three items of one bag, each moved to the next one's slot before a round wrote any of it. */
+    private static void tradeSlots(Items items, long playerId) {
+        Map<Integer, Item> bag = items.getGroup(GroupKeys.of(playerId));
+        Item first = bag.get(0), second = bag.get(1), third = bag.get(2);
+        for (Item item : List.of(first, second, third)) items.delete(item);
+        first.slot = 1;
+        second.slot = 2;
+        third.slot = 0;
+        for (Item item : List.of(first, second, third)) items.insert(item);
+    }
+
+    @Test
+    void writesItemsThatTradeSlotsWhereverABatchEnds() {
+        MemoryMapper stored = new MemoryMapper();
+        try (GameData twoABatch = GameData.builder().errorHandler(new ReportedFailures()).repositories(stored, List.of(Items.class))
+                .flushInterval(Duration.ofMinutes(1)).batchSize(2).build()) {
+            for (long uid = 1; uid <= 3; uid++) stored.put(Item.class, new Item(uid, 100, (int) uid - 1, 5001, 1));
+            tradeSlots(twoABatch.repository(Items.class), 100);
+            twoABatch.flush();   // one write of the three: none can take its slot before the others have left theirs
+        }
+        assertEquals(List.of(List.of(1L, 1), List.of(2L, 2), List.of(3L, 0)),
+                stored.rows(Item.class).stream().map(row -> List.of(row.get("uid"), row.get("slot"))).sorted(java.util.Comparator.comparing(row -> (Long) row.get(0))).toList());
+    }
+
+    @Test
+    void writesAGroupsReplacementsTogetherWhenABatchIsWrittenInParts() {
+        MemoryMapper stored = new MemoryMapper();
+        ReportedFailures reported = new ReportedFailures();
+        try (GameData oneBatch = GameData.builder().errorHandler(reported).repositories(stored, List.of(Items.class))
+                .flushInterval(Duration.ofMinutes(1)).build()) {
+            Items bags = oneBatch.repository(Items.class);
+            for (long uid = 1; uid <= 3; uid++) stored.put(Item.class, new Item(uid, 100, (int) uid - 1, 5001, 1));
+            stored.put(Item.class, new Item(9, 200, 0, 5001, 1));
+            stored.badRows = entity -> ((Item) entity).amount < 0;
+            tradeSlots(bags, 100);
+            Item refused = bags.get(GroupKeys.of(200L), 0);
+            bags.delete(refused);
+            refused.amount = -1;
+            bags.insert(refused);   // a replacement the database refuses, in the batch of the three
+
+            assertThrows(DataException.class, oneBatch::flush);
+            assertEquals(1, reported.all().size(), "the three went in together, so the database works and the fourth is refused for what it is");
+            assertSame(refused, reported.all().getFirst().value());
+        }
+        assertEquals(List.of(List.of(1L, 1), List.of(2L, 2), List.of(3L, 0), List.of(9L, 0)),
+                stored.rows(Item.class).stream().map(row -> List.of(row.get("uid"), row.get("slot"))).sorted(java.util.Comparator.comparing(row -> (Long) row.get(0))).toList());
+    }
+
     @Test
     void keysGroupsAndEntitiesBySeveralFields() {
         Quest done = new Quest(1, 100, 1, 7, 1);
