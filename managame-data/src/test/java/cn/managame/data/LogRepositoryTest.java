@@ -112,16 +112,41 @@ class LogRepositoryTest {
             release.await();
             throw new IllegalArgumentException("refused");
         };
-        try (GameData data = GameData.builder().repositories(database, List.of(Players.class)).logRepositories(hanging, List.of(ItemLogs.class))
-                .errorHandler(reported).flushInterval(Duration.ofMillis(20)).build()) {
+        GameData data = GameData.builder().repositories(database, List.of(Players.class)).logRepositories(hanging, List.of(ItemLogs.class))
+                .errorHandler(reported).flushInterval(Duration.ofMillis(20)).shutdownTimeout(Duration.ZERO).build();
+        try {
             data.repository(ItemLogs.class).insert(new ItemLog(100, 5001, 1));
             assertTrue(writing.await(5, TimeUnit.SECONDS), "a log round waits in the writer");
             data.repository(Players.class).insert(new Player(1, "ann"));
             data.flush();
             assertEquals(1, database.rows(Player.class).size(), "written while the logs' round waits");
+        } finally {
             release.countDown();
+            // The only log of its batch is kept, as nothing tells its failure from the destination's; close hands it over.
+            assertThrows(DataException.class, data::close);
         }
         assertEquals(DATA_LOG_SAVE_FAILED, reported.all().getFirst().errorCode());
+    }
+
+    @Test
+    void keepsEveryLogOfABatchOfWhichNoneCanBeWritten() {
+        LogService service = new LogService();
+        boolean[] refusing = {true};
+        LogWriter refusesAll = (logType, logs) -> {
+            if (refusing[0]) throw new IllegalStateException("the service answers, but takes no logs");
+            service.write(logType, logs);
+        };
+        try (GameData data = start(refusesAll, 100)) {
+            ItemLogs logs = data.repository(ItemLogs.class);
+            logs.insert(new ItemLog(100, 5001, 1));
+            logs.insert(new ItemLog(100, 5001, 2));
+            assertThrows(DataException.class, data::flushLogs);
+            assertEquals(List.of(), reported.all(), "no log of the batch was written, so none is given up");
+            refusing[0] = false;
+            data.flushLogs();
+        }
+        assertEquals(List.of(new ItemLog(100, 5001, 1), new ItemLog(100, 5001, 2)), service.received);
+        assertEquals(List.of(), reported.all());
     }
 
     @Test

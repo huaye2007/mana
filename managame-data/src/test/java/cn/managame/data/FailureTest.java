@@ -11,10 +11,14 @@ import cn.managame.data.Fixtures.Players;
 import cn.managame.data.Fixtures.ReportedFailures;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-/** What writing does when the database cannot be reached, loses an acknowledgement, or refuses a row. */
+/** What writing does when the database cannot be reached, refuses every write, loses an acknowledgement, or refuses a row. */
 class FailureTest {
     private final MemoryMapper database = new MemoryMapper();
     private final ReportedFailures reported = new ReportedFailures();
@@ -25,6 +29,7 @@ class FailureTest {
     @AfterEach
     void close() {
         database.unreachable = false;
+        database.readOnly = false;
         try {
             data.close();
         } catch (DataException e) {
@@ -80,13 +85,90 @@ class FailureTest {
     @Test
     void reportsAnUpdateOfARowNoLongerStored() {
         database.put(Player.class, new Player(1, "ann"));
-        Player player = players.get(1L);
+        database.put(Player.class, new Player(2, "bob"));
+        Player gone = players.get(1L), stored = players.get(2L);
         database.remove(Player.class, 1L);   // another process deletes the row
-        player.level = 3;
-        players.update(player);
+        gone.level = 3;
+        players.update(gone);
+        stored.level = 3;
+        players.update(stored);
         assertThrows(DataException.class, data::flush);
+        assertEquals(3, database.rows(Player.class).getFirst().get("level"), "the other row of the batch is written");
         assertEquals(1, reported.all().size());
+        assertSame(gone, reported.all().getFirst().value());
         assertEquals(DataOperation.UPDATE, reported.all().getFirst().operation());
+    }
+
+    @Test
+    void keepsEveryRowOfABatchOfWhichNoneCanBeWritten() {
+        players.insert(new Player(1, "ann"));
+        players.insert(new Player(2, "bob"));
+        database.readOnly = true;   // an error no mapper knows: nothing says whether the rows or the database fail
+        assertThrows(DataException.class, data::flush);
+        assertThrows(DataException.class, data::flush);
+        assertEquals(List.of(), reported.all(), "no row of the batch was written, so none is given up");
+        assertEquals(2, data.stats().entities().getFirst().waiting());
+        database.readOnly = false;
+        data.flush();
+        assertEquals(List.of("ann", "bob"), names());
+        assertEquals(List.of(), reported.all());
+    }
+
+    @Test
+    void keepsARowThatFailsAloneUntilAnotherOfItsBatchIsWritten() {
+        database.put(Player.class, new Player(1, "ann"));
+        database.put(Player.class, new Player(2, "bob"));
+        database.badRows = entity -> ((Player) entity).name.length() > 8;
+        Player longName = players.get(1L);
+        longName.name = "a name longer than eight";
+        players.update(longName);
+        assertThrows(DataException.class, data::flush);
+        assertEquals(List.of(), reported.all(), "alone in its batch, its failure may as well be the database's");
+        assertEquals(1, data.stats().entities().getFirst().waiting());
+
+        players.update(2L, player -> player.level = 2);
+        assertThrows(DataException.class, data::flush);
+        assertEquals(1, reported.all().size(), "the other row was written, so the database works and the row is refused for what it is");
+        assertSame(longName, reported.all().getFirst().value());
+        assertEquals(0, data.stats().entities().getFirst().waiting());
+        assertEquals(List.of("ann", "bob"), names());
+    }
+
+    @Test
+    void writesAChangeMadeWhileItsRowIsWrittenInTheNextRound() throws Exception {
+        Player player = new Player(1, "ann");
+        players.insert(player);
+        database.writeGate = new CountDownLatch(1);
+        try (ExecutorService thread = Executors.newSingleThreadExecutor()) {
+            Future<?> round = thread.submit(data::flush);
+            while (database.writes.get() == 0) Thread.onSpinWait();   // the round has read the player and waits to store it
+            player.level = 2;
+            players.update(player);
+            database.writeGate.countDown();
+            round.get();
+        }
+        assertEquals(1, database.rows(Player.class).getFirst().get("level"), "as the round read it");
+        assertEquals(1, data.stats().entities().getFirst().waiting(), "the change made meanwhile");
+        data.flush();
+        assertEquals(2, database.rows(Player.class).getFirst().get("level"));
+        assertEquals(List.of(), reported.all());
+    }
+
+    @Test
+    void deletesARowDeletedWhileItsInsertIsWritten() throws Exception {
+        players.insert(new Player(1, "ann"));
+        database.writeGate = new CountDownLatch(1);
+        try (ExecutorService thread = Executors.newSingleThreadExecutor()) {
+            Future<?> round = thread.submit(data::flush);
+            while (database.writes.get() == 0) Thread.onSpinWait();
+            players.delete(1L);   // not dropped with the insert: that insert is on its way to the database
+            database.writeGate.countDown();
+            round.get();
+        }
+        assertEquals(List.of("ann"), names());
+        data.flush();
+        assertEquals(List.of(), names());
+        assertEquals(List.of(), reported.all());
     }
 
     @Test

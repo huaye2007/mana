@@ -52,16 +52,21 @@ public interface EntityMapper {
     /**
      * Writes one batch of changes with the same operation. An UPDATE of an entity whose row is missing may write the row
      * again, as MySQL's mapper does, or fail, as MongoDB's does. Writing a batch again after it failed must do no harm,
-     * because a failure that {@link #isRetryable} allows is written again in the next round: write a batch in one
-     * transaction, or write every entity idempotently.
+     * because a batch that failed is written again, whole in the next round or one row at a time in this one: write a
+     * batch in one transaction, or write every entity idempotently.
      */
     void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws Exception;
 
     /**
-     * Whether a failure of {@link #write} may succeed when tried again, in the next round, without a change to code or
-     * data; otherwise the batch is split into single changes, and those that still fail are dropped. By default, a lost
-     * or refused connection, a timeout, a deadlock or lock wait (JDBC, MongoDB and {@code java.net}), and a collection a
+     * Whether a failure of {@link #write} says the database cannot be written now, so that the batch waits whole for the
+     * next round, and after two such failures in a row nothing more is written here in this round. By default, a lost or
+     * refused connection, a timeout, a deadlock or lock wait (JDBC, MongoDB and {@code java.net}), and a collection a
      * business thread changed while it was being read.
+     *
+     * <p>Any other failure may be a row's or the database's, which no list of errors tells for sure, so the batch is
+     * written again one row at a time. When some rows are written, the database works, and those that fail are handed to
+     * the DataErrorHandler and dropped; when none is, all are kept for the next round. Recognizing more failures here
+     * only saves that second pass: no row is dropped for a failure this method does not know.
      */
     default boolean isRetryable(Throwable failure) { return RetryableFailures.isRetryable(failure); }
 }

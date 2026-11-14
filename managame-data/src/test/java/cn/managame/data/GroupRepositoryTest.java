@@ -112,6 +112,38 @@ class GroupRepositoryTest {
     }
 
     @Test
+    void anItemMovedToAnotherSlotComesBackAtItsNewSlot() {
+        database.put(Item.class, new Item(1, 100, 0, 5001, 1));
+        Item item = items.get(GroupKeys.of(100L), 0);
+        items.delete(item);
+        item.slot = 3;
+        items.insert(item);   // the same uid at another slot, before a round wrote either change
+        items.evict(GroupKeys.of(100L));
+
+        Map<Integer, Item> bag = items.getGroup(GroupKeys.of(100L));
+        assertEquals(Set.of(3), bag.keySet(), "at its new slot only, not where the database still has it");
+        assertSame(item, bag.get(3));
+        data.flush();
+        assertEquals(List.of(List.of(1L, 3, 1)), rows());
+    }
+
+    @Test
+    void anItemMovedToAnotherGroupWithItsIdIsInThatGroupOnly() {
+        database.put(Item.class, new Item(1, 100, 0, 5001, 1));
+        Item item = items.get(GroupKeys.of(100L), 0);
+        items.delete(item);
+        item.playerId = 200;
+        items.insert(item);   // traded to another player with its uid
+        items.evict(GroupKeys.of(100L));
+        items.evict(GroupKeys.of(200L));
+
+        assertTrue(items.getGroup(GroupKeys.of(100L)).isEmpty());
+        assertSame(item, items.get(GroupKeys.of(200L), 0));
+        data.flush();
+        assertEquals(List.of(200L), database.rows(Item.class).stream().map(row -> row.get("playerId")).toList());
+    }
+
+    @Test
     void keysGroupsAndEntitiesBySeveralFields() {
         Quest done = new Quest(1, 100, 1, 7, 1);
         done.progress = 10;

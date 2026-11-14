@@ -65,7 +65,7 @@ public abstract class GroupRepository<K, E> {
 
     /** Reads the whole table into memory; GameData calls it while building a preloaded repository. */
     final void preload() {
-        rowsByGroup(loadTable()).forEach((groupKey, rows) -> groups.put(groupKey, groupOf(groupKey, rows, List.of())));
+        rowsByGroup(loadTable()).forEach((groupKey, rows) -> groups.put(groupKey, groupOf(groupKey, rows, Map.of())));
     }
 
     /** The group, live and for reading, loaded first when not in memory; empty when the database has none. */
@@ -193,7 +193,7 @@ public abstract class GroupRepository<K, E> {
 
     /** What the database has for the group with its unwritten changes laid over; runs inside the cache. */
     private ConcurrentHashMap<K, E> load(GroupKeys groupKey) {
-        List<PendingChange> unwritten = changes.findGroup(groupKey);
+        Map<Object, PendingChange> unwritten = changes.findGroup(groupKey);
         List<Object> rows;
         try {
             rows = mapper.loadGroup(entityType, groupKey);
@@ -204,19 +204,19 @@ public abstract class GroupRepository<K, E> {
     }
 
     /**
-     * A group of these rows with the changes laid over, deletes first, so a row deleted and another inserted at the same
-     * map key end as the inserted one.
+     * A group of these rows with the unwritten changes, by id, laid over: a row with a change is as its change has it,
+     * deleted or at the entity's map key now, whatever the database returned for its id.
      */
     @SuppressWarnings("unchecked")
-    private ConcurrentHashMap<K, E> groupOf(GroupKeys groupKey, List<Object> rows, List<PendingChange> unwritten) {
+    private ConcurrentHashMap<K, E> groupOf(GroupKeys groupKey, List<Object> rows, Map<Object, PendingChange> unwritten) {
         ConcurrentHashMap<K, E> group = new ConcurrentHashMap<>();
         for (Object entity : rows) {
+            if (!unwritten.isEmpty() && unwritten.containsKey(keys.idOf(entity))) continue;
             K mapKey = mapKeyOf((E) entity);
             if (group.putIfAbsent(mapKey, (E) entity) != null)
                 throw new DataException(DATA_LOAD_FAILED, "group " + groupKey + " of " + entityName() + " has two rows with map key " + mapKey, null);
         }
-        for (PendingChange change : unwritten) if (change.operation() == DELETE) group.remove((K) change.mapKey());
-        for (PendingChange change : unwritten) if (change.operation() != DELETE) group.put((K) change.mapKey(), (E) change.entity());
+        for (PendingChange change : unwritten.values()) if (change.operation() != DELETE) group.put((K) change.mapKey(), (E) change.entity());
         return group;
     }
 

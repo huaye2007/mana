@@ -65,9 +65,11 @@ class MongoIntegrationTest {
                 try (GameData preloaded = GameData.builder().errorHandler(failure -> {}).preloadedRepositories(new MongoEntityMapper(database), List.of(Players.class)).build()) {
                     assertEquals(49, preloaded.repository(Players.class).all().size());
                 }
-                database.getCollection("player").deleteMany(new Document());
+                database.getCollection("player").deleteOne(new Document("_id", 9L));
                 players.update(9L, player -> player.level = 2);
-                assertThrows(DataException.class, data::flush, "an update of a document no longer stored fails");
+                players.update(10L, player -> player.level = 2);
+                assertThrows(DataException.class, data::flush, "an update of a document no longer stored fails, and is given up as the other is written");
+                assertEquals(48, database.getCollection("player").countDocuments());
             } finally {
                 database.drop();
             }

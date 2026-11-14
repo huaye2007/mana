@@ -187,6 +187,20 @@ class MysqlEntityMapperTest {
     }
 
     @Test
+    void keepsEveryRowTheServerRefusesForAReasonTheMapperDoesNotKnow() {
+        players.insert(new Player(1, "ann"));
+        players.insert(new Player(2, "bob"));
+        database.serverError = 1142;   // the user's right to write taken away: an error the mapper has no rule for
+        assertThrows(DataException.class, data::flush);
+        assertThrows(DataException.class, data::flush);
+        assertEquals(List.of(), reported.all(), "no row of the batch could be written, so none is given up");
+        database.serverError = 0;
+        data.flush();
+        assertEquals(2, players().size());
+        assertEquals(List.of(), reported.all());
+    }
+
+    @Test
     void tellsWhatTheServerCannotDoNowFromWhatTheDataBreaks() {
         MysqlEntityMapper mapper = new MysqlEntityMapper(database);
         for (int error : List.of(1021, 1037, 1038, 1041, 1114, 1203, 1226, 1290, 1317, 1792, 1836))

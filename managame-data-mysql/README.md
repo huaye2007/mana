@@ -60,9 +60,10 @@ SELECT once per hundred ids on one connection, filling the last hundred by repea
 - **What is tried again.** A lost or refused connection, a timeout, a deadlock or lock wait, as with every mapper, and
   what MySQL cannot do now, which says nothing about the rows: read-only, as a primary is once another took over (errors
   1290, 1792, 1836), the disk or a table full (1021, 1114), out of memory or resources (1037, 1038, 1041), the user's
-  connections or resources used up (1203, 1226) and a statement killed (1317). Such a batch waits for the next round.
-  Any other failure is the data's: the batch is split into single rows, and those that still fail go to the
-  `DataErrorHandler`. `MysqlLogWriter` tells the two apart the same way.
+  connections or resources used up (1203, 1226) and a statement killed (1317). Such a batch waits whole for the next
+  round. Any other failure has the batch written again one row at a time: when some rows are written, those that still
+  fail go to the `DataErrorHandler`; when none is, as when the server answers every write with an error not listed
+  here, all wait for the next round. `MysqlLogWriter` does the same.
 - Keep the pool larger than GameData's `writeThreads` plus the loads that run at once.
 
 ## Driver settings
@@ -124,7 +125,8 @@ through GameData, covering rows with JSON columns, loading JSON into the initial
 `getAll` of more ids
 than one SELECT names, updates of many rows
 in one batch, groups and a unique slot reused through deletes first, a bad row dropped and the others written,
-changes kept while the database refuses connections, an insert whose commit was not acknowledged written again without
+changes kept while the database refuses connections, every row kept when the server refuses them all for a reason the
+mapper does not know, an insert whose commit was not acknowledged written again without
 a duplicate, an updated row no longer stored written again, mappings refused at build, and logs in day partitions cut in the
 partition zone, in one batch. `MysqlIntegrationTest` runs against a real MySQL when given a database that can be
 thrown away:

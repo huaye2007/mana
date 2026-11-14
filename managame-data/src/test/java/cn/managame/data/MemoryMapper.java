@@ -18,7 +18,8 @@ import java.util.function.Predicate;
 /**
  * An EntityMapper over maps in memory that behaves as a database does: it keeps copies of the rows it is given, loads
  * new instances, writes a batch all or nothing, refuses to insert an id twice or update a missing row, and can be told
- * to be unreachable, to lose the acknowledgement of its next write, or to refuse rows as bad data.
+ * to be unreachable, to refuse every write, to lose the acknowledgement of its next write, to refuse rows as bad data,
+ * or to hold a write between reading its entities and storing them.
  */
 class MemoryMapper implements EntityMapper {
     private final Map<EntityType, Map<Object, Map<String, Object>>> tables = new HashMap<>();
@@ -28,6 +29,12 @@ class MemoryMapper implements EntityMapper {
     volatile boolean failAfterNextWrite;
     /** Rows this predicate accepts are refused as bad data. */
     volatile Predicate<Object> badRows = entity -> false;
+    /** Every write is refused with an error no mapper knows, as by a database that answers but cannot write now. */
+    volatile boolean readOnly;
+    /** Writes so far that have read their entities. */
+    final AtomicInteger writes = new AtomicInteger();
+    /** When set, every write waits for it to open after reading its entities, before it stores them. */
+    volatile CountDownLatch writeGate;
     /** Loads so far, of single entities and of groups. */
     final AtomicInteger loads = new AtomicInteger();
     /** When set, every load waits for it to open, outside this mapper's lock. */
@@ -110,8 +117,19 @@ class MemoryMapper implements EntityMapper {
         return entities;
     }
 
-    @Override public synchronized void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws ConnectException {
+    /** Reads the entities first, as a mapper encodes its rows before it sends them, then waits at the write gate. */
+    @Override public void write(EntityType type, DataOperation operation, List<? extends Change> batch) throws ConnectException, InterruptedException {
+        List<Map<String, Object>> read = new ArrayList<>(batch.size());
+        for (Change change : batch) read.add(change.entity() == null ? null : rowOf(type, change.entity()));
+        writes.incrementAndGet();
+        CountDownLatch gate = writeGate;
+        if (gate != null) gate.await();
+        store(type, operation, batch, read);
+    }
+
+    private synchronized void store(EntityType type, DataOperation operation, List<? extends Change> batch, List<Map<String, Object>> read) throws ConnectException {
         if (unreachable) throw new ConnectException("the database cannot be reached");
+        if (readOnly) throw new IllegalStateException("the database is read-only");
         Map<Object, Map<String, Object>> rows = tables.get(type);
         for (Change change : batch) {
             if (change.entity() != null && operation != DataOperation.DELETE && badRows.test(change.entity()))
@@ -119,9 +137,9 @@ class MemoryMapper implements EntityMapper {
             if (operation == DataOperation.INSERT && rows.containsKey(change.id())) throw new IllegalStateException("duplicate id " + change.id());
             if (operation == DataOperation.UPDATE && !rows.containsKey(change.id())) throw new IllegalStateException("no row " + change.id());
         }
-        for (Change change : batch) {
-            if (operation == DataOperation.DELETE) rows.remove(change.id());
-            else rows.put(change.id(), rowOf(type, change.entity()));
+        for (int i = 0; i < batch.size(); i++) {
+            if (operation == DataOperation.DELETE) rows.remove(batch.get(i).id());
+            else rows.put(batch.get(i).id(), read.get(i));
         }
         if (failAfterNextWrite) {
             failAfterNextWrite = false;

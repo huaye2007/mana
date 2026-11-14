@@ -25,17 +25,20 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
+import java.util.function.Predicate;
 
 /**
  * Writes every entity type's changes through its {@link EntityMapper} and every log type's logs through its
  * {@link LogWriter}, in rounds. In a round each change set and log queue with something waiting is written by one of
  * the write threads, so different types are written at once while one type is written by one thread at a time, in the
- * order its changes were made. A type's deletes are written first, so a row can take the unique value of one deleted
- * in the same round, then replacements, inserts and updates, in batches. Rounds never overlap.
+ * order its changes were made. A type's deletes are written first, so a row can take the unique value of one deleted in
+ * the same round, then replacements, inserts and updates, in batches. Rounds never overlap.
  *
- * <p>A failure the mapper or writer calls retryable leaves the batch for the next round, and a mapper or writer that
- * failed so twice in a row gets nothing more in the round, which would only wait out the same timeout again. Any other
- * failure splits the batch into single changes or logs; one that still fails goes to the DataErrorHandler and is dropped.
+ * <p>Changes and logs are written by the same rule ({@link #writeBatch}). A failure the mapper or writer calls
+ * retryable leaves the batch for the next round, and a mapper or writer that failed so twice in a row gets nothing more
+ * in the round, which would only wait out the same timeout again. Any other failure may be a row's or the database's,
+ * and writing the batch one row at a time tells them apart: when some of its rows are written the database works, so
+ * those that fail go to the DataErrorHandler and are dropped; when none is, all are kept for the next round.
  *
  * <p>GameData keeps two, one for the entities' change sets and one for the logs' queues, so that the rounds of each
  * never wait for the other's.
@@ -68,7 +71,7 @@ public final class ChangeWriter {
             this.deadline = deadline;
         }
 
-        /** Changes and logs kept for a later round after retryable failures. */
+        /** Changes and logs kept for a later round after failures. */
         public int unwritten() { return unwritten.get(); }
 
         /** Changes and logs handed to the DataErrorHandler. */
@@ -85,6 +88,20 @@ public final class ChangeWriter {
         private AtomicInteger failuresOf(Object target) {
             return failuresInARow.computeIfAbsent(target, key -> new AtomicInteger());
         }
+    }
+
+    /** Writes a batch of changes or logs through a mapper or writer. */
+    private interface BatchWrite<T> {
+        void write(List<T> batch) throws Exception;
+    }
+
+    /** What became of one batch: what was written, what is kept for a later round, and what is given up, each with its cause. */
+    private static final class BatchResult<T> {
+        List<T> written = List.of(), kept = List.of(), givenUp = List.of();
+        /** Why each of {@code givenUp} failed, in the same order. */
+        List<Throwable> causes = List.of();
+        /** Writes that failed, the batch or a single change or log each counting once. */
+        int failures;
     }
 
     public ChangeWriter(List<ChangeSet> changeSets, List<LogQueue> logQueues, int batchSize, int writeThreads, DataErrorHandler errorHandler) {
@@ -121,9 +138,11 @@ public final class ChangeWriter {
             for (ChangeSet changes : changeSets) {
                 List<PendingChange> waiting = changes.takeAll();
                 changes.dropped.addAndGet(waiting.size());
-                for (PendingChange change : waiting)
+                for (PendingChange change : waiting) {
+                    change.finished = true;
                     reportFailure(null, DATA_SAVE_FAILED, changes.type.entityClass(), change.operation, change.entityOrId(), cause);
-                changes.putBack(List.of());
+                }
+                changes.endRound();
                 dropped += waiting.size();
             }
             for (LogQueue logs : logQueues) {
@@ -200,146 +219,141 @@ public final class ChangeWriter {
         }
     }
 
-    /** Writes one entity type's changes; returns how many it put back for a later round. */
+    /** Writes one entity type's changes; returns how many stay for a later round. */
     private int writeChanges(ChangeSet changes, Round round) {
-        List<PendingChange> taken = changes.takeAll(), unwritten = new ArrayList<>();
-        boolean finished = false;
+        EntityMapper mapper = changes.mapper;
+        List<PendingChange> taken = changes.takeAll();
+        int finished = 0;
         try {
             Map<DataOperation, List<PendingChange>> byOperation = new EnumMap<>(DataOperation.class);
             for (PendingChange change : taken) byOperation.computeIfAbsent(change.operation, key -> new ArrayList<>()).add(change);
             for (DataOperation operation : WRITE_ORDER) {
-                List<PendingChange> batch = byOperation.getOrDefault(operation, List.of());
-                for (int from = 0; from < batch.size(); from += batchSize)
-                    writeBatch(changes, round, operation, batch.subList(from, Math.min(batch.size(), from + batchSize)), unwritten);
-            }
-            finished = true;
-        } finally {
-            // After an unexpected failure it is unknown which changes were written: all are written again, which does
-            // no harm, as an insert comes back as DELETE_INSERT.
-            if (!finished) unwritten = taken;
-            for (PendingChange conflict : changes.putBack(unwritten)) {
-                changes.dropped.incrementAndGet();
-                reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), conflict.operation, conflict.entityOrId(),
-                        new IllegalStateException("a change that failed to be written conflicts with a later change of its row"));
-            }
-        }
-        return unwritten.size();
-    }
-
-    private void writeBatch(ChangeSet changes, Round round, DataOperation operation, List<PendingChange> batch, List<PendingChange> unwritten) {
-        EntityMapper mapper = changes.mapper;
-        if (round.shouldStop(mapper)) {
-            unwritten.addAll(batch);
-            return;
-        }
-        try {
-            mapper.write(changes.type, operation, batch);
-            round.resetFailures(mapper);
-            changes.written.addAndGet(batch.size());
-            round.written.addAndGet(batch.size());
-            return;
-        } catch (Throwable e) {
-            changes.failures.incrementAndGet();
-            if (mapper.isRetryable(e)) {
-                round.countFailure(mapper);
-                unwritten.addAll(batch);
-                return;
-            }
-            round.resetFailures(mapper);   // the database answered, so what failed is the data
-            if (batch.size() == 1) {
-                changes.dropped.incrementAndGet();
-                reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), operation, batch.getFirst().entityOrId(), e);
-                return;
-            }
-        }
-        for (PendingChange change : batch) {
-            if (round.shouldStop(mapper)) {
-                unwritten.add(change);
-                continue;
-            }
-            try {
-                mapper.write(changes.type, operation, List.of(change));
-                round.resetFailures(mapper);
-                changes.written.incrementAndGet();
-                round.written.incrementAndGet();
-            } catch (Throwable e) {
-                changes.failures.incrementAndGet();
-                if (mapper.isRetryable(e)) {
-                    round.countFailure(mapper);
-                    unwritten.add(change);
-                } else {
-                    round.resetFailures(mapper);
-                    changes.dropped.incrementAndGet();
-                    reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), operation, change.entityOrId(), e);
+                List<PendingChange> ofOperation = byOperation.getOrDefault(operation, List.of());
+                for (int from = 0; from < ofOperation.size(); from += batchSize) {
+                    BatchResult<PendingChange> result = writeBatch(round, mapper, mapper::isRetryable,
+                            batch -> mapper.write(changes.type, operation, batch), ofOperation.subList(from, Math.min(ofOperation.size(), from + batchSize)));
+                    changes.written.addAndGet(result.written.size());
+                    changes.failures.addAndGet(result.failures);
+                    finished += result.written.size() + result.givenUp.size();
+                    for (PendingChange change : result.written) change.finished = true;
+                    for (int i = 0; i < result.givenUp.size(); i++) {
+                        PendingChange change = result.givenUp.get(i);
+                        change.finished = true;
+                        changes.dropped.incrementAndGet();
+                        reportFailure(round, DATA_SAVE_FAILED, changes.type.entityClass(), operation, change.entityOrId(), result.causes.get(i));
+                    }
                 }
             }
+        } finally {
+            // A change not marked finished stays, one whose write was cut short by an unexpected failure too: writing
+            // it again does no harm.
+            changes.endRound();
         }
+        return taken.size() - finished;
     }
 
     /**
-     * Writes what was queued when it started, so logs queued meanwhile wait for the next round. Logs not written after a
-     * retryable failure go back to the end of the queue; returns how many.
+     * Writes what was queued when it started, so logs queued meanwhile wait for the next round. Logs kept after a
+     * failure go back to the end of the queue; returns how many.
      */
     private int writeLogs(LogQueue logs, Round round) {
+        LogWriter writer = logs.writer;
         List<Object> unwritten = new ArrayList<>();
         int remaining = logs.size();
-        while (remaining > 0 && !round.shouldStop(logs.writer)) {
+        while (remaining > 0 && !round.shouldStop(writer)) {
             List<Object> batch = new ArrayList<>(Math.min(batchSize, remaining));
             for (Object log; batch.size() < batchSize && remaining > 0 && (log = logs.poll()) != null; remaining--) batch.add(log);
             if (batch.isEmpty()) break;
-            writeLogBatch(logs, round, batch, unwritten);
+            BatchResult<Object> result = writeBatch(round, writer, writer::isRetryable, taken -> writer.write(logs.type, taken), batch);
+            logs.written.addAndGet(result.written.size());
+            logs.failures.addAndGet(result.failures);
+            unwritten.addAll(result.kept);
+            for (int i = 0; i < result.givenUp.size(); i++) {
+                logs.dropped.incrementAndGet();
+                reportFailure(round, DATA_LOG_SAVE_FAILED, logs.type, LOG_INSERT, result.givenUp.get(i), result.causes.get(i));
+            }
         }
         logs.putBack(unwritten);
         return unwritten.size();
     }
 
-    private void writeLogBatch(LogQueue logs, Round round, List<Object> batch, List<Object> unwritten) {
-        LogWriter writer = logs.writer;
-        if (round.shouldStop(writer)) {
-            unwritten.addAll(batch);
-            return;
+    /**
+     * Writes one batch of changes or logs to {@code target}, the mapper or writer, which stands for the database or
+     * service it writes to. A batch that fails for a reason {@code isRetryable} names is kept whole. Any other failure
+     * may be a row's or the database's, so the batch is written again one row at a time: when some are written the
+     * database works, and those that fail are given up; when none is written, all are kept.
+     */
+    private <T> BatchResult<T> writeBatch(Round round, Object target, Predicate<Throwable> isRetryable, BatchWrite<T> write, List<T> batch) {
+        BatchResult<T> result = new BatchResult<>();
+        if (round.shouldStop(target)) {
+            result.kept = batch;
+            return result;
         }
-        try {
-            writer.write(logs.type, batch);
-            round.resetFailures(writer);
-            logs.written.addAndGet(batch.size());
+        Throwable failure = failureOf(write, batch);
+        if (failure == null) {
+            round.resetFailures(target);
             round.written.addAndGet(batch.size());
-            return;
-        } catch (Throwable e) {
-            logs.failures.incrementAndGet();
-            if (writer.isRetryable(e)) {
-                round.countFailure(writer);
-                unwritten.addAll(batch);
-                return;
-            }
-            round.resetFailures(writer);
-            if (batch.size() == 1) {
-                logs.dropped.incrementAndGet();
-                reportFailure(round, DATA_LOG_SAVE_FAILED, logs.type, LOG_INSERT, batch.getFirst(), e);
-                return;
-            }
+            result.written = batch;
+            return result;
         }
-        for (Object log : batch) {
-            if (round.shouldStop(writer)) {
-                unwritten.add(log);
-                continue;
-            }
-            try {
-                writer.write(logs.type, List.of(log));
-                round.resetFailures(writer);
-                logs.written.incrementAndGet();
-                round.written.incrementAndGet();
-            } catch (Throwable e) {
-                logs.failures.incrementAndGet();
-                if (writer.isRetryable(e)) {
-                    round.countFailure(writer);
-                    unwritten.add(log);
+        result.failures++;
+        if (isRetryable.test(failure)) {
+            round.countFailure(target);
+            result.kept = batch;
+            return result;
+        }
+        round.resetFailures(target);   // the database answered
+        List<T> written = new ArrayList<>(), kept = new ArrayList<>(), failed = new ArrayList<>();
+        List<Throwable> causes = new ArrayList<>();
+        if (batch.size() == 1) {
+            failed.add(batch.getFirst());
+            causes.add(failure);
+        } else {
+            for (T one : batch) {
+                if (round.shouldStop(target)) {
+                    kept.add(one);
+                    continue;
+                }
+                Throwable failureOfOne = failureOf(write, List.of(one));
+                if (failureOfOne == null) {
+                    round.resetFailures(target);
+                    round.written.incrementAndGet();
+                    written.add(one);
+                    continue;
+                }
+                result.failures++;
+                if (isRetryable.test(failureOfOne)) {
+                    round.countFailure(target);
+                    kept.add(one);
                 } else {
-                    round.resetFailures(writer);
-                    logs.dropped.incrementAndGet();
-                    reportFailure(round, DATA_LOG_SAVE_FAILED, logs.type, LOG_INSERT, log, e);
+                    round.resetFailures(target);
+                    failed.add(one);
+                    causes.add(failureOfOne);
                 }
             }
+        }
+        result.written = written;
+        result.kept = kept;
+        if (!written.isEmpty()) {
+            result.givenUp = failed;
+            result.causes = causes;
+        } else if (!failed.isEmpty()) {
+            // Nothing of the batch was written, so its failures tell nothing about the rows: they wait as well.
+            Throwable first = causes.getFirst();
+            LOG.log(System.Logger.Level.WARNING, () -> "None of a batch of " + batch.size() + " could be written through "
+                    + target.getClass().getName() + "; kept for the next round. Its first failure: " + first);
+            kept.addAll(failed);
+        }
+        return result;
+    }
+
+    /** Why writing {@code rows} failed, or null when they are written. */
+    private static <T> Throwable failureOf(BatchWrite<T> write, List<T> rows) {
+        try {
+            write.write(rows);
+            return null;
+        } catch (Throwable e) {
+            return e;
         }
     }
 }

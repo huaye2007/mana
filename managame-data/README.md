@@ -104,7 +104,7 @@ data.close();                                            // writes what is left
   EventLoop. A group is always loaded whole, by reads and changes alike. What reads return is live and for reading:
   change entities and groups through the repository.
 - **Several at once.** `getAll(ids)` returns those of the ids that exist, by id in the order asked. Those not in memory
-  are read with one call of the mapper's `loadAll` (in MySQL a `WHERE id IN (...)` per thousand ids). A `get` of one of
+  are read with one call of the mapper's `loadAll` (in MySQL a `WHERE id IN (...)` per hundred ids). A `get` of one of
   them meanwhile may read it too; whichever stores it first is the instance both return.
 - **After changing an entity, record it**: `update(entity)`, or change it through `update(id, change)` /
   `update(groupKey, mapKey, change)`, which cannot forget. A change is written with the state the entity has when its
@@ -135,16 +135,21 @@ Every `flushInterval` (1 second) a round writes what changed since the last one:
 - **A row is written once per round**, with its latest state, however often it changed. An insert followed by an update
   is written as one insert, an insert followed by a delete not at all, and a delete followed by an insert as
   `DELETE_INSERT`, a replacement. A change that cannot follow the waiting one, such as an update of a deleted row,
-  throws on the calling thread.
+  throws on the calling thread. A row changed while a round is writing it is written again by the next round.
 - **Types are written in parallel**, each entity type by one of `writeThreads` (4) threads at a time, so the
   changes of a row are written in order. A type's deletes are written first, so a row can take the unique value of one
   deleted in the same round. Changes go to the mapper in batches of `batchSize` (500), one operation per batch.
 - **Failures.** A failure the mapper or writer calls retryable (`isRetryable`: by default a lost or refused connection,
   a timeout, a deadlock or lock wait, from JDBC, MongoDB or `java.net`) keeps the batch for the next round; after two
   in a row, the round writes nothing more through that mapper or writer, so an outage costs about two timeouts per
-  round. An insert whose outcome such a failure left unknown is written again as `DELETE_INSERT`, so it never meets its
-  own earlier row. Any other failure splits the batch into single changes; each that still fails goes to the
-  `DataErrorHandler` and is dropped, and the others are written.
+  round. An insert a round could not write is written as `DELETE_INSERT` from then on, since a write that failed may
+  have reached the database, so it never meets its own earlier row.
+- **A row's failure or the database's.** Any other failure may be either, and no list of errors tells for sure, so the
+  batch is written again one row at a time. When some rows are written, the database works: each that still fails goes
+  to the `DataErrorHandler` and is dropped. When none is written, all are kept for the next round and a WARNING names
+  the failure, so a database that answers every write with an error no mapper knows, such as a column missing after a
+  migration, loses no change. A row that fails alone in its batch is kept the same way, until a round writes another
+  row in a batch with it or `close()` hands it over; `flush()` throws while it waits.
 - **`flush()`** writes every entity change made before the call, now, and returns when it is written; it throws
   `DataException` (`DATA_SAVE_FAILED`) when something failed. Use it before another process reads the data, such as
   when a player moves to another server: `flush()`, then `evict`. It does not wait for logs.
@@ -174,8 +179,10 @@ service timing out, never delays the entities' rounds, and its failures never fa
 logs now and throws `DataException` (`DATA_LOG_SAVE_FAILED`) when some failed. `close()` writes entities and logs at
 once, on threads of their own, so neither takes the other's share of `shutdownTimeout`.
 
-A writer that reports over HTTP is a lambda. To have answers such as 503 tried again in the next round, it throws its
-own exception for them and recognizes it:
+A writer that reports over HTTP is a lambda. Logs fail as changes do: a batch whose failure the writer calls retryable
+waits whole for the next round; any other is written again one log at a time, and its logs are dropped only when some
+of the batch are written. To have answers such as 503 leave the batch whole at once, without that second pass, the
+writer throws its own exception for them and recognizes it:
 
 ```java
 class LogService implements LogWriter {
@@ -256,7 +263,9 @@ entity's id and the entity to read. `EntityType` lists the saved fields (`Entity
 set, and the Java field for annotations), the key fields, and makes new instances. Writing a batch again after it
 failed must do no harm: write a batch in one transaction, or every entity idempotently. An UPDATE of an entity whose row
 is missing may write the row again (MySQL's mapper does) or fail (MongoDB's does). `isRetryable` starts from
-`RetryableFailures.isRetryable`, which a mapper can extend.
+`RetryableFailures.isRetryable`, which a mapper can extend. It names the failures that leave a batch whole for the next
+round; a failure it does not know only costs writing the batch one row at a time, and drops no row unless others of the
+batch are written.
 
 ## Configuration
 
@@ -292,7 +301,7 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 
 | Logger | Logs |
 | --- | --- |
-| `cn.managame.data` | INFO: GameData started (its repositories, interval and write threads), each table preloaded with its rows and time, and closed. DEBUG: each repository, each write round that had something to do (written, kept for later, dropped, time). WARNING: an entity collection that is not thread-safe. ERROR: a round or a DataErrorHandler that failed. |
+| `cn.managame.data` | INFO: GameData started (its repositories, interval and write threads), each table preloaded with its rows and time, and closed. DEBUG: each repository, each write round that had something to do (written, kept for later, dropped, time). WARNING: an entity collection that is not thread-safe; a batch of which nothing could be written, kept for the next round, with its first failure. ERROR: a round or a DataErrorHandler that failed. |
 
 ## Build and test
 
@@ -305,7 +314,8 @@ Install managame-common first. The tests run against an in-memory `EntityMapper`
 acknowledgement or refuse bad rows. They cover:
 - writing inserts, updates and deletes; loading once and keeping the entity; remembering ids that do not exist;
 - a row changed many times written once, inserted and deleted written not at all, deleted and inserted replaced;
-- groups: loading, changing, keys of several fields, an evicted group coming back with its unwritten changes;
+- groups: loading, changing, keys of several fields, an evicted group coming back with its unwritten changes, an item
+  moved to another slot or to another group with its id coming back where it is now;
 - one load for threads asking for the same id or group at once; unused entries leaving memory, and an evicted entity
   coming back unwritten as the same instance;
 - `getAll`: one load of the ids neither in memory nor changed, a `get` and a `getAll` loading one id at once ending with
@@ -314,11 +324,13 @@ acknowledgement or refuse bad rows. They cover:
 - preloaded repositories: the whole table read at build and no read asking the database after, `all()`, changes as
   usual, `evict` refused, a mapper without `loadTable` failing the build;
 - logs through the application's writer: in order, kept when the writer calls a failure retryable, a refused log
-  dropped and the others written, a full queue refusing logs, a destination that hangs and then fails never holding up
+  dropped and the others written, every log of a batch kept when none of it can be written, a full queue refusing logs, a destination that hangs and then fails never holding up
   the writing of entities;
-- failures: a bad row dropped and the others written, changes kept while the database cannot be reached, an insert whose
-  acknowledgement was lost written again without a duplicate, an update of a missing row reported, close handing over
-  what it could not write;
+- failures: a bad row dropped and the others written, changes kept while the database cannot be reached, every row of a
+  batch kept when none of it can be written, a row that fails alone kept until another of its batch is written, an
+  insert whose acknowledgement was lost written again without a duplicate, an update of a missing row reported, a change
+  or a delete made while its row is being written carried out by the next round, close handing over what it could not
+  write;
 - the build refusing classes and registrations that do not fit, passing on what a mapper throws, and taking
   repositories as a collection;
 - business threads changing players and their items while rounds write every few milliseconds.

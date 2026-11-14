@@ -182,7 +182,11 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   as a collection with the `EntityMapper` or `LogWriter` that keeps them (`repositories(mapper, types)`,
   `logRepositories(writer, types)`). managame-data knows no database: MySQL and MongoDB are projects of their own
   (`MysqlEntityMapper` with `@Table`, `MongoEntityMapper` with `@Collection`, `MysqlLogWriter`), and where logs go,
-  such as a service over HTTP, is the application's `LogWriter`; each mapper and writer decides what is retryable.
+  such as a service over HTTP, is the application's `LogWriter`; each mapper and writer decides what is retryable,
+  which leaves a batch whole for the next round. No list of errors decides what is dropped: a batch that fails otherwise
+  is written again one row at a time, and a row is given up only when others of its batch are written, since that
+  shows the database works; when none is, all are kept. A change set keeps one change per row and never merges a
+  failed write back: a change stays until it is written, and a row changed while it is written gets a new change.
   Changes are recorded, not copied: the write thread reads the entity when it writes it, so business threads pay no
   copy and entity collections must be thread-safe. The caches are plain Caffeine, `Caffeine.newBuilder()
   .expireAfterAccess(cacheExpire)` with no further tuning or wrapper: it loads a key once however many threads ask.

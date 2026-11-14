@@ -51,7 +51,9 @@ made it:
 | DELETE | `deleteMany` of the batch's ids |
 
 An insert therefore also replaces a document another writer stored with the same `_id`; the application assigns ids
-uniquely. A failed UPDATE batch is split into single writes, and the missing document goes to the DataErrorHandler.
+uniquely. A failed UPDATE batch is written again one document at a time: the others are written, and the missing
+document goes to the DataErrorHandler. An update that fails alone in its batch waits for the next round, as managame-data
+gives a row up only when others of its batch are written.
 
 ## Build and test
 
