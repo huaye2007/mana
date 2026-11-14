@@ -103,7 +103,9 @@ public abstract class GroupRepository<K, E> {
         E entity = get(groupKey, mapKey);
         if (entity == null) return false;
         change.accept(entity);
-        update(entity);
+        // Memory gave the entity at these keys a moment ago: recorded under them, without making the keys from the
+        // entity and looking it up again as update(entity) must.
+        changes.add(UPDATE, keys.idOf(entity), groupKey, mapKey, entity);
         return true;
     }
 

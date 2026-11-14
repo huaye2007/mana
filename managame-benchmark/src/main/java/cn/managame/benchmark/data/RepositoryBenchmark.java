@@ -26,8 +26,9 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * What business code pays on its own thread with every entity in memory: reading a player, reading a player's bag,
- * reading fifty players at once, reading a guild of a preloaded table, and recording that a player changed, which
- * merges into the change already waiting for it. No save runs.
+ * reading fifty players at once, reading a guild of a preloaded table, and recording that a player or an item of a bag
+ * changed, with the entity in hand or got by its keys in the same call, which merges into the change already waiting
+ * for it. No save runs.
  */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -39,7 +40,10 @@ public class RepositoryBenchmark {
     static final int PLAYERS = 1024, SLOTS = 8, BATCH = 50, BATCHES = 16;
     private final Long[] ids = new Long[PLAYERS];
     private final GroupKeys[] groupKeys = new GroupKeys[PLAYERS];
+    private static final Integer FIRST_SLOT = 0;
     private final Player[] cachedPlayers = new Player[PLAYERS];
+    /** Each player's item in the first slot. */
+    private final Item[] cachedItems = new Item[PLAYERS];
     /** Fifty ids each, spread over the players. */
     private final List<List<Long>> batches = new ArrayList<>();
     private DataFixture fixture;
@@ -60,7 +64,10 @@ public class RepositoryBenchmark {
             for (int slot = 0; slot < SLOTS; slot++) items.insert(new Item((long) i * SLOTS + slot, i, slot));
         }
         fixture.data.flush();
-        for (int i = 0; i < PLAYERS; i++) cachedPlayers[i] = players.get(ids[i]);
+        for (int i = 0; i < PLAYERS; i++) {
+            cachedPlayers[i] = players.get(ids[i]);
+            cachedItems[i] = items.get(groupKeys[i], FIRST_SLOT);
+        }
         for (int batch = 0; batch < BATCHES; batch++) {
             List<Long> batchIds = new ArrayList<>(BATCH);
             for (int i = 0; i < BATCH; i++) batchIds.add(ids[(batch * BATCH + i) & (PLAYERS - 1)]);
@@ -83,4 +90,16 @@ public class RepositoryBenchmark {
         player.gold++;
         players.update(player);
     }
+
+    /** As {@link #update}, the player got by its id and changed in the one call that cannot forget to record it. */
+    @Benchmark public boolean updateById() { return players.update(ids[next++ & (PLAYERS - 1)], player -> player.gold++); }
+
+    @Benchmark public void updateInGroup() {
+        Item item = cachedItems[next++ & (PLAYERS - 1)];
+        item.amount++;
+        items.update(item);
+    }
+
+    /** As {@link #updateInGroup}, the item got by its group and slot and changed in one call. */
+    @Benchmark public boolean updateInGroupByKeys() { return items.update(groupKeys[next++ & (PLAYERS - 1)], FIRST_SLOT, item -> item.amount++); }
 }

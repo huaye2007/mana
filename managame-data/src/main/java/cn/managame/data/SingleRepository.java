@@ -151,7 +151,9 @@ public abstract class SingleRepository<K, E> {
         E entity = get(id);
         if (entity == null) return false;
         change.accept(entity);
-        update(entity);
+        // Memory gave the entity for this id a moment ago: recorded under it, without reading the id from the entity
+        // and looking it up again as update(entity) must.
+        changes.add(UPDATE, id, null, null, entity);
         return true;
     }
 

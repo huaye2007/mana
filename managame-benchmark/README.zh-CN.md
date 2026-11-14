@@ -10,7 +10,7 @@
 | `cn.managame.benchmark.network` | `EchoThroughputBenchmark`、`EchoLatencyBenchmark`，以及对应的 `…ProcessBenchmark` | 在回环地址上回显带长度前缀的消息：多个消息在途时的每秒吞吐，以及单条消息的往返时间 |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`、`DispatchThroughputBenchmark` | 每秒经过 `GameRuntime.execute` 执行的任务数（不带和带一个拦截器），以及每秒经 `Dispatcher` 交给注解处理器的玩家请求数 |
 | `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`、`CallLatencyBenchmark`、`NotifyThroughputBenchmark`，以及对应的 `…ProcessBenchmark` | 多个请求在途时每秒应答的调用数和处理的通知数，以及单个调用的往返时间 |
-| `cn.managame.benchmark.data` | `RepositoryBenchmark`、`UpdateThroughputBenchmark`、`WriteThroughputBenchmark` | 实体都在内存里时业务线程的开销（读取玩家或背包、登记修改；ns/op），四个线程同时登记修改的每秒次数，以及经一个什么都不保存的 Mapper 每秒写出的修改数：不含数据库的 managame-data 自身开销 |
+| `cn.managame.benchmark.data` | `RepositoryBenchmark`、`UpdateThroughputBenchmark`、`WriteThroughputBenchmark` | 实体都在内存里时业务线程的开销（读取玩家或背包，登记玩家或背包里一件物品的修改，实体在手里或在同一次调用里按 key 取出；ns/op），四个线程同时登记修改的每秒次数，以及经一个什么都不保存的 Mapper 每秒写出的修改数：不含数据库的 managame-data 自身开销 |
 | `cn.managame.benchmark.mysql` | `SaveThroughputBenchmark` | 经 managame-data-mysql 每秒写入 MySQL 模式的内存 H2 数据库的行数：更新，以及插入加删除 |
 | `cn.managame.benchmark.mysqlserver` | `SaveBenchmark`、`LoadBenchmark` | 对真实 MySQL（`MANAGAME_DATA_MYSQL_URL`、`_USER`、`_PASSWORD`）：每秒写入的行数（标量列、JSON 列、分组的道具、插入加删除），以及 8 个线程每秒冷加载的实体数（按 id、`getAll` 100 个、一组 20 个） |
 | `cn.managame.benchmark.mongo` | `SaveBenchmark`、`LoadBenchmark` | 同样的测试，对真实 MongoDB（`MANAGAME_DATA_MONGO_URI`） |
