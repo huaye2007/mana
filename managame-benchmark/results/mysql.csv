@@ -1,0 +1,4 @@
+# recorded 2026-11-14 on Windows 11 amd64, 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99,alloc_mb_per_s,gc_count,gc_ms,cpu_ns_per_op,cpu_caller_ns_per_op,cpu_eventloop_ns_per_op,cpu_other_ns_per_op,cpu_jvm_ns_per_op,direct_mib,sent_bytes_per_op,received_bytes_per_op,busy_percent,peer_cpu_ns_per_op,peer_cpu_eventloop_ns_per_op,peer_cpu_other_ns_per_op,peer_cpu_jvm_ns_per_op,peer_alloc_bytes_per_op,peer_gc_count,peer_gc_ms,peer_direct_mib
+SaveThroughputBenchmark.insertDelete,,thrpt,474815.664,64376.712,ops/s,4172.112,,,1886.978,34.000,570.000,3636.327,1964.132,0.000,660.137,1012.058,0.000,,,4.018,,,,,,,,
+SaveThroughputBenchmark.update,,thrpt,96685.806,5254.027,ops/s,22935.708,,,2112.570,35.000,52.000,10760.126,10246.585,0.000,144.825,368.716,0.000,,,6.081,,,,,,,,

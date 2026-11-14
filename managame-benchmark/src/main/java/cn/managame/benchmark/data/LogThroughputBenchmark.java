@@ -11,6 +11,7 @@ import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Measurement;
 import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OperationsPerInvocation;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
@@ -20,9 +21,11 @@ import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 
 /**
- * Logs queued per second by four business threads at once into one log type, as item logs are on every change of a
- * bag: how much threads logging into one queue wait for each other. A writer that drops what it is given empties the
- * queue every 10 ms, so it never fills.
+ * Logs per second through one log type, queued by four business threads at once and written by {@code flushLogs()}
+ * through a writer that drops what it is given: what the queue and a round of logs cost the framework itself, and how
+ * much threads logging into one queue wait for each other. Each thread queues {@value #LOGS} logs and has them written,
+ * so the queue holds a few thousand at most. Left to rounds on a timer, four threads queue more than one thread writes,
+ * and the result measures the garbage collector moving a queue of millions.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -32,6 +35,8 @@ import org.openjdk.jmh.annotations.Warmup;
 @Warmup(iterations = 3, time = 1)
 @Measurement(iterations = 5, time = 1)
 public class LogThroughputBenchmark {
+    static final int LOGS = 1000;
+
     public record ItemLog(long playerId, int configId, int delta) {}
 
     public static final class ItemLogs extends LogRepository<ItemLog> {}
@@ -40,13 +45,17 @@ public class LogThroughputBenchmark {
     private GameData data;
     private ItemLogs logs;
 
+    /** A long flush interval leaves writing to the benchmark's own {@code flushLogs()}. */
     @Setup(Level.Trial) public void start() {
         data = GameData.builder().errorHandler(failure -> {}).logRepositories((type, written) -> {}, List.of(ItemLogs.class))
-                .flushInterval(Duration.ofMillis(10)).logQueueCapacity(1 << 24).build();
+                .flushInterval(Duration.ofHours(1)).build();
         logs = data.repository(ItemLogs.class);
     }
 
     @TearDown(Level.Trial) public void stop() { data.close(); }
 
-    @Benchmark public boolean insert() { return logs.insert(log); }
+    @Benchmark @OperationsPerInvocation(LOGS) public void insert() {
+        for (int i = 0; i < LOGS; i++) logs.insert(log);
+        data.flushLogs();
+    }
 }
