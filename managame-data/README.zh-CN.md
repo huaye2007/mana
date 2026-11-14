@@ -24,7 +24,7 @@
 | --- | --- |
 | `cn.managame.data` | 业务代码使用的：`GameData`、各 Repository、`GroupKeys`、`MapKeys`、`DataException`、`DataFailure`、`DataErrorHandler`、`DataOperation` |
 | `cn.managame.data.annotation` | `@Id`、`@GroupKey`、`@MapKey` |
-| `cn.managame.data.spi` | 数据库或日志去处要实现的：`EntityMapper`、`LogWriter`，以及它们读取的 `EntityType`、`EntityField`、`Change`，还有默认的重试规则 `RetryableFailures` |
+| `cn.managame.data.spi` | 数据库或日志去处要实现的：`EntityMapper`、`LogWriter`，以及它们读取的 `EntityType`、`EntityField`、`Change`，还有默认的重试规则 `RetryableFailures`，和用来包住另一个 Mapper 的 `DelegatingEntityMapper` |
 | `cn.managame.data.internal` | 内部实现；只是为了让其他包能调用才是 public，不是 API，任何版本都可能变 |
 
 ## 快速上手
@@ -116,6 +116,70 @@ data.close();                                            // 写完剩下的修�
 - **整表常驻。** 能放进内存又一直要读的表（例如公会）用 `preloadedRepositories(mapper, types)` 注册：build 时通过 Mapper 的
   `loadTable` 整表读入，之后什么都不离开内存。内存里没有的 id 或组就是不存在，所以读取从不查库；`all()` 列出全部实体（或组）。
   修改照常写入；`evict` 会抛异常，因为丢掉一个实体会让它看起来像被删除了。
+
+## 新数据免查库
+
+开服时，几分钟内会创建成千上万个角色，每个角色都要向几十个 Repository 要自己的数据，而这些表里还没有它的任何一行。
+不管是 SingleRepository 还是 GroupRepository，读数据库都只经过 `EntityMapper` 的三个方法，而且每个都带着 `EntityType`：
+`load`、`loadAll` 和 `loadGroup`。所以想省掉这些查询的应用，在真正的 Mapper 外面包一层自己的 Mapper，由它替新角色直接
+回答，不去问数据库。`DelegatingEntityMapper`（在 `cn.managame.data.spi` 包里）把每个调用原样转给交给它的 Mapper，应用只需
+覆写加载的几个方法；不需要这个功能的应用直接用真正的 Mapper 即可。Repository 按数据库里没有数据继续：`get` 返回 null 并
+记住，组从空开始，之后插入的数据照常写入。
+
+```java
+/** 按应用自己的约定：角色 id 的字段一律命名为 roleId。 */
+final class NewRoleMapper extends DelegatingEntityMapper {
+    private final Set<Long> newRoles;   // 创角时加入；十分钟后移除，或者在淘汰它的数据时移除
+    /** 按角色存的类型，build 时判定一次：@Id 名为 roleId 的记 -1，否则记 roleId 在 @GroupKey 字段里的位置。 */
+    private final Map<EntityType, Integer> roleKey = new ConcurrentHashMap<>();
+
+    NewRoleMapper(EntityMapper mapper, Set<Long> newRoles) {
+        super(mapper);
+        this.newRoles = newRoles;
+    }
+
+    @Override public void prepare(EntityType type) {
+        super.prepare(type);
+        if (type.groupKeys().isEmpty()) {
+            if (type.id().name().equals("roleId")) roleKey.put(type, -1);
+            return;
+        }
+        for (int i = 0; i < type.groupKeys().size(); i++)
+            if (type.groupKeys().get(i).name().equals("roleId")) roleKey.put(type, i);
+    }
+
+    @Override public Object load(EntityType type, Object id) throws Exception {
+        return roleKey.containsKey(type) && newRoles.contains(id) ? null : super.load(type, id);
+    }
+
+    @Override public List<Object> loadAll(EntityType type, Collection<?> ids) throws Exception {
+        if (!roleKey.containsKey(type)) return super.loadAll(type, ids);
+        List<Object> stored = new ArrayList<>(ids);
+        stored.removeIf(newRoles::contains);
+        return stored.isEmpty() ? List.of() : super.loadAll(type, stored);
+    }
+
+    @Override public List<Object> loadGroup(EntityType type, GroupKeys key) throws Exception {
+        Integer place = roleKey.get(type);
+        return place != null && newRoles.contains(key.valueAt(place)) ? List.of() : super.loadGroup(type, key);
+    }
+}
+
+GameData data = GameData.builder()
+        .repositories(new NewRoleMapper(new MysqlEntityMapper(dataSource, json), newRoles), List.of(Players.class, Items.class))
+        .errorHandler(failures::save)
+        .build();
+```
+
+- **一个类型是什么，在 `prepare` 里判定一次。** GameData 在 build 时对每个实体类型调用它一次，所以每次加载只多一次查找，
+  不用遍历字段。示例按 key 字段的名字判定，不需要注解；想用注解的应用可以从 `EntityField.field()` 读自己的注解。按别的
+  key 存的类型原样透传。
+- **只有确定数据库里没有这个 key 的数据时才回答"没有"。** 这个 key 的数据一旦离开内存（超过 `cacheExpire` 没用到，或被
+  `evict`），再回答"没有"就会让它以空的状态回来，之后的写入会和数据库里已有的行冲突。所以把一个角色算作新角色的时间要
+  短于 `cacheExpire`（从创角算起），并且应用一淘汰它的数据就把它移出。这期间该角色的行也只能由本进程写：别的进程直接
+  写进数据库的行会被漏掉。
+- 还有未写入修改的 key 会带着这些修改回来：Repository 把它们叠加在 Mapper 返回的结果上。
+- 加载在请求的线程上执行，这期间要同一个 key 的其他线程都在等，所以覆写的方法要么用内存里的信息回答，要么把调用转下去。
 
 ## 写入
 
@@ -237,6 +301,9 @@ key 字段，并能创建新实例。失败后重写同一批必须无害：一�
 `RetryableFailures.isRetryable`，Mapper 可以在它的基础上扩展。它列出的是让整批留到下一轮的失败；它不认识的失败只是多花
 一遍逐行重写，并且只有同批有别的行写成功时才会丢弃失败的行。
 
+想改变现有 Mapper 对某些调用的处理时，继承 `DelegatingEntityMapper` 把它包起来，而不是重写一个 Mapper：它把每个调用都
+转下去，包括 `isRetryable` 和 `loadTable`，应用只覆写自己要回答的那几个，见[新数据免查库](#新数据免查库)。
+
 ## 配置
 
 | 设置 | 默认值 | |
@@ -293,5 +360,7 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 - 失败：坏行丢弃而其他照常写入，连不上数据库期间保留修改，一批里一行都写不进去时全部保留，单独失败的行留到同批有别的行
   写成功为止，确认丢失的插入重写而不产生重复，更新已不存在的行被报告，一行正在写入时对它做的修改或删除由下一轮完成，close
   交出未能写入的数据；
+- 包在 Mapper 外面的 Mapper（`DelegatingEntityMapper`）：新角色的 `get`、`getOrCreate`、`getAll` 和组都不读数据库，其他
+  角色、不按角色存的类型照常读库，角色不再算新之后重新读库，过早淘汰时未写入的修改不丢，没有覆写的调用原样转下去；
 - 构建时拒绝不合适的类和注册，原样抛出 Mapper 的异常，以集合传入 Repository；
 - 业务线程修改玩家和物品的同时，每隔几毫秒写入一轮。

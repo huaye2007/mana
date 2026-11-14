@@ -26,7 +26,7 @@ logs, and the application picks them per repository:
 | --- | --- |
 | `cn.managame.data` | what business code uses: `GameData`, the repositories, `GroupKeys`, `MapKeys`, `DataException`, `DataFailure`, `DataErrorHandler`, `DataOperation` |
 | `cn.managame.data.annotation` | `@Id`, `@GroupKey`, `@MapKey` |
-| `cn.managame.data.spi` | what a database or log destination implements: `EntityMapper`, `LogWriter`, and what they read, `EntityType`, `EntityField`, `Change`, with `RetryableFailures`, the default retry rule |
+| `cn.managame.data.spi` | what a database or log destination implements: `EntityMapper`, `LogWriter`, and what they read, `EntityType`, `EntityField`, `Change`, with `RetryableFailures`, the default retry rule, and `DelegatingEntityMapper`, for a mapper around another |
 | `cn.managame.data.internal` | the implementation; public only so the other packages can reach it, not API, and it may change in any release |
 
 ## Quick start
@@ -127,6 +127,74 @@ data.close();                                            // writes what is left
   `preloadedRepositories(mapper, types)`: build reads it whole through the mapper's `loadTable`, and nothing leaves
   memory after. An id or group not in memory does not exist, so no read asks the database, and `all()` lists every
   entity, or group. Changes are written as usual; `evict` throws, since dropping an entity would make it look deleted.
+
+## Skipping loads of new data
+
+When a server opens, thousands of roles are created within minutes, and each asks dozens of repositories for its data:
+reads of rows no table has yet. Every read of the database, by a SingleRepository or a GroupRepository alike, goes
+through three methods of the `EntityMapper`, each with the `EntityType`: `load`, `loadAll` and `loadGroup`. So an
+application that wants to spare those reads puts a mapper of its own around the real one, which answers for a new role
+without asking. `DelegatingEntityMapper` (in `cn.managame.data.spi`) hands every call to the mapper it is given, so the
+application overrides only the loads; an application that needs none of this uses the real mapper as it is. The
+repositories go on as when the database has nothing: `get` returns null and remembers it, a group starts empty, and what
+is inserted is written as usual.
+
+```java
+/** By the application's rule that a role's id is always a field named roleId. */
+final class NewRoleMapper extends DelegatingEntityMapper {
+    private final Set<Long> newRoles;   // added when a role is created; removed ten minutes later, or when its data is evicted
+    /** The types kept by role, found once at build: -1 for an @Id named roleId, or else its place among the @GroupKey fields. */
+    private final Map<EntityType, Integer> roleKey = new ConcurrentHashMap<>();
+
+    NewRoleMapper(EntityMapper mapper, Set<Long> newRoles) {
+        super(mapper);
+        this.newRoles = newRoles;
+    }
+
+    @Override public void prepare(EntityType type) {
+        super.prepare(type);
+        if (type.groupKeys().isEmpty()) {
+            if (type.id().name().equals("roleId")) roleKey.put(type, -1);
+            return;
+        }
+        for (int i = 0; i < type.groupKeys().size(); i++)
+            if (type.groupKeys().get(i).name().equals("roleId")) roleKey.put(type, i);
+    }
+
+    @Override public Object load(EntityType type, Object id) throws Exception {
+        return roleKey.containsKey(type) && newRoles.contains(id) ? null : super.load(type, id);
+    }
+
+    @Override public List<Object> loadAll(EntityType type, Collection<?> ids) throws Exception {
+        if (!roleKey.containsKey(type)) return super.loadAll(type, ids);
+        List<Object> stored = new ArrayList<>(ids);
+        stored.removeIf(newRoles::contains);
+        return stored.isEmpty() ? List.of() : super.loadAll(type, stored);
+    }
+
+    @Override public List<Object> loadGroup(EntityType type, GroupKeys key) throws Exception {
+        Integer place = roleKey.get(type);
+        return place != null && newRoles.contains(key.valueAt(place)) ? List.of() : super.loadGroup(type, key);
+    }
+}
+
+GameData data = GameData.builder()
+        .repositories(new NewRoleMapper(new MysqlEntityMapper(dataSource, json), newRoles), List.of(Players.class, Items.class))
+        .errorHandler(failures::save)
+        .build();
+```
+
+- **Decide what a type is once, in `prepare`.** GameData calls it for each entity type at build, so a load pays one
+  lookup and no walk over the fields. The example goes by the name of the key field, which needs no annotation; an
+  application that prefers one reads its own from `EntityField.field()`. Types kept by another key pass through.
+- **Answer nothing only while the database is sure to have nothing for the key.** Once what the key got has left
+  memory, unused for `cacheExpire` or evicted, answering nothing would bring it back empty, and later writes would go
+  against the rows the database has. So take a role out of the new ones after a time shorter than `cacheExpire` from its
+  creation, and as soon as the application evicts its data. And only this process may write the role's rows meanwhile:
+  rows another one writes straight to the database would be missed.
+- A key whose changes are not written yet comes back with them: the repository lays them over what the mapper returns.
+- Loads run on the asking thread while the others asking for the same key wait, so an override answers from memory or
+  hands the call on.
 
 ## Writing
 
@@ -267,6 +335,10 @@ is missing may write the row again (MySQL's mapper does) or fail (MongoDB's does
 round; a failure it does not know only costs writing the batch one row at a time, and drops no row unless others of the
 batch are written.
 
+To change what an existing mapper does for some calls, extend `DelegatingEntityMapper` around it rather than write a
+mapper anew: it hands on every call, `isRetryable` and `loadTable` among them, and the application overrides the ones it
+answers itself, as in [Skipping loads of new data](#skipping-loads-of-new-data).
+
 ## Configuration
 
 | Setting | Default | |
@@ -331,6 +403,9 @@ acknowledgement or refuse bad rows. They cover:
   insert whose acknowledgement was lost written again without a duplicate, an update of a missing row reported, a change
   or a delete made while its row is being written carried out by the next round, close handing over what it could not
   write;
+- a mapper around the mapper (`DelegatingEntityMapper`): nothing read for a new role, by `get`, `getOrCreate`, `getAll`
+  or a group, the database read for other roles, for types not kept by role and again once the role is no longer new,
+  unwritten changes kept through an early evict, everything not overridden handed on;
 - the build refusing classes and registrations that do not fit, passing on what a mapper throws, and taking
   repositories as a collection;
 - business threads changing players and their items while rounds write every few milliseconds.

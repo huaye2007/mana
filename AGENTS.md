@@ -187,6 +187,11 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   is written again one row at a time, and a row is given up only when others of its batch are written, since that
   shows the database works; when none is, all are kept. A change set keeps one change per row and never merges a
   failed write back: a change stays until it is written, and a row changed while it is written gets a new change.
+  Repositories have no hooks, and the builder no settings, for what only some applications need. Every read of the
+  database, by either kind of repository, goes through the `EntityMapper` with its `EntityType`, so an application
+  that answers some loads itself (the data of a role created minutes ago, which no table has yet) extends
+  `DelegatingEntityMapper` around the real mapper, and works out what a type is once, in `prepare`, by a rule of its
+  own such as the name of the key field; the framework has no annotation or concept for it.
   Changes are recorded, not copied: the write thread reads the entity when it writes it, so business threads pay no
   copy and entity collections must be thread-safe. The caches are plain Caffeine, `Caffeine.newBuilder()
   .expireAfterAccess(cacheExpire)` with no further tuning or wrapper: it loads a key once however many threads ask.
@@ -203,8 +208,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
 - data's packages split by who uses them: `cn.managame.data` for business code (GameData, repositories, keys,
   failures), `annotation` for the entity annotations (`mysql.annotation`, `mongo.annotation` in the backend projects),
   `spi` for what a backend implements and reads (`EntityMapper`, `LogWriter`, `EntityType`, `EntityField`, read-only
-  `Change`, `RetryableFailures`), and `internal` for the implementation: public only to be reachable across packages,
-  marked not API, with no `module-info.java`. A helper used by one package stays package-private there.
+  `Change`, `RetryableFailures`, `DelegatingEntityMapper`), and `internal` for the implementation: public only to be
+  reachable across packages, marked not API, with no `module-info.java`. A helper used by one package stays
+  package-private there.
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).
