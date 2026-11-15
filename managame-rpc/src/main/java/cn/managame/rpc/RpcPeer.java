@@ -49,9 +49,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Calls, notifies and answers take no lock: they read the instance connected and its connections from one
  * immutable {@link Instance}, and the waiting calls are lock-free. Only connections joining and leaving lock the
- * peer, and the listener runs under that lock, so it hears one peer's changes in order and may still call or
+ * peer, and the handler hears them under that lock, so it hears one peer's changes in order and may still call or
  * notify any peer. The calls a new instance cannot answer fail under it too, before that instance has a connection,
- * so what the listener asks as it hears the new instance connect is asked of that one and waits for its answer.
+ * so what the handler asks as it hears the new instance connect is asked of that one and waits for its answer.
  */
 public final class RpcPeer {
     private static final System.Logger LOG = System.getLogger("cn.managame.rpc");
@@ -285,7 +285,7 @@ public final class RpcPeer {
                     node.fireDisconnected(this);
                 }
                 // The old instance's connections and calls end here, while the new one has no connection yet: a call
-                // made from now on, as by the listener hearing it connect, is the new instance's and stays.
+                // made from now on, as by the handler hearing it connect, is the new instance's and stays.
                 for (Connection up : old) up.close();
                 if (replaced) pending.failAll(RPC_UNAVAILABLE);
             } else if (!outbound && theirs.slots() != current.slots().length) {

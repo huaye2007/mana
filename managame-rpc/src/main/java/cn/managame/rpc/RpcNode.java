@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit;
  * <pre>{@code
  * RpcNode node = RpcNode.builder()
  *         .nodeId(101).metadata(about).listen(7101)       // listening is optional
- *         .handler(handler).listener(listener)
+ *         .handler(handler)
  *         .start();
  *
  * RpcPeer world = node.createPeer(1, new InetSocketAddress("10.0.0.1", 7001));
@@ -80,7 +80,7 @@ public final class RpcNode implements AutoCloseable {
     private final int nodeId;
     private final long incarnation;
     private final Metadata metadata;
-    private final RpcListener listener;
+    private final RpcHandler handler;
     private final Duration timeout, redialMin, redialMax;
     private final int maxFrameLength, maxPendingCalls;
     private final Metrics metrics;
@@ -104,7 +104,7 @@ public final class RpcNode implements AutoCloseable {
         nodeId = b.nodeId;
         incarnation = System.currentTimeMillis() * 1000 + ThreadLocalRandom.current().nextInt(1000);
         metadata = b.metadata;
-        listener = b.listener;
+        handler = b.handler;
         timeout = b.timeout;
         redialMin = b.redialMin;
         redialMax = b.redialMax;
@@ -113,7 +113,7 @@ public final class RpcNode implements AutoCloseable {
         metrics = b.metrics;
         timer = new HashedWheelTimer(Thread.ofPlatform().name("rpc-timer-" + nodeId).daemon().factory(), TICK_MILLIS, TimeUnit.MILLISECONDS);
         meters = new NodeMetrics(metrics, timer);
-        RpcConnectionHandler connections = new RpcConnectionHandler(this, b.handler, b.authenticator);
+        RpcConnectionHandler connections = new RpcConnectionHandler(this, handler, b.authenticator);
         long heartbeatMillis = b.heartbeatInterval.toMillis();
         EventLoopGroup shared = null;
         Bootstrap client = b.bootstrap.clone().handler(initializer(false, heartbeatMillis, connections));
@@ -219,7 +219,7 @@ public final class RpcNode implements AutoCloseable {
      * Forgets node {@code nodeId}, dialed or dialing in: fails its waiting calls with RPC_UNAVAILABLE, on this
      * thread, stops dialing it and closes its connections. A node that dials in again afterwards joins as a new
      * peer. False when there was no such peer. Blocks until the connections are closed, so it must not run on the
-     * node's EventLoops, where its handler, listener and answered callbacks run (IllegalStateException).
+     * node's EventLoops, where its handler and answered callbacks run (IllegalStateException).
      */
     public boolean removePeer(int nodeId) {
         checkNotOnEventLoop();
@@ -316,22 +316,26 @@ public final class RpcNode implements AutoCloseable {
 
     void fireConnected(RpcPeer peer) {
         LOG.log(Level.INFO, () -> "Node " + peer.nodeId() + " connected, incarnation " + peer.incarnation());
-        if (listener == null) return;
         try {
-            listener.onConnected(peer);
+            handler.onConnected(peer);
         } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "The RPC listener failed on " + peer + " connecting", e);
+            handlerFailed(peer, "connecting", e);
         }
     }
 
     void fireDisconnected(RpcPeer peer) {
         LOG.log(Level.INFO, () -> "Node " + peer.nodeId() + " disconnected");
-        if (listener == null) return;
         try {
-            listener.onDisconnected(peer);
+            handler.onDisconnected(peer);
         } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "The RPC listener failed on " + peer + " disconnecting", e);
+            handlerFailed(peer, "disconnecting", e);
         }
+    }
+
+    /** As when it fails on a message: what the application meant to do on hearing it is lost. */
+    private static void handlerFailed(RpcPeer peer, String hearing, RuntimeException e) {
+        LOG.log(Level.ERROR, "The RPC handler failed on node " + peer.nodeId() + " " + hearing, e);
+        peer.meters().handlerFailed.increment();
     }
 
     private void checkNotOnEventLoop() {
@@ -349,7 +353,6 @@ public final class RpcNode implements AutoCloseable {
         private Metadata metadata = Metadata.empty();
         private InetSocketAddress listen;
         private RpcHandler handler = NO_HANDLER;
-        private RpcListener listener;
         private RpcAuthenticator authenticator;
         private Bootstrap bootstrap = new Bootstrap();
         private ServerBootstrap serverBootstrap = new ServerBootstrap();
@@ -372,11 +375,11 @@ public final class RpcNode implements AutoCloseable {
         /** Lets other nodes dial this one on {@code address}; port 0 binds an ephemeral port, see {@link #port}. */
         public Builder listen(InetSocketAddress address) { listen = Objects.requireNonNull(address, "address"); return this; }
 
-        /** Handles what peers send. Without one, requests fail with HANDLER_NOT_FOUND and notifies are dropped. */
+        /**
+         * Handles what peers send and hears them come and go. Without one, requests fail with HANDLER_NOT_FOUND,
+         * notifies are dropped and no one hears.
+         */
         public Builder handler(RpcHandler handler) { this.handler = Objects.requireNonNull(handler, "handler"); return this; }
-
-        /** Hears peers come and go; none by default. */
-        public Builder listener(RpcListener listener) { this.listener = Objects.requireNonNull(listener, "listener"); return this; }
 
         /** Admits the nodes on the other side of each connection; all by default. */
         public Builder authenticator(RpcAuthenticator authenticator) {

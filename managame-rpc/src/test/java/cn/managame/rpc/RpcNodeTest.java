@@ -49,6 +49,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -76,7 +77,7 @@ class RpcNodeTest {
             HOLD = 9, CLOSE = 10, DROP = 11, REFUSE = 12, NOTE = 20, ORDER = 21;
     private static final int SOLD_OUT = 10_001;   // the game's own code
 
-    /** What handlers saw, what listeners heard, and what callbacks got. */
+    /** What handlers were sent, which peers they heard come and go, and what callbacks got. */
     private final BlockingQueue<String> seen = new LinkedBlockingQueue<>(), events = new LinkedBlockingQueue<>(),
             answers = new LinkedBlockingQueue<>();
     /** Requests a HOLD handler keeps, to be answered by the test. */
@@ -96,9 +97,17 @@ class RpcNodeTest {
         for (AutoCloseable closeable : closeables) closeable.close();
     }
 
-    /** A handler as an application writes one: it decides by the message and its command what to do. */
-    private RpcHandler handler(String name) {
-        return (rpcPeer, connection, msg) -> {
+    /**
+     * A handler as an application writes one: it decides by the message and its command what to do, and tells a
+     * restart of a peer by the incarnation it saw last.
+     */
+    private class Handler implements RpcHandler {
+        private final String name;
+        private final Map<Integer, Long> incarnations = new ConcurrentHashMap<>();
+
+        Handler(String name) { this.name = name; }
+
+        @Override public void handleMessage(RpcPeer rpcPeer, Connection connection, Object msg) {
             switch (msg) {
                 case RpcRequest request -> answer(name, rpcPeer, connection, request);
                 case RpcNotify notify when notify.command() == ORDER ->
@@ -106,7 +115,15 @@ class RpcNodeTest {
                 case RpcNotify notify -> seen.add(name + " notified " + text(notify.body()) + " from " + rpcPeer.nodeId());
                 default -> fail("Unexpected " + msg);
             }
-        };
+        }
+
+        @Override public void onConnected(RpcPeer rpcPeer) {
+            Long last = incarnations.put(rpcPeer.nodeId(), rpcPeer.incarnation());
+            boolean restarted = last != null && last != rpcPeer.incarnation();
+            events.add(name + " connected " + rpcPeer.nodeId() + (restarted ? " restarted" : "") + " with " + rpcPeer.connectionCount());
+        }
+
+        @Override public void onDisconnected(RpcPeer rpcPeer) { events.add(name + " disconnected " + rpcPeer.nodeId()); }
     }
 
     private void answer(String name, RpcPeer rpcPeer, Connection connection, RpcRequest request) {
@@ -155,20 +172,6 @@ class RpcNodeTest {
         }
     }
 
-    /** Tells a restart as an application does: by the incarnation it saw last. */
-    private RpcListener listener(String name) {
-        Map<Integer, Long> seen = new ConcurrentHashMap<>();
-        return new RpcListener() {
-            @Override public void onConnected(RpcPeer peer) {
-                Long last = seen.put(peer.nodeId(), peer.incarnation());
-                boolean restarted = last != null && last != peer.incarnation();
-                events.add(name + " connected " + peer.nodeId() + (restarted ? " restarted" : "") + " with " + peer.connectionCount());
-            }
-
-            @Override public void onDisconnected(RpcPeer peer) { events.add(name + " disconnected " + peer.nodeId()); }
-        };
-    }
-
     /** Records "ok <body>" or "fail <code>", and "on the caller" when it ran on the thread that made the call. */
     private RpcCallback recorder() {
         Thread caller = Thread.currentThread();
@@ -177,7 +180,7 @@ class RpcNodeTest {
     }
 
     private RpcNode.Builder node(int id, String name) {
-        return RpcNode.builder().nodeId(id).handler(handler(name)).listener(listener(name)).timeout(timeout).heartbeatInterval(heartbeat);
+        return RpcNode.builder().nodeId(id).handler(new Handler(name)).timeout(timeout).heartbeatInterval(heartbeat);
     }
 
     private RpcNode start(RpcNode.Builder builder) {
@@ -381,9 +384,9 @@ class RpcNodeTest {
 
     @Test void theApplicationGroupsPeersByWhatTheySayInTheirHandshake() throws Exception {
         Map<Integer, List<Integer>> byService = new ConcurrentHashMap<>();
-        world = start(node(1, "world").listen(LOOPBACK).listener(new RpcListener() {
-            @Override public void onConnected(RpcPeer peer) {
-                byService.computeIfAbsent(peer.metadata().get(SERVICE), service -> new CopyOnWriteArrayList<>()).add(peer.nodeId());
+        world = start(node(1, "world").listen(LOOPBACK).handler(new Handler("world") {
+            @Override public void onConnected(RpcPeer rpcPeer) {
+                byService.computeIfAbsent(rpcPeer.metadata().get(SERVICE), service -> new CopyOnWriteArrayList<>()).add(rpcPeer.nodeId());
             }
         }));
         for (int id = 2; id <= 4; id++)
@@ -391,6 +394,44 @@ class RpcNodeTest {
         await(() -> byService.values().stream().mapToInt(List::size).sum() == 3);
         assertEquals(List.of(2, 3), byService.get(10).stream().sorted().toList());
         assertEquals(List.of(4), byService.get(20));
+    }
+
+    /** What a node keeps for a peer goes when the peer does: the handler that took it in also hears the peer leave. */
+    @Test void theHandlerClearsWhatItKeptForAPeerThatLeft() throws Exception {
+        Map<Integer, Set<Long>> playersOf = new ConcurrentHashMap<>(); // the players each game server has in the world
+        world = start(RpcNode.builder().nodeId(1).listen(LOOPBACK).handler(new RpcHandler() {
+            @Override public void handleMessage(RpcPeer rpcPeer, Connection connection, Object msg) {
+                if (msg instanceof RpcNotify entered)
+                    playersOf.computeIfAbsent(rpcPeer.nodeId(), node -> ConcurrentHashMap.newKeySet()).add(entered.routeKey());
+            }
+
+            @Override public void onDisconnected(RpcPeer rpcPeer) { playersOf.remove(rpcPeer.nodeId()); }
+        }));
+        game = start(node(2, "game"));
+        RpcNode other = start(node(3, "other"));
+        RpcPeer fromGame = game.createPeer(1, at(world)), fromOther = other.createPeer(1, at(world));
+        await(() -> fromGame.isConnected() && fromOther.isConnected());
+        fromGame.notify(RpcNotify.of(NOTE, 7, text("")));
+        fromGame.notify(RpcNotify.of(NOTE, 8, text("")));
+        fromOther.notify(RpcNotify.of(NOTE, 9, text("")));
+        await(() -> playersOf.equals(Map.of(2, Set.of(7L, 8L), 3, Set.of(9L))));
+        game.close(); // as when its process stops or crashes: the world sees its last connection close
+        await(() -> playersOf.equals(Map.of(3, Set.of(9L))));
+    }
+
+    /** A handler that only receives is a lambda, and hears no peer come or go. */
+    @Test void aHandlerThatOnlyReceivesIsALambda() throws Exception {
+        world = start(RpcNode.builder().nodeId(1).listen(LOOPBACK).handler((rpcPeer, connection, msg) -> {
+            if (msg instanceof RpcRequest request) rpcPeer.reply(connection, RpcResponse.of(request.requestId(), text("pong")));
+        }));
+        game = start(node(2, "game"));
+        RpcPeer peer = game.createPeer(1, at(world));
+        assertEquals("game connected 1 with 1", next(events));
+        peer.call(RpcRequest.of(ECHO, text("ping")), recorder());
+        assertEquals("ok pong", next(answers));
+        world.close();
+        assertEquals("game disconnected 1", next(events));
+        assertTrue(events.isEmpty());
     }
 
     @Test void aRestartIsToldFromAReconnect() throws Exception {
@@ -424,11 +465,10 @@ class RpcNodeTest {
         Proxy proxy = new Proxy(world.port());
         closeables.add(proxy);
         RpcCallback recorder = recorder();
-        // A game server registering with the world server whenever it connects, straight from its listener.
-        game = start(RpcNode.builder().nodeId(2).handler(handler("game")).redialDelay(Duration.ofMillis(50), Duration.ofMillis(50))
-                .listener(new RpcListener() {
-                    @Override public void onConnected(RpcPeer peer) { peer.call(RpcRequest.of(ECHO, text("register")), recorder); }
-                }));
+        // A game server registering with the world server whenever it connects, straight from its handler.
+        game = start(node(2, "game").redialDelay(Duration.ofMillis(50), Duration.ofMillis(50)).handler(new Handler("game") {
+            @Override public void onConnected(RpcPeer rpcPeer) { rpcPeer.call(RpcRequest.of(ECHO, text("register")), recorder); }
+        }));
         RpcPeer peer = game.createPeer(1, new InetSocketAddress("127.0.0.1", proxy.port()));
         assertEquals("ok world got register from 2", next(answers));
 
@@ -831,10 +871,10 @@ class RpcNodeTest {
     }
 
     /**
-     * Two peers join on two EventLoops at once, and each one's listener, run while its peer is being joined, makes
-     * the first call to the other: neither may wait for the other.
+     * Two peers join on two EventLoops at once, and the handler hearing each connect, while its peer is being joined,
+     * makes the first call to the other: neither may wait for the other.
      */
-    @Test void listenersCallingEachOtherDoNotDeadlock() throws Exception {
+    @Test void hearingPeersConnectAndCallingEachOthersDoesNotDeadlock() throws Exception {
         EventLoopGroup boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         EventLoopGroup workers = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory()); // one per connection, in turn
         closeables.add(() -> {
@@ -843,15 +883,15 @@ class RpcNodeTest {
         });
         CyclicBarrier together = new CyclicBarrier(2);
         world = start(node(1, "world").serverBootstrap(new ServerBootstrap().group(boss, workers)).listen(LOOPBACK)
-                .listener(new RpcListener() {
-                    @Override public void onConnected(RpcPeer peer) {
+                .handler(new Handler("world") {
+                    @Override public void onConnected(RpcPeer rpcPeer) {
                         try {
-                            together.await(5, TimeUnit.SECONDS); // both listeners run at once
+                            together.await(5, TimeUnit.SECONDS); // both are heard at once
                         } catch (Exception e) {
                             answers.add("apart " + e);
                             return;
                         }
-                        world.peer(peer.nodeId() == 2 ? 3 : 2).call(RpcRequest.of(ECHO, text("hi")), recorder());
+                        world.peer(rpcPeer.nodeId() == 2 ? 3 : 2).call(RpcRequest.of(ECHO, text("hi")), recorder());
                     }
                 }));
         start(node(2, "first")).createPeer(1, at(world));
@@ -908,16 +948,23 @@ class RpcNodeTest {
         await(() -> peer.notify(RpcNotify.of(NOTE, text("again"))) == WriteStatus.ACCEPTED);
     }
 
-    @Test void exceptionsInCallbacksAndListenersAreOnlyLogged() throws Exception {
-        world = start(node(1, "world").listen(LOOPBACK).listener(new RpcListener() {
-            @Override public void onConnected(RpcPeer peer) { throw new IllegalStateException("listener"); }
+    /** A handler that throws on hearing a peer come or go is counted as when it throws on a message; a callback is not. */
+    @Test void exceptionsInCallbacksAndOnHearingPeersComeAndGoAreOnlyLogged() throws Exception {
+        Backend metrics = new Backend();
+        world = start(node(1, "world").listen(LOOPBACK).metrics(metrics).handler(new Handler("world") {
+            @Override public void onConnected(RpcPeer rpcPeer) { throw new IllegalStateException("connecting"); }
+
+            @Override public void onDisconnected(RpcPeer rpcPeer) { throw new IllegalStateException("disconnecting"); }
         }));
         game = start(node(2, "game"));
         RpcPeer peer = game.createPeer(1, at(world));
         await(() -> peer.isConnected() && world.peer(2) != null && world.peer(2).isConnected());
+        await(() -> metrics.count("managame.rpc.handler.failed", "node", "2") == 1);
         peer.call(RpcRequest.of(ECHO, text("")), (request, response) -> { throw new IllegalStateException("callback"); });
         peer.call(RpcRequest.of(ECHO, text("fine")), recorder());
         assertEquals("ok world got fine from 2", next(answers));
+        game.close();
+        await(() -> metrics.count("managame.rpc.handler.failed", "node", "2") == 2);
     }
 
     @Test void misuseThrowsAndReleases() throws Exception {

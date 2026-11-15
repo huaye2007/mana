@@ -118,6 +118,7 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
 - 握手、心跳和本节点自己调用的应答都不会交给处理器：节点自己处理它们，每个应答交给对应调用的回调。
 - 处理器在该连接的 EventLoop 上按消息到达顺序执行，不能阻塞。
 - 处理器抛出异常时：对于请求，如果还没应答过，就以 `RPC_HANDLER_ERROR` 失败；对于通知，只记日志。没有设置处理器的节点，对请求回复 `HANDLER_NOT_FOUND`，通知直接丢弃。
+- 对端的连接和断开也通知这同一个处理器，见[连接和断开](#连接和断开)。
 
 ## 引用计数
 
@@ -137,24 +138,37 @@ body 是 Netty 的 `ByteBuf`，一路都不拷贝。三种记录遵循 Netty 的
 - **`node.removePeer(id)`** 移除一个对端，不论连接由哪一方发起：等待中的调用以 `RPC_UNAVAILABLE` 失败，停止重连，关闭它的连接。该节点之后再连进来，会作为新的对端加入。连进来的对端在被移除前一直保留，所以节点会以新 id 上下线的集群，要在服务发现看到节点离开时移除它。
 - **`node.peer(id)`** 返回该 id 的对端，没有则返回 null；**`node.peers()`** 返回所有对端的快照。
 
-### 监听器
+### 连接和断开
 
-`RpcListener` 有两个方法，默认实现都为空：
+每个节点都能知道对端的连接和断开，不论连接由哪一方发起：通知交给接收对端消息的那个 `RpcHandler`。它另有两个方法，不实现就什么都不做，所以只收消息的处理器仍然可以写成 lambda：
 
 | 方法 | 何时调用 |
 | --- | --- |
-| `onConnected(peer)` | 对端一个运行实例的全部连接都完成了握手 |
-| `onDisconnected(peer)` | 对端的最后一条连接断开，包括被移除、被新实例替换的情况 |
+| `onConnected(rpcPeer)` | 对端一个运行实例的全部连接都完成了握手 |
+| `onDisconnected(rpcPeer)` | 对端的最后一条连接断开，包括被移除、本节点关闭、被新实例替换的情况 |
 
-只断了部分连接的对端仍算连着，不发事件；它的 key 改走剩下的连接。只要还有一条连接，`peer.isConnected()` 就为 true。同一个对端的回调不会重叠，并且按顺序到达；它们在发生变化的那条连接的 EventLoop 上执行，不能阻塞。监听器里可以调用、通知、应答任何对端：调用、通知和应答都不加锁，监听器不会去等另一个对端的锁。
+为对端保存了东西的处理器写成一个类，在 `onDisconnected` 里清掉为离开的那个对端保存的东西，不论那个节点是停服、崩溃还是断网：
+
+```java
+final class WorldEntry implements RpcHandler {
+    @Override public void handleMessage(RpcPeer rpcPeer, Connection connection, Object msg) { ... }
+
+    @Override public void onDisconnected(RpcPeer rpcPeer) {           // 在 EventLoop 上：把工作交出去
+        int gameServer = rpcPeer.nodeId();
+        executor.execute(() -> world.removePlayersOf(gameServer));    // 它的玩家随它一起离开世界
+    }
+}
+```
+
+只断了部分连接的对端仍算连着，不发事件；它的 key 改走剩下的连接。只要还有一条连接，`peer.isConnected()` 就为 true。同一个对端的这两个方法不会重叠，并且按顺序到达；它们在发生变化的那条连接的 EventLoop 上执行，不能阻塞。在这两个方法里可以调用、通知、应答任何对端：调用、通知和应答都不加锁，不会去等另一个对端的锁。有多条连接的对端，可能在最后一条连接完成握手之前就从已连上的连接发来消息，所以它的消息可能先于 `onConnected` 到达。这两个方法抛出的异常和处理消息时抛出的一样，记日志并计数。
 
 ### 启动
 
-对端还没连上时，调用会立即以 `RPC_UNAVAILABLE` 失败（回调不在调用线程上执行），不会排队。如果一个节点必须等另一个节点连上才能开始服务（比如游戏服要先在世界服注册，才能放玩家进来），就在监听器里启动这部分工作：
+对端还没连上时，调用会立即以 `RPC_UNAVAILABLE` 失败（回调不在调用线程上执行），不会排队。如果一个节点必须等另一个节点连上才能开始服务（比如游戏服要先在世界服注册，才能放玩家进来），就在得知那个节点连上时启动这部分工作：
 
 ```java
-public void onConnected(RpcPeer peer) {
-    if (peer.nodeId() == WORLD) executor.execute(this::registerAndOpen);
+@Override public void onConnected(RpcPeer rpcPeer) {
+    if (rpcPeer.nodeId() == WORLD) executor.execute(this::registerAndOpen);
 }
 ```
 
@@ -165,9 +179,9 @@ public void onConnected(RpcPeer peer) {
 - 实例号能区分重启和重连。重启之后实例号会变，本节点掌握的关于该对端的状态（比如某个游戏服上的玩家）都已失效；如果只是重连，实例号不变，这些状态仍然有效。保存这类状态的应用把实例号一起记下：
 
   ```java
-  public void onConnected(RpcPeer peer) {
-      Long last = seen.put(peer.nodeId(), peer.incarnation());
-      if (last != null && last != peer.incarnation()) clearPlayersOn(peer.nodeId());
+  @Override public void onConnected(RpcPeer rpcPeer) {
+      Long last = seen.put(rpcPeer.nodeId(), rpcPeer.incarnation());
+      if (last != null && last != rpcPeer.incarnation()) clearPlayersOn(rpcPeer.nodeId());
   }
   ```
 
@@ -184,14 +198,14 @@ RpcNode game = RpcNode.builder().nodeId(101)
         .metadata(Metadata.builder().put(SERVICE, GAME).build())
         .start();
 
-// 在世界服上：按对端自报的用途分组
+// 在世界服的处理器里：按对端自报的用途分组
 Map<Integer, Set<RpcPeer>> byService = new ConcurrentHashMap<>();
-RpcListener grouping = new RpcListener() {
-    public void onConnected(RpcPeer peer) {
-        byService.computeIfAbsent(peer.metadata().get(SERVICE), s -> ConcurrentHashMap.newKeySet()).add(peer);
-    }
-    public void onDisconnected(RpcPeer peer) { byService.get(peer.metadata().get(SERVICE)).remove(peer); }
-};
+
+@Override public void onConnected(RpcPeer rpcPeer) {
+    byService.computeIfAbsent(rpcPeer.metadata().get(SERVICE), s -> ConcurrentHashMap.newKeySet()).add(rpcPeer);
+}
+
+@Override public void onDisconnected(RpcPeer rpcPeer) { byService.get(rpcPeer.metadata().get(SERVICE)).remove(rpcPeer); }
 ```
 
 一组节点里由哪一个处理某个 key，也由业务决定：取模、哈希，或者查表（比如"这个玩家所在的游戏服"）。
@@ -245,7 +259,7 @@ RpcNode.builder()
 ## 可观测性
 
 - `peer.pendingCount()`：发往该对端、还在等待应答的调用数。
-- `peer.connectionCount()`、`peer.isConnected()`、`peer.incarnation()`，以及通过监听器获知的连接和断开事件。
+- `peer.connectionCount()`、`peer.isConnected()`、`peer.incarnation()`，以及处理器得知的连接和断开。
 - 每个调用的结果都会和它的请求一起交给回调；业务在自己的回调适配器里按对端和 command 统计延迟、超时和失败，对接自己使用的任何监控系统。
 - `metrics(Metrics)` 上报经过节点的消息、失败的情况和节点持有的状态。默认的 `Metrics.noop()` 下，每个事件只多一次空方法调用，不读时钟；接了后端时，调用在应答到达时多读一次时钟。
 
@@ -265,7 +279,7 @@ RpcNode.builder()
 | `managame.rpc.notifies.sent` | counter | 连接接受的通知数 |
 | `managame.rpc.notifies.refused` | counter | 被拒绝的通知，带 `status` 标签：`NOT_WRITABLE` 或 `INACTIVE` |
 | `managame.rpc.requests.received`、`managame.rpc.notifies.received` | counter | 它发给本节点的请求和通知数 |
-| `managame.rpc.handler.failed` | counter | 本节点的处理器处理它发来的消息时抛异常的次数 |
+| `managame.rpc.handler.failed` | counter | 本节点的处理器处理它发来的消息、或得知它连接和断开时抛异常的次数 |
 | `managame.rpc.replies.lost` | counter | 它的这个实例没有连接可以写出的应答数 |
 
 节点自身的指标，除注明的以外没有标签：
@@ -285,7 +299,7 @@ managame-network 的 `NetworkMetrics.directMemory(metrics)` 上报 Netty 的直�
 | 内容 | 执行线程 |
 | --- | --- |
 | `RpcHandler.handleMessage`、`RpcAuthenticator` | 该连接的 EventLoop，按到达顺序 |
-| `RpcListener` | 发生变化的那条连接的 EventLoop |
+| `RpcHandler.onConnected`、`onDisconnected` | 发生变化的那条连接的 EventLoop |
 | `RpcCallback` | 应答到达的那条连接的 EventLoop；超时时：节点的时间轮线程；调用发出前就失败时：节点主动连接所用的某个 EventLoop，按 route key 选；对端的最后一条连接断开时：那条连接的 EventLoop；对端的新实例替换旧实例时：带来新实例的那条连接的 EventLoop；移除对端或关闭节点时：执行该操作的线程。永远不会在 `call` 内部、在调用线程上执行 |
 | `call`、`notify`、`broadcast`、`reply`、`createPeer` | 任意线程 |
 | `removePeer`、`close` | 节点的 EventLoop 以外的任意线程，`close` 还不能在时间轮线程上调用（它们会阻塞到连接关闭；在那些线程上调用会抛 `IllegalStateException`） |
@@ -299,8 +313,7 @@ managame-network 的 `NetworkMetrics.directMemory(metrics)` 上报 Netty 的直�
 | `nodeId(int)` | 必填 | 本节点 id，集群内唯一 |
 | `metadata(Metadata)` | 空 | 握手时告诉每个对端的信息 |
 | `listen(port)` / `listen(InetSocketAddress)` | 不监听 | 允许其他节点连接本节点；端口 0 会绑定一个临时端口（用 `node.port()` 读） |
-| `handler(RpcHandler)` | 请求以 `HANDLER_NOT_FOUND` 失败 | 处理对端发来的消息 |
-| `listener(RpcListener)` | 无 | 接收对端连接和断开的通知 |
+| `handler(RpcHandler)` | 请求以 `HANDLER_NOT_FOUND` 失败 | 处理对端发来的消息，接收对端连接和断开的通知 |
 | `authenticator(RpcAuthenticator)` | 全部放行 | 决定谁能加入 |
 | `bootstrap(Bootstrap)` / `serverBootstrap(ServerBootstrap)` | 节点自己的 EventLoop | 用于主动连接和监听的 Netty bootstrap，可设置 EventLoop、channel 类型和 socket 选项。handler 由节点设置；没设置的项，节点会在副本上补全 |
 | `redialDelay(min, max)` | 100 毫秒、10 秒 | 主动建立的连接断开后，等多久再重连 |
@@ -336,7 +349,7 @@ metadata 的格式是：先用 unsigned short 写长度，再写字节。握手�
 
 | Logger | 内容 |
 | --- | --- |
-| `cn.managame.rpc` | INFO：节点启动与关闭、拨号或移除节点、节点连上（或换成新实例）与断开。DEBUG：每个超时的调用、每个失败的连接。WARNING：因静默或协议错误关闭的连接、被替换的实例、抛异常的监听器或回调。ERROR：认证器或处理器出错。 |
+| `cn.managame.rpc` | INFO：节点启动与关闭、拨号或移除节点、节点连上（或换成新实例）与断开。DEBUG：每个超时的调用、每个失败的连接。WARNING：因静默或协议错误关闭的连接、被替换的实例、抛异常的回调。ERROR：认证器或处理器出错，包括处理消息和得知对端连接、断开的时候。 |
 
 底层监听的 socket 和每个拨出的连接由 network 的 `cn.managame.network` 记录。
 
@@ -353,11 +366,11 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 - 通知、广播，以及在主动方发起的连接上双向调用和通知；
 - 多条连接下按 route key 保序，key 的连接断开时改走其他连接，请求所在连接断开后应答从另一条连接回来；
 - 对端的最后一条连接断开时等待中的调用立即失败，这期间写出的应答丢失；
-- 监听器：全部连接连上才算连上，全部断开才算断开；业务按握手 metadata 给对端分组；
+- 处理器得知对端的连接和断开：全部连接连上才算连上，全部断开才算断开；对端离开时清掉为它保存的东西；业务按握手 metadata 给对端分组；只收消息的 lambda；
 - 通过一个能切断连接的代理，区分重启和重连，旧实例的调用立即失败；更新的实例替换旧实例；
 - 握手：两个节点互相连接、以错误 id 应答、协议版本不同、握手前收到其他帧、超过最大长度的帧、槽号超出连接数、始终不握手的连接，以及两个方向的准入检查；
 - 心跳保持空闲连接、主动方断开不再回应心跳的对端、被连接方关闭不再发心跳的主动方，以及回应心跳；
 - 最大帧长度；繁忙的连接；等待调用的上限；
-- 两个对端同时加入、各自的监听器互相调用对方时不会死锁，节点关闭前刚写出的应答仍能送达调用方；
-- 移除对端、关闭节点、在节点的 EventLoop 和时间轮线程上调用阻塞方法被拒绝、回调和监听器抛异常，以及各种误用；
+- 两个对端同时加入、处理器得知其中一个连上时去调用另一个，不会死锁；节点关闭前刚写出的应答仍能送达调用方；
+- 移除对端、关闭节点、在节点的 EventLoop 和时间轮线程上调用阻塞方法被拒绝、回调抛异常、处理器在得知对端连接和断开时抛异常，以及各种误用；
 - 单独测试等待调用表：id、上限、全部失败，以及并发下每个调用都恰好结束一次。

@@ -48,6 +48,7 @@ set timers and publish events, and what comes of those returns as tasks on a rou
 | --- | --- | --- |
 | Clients come in | a `ConnectionHandler`, its gateway | Keeps a session per connection, builds each message's context from it, dispatches, and writes the answer in its own packet format ([runtime: Dispatcher](managame-runtime/README.md)) |
 | Other processes come in | an `RpcHandler` | Decodes a request and dispatches it as the gateway does, to the same handlers, answering with `rpcPeer.reply(connection, response)` ([rpc](managame-rpc/README.md)) |
+| Another process goes away | the same `RpcHandler`, in `onDisconnected` | Hands the runtime the clearing of what the game kept for that node, such as its players in the world, as the gateway does when a player's connection closes |
 | A task calls another process | a wrapper round `peer.call` | Takes the task's `runtime.continuation()` before calling; decodes the answer in the callback, where it is released on return, then goes back to the calling task's route through the continuation's `execute(task)`, which a full route does not refuse: a callback runs on an EventLoop, never on the route |
 | Who is online | a map of roles to sessions | Pushes to a player outside a request, and finds the session a new login replaces |
 | A player online | an object of its own per player, in memory | Holds what lasts as long as the player is online, such as the session and a `TimerGroup`; never a `Context`, which each message brings |
@@ -94,7 +95,7 @@ Start from the bottom and open the doors last, so a message that arrives finds e
 1. `GameData.build()`: reads the entity classes, has each mapper check its tables, loads the preloaded ones.
 2. `GameRuntime.build()`, then the `Dispatcher`, `EventBus`, `HttpRoutes` and `GameTimer` on it.
 3. `RpcNode.start()` with the `RpcHandler`, then `createPeer` for the nodes this one dials. What must be done with a
-   peer before serving, such as registering with a world server, starts from `RpcListener.onConnected`.
+   peer before serving, such as registering with a world server, starts from the `RpcHandler`'s `onConnected`.
 4. `NetworkServer.start(...)` for clients.
 
 Stop in the opposite order. Each step ends what the next would otherwise wait for or lose:
@@ -115,7 +116,7 @@ on the data, the Dispatcher on the runtime, and the servers and the node on the 
 
 | Thread | Runs | Rule |
 | --- | --- | --- |
-| EventLoops (network, rpc) | Decoding, the gateway, the `RpcHandler`, RPC callbacks and listeners | Never block: decode, then hand the work to the runtime |
+| EventLoops (network, rpc) | Decoding, the gateway, the `RpcHandler`, RPC callbacks | Never block: decode, then hand the work to the runtime |
 | A route of the runtime | Every handler, event, timer and continuation, one at a time per domain and route key | Business logic, and only here. A load from the database blocks the route it is on, which is what `RouteExecutors.virtualThreads()` is for |
 | Timer wheels (runtime, rpc) | Handing due timers to the runtime; the callbacks of RPC calls that timed out | Never block |
 | data's write threads | Writing changes, reading each entity as it is written | Keep an entity's collections thread-safe |

@@ -40,6 +40,7 @@ other processes  --> rpc     --> RpcHandler --+                       ^         
 | --- | --- | --- |
 | 客户端进来 | 一个 `ConnectionHandler`，也就是网关 | 每个连接保存一个会话，按会话给每条消息建上下文，交给 Dispatcher，再按自己的包格式写回应答（[runtime：Dispatcher](managame-runtime/README.zh-CN.md)） |
 | 其它进程进来 | 一个 `RpcHandler` | 解析请求，和网关一样交给 Dispatcher，用的是同一批处理器，再用 `rpcPeer.reply(connection, response)` 应答（[rpc](managame-rpc/README.zh-CN.md)） |
+| 其它进程离开 | 同一个 `RpcHandler` 的 `onDisconnected` | 把清理工作交给 runtime：清掉游戏为那个节点保存的东西，比如它在世界里的玩家，和网关在玩家连接断开时做的一样 |
 | 任务调用别的进程 | 对 `peer.call` 的一层封装 | 调用之前先取任务的 `runtime.continuation()`；在回调里把应答解析完（回调返回时应答就释放了），再用它的 `execute(task)` 回到发起调用的任务的路由上，路由满了也不会被拒绝：回调在 EventLoop 上执行，不在路由上 |
 | 谁在线 | 一张角色到会话的表 | 在请求之外给玩家推送；新登录时找到要被顶掉的旧会话 |
 | 一个在线玩家 | 应用自己的、每个玩家一个的内存对象 | 保存和在线同寿命的东西，比如会话和一个 `TimerGroup`；不保存 `Context`，上下文是每条消息带来的 |
@@ -76,7 +77,7 @@ other processes  --> rpc     --> RpcHandler --+                       ^         
 
 1. `GameData.build()`：读实体类，让每个 mapper 检查自己的表，加载整表常驻的表。
 2. `GameRuntime.build()`，然后是建在它上面的 `Dispatcher`、`EventBus`、`HttpRoutes` 和 `GameTimer`。
-3. 带着 `RpcHandler` 的 `RpcNode.start()`，再对要主动连接的节点 `createPeer`。对外服务之前必须先和某个对端做完的事，比如向世界服注册，从 `RpcListener.onConnected` 开始。
+3. 带着 `RpcHandler` 的 `RpcNode.start()`，再对要主动连接的节点 `createPeer`。对外服务之前必须先和某个对端做完的事，比如向世界服注册，从 `RpcHandler` 的 `onConnected` 开始。
 4. 给客户端的 `NetworkServer.start(...)`。
 
 关闭顺序相反。每一步都先结束下一步本来要等待或者会丢掉的东西：
@@ -92,7 +93,7 @@ other processes  --> rpc     --> RpcHandler --+                       ^         
 
 | 线程 | 执行什么 | 规则 |
 | --- | --- | --- |
-| EventLoop（network、rpc） | 解码、网关、`RpcHandler`、RPC 的回调和监听器 | 不能阻塞：解析完就把工作交给 runtime |
+| EventLoop（network、rpc） | 解码、网关、`RpcHandler`、RPC 的回调 | 不能阻塞：解析完就把工作交给 runtime |
 | runtime 的一条路由 | 所有处理器、事件、定时器和续接的工作，同一 domain 和路由键逐个执行 | 业务逻辑，而且只在这里执行。从数据库加载会阻塞所在的路由，`RouteExecutors.virtualThreads()` 就是为此准备的 |
 | 时间轮（runtime、rpc） | 把到期的定时器交给 runtime；超时的 RPC 调用的回调 | 不能阻塞 |
 | data 的写线程 | 写入修改，写的时候读实体 | 实体里的集合要线程安全 |

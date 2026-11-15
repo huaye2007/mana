@@ -167,8 +167,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   (without) / `RpcResponse` (`requestId`, `code`, `metadata`, `body`), `node.createPeer` / `removePeer`,
   `node.peer(id).call(request, callback)` with `RpcCallback.onResponse(request, response)`, `peer.notify(notify)`,
   `node.broadcast(peers, notify)`, `RpcHandler.handleMessage(RpcPeer rpcPeer, Connection connection, Object msg)`
-  answered with `rpcPeer.reply(connection, response)`, `RpcListener.onConnected(peer)`, `incarnation` (a
-  running instance of a node), `node.close()`, `RpcAuthenticator`, handshake and heartbeat (the internal frames).
+  answered with `rpcPeer.reply(connection, response)`, its `onConnected(rpcPeer)` / `onDisconnected(rpcPeer)`,
+  `incarnation` (a running instance of a node), `node.close()`, `RpcAuthenticator`, handshake and heartbeat (the
+  internal frames).
 - rpc decisions the maintainer made: TCP only; waiting calls belong to the `RpcPeer`, under its own request ids,
   so an answer may come back on any connection of the same instance, and they fail at once when the peer's last
   connection closes; a callee pushes back by pausing reads with Netty's `autoRead`, with no API of rpc's own; a
@@ -178,7 +179,9 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   wheel per node does all its timing (call timeouts, heartbeats); the handshake negotiates nothing, so the nodes
   of a cluster share one protocol version, heartbeat interval and largest frame; a call fails with `RPC_UNAVAILABLE`
   when its peer is not there and `RPC_OVERLOADED` when it is but can take no more, since a caller answers the two
-  differently.
+  differently; every node hears its peers connect and disconnect through its one `RpcHandler`, which also receives
+  their messages, as network's `ConnectionHandler` hears a connection open, read and close: there is no separate
+  listener, and it is where an application clears what it kept for a peer that left.
 - data names and decisions the maintainer made: `GameData` with `GameData.builder()`, `SingleRepository<K, E>`
   (by `@Id`), `GroupRepository<K, E>` (groups by `@GroupKey`, `GroupKeys.of(...)`, a map per group by `@MapKey`,
   `MapKeys.of(...)` for several), `LogRepository<E>`, repositories as empty subclasses the builder creates, registered

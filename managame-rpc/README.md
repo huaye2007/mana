@@ -161,6 +161,7 @@ RpcHandler handler = (rpcPeer, connection, msg) -> {
 - The handler runs on the connection's EventLoop, in the order messages arrived on it, and must not block.
 - When it throws, a request not yet answered fails with `RPC_HANDLER_ERROR`; for a notify the exception is logged.
   A node without a handler answers requests with `HANDLER_NOT_FOUND` and drops notifies.
+- The same handler hears peers connect and disconnect, see [Connecting and disconnecting](#connecting-and-disconnecting).
 
 ## Reference counting
 
@@ -192,29 +193,47 @@ The application drives membership from its own configuration or service discover
   sees them leave.
 - **`node.peer(id)`** is the peer with that id or null; **`node.peers()`** a snapshot of all.
 
-### Listener
+### Connecting and disconnecting
 
-`RpcListener` has two methods, both empty by default:
+Every node hears its peers come and go, whichever side dialed, through the `RpcHandler` that receives their
+messages. It has two more methods, which do nothing unless implemented, so a handler that only receives stays a
+lambda:
 
 | Method | When |
 | --- | --- |
-| `onConnected(peer)` | Every connection of a running instance of the peer completed its handshake |
-| `onDisconnected(peer)` | The peer's last connection closed, also when it was removed or a new instance took over |
+| `onConnected(rpcPeer)` | Every connection of a running instance of the peer completed its handshake |
+| `onDisconnected(rpcPeer)` | The peer's last connection closed, also when it was removed, this node closed or a new instance took over |
+
+A handler that keeps something for its peers is a class, and `onDisconnected` is where it clears what it kept for
+the one that left, whether that node stopped, crashed or lost its network:
+
+```java
+final class WorldEntry implements RpcHandler {
+    @Override public void handleMessage(RpcPeer rpcPeer, Connection connection, Object msg) { ... }
+
+    @Override public void onDisconnected(RpcPeer rpcPeer) {           // on an EventLoop: hand the work on
+        int gameServer = rpcPeer.nodeId();
+        executor.execute(() -> world.removePlayersOf(gameServer));    // its players leave the world with it
+    }
+}
+```
 
 A peer that loses some of its connections stays connected, with no event; its keys take the connections left.
-`peer.isConnected()` is true while at least one connection is up. Calls for one peer never overlap and come in
-order, on the EventLoop of the connection that changed, and must not block. A listener may call, notify and answer
-any peer: calls, notifies and answers take no lock, so a listener never waits for another peer's.
+`peer.isConnected()` is true while at least one connection is up. The two methods never overlap for one peer and
+come in order, on the EventLoop of the connection that changed, and must not block. They may call, notify and
+answer any peer: calls, notifies and answers take no lock, so hearing one peer never waits for another's. A peer
+with several connections may send on those up before the last completes its handshake, so a message of its may come
+before `onConnected`. An exception thrown from either is logged and counted like one thrown on a message.
 
 ### Starting up
 
 A call to a peer not yet connected fails at once with `RPC_UNAVAILABLE`, off the calling thread; nothing is
 queued. A node that must reach another before it serves, such as a game server registering with the world server
-before letting players in, starts that work from its listener:
+before letting players in, starts that work when it hears that node connect:
 
 ```java
-public void onConnected(RpcPeer peer) {
-    if (peer.nodeId() == WORLD) executor.execute(this::registerAndOpen);
+@Override public void onConnected(RpcPeer rpcPeer) {
+    if (rpcPeer.nodeId() == WORLD) executor.execute(this::registerAndOpen);
 }
 ```
 
@@ -228,9 +247,9 @@ number, sent in every handshake. `node.incarnation()` is this node's, `peer.inca
   An application that keeps such state keeps the incarnation with it:
 
   ```java
-  public void onConnected(RpcPeer peer) {
-      Long last = seen.put(peer.nodeId(), peer.incarnation());
-      if (last != null && last != peer.incarnation()) clearPlayersOn(peer.nodeId());
+  @Override public void onConnected(RpcPeer rpcPeer) {
+      Long last = seen.put(rpcPeer.nodeId(), rpcPeer.incarnation());
+      if (last != null && last != rpcPeer.incarnation()) clearPlayersOn(rpcPeer.nodeId());
   }
   ```
 
@@ -251,14 +270,14 @@ RpcNode game = RpcNode.builder().nodeId(101)
         .metadata(Metadata.builder().put(SERVICE, GAME).build())
         .start();
 
-// on the world server: group peers by what they say they are
+// in the world server's handler: group peers by what they say they are
 Map<Integer, Set<RpcPeer>> byService = new ConcurrentHashMap<>();
-RpcListener grouping = new RpcListener() {
-    public void onConnected(RpcPeer peer) {
-        byService.computeIfAbsent(peer.metadata().get(SERVICE), s -> ConcurrentHashMap.newKeySet()).add(peer);
-    }
-    public void onDisconnected(RpcPeer peer) { byService.get(peer.metadata().get(SERVICE)).remove(peer); }
-};
+
+@Override public void onConnected(RpcPeer rpcPeer) {
+    byService.computeIfAbsent(rpcPeer.metadata().get(SERVICE), s -> ConcurrentHashMap.newKeySet()).add(rpcPeer);
+}
+
+@Override public void onDisconnected(RpcPeer rpcPeer) { byService.get(rpcPeer.metadata().get(SERVICE)).remove(rpcPeer); }
 ```
 
 Which node of a group serves a key is the application's too: modulo, hashing, or a lookup such as "the game
@@ -346,7 +365,7 @@ heartbeat. The heartbeat itself runs on the connection's EventLoop.
 ## Observability
 
 - `peer.pendingCount()`: the calls to the peer waiting for their answer.
-- `peer.connectionCount()`, `peer.isConnected()`, `peer.incarnation()`, and the peers the listener hears connect and disconnect.
+- `peer.connectionCount()`, `peer.isConnected()`, `peer.incarnation()`, and the peers the handler hears connect and disconnect.
 - Every call's outcome reaches its callback with the request it answers; an application measures latency, timeouts
   and failures by peer and command in its own callback adapter, for whatever monitoring it uses.
 - `metrics(Metrics)` reports what goes through the node, what fails and what it holds. By default, `Metrics.noop()`,
@@ -369,7 +388,7 @@ By peer, with the tag `node` for the peer's id:
 | `managame.rpc.notifies.sent` | counter | Notifies a connection accepted |
 | `managame.rpc.notifies.refused` | counter | Notifies refused, with the tag `status`: `NOT_WRITABLE` or `INACTIVE` |
 | `managame.rpc.requests.received`, `managame.rpc.notifies.received` | counter | What it sent this node |
-| `managame.rpc.handler.failed` | counter | Times this node's handler threw on what it sent |
+| `managame.rpc.handler.failed` | counter | Times this node's handler threw on what it sent, or on hearing it connect or disconnect |
 | `managame.rpc.replies.lost` | counter | Answers no connection of its instance could take |
 
 For the node, with no tag but where said:
@@ -390,7 +409,7 @@ for the whole process.
 | What | Runs on |
 | --- | --- |
 | `RpcHandler.handleMessage`, `RpcAuthenticator` | the connection's EventLoop, in arrival order |
-| `RpcListener` | the EventLoop of the connection that changed |
+| `RpcHandler.onConnected`, `onDisconnected` | the EventLoop of the connection that changed |
 | `RpcCallback` | the EventLoop of the connection the answer came on; the node's time wheel thread when the call timed out; a dialing EventLoop of the node, picked by the route key, when the call failed before it was sent; the EventLoop of the peer's last connection when that closed; the EventLoop of the connection that brought a new instance of the peer; the thread that removed the peer or closed the node. Never the calling thread inside `call` |
 | `call`, `notify`, `broadcast`, `reply`, `createPeer` | any thread |
 | `removePeer`, `close` | any thread but the node's EventLoops, and for `close` its time wheel (they block until connections close; there they throw `IllegalStateException`) |
@@ -404,8 +423,7 @@ None of them may block: business logic belongs on the application's own threads,
 | `nodeId(int)` | required | This node's id, unique in the cluster |
 | `metadata(Metadata)` | empty | What this node tells every peer in the handshake |
 | `listen(port)` / `listen(InetSocketAddress)` | none | Lets other nodes dial this one; port 0 binds an ephemeral port (`node.port()`) |
-| `handler(RpcHandler)` | requests fail with `HANDLER_NOT_FOUND` | Handles what peers send |
-| `listener(RpcListener)` | none | Hears peers connect and disconnect |
+| `handler(RpcHandler)` | requests fail with `HANDLER_NOT_FOUND` | Handles what peers send, and hears them connect and disconnect |
 | `authenticator(RpcAuthenticator)` | admit all | Decides who may join |
 | `bootstrap(Bootstrap)` / `serverBootstrap(ServerBootstrap)` | the node's own EventLoops | Netty bootstraps for dialing and listening: EventLoops, channel type, socket options. The handler is the node's; what is unset is filled in on a copy |
 | `redialDelay(min, max)` | 100 ms, 10 s | How long a dialed connection waits before dialing again |
@@ -448,7 +466,7 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 
 | Logger | Logs |
 | --- | --- |
-| `cn.managame.rpc` | INFO: the node started and closed, a peer dialed or removed, a peer connected (or a new instance of it) and disconnected. DEBUG: each call that timed out, each connection that failed. WARNING: connections closed for silence or a broken protocol, a replaced instance, a listener or callback that threw. ERROR: an authenticator or handler that failed. |
+| `cn.managame.rpc` | INFO: the node started and closed, a peer dialed or removed, a peer connected (or a new instance of it) and disconnected. DEBUG: each call that timed out, each connection that failed. WARNING: connections closed for silence or a broken protocol, a replaced instance, a callback that threw. ERROR: an authenticator or handler that failed, on a message or on hearing a peer connect or disconnect. |
 
 network's `cn.managame.network` logs the listening socket and each dialed connection underneath.
 
@@ -467,7 +485,8 @@ Netty's leak detection at its strictest, covering:
 - order by route key over several connections, a key taking another connection while its own is down, and an
   answer coming back on another connection after its request's dropped;
 - calls failing at once when the peer's last connection closes, and the answer written meanwhile lost;
-- the listener: connected once every connection is, disconnected once none is; peers grouped by handshake metadata;
+- the handler hearing peers: connected once every connection is, disconnected once none is; what it kept for a peer
+  cleared when that peer leaves; peers grouped by handshake metadata; a lambda that only receives;
 - a restart told from a reconnect through a proxy that cuts connections, the old instance's calls failing at once,
   and a newer instance replacing an older one;
 - handshakes: two nodes dialing each other, a node answering under another id, protocol versions, a frame before
@@ -476,9 +495,9 @@ Netty's leak detection at its strictest, covering:
 - heartbeats keeping an idle connection up, a dialer dropping a peer that stops answering, the accepting side
   closing a dialer that goes silent, and answering heartbeats;
 - the largest frame; a busy connection; the pending-call limit;
-- two listeners calling each other's peers while both peers join, without deadlock, and an answer written just
-  before the node closes still reaching its caller;
-- removing peers, closing nodes, blocking calls refused on the node's EventLoops and time wheel, throwing
-  callbacks and listeners, and misuse;
+- the handler calling each of two peers as it hears the other connect, while both join, without deadlock, and an
+  answer written just before the node closes still reaching its caller;
+- removing peers, closing nodes, blocking calls refused on the node's EventLoops and time wheel, callbacks that
+  throw and a handler that throws on hearing a peer, and misuse;
 - the pending-call table on its own: ids, the limit, failing all, and every call ending exactly once under
   contention.
