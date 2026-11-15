@@ -44,6 +44,7 @@ class TimerGroupTest {
     private static final MetadataKey<String> TRACE = MetadataKey.stringKey(1);
 
     private record Request(int domain, long routeKey, byte businessType, long businessId, Metadata metadata) implements RequestContext {
+        @Override public <T> void put(MetadataKey<T> key, T value) { throw new UnsupportedOperationException("nothing is put here"); }
         @Override public boolean reply(Object result) { return true; }
         @Override public boolean fail(int errorCode) { return true; }
     }
@@ -123,7 +124,7 @@ class TimerGroupTest {
             timers.every(given, "tick", Duration.ofMillis(30), later -> seen.add(Context.current()));
         });
         assertSame(given, seen.poll(5, TimeUnit.SECONDS));
-        assertSame(given, seen.poll(5, TimeUnit.SECONDS));
+        assertEquals(given, seen.poll(5, TimeUnit.SECONDS), "a timer that repeats runs each firing with a copy of it");
         onRoute(context -> timers.cancelAll());
     }
 

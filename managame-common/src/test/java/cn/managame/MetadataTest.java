@@ -1,5 +1,6 @@
 package cn.managame;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,6 +31,36 @@ class MetadataTest {
         assertEquals(7L, original.get(SERVER));
         assertNull(original.get(LEVEL));
         assertTrue(Metadata.empty().toBuilder().build().isEmpty());
+    }
+
+    @Test void withSetsOneValueWithoutChangingTheOriginal() {
+        Metadata original = Metadata.builder().put(TRACE, "t1").put(SERVER, 7L).build();
+        Metadata added = original.with(LEVEL, 3);
+        assertEquals(3, added.get(LEVEL));
+        assertEquals("t1", added.get(TRACE));
+        assertEquals(7L, added.get(SERVER));
+        assertNull(original.get(LEVEL), "the original is as it was");
+
+        Metadata replaced = original.with(TRACE, "a longer trace").with(SERVER, 8L);
+        assertEquals("a longer trace", replaced.get(TRACE));
+        assertEquals(8L, replaced.get(SERVER));
+        assertEquals("t1", original.get(TRACE));
+        assertEquals(7L, original.get(SERVER));
+
+        assertArrayEquals(original.toBuilder().put(TRACE, "t2").put(LEVEL, 3).build().bytes(), original.with(TRACE, "t2").with(LEVEL, 3).bytes(),
+                "the bytes a builder makes of the same puts");
+        assertEquals(3, Metadata.wrap(added.bytes()).get(LEVEL), "the bytes are the wire form");
+        assertEquals("t1", Metadata.empty().with(TRACE, "t1").get(TRACE));
+        assertTrue(Metadata.empty().isEmpty(), "the shared empty metadata stays empty");
+    }
+
+    @Test void withRejectsWhatDoesNotFit() {
+        MetadataKey<byte[]> blob = MetadataKey.bytesKey(4);
+        Metadata original = Metadata.builder().put(TRACE, "t1").build();
+        assertThrows(IllegalArgumentException.class, () -> original.with(blob, new byte[65536]), "a value too large");
+        assertThrows(IllegalArgumentException.class, () -> original.with(blob, new byte[65530]), "too large with the rest");
+        assertEquals(65531, Metadata.empty().with(blob, new byte[65531]).get(blob).length, "the most that fits: 65535 with its header");
+        assertThrows(NullPointerException.class, () -> original.with(TRACE, null));
     }
 
     @Test void malformedBytesAreRejected() {

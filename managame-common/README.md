@@ -62,6 +62,9 @@ Rules:
 - Each `build()` returns an independent snapshot; `Metadata.empty()` is the shared empty instance.
 - `metadata.toBuilder()` derives new metadata with values added or replaced, leaving the original as it was:
   `metadata.toBuilder().put(FROM_SERVER, 8L).build()`.
+- `metadata.with(key, value)` derives new metadata with that one value set, in one copy of the bytes:
+  `metadata.with(FROM_SERVER, 8L)`. A metadata itself never changes, so it is shared freely between threads and
+  contexts; what holds one, such as a runtime context (`context.put(key, value)`), takes the new one in its place.
 - The application owns the key ids. Allocate them in one place so that every server of a cluster agrees.
 
 ## Unique ids

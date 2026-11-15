@@ -42,10 +42,11 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 | `businessId` | long | 任务为谁执行，例如当前操作的玩家 |
 | `metadata` | `Metadata` | 随之传递的业务字段，例如 trace id |
 
-- `GameContext` 是普通的不可变上下文：`GameContext.of(domain, key)`、`GameContext.of(domain, key, type, id)` 或
+- `GameContext` 是普通的上下文：`GameContext.of(domain, key)`、`GameContext.of(domain, key, type, id)` 或
   `new GameContext(domain, key, type, id, metadata)`。
 - 任务内部用 `Context.current()` 取得当前任务的上下文；`Context.hasCurrent()` 判断当前线程是否在执行任务。
-- `GameContext.copyOf(context)` 得到一份普通副本，用于针对同一对象的新工作，保留路由和 metadata。请求的副本不能应答该请求。
+- `GameContext.copyOf(context)` 得到一份普通副本，用于针对同一对象的新工作，带着路由和上下文此刻的 metadata。请求的副本不能应答该请求。
+- `context.put(key, value)` 往上下文的 metadata 里设置一个值，让包在所有任务外面的那一层加上任务要读的东西，见[拦截器](#拦截器)。`Metadata` 本身从不改变：上下文换成一份新的，所以只有这个上下文能看到这个值；之前已经拿走它 metadata 的地方，比如一份副本、分发消息时的来源，仍是拿走时的样子。上下文的其它字段都不会变。
 - `RequestContext` 在此基础上增加 `reply(result)` 和 `fail(errorCode)`，用于有人在等待结果的工作。只有第一次应答有效，可以在任意线程、在任务返回之后应答。请求一定会得到应答：任务抛异常时 runtime 以 `RUNTIME_EXECUTION_ERROR` 应答，`execute` 拒绝任务时以拒绝的错误码应答。`fail(errorCode, args...)` 还可以带上字符串参数，例如错误提示里要显示的数值，由来源按自己的格式放置；HTTP 请求要显示的是文案，由编解码器根据它们生成。
 
 ### 回到原路由继续执行
@@ -219,15 +220,59 @@ class Gateway implements ConnectionHandler {
 
 ## 拦截器
 
+拦截器有两种，各管一件事：
+
+| 拦截器 | 包住什么 | 拿到什么 | 用来做什么 |
+| --- | --- | --- | --- |
+| Dispatcher 的 `HandleInterceptor` | 每个 `@HandleMethod`，一条消息一次 | 上下文、处理器的 `Method`、消息 | 和请求有关的事：登录检查、出问题的功能临时关掉、按消息类型限流 |
+| runtime 的 `TaskInterceptor` | 每个任务：处理器、事件、HTTP 接口、定时器，以及之后续接请求的任务 | 上下文 | 和每个任务都有关的事：把 trace id 放进日志上下文、`context.put`、保存任务改过的东西 |
+
+请求的检查放在 `HandleInterceptor` 里：它知道是哪个处理器、哪条消息；续接请求的任务也不会再经过它，否则中途改了主意的检查会把做了一半的请求拒掉。
+
+### 包住处理器
+
+```java
+class FeatureSwitch implements HandleInterceptor {        // 出问题的功能，不停服就能关掉
+    private final Set<Class<?>> closed = ConcurrentHashMap.newKeySet();
+
+    public boolean before(HandleContext context, Method handler, Object message) {
+        if (!closed.contains(handler.getDeclaringClass())) return true;
+        context.fail(FEATURE_CLOSED);
+        return false;                                     // 处理器不再执行
+    }
+}
+
+class LoginCheck implements HandleInterceptor {           // 登录前只能执行登录 domain 的处理器
+    public boolean before(HandleContext context, Method handler, Object message) {
+        if (context.domain() == LOGIN || context.businessId() != 0) return true;
+        context.fail(NOT_LOGGED_IN);
+        return false;
+    }
+}
+
+Dispatcher dispatcher = Dispatcher.builder(runtime)
+        .intercept(List.of(new LoginCheck(), new FeatureSwitch()))
+        .register(handlers)
+        .build();
+```
+
+- 每条消息只执行一次，紧贴着处理器，在处理器的路由和线程上，在 runtime 的 `TaskInterceptor` 里面。所以可以读这条路由上的数据，比如玩家的等级。
+- `handler` 是处理器的 `java.lang.reflect.Method`：能读到它的类、方法名，以及应用加在类或方法上的注解，比如应用自己的 `@Feature("shop")`，按名字开关功能。`message` 是处理器将要拿到的消息。
+- 所有把消息交给这个 Dispatcher 的入口都经过它，客户端网关和别的服务器进来的入口一样，检查只写一处。
+- 续接请求的任务、事件、定时器都不经过它；没有到达处理器的消息也不经过它：没有处理器的、路由不了的、被 runtime 拒绝的。
+- `before` 按拦截器添加的顺序执行，然后是处理器，再按相反顺序执行 `before` 返回了 true 的那些拦截器的 `after`。`before` 返回 false 时，处理器和之后的 `before` 都不再执行，也不会交给错误处理器，因为拒绝不是错误。被拒绝的请求由拦截器自己应答，没有应答时以 `RUNTIME_EXECUTION_ERROR` 应答，因为请求一定会得到应答。
+- `after` 拿到处理器或后面某个 `before` 抛出的异常，没有则为 null。处理器返回的应答此时已经发出；void 的处理器可能之后才应答。
+- `before` 或 `after` 抛异常时，和处理器抛异常一样处理：请求以 `RUNTIME_EXECUTION_ERROR` 应答，已经应答过的除外，异常交给错误处理器。
+- 没有添加拦截器时 Dispatcher 原样调用处理器（`DispatchThroughputBenchmark.dispatchIntercepted` 测量了一个什么都不做的拦截器）。
+
+### 包住每个任务
+
 `TaskInterceptor` 在 runtime 的每个任务执行前后运行，不管任务来自哪个入口：Dispatcher 的处理器、事件、HTTP 接口、定时器和定时任务，以及用 `runtime.execute` 回到某条路由上继续的工作（它本身也是一个任务）。拦截器在任务的路由和线程上运行，`Context.current()` 就是任务的上下文。每个拦截器都会看到所有任务，由它自己按 domain 或上下文的类型决定怎么做：
 
 ```java
-class LoginCheck implements TaskInterceptor {             // 登录前只能执行登录 domain 的处理器
+class Trace implements TaskInterceptor {                  // 不管从哪个入口进来，每个任务都有 trace id
     public boolean before(Context context) {
-        if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
-            request.fail(NOT_LOGGED_IN);
-            return false;                                     // 任务不再执行
-        }
+        if (!context.metadata().contains(TRACE)) context.put(TRACE, newTraceId());
         return true;
     }
 }
@@ -241,17 +286,17 @@ class SavePlayer implements TaskInterceptor {             // 不管是请求、�
 GameRuntime runtime = GameRuntime.builder()
         .domain(PLAYER, RouteExecutors.virtualThreads())
         .domain(LOGIN, RouteExecutors.virtualThreads())
-        .intercept(List.of(new LoginCheck(), new SavePlayer()))
+        .intercept(List.of(new Trace(), new SavePlayer()))
         .build();
 ```
 
 - `before` 按拦截器添加的顺序执行，然后是任务，再按相反顺序执行 `after`。只有 `before` 返回 true 的拦截器才会执行 `after`，所以 `before` 里设置的东西（比如日志上下文里的 trace id）一定会被 `after` 清掉。某个 `after` 抛异常时，其余的 `after` 仍会执行。
-- `before` 返回 false 表示拒绝任务：任务和之后的 `before` 都不再执行，也不会交给错误处理器，因为拒绝不是错误。被拒绝的请求由拦截器自己应答（如上面的 `LoginCheck`），没有应答时以 `RUNTIME_EXECUTION_ERROR` 应答，因为请求一定会得到应答。
+- `before` 返回 false 表示拒绝任务：任务和之后的 `before` 都不再执行，也不会交给错误处理器，因为拒绝不是错误。被拒绝的请求由拦截器自己应答，没有应答时以 `RUNTIME_EXECUTION_ERROR` 应答，因为请求一定会得到应答。它看不到处理器和消息，而且续接请求的任务、事件、定时器也会经过它，后两者没有人可以应答：要按请求的内容来拒绝，放到 `HandleInterceptor` 里。
 - `after` 拿到任务或后面某个 `before` 抛出的异常，没有则为 null，后面的 `before` 拒绝任务时也是 null。任务执行中给出的应答此时已经发出。
+- `before` 用 `context.put(key, value)` 放进上下文的东西（如上面的 `Trace`），后面的拦截器、任务本身都从 `context.metadata()` 读到；任务之后发起的东西在发起时拿上下文的 metadata，所以事件、定时器、对别的进程的调用也带着它。只有这里能覆盖所有入口：消息的来源、HTTP 请求、Cron 带来的 metadata 是什么就是什么，往往是空的。
+- 每条消息、每个事件、每个 HTTP 请求都有自己的上下文；用 `GameContext` 设置的周期定时器和 cron 定时器，每次触发用它的一份拷贝，所以也各有自己的。续接请求的任务用的是请求原来的上下文，能读到之前放进去的值。应用自己留着、一个接一个任务反复使用的上下文对象，会留着放进去的值。`put` 只在任务自己的线程上调用。
 - `before` 或 `after` 抛异常时，和任务抛异常一样处理：请求以 `RUNTIME_EXECUTION_ERROR` 应答，已经应答过的除外，异常交给错误处理器。`before` 抛异常时，任务和之后的 `before` 同样不再执行。
 - 没有添加拦截器时 runtime 原样执行任务；每添加一个，每个任务多两次调用（`ExecuteThroughputBenchmark.executeIntercepted` 测量了一个什么都不做的拦截器）。
-- 需要看消息本身的检查，比如按消息类型限流，放在应用的入口里、分发之前做（那里有消息和包的协议号），或者放在处理器里。
-
 ## 事件
 
 ```java
@@ -294,6 +339,7 @@ timer.close();
 - 时间轮的线程只负责把到期任务交给 runtime，业务逻辑和其它任务一样在路由上执行。
 - 延迟使用单调时钟，不受 `GameTime` 影响。
 - `every` 按固定频率执行，第一次在一个周期之后。上一次还没结束时，这一次会记录日志并跳过，所以任务比周期慢时只会变慢，不会占满路由：做 tick 的业务要读实际过了多久，不要数触发次数。被 runtime 拒绝（路由已满）的那一次同样记录日志并跳过；runtime 关闭后定时器停止。
+- 用 `GameContext` 设置的 `every` 和 `cron`，每次触发用它的一份拷贝：每次触发都是一个独立的任务，所以一次触发放进上下文的东西（比如拦截器给它的 trace id）不会带到下一次。
 - `after` 只触发一次，被拒绝了没有下一次可补，所以路由再满它也会执行：任务为之设定时器的事，比如 buff 结束、建筑完工，一定会发生。只有到期时 runtime 已经关闭，它才会丢。
 - `close()` 之后仍然可以设定时器：拿到的是已取消的定时器，永远不会触发，所以应用关闭期间还在收尾的任务不会因为定时器先关了而失败。
 - 在定时器自己的路由上取消后，它不会再执行，已经排在路由上的那次也不会，所以关闭副本的任务取消心跳后就不用再管了。在别的线程上取消时，`cancel` 返回的同时可能正好有一次开始执行。
@@ -446,7 +492,7 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 | Logger | 内容 |
 | --- | --- |
 | `cn.managame.runtime` | INFO：runtime 启动（每个 domain 及其执行器，以及任务拦截器的数量）、开始关闭、关闭完成。DEBUG：每个被拒绝的任务、回收的空闲路由队列。WARNING：设置了 `slowTask` 时的慢任务。ERROR：默认错误处理器记录的失败任务。 |
-| `cn.managame.runtime.dispatch` | INFO：Dispatcher 的处理器数量。DEBUG：每种消息对应的处理器、每条被拒绝的消息。ERROR：无法执行的处理器。 |
+| `cn.managame.runtime.dispatch` | INFO：Dispatcher 的处理器和拦截器数量。DEBUG：每种消息对应的处理器、每条被拒绝的消息、每条被拦截器拦下的消息。ERROR：无法执行的处理器。 |
 | `cn.managame.runtime.event` | INFO：事件总线的订阅者数量。DEBUG：每种事件的订阅者。 |
 | `cn.managame.runtime.http` | INFO：HTTP 接口数量。DEBUG：每个接口、每个错误请求。ERROR：无法执行或无法应答的请求。 |
 | `cn.managame.runtime.timer` | INFO：每个排上的 `@Cron` 方法。DEBUG：每个 `timer.cron`。WARNING：被拒绝或跳过的触发。ERROR：执行失败的触发。 |
@@ -495,4 +541,4 @@ gauge 在采集时才读取执行器自己的状态，`close()` 时移除。路�
 mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
-先安装 managame-common 和 managame-network。测试覆盖 runtime 及其执行器的顺序与拒绝、路由键、Dispatcher 的应答与失败、包住所有入口的任务拦截器、基于真实 TCP 的玩家网关、事件、定时器，以及基于真实连接的 HTTP 路由。
+先安装 managame-common 和 managame-network。测试覆盖 runtime 及其执行器的顺序与拒绝、路由键、Dispatcher 的应答与失败、包住处理器的拦截器（按功能开关、只执行一次）、包住所有入口的任务拦截器、基于真实 TCP 的玩家网关、事件、定时器，以及基于真实连接的 HTTP 路由。

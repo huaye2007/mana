@@ -7,12 +7,9 @@ package cn.managame.runtime;
  * and decides itself what to do, for example by its domain or the kind of its context:
  *
  * <pre>{@code
- * class LoginCheck implements TaskInterceptor {
+ * class Trace implements TaskInterceptor {
  *     public boolean before(Context context) {
- *         if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
- *             request.fail(NOT_LOGGED_IN);
- *             return false;
- *         }
+ *         if (!context.metadata().contains(TRACE)) context.put(TRACE, newTraceId());
  *         return true;
  *     }
  * }
@@ -21,14 +18,21 @@ package cn.managame.runtime;
  *         if (context.domain() == PLAYER && failure == null) players.get(context.routeKey()).saveIfDirty();
  *     }
  * }
- * GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads()).intercept(List.of(new LoginCheck(), new SavePlayer()));
+ * GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads()).intercept(List.of(new Trace(), new SavePlayer()));
  * }</pre>
  *
- * The befores run in the order the interceptors were added, then the task, then in reverse order the after of each
+ * It is for what is about every task. It is given no handler and no message, and it also runs for what continues a
+ * request, for events and for timers: what is about a request, a login check or a feature switched off, is a
+ * {@link cn.managame.runtime.dispatch.HandleInterceptor} of the Dispatcher, around the handler alone.
+ *
+ * <p>The befores run in the order the interceptors were added, then the task, then in reverse order the after of each
  * interceptor whose before returned true, so what a before sets up an after always takes down. A before that returns
  * false refuses the task: it and the later befores do not run, and no error handler hears of it, since a refusal is no
  * error. The interceptor answers a request it refuses, or else it fails with RUNTIME_EXECUTION_ERROR, since a request
  * is always answered. After the afters, a task that did not run has its {@link GameTask#refused} called.
+ *
+ * <p>A before adds what the task and all it starts read with {@link Context#put}, such as a trace id for a task that
+ * came without one: it is the one place that reaches every entry.
  *
  * <p>An exception from either is handled as one from the task: a request fails with RUNTIME_EXECUTION_ERROR, unless it
  * was answered already, and the exception goes to the error handler. A before that throws also keeps the task and the

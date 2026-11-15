@@ -128,13 +128,21 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   that the application keeps with a route's state in memory and uses from that route's tasks; `GameTimer` keeps none,
   and a group keeps no context: each timer takes one as it is set, the calling task's or one passed with it, as every
   task goes to the runtime with its own. A
-  request is answered whether its task is accepted or refused. What runs around business logic (a trace id in the logs, saving
-  what a task changed, a login check) is a `TaskInterceptor` of the runtime (`GameRuntime.builder().intercept`),
-  around every task whatever its entry, a continuation included; entries have no interceptors of their own, and checks
-  that need the message itself belong in the application's entry before it dispatches. A `before` refuses a task by
-  returning false, answering a request it refuses itself; a refusal is no error.
+  request is answered whether its task is accepted or refused. What runs around every task (a trace id in the logs,
+  `context.put`, saving what a task changed) is a `TaskInterceptor` of the runtime (`GameRuntime.builder().intercept`),
+  around every task whatever its entry, a continuation included. What is about a request (a login check, a feature
+  switched off while it is fixed, a limit by kind of message) is a `HandleInterceptor` of the Dispatcher
+  (`Dispatcher.builder(runtime).intercept`): around each `@HandleMethod`, once for a message, on the handler's route,
+  given the handler's `Method` and the message, and shared by every entry that dispatches; not around what continues
+  the request, an event or a timer, which a check that changed its mind meanwhile must not refuse half done. A
+  `before` of either refuses by returning false, answering a request it refuses itself; a refusal is no error.
 - **Every context has the same fields:** `domain` (int), `routeKey` (long), `businessType` (byte),
-  `businessId` (long) and `Metadata`.
+  `businessId` (long) and `Metadata`. A `Metadata` never changes, so contexts, threads and the wire share one freely;
+  `context.put(key, value)` gives that context a new one (`Metadata.with`), so that a `TaskInterceptor`, the one
+  place around every task, adds what the task and what it starts read, such as a trace id. Nothing else of a context
+  changes. Each task has a context of its own where the framework makes it (a message, an event, an HTTP request, a
+  firing of a periodic or cron timer set with a `GameContext`, which is copied), so what is put is that task's and
+  what continues it.
 - **The business decides routing per domain, and a handler may name its message's key.** Each domain has its own
   `RouteExecutor` and its own `RouteKeyResolver`, set once for the whole domain: by default the source's business id
   (the acting player). A handler whose message carries its key names that member in its annotation

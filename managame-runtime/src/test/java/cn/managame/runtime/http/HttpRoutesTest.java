@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import cn.managame.FrameworkErrorCodes;
+import cn.managame.MetadataKey;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.runtime.Context;
@@ -274,6 +275,27 @@ class HttpRoutesTest {
     private static void assertReleased(FullHttpRequest request) throws InterruptedException {
         for (int waited = 0; waited < 5000 && request.refCnt() > 0; waited += 10) Thread.sleep(10);
         assertEquals(0, request.refCnt());
+    }
+
+    /** An HTTP request's context comes with no metadata: an interceptor puts in it what it reads from the request. */
+    @Test void anInterceptorPutsWhatTheEndpointReadsFromItsContext() throws Exception {
+        MetadataKey<String> trace = MetadataKey.stringKey(1);
+        TaskInterceptor tracing = new TaskInterceptor() {
+            @Override public boolean before(Context context) {
+                if (context instanceof HttpRequestContext request && request.request().headers().get("X-Trace") instanceof String id)
+                    context.put(trace, id);
+                return true;
+            }
+        };
+        @Domain(WORLD) class Traced {
+            @HttpMethod("/traced") String traced(String body) { return Context.current().metadata().get(trace) + " " + body; }
+        }
+        try (GameRuntime traced = GameRuntime.builder().domain(WORLD, RouteExecutors.striped(1), RouteKeys.constant(0))
+                .intercept(List.of(tracing)).build()) {
+            serve(HttpRoutes.builder(traced).register(List.of(new Traced())).build());
+            assertEquals("t1 x", send(request("POST", "/traced", "x").header("X-Trace", "t1")).body());
+            assertEquals("null y", send("POST", "/traced", "y").body(), "each request has a context of its own");
+        }
     }
 
     @Test void aRequestIsReleasedHoweverItsTaskEnds() throws Exception {

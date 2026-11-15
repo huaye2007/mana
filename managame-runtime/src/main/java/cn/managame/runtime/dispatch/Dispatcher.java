@@ -11,8 +11,11 @@ import cn.managame.runtime.Route;
 import cn.managame.runtime.annotation.AnnotatedMethod;
 import cn.managame.runtime.annotation.HandleMethod;
 import java.lang.System.Logger.Level;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -35,17 +38,21 @@ import java.util.function.Consumer;
  * returning a {@link HandleResult}, or through its {@link HandleContext}, also later from any thread. Messages are
  * matched by exact class. One with no handler fails with HANDLER_NOT_FOUND, one that cannot be routed with
  * INVALID_ROUTE_KEY, one the runtime refuses with the runtime's code, and a handler that throws with
- * RUNTIME_EXECUTION_ERROR. The runtime's TaskInterceptors run around every handler, as around every task.
+ * RUNTIME_EXECUTION_ERROR. The runtime's TaskInterceptors run around every handler, as around every task, and inside
+ * them the Dispatcher's own {@link HandleInterceptor}s, which are given the handler's method and the message and so are
+ * where a request is checked or a feature switched off.
  */
 public final class Dispatcher {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime.dispatch");
     private final GameRuntime runtime;
     private final Map<Class<?>, AnnotatedMethod> handlers;
+    private final HandleInterceptor[] interceptors;
 
     private Dispatcher(Builder b) {
         runtime = b.runtime;
         handlers = Map.copyOf(b.handlers);
-        LOG.log(Level.INFO, () -> "Dispatcher with " + handlers.size() + " handlers");
+        interceptors = b.interceptors.toArray(HandleInterceptor[]::new);
+        LOG.log(Level.INFO, () -> "Dispatcher with " + handlers.size() + " handlers and " + interceptors.length + " interceptors");
         handlers.forEach((type, handler) -> LOG.log(Level.DEBUG, () -> type.getName() + " handled by " + handler + " in domain " + handler.domain()));
     }
 
@@ -83,9 +90,8 @@ public final class Dispatcher {
         HandleContext context = new HandleContext(route, source.metadata(), onAnswer, handler.kind());
         try {
             runtime.execute(context, task -> {
-                Object result = handler.invoke(task, message);
-                if (result != null) task.answer((HandleResult) result);
-                else if (!handler.returnsVoid()) throw new IllegalStateException(handler + " returned null; only a void handler answers later");
+                if (interceptors.length == 0) handle(handler, task, message);
+                else intercept(handler, task, message);
             });
         } catch (GameRuntimeException refused) {
             // execute answered the request with the refusal's code
@@ -93,6 +99,45 @@ public final class Dispatcher {
             LOG.log(Level.ERROR, "Cannot run " + handler, e);
             context.fail(RUNTIME_EXECUTION_ERROR);
         }
+    }
+
+    /** The handler, and the answer it returned; only a void handler answers later. */
+    private static void handle(AnnotatedMethod handler, HandleContext context, Object message) throws Exception {
+        Object result = handler.invoke(context, message);
+        if (result != null) context.answer((HandleResult) result);
+        else if (!handler.returnsVoid()) throw new IllegalStateException(handler + " returned null; only a void handler answers later");
+    }
+
+    /**
+     * The befores in order, the handler unless one refused the message, then the after of each before that returned
+     * true, in reverse. All of them run whatever one throws, and what was thrown goes on to the runtime.
+     */
+    private void intercept(AnnotatedMethod handler, HandleContext context, Object message) throws Exception {
+        Method method = handler.method();
+        int entered = 0;
+        Throwable failure = null;
+        try {
+            while (entered < interceptors.length && interceptors[entered].before(context, method, message)) entered++;
+            if (entered == interceptors.length) {
+                handle(handler, context, message);
+            } else {
+                LOG.log(Level.DEBUG, () -> "An interceptor refused " + message.getClass().getName() + " for " + handler);
+                context.fail(RUNTIME_EXECUTION_ERROR); // does nothing if the interceptor answered, as it should
+            }
+        } catch (Exception | Error e) {
+            failure = e;
+        }
+        Throwable thrown = failure;
+        for (int i = entered - 1; i >= 0; i--) {
+            try {
+                interceptors[i].after(context, method, message, failure);
+            } catch (Exception | Error e) {
+                if (thrown == null) thrown = e;
+                else thrown.addSuppressed(e);
+            }
+        }
+        if (thrown instanceof Error error) throw error;
+        if (thrown != null) throw (Exception) thrown;
     }
 
     private static void reject(Object message, Consumer<HandleResult> onAnswer, int errorCode, String reason) {
@@ -103,8 +148,18 @@ public final class Dispatcher {
     public static final class Builder {
         private final GameRuntime runtime;
         private final Map<Class<?>, AnnotatedMethod> handlers = new HashMap<>();
+        private final List<HandleInterceptor> interceptors = new ArrayList<>();
 
         private Builder(GameRuntime runtime) { this.runtime = Objects.requireNonNull(runtime, "runtime"); }
+
+        /**
+         * Adds interceptors around every handler, each given the handler's method and the message; their before
+         * methods run in the order they were added. See {@link HandleInterceptor}.
+         */
+        public Builder intercept(Collection<? extends HandleInterceptor> interceptors) {
+            for (HandleInterceptor interceptor : interceptors) this.interceptors.add(Objects.requireNonNull(interceptor, "interceptor"));
+            return this;
+        }
 
         /**
          * Registers every {@link HandleMethod} of each object. Two handlers for one message class, a handler that

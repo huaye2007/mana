@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.Metadata;
+import cn.managame.MetadataKey;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.EventMethod;
 import cn.managame.runtime.annotation.HandleMethod;
@@ -22,6 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -35,6 +37,10 @@ class TaskInterceptorTest {
     record Boom() {}
     record Later() {}
     record LevelUp(long playerId) {}
+    record Enter() {}
+    record Entered(long playerId) {}
+
+    private static final MetadataKey<String> TRACE = MetadataKey.stringKey(1);
 
     private final List<String> trace = new CopyOnWriteArrayList<>();
     private final BlockingQueue<String> answers = new LinkedBlockingQueue<>();
@@ -91,6 +97,29 @@ class TaskInterceptorTest {
             }
             return true;
         }
+    }
+
+    /** Gives every task that came without a trace id one: in one place, whatever the entry. */
+    static class Tracer implements TaskInterceptor {
+        private final AtomicInteger ids = new AtomicInteger();
+
+        @Override public boolean before(Context context) {
+            if (context.businessType() != MARKER && !context.metadata().contains(TRACE)) context.put(TRACE, "t" + ids.incrementAndGet());
+            return true;
+        }
+    }
+
+    @Domain(PLAYER)
+    class Door {
+        EventBus events;
+
+        /** Starts an event, and answers from the task that continues the request: both go on with the id this task was given. */
+        @HandleMethod void enter(HandleContext context, Enter enter) {
+            trace.add("enter " + context.metadata().get(TRACE));
+            events.publish(new Entered(context.businessId()));
+            Thread.ofVirtual().start(() -> runtime.execute(context, again -> again.reply(again.metadata().get(TRACE))));
+        }
+        @EventMethod(routeKey = "playerId") void entered(GameContext context, Entered event) { trace.add("event " + context.metadata().get(TRACE)); }
     }
 
     private void start(TaskInterceptor... interceptors) {
@@ -152,6 +181,23 @@ class TaskInterceptorTest {
         assertEquals("ok later", ask(role, new Later()));
         assertEquals(List.of("a before " + PLAYER + ":1001", "a after", "a before " + PLAYER + ":1001", "reply later", "a after"),
                 trace, "the handler's task, then the task that continued the request on its route");
+    }
+
+    @Test void whatAnInterceptorPutsIsReadByTheTaskAndByWhatItStarts() throws Exception {
+        Door door = new Door();
+        runtime = GameRuntime.builder().domain(PLAYER, RouteExecutors.virtualThreads()).intercept(List.of(new Tracer()))
+                .errorHandler((context, cause) -> errors.add(cause)).build();
+        dispatcher = Dispatcher.builder(runtime).register(List.of(door)).build();
+        door.events = EventBus.builder(runtime).register(List.of(door)).build();
+
+        assertEquals("ok t1", ask(role, new Enter()), "the task that continued the request has the id its first task was given");
+        assertEquals(List.of("enter t1", "event t1", "reply t1"), trace, "the handler read it, and the event it published carries it");
+        assertTrue(role.metadata().isEmpty(), "the source the message was dispatched with is as it was");
+
+        trace.clear();
+        assertEquals("ok t2", ask(role, new Enter()), "the next message has a context of its own, and an id of its own");
+        assertEquals(List.of("enter t2", "event t2", "reply t2"), trace);
+        assertNull(errors.poll());
     }
 
     @Test void aBeforeRefusesARequestByReturningFalse() throws Exception {

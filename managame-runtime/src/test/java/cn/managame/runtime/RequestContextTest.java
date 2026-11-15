@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.Metadata;
+import cn.managame.MetadataKey;
 import cn.managame.runtime.executor.RouteExecutors;
 import java.time.Duration;
 import java.util.List;
@@ -30,6 +31,7 @@ class RequestContextTest {
             this(PLAYER, playerId, PLAYER_ID, playerId, Metadata.empty(), new AtomicReference<>(), new CountDownLatch(1));
         }
 
+        @Override public <T> void put(MetadataKey<T> key, T value) { throw new UnsupportedOperationException("nothing is put here"); }
         @Override public boolean reply(Object result) { return answer(result); }
         @Override public boolean fail(int errorCode) { return answer("fail:" + errorCode); }
 

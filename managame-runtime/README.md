@@ -44,12 +44,16 @@ Every piece of business logic runs with a `Context`:
 | `businessId` | long | Whom the task is for, such as the acting player |
 | `metadata` | `Metadata` | Application fields carried along, such as a trace id |
 
-- `GameContext` is the plain immutable context: `GameContext.of(domain, key)`, `GameContext.of(domain, key, type, id)`
+- `GameContext` is the plain context: `GameContext.of(domain, key)`, `GameContext.of(domain, key, type, id)`
   or `new GameContext(domain, key, type, id, metadata)`.
 - Inside a task, `Context.current()` returns the running task's context; `Context.hasCurrent()` tells whether a
   task is running on this thread.
-- `GameContext.copyOf(context)` is a plain copy for new work about the same subject, keeping route and metadata.
-  A copy of a request cannot answer that request.
+- `GameContext.copyOf(context)` is a plain copy for new work about the same subject, with the route and the metadata
+  the context has now. A copy of a request cannot answer that request.
+- `context.put(key, value)` sets one value in the context's metadata, for what runs around every task to add what
+  the task reads; see [Interceptors](#interceptors). A `Metadata` itself never changes: the context takes a new one,
+  so only that context shows the value, and what took its metadata before, a copy or the source of a dispatched
+  message, keeps what it took. Nothing else of a context changes.
 - `RequestContext` adds `reply(result)` and `fail(errorCode)` for work someone waits on. Only the first answer
   counts, and it may come from any thread, also after the task returned. A request is always answered: if its task
   throws, the runtime fails it with `RUNTIME_EXECUTION_ERROR`, and if `execute` refuses its task, with the refusal's
@@ -276,18 +280,74 @@ class Gateway implements ConnectionHandler {
 
 ## Interceptors
 
+There are two, for two different jobs:
+
+| Interceptor | Runs around | Is given | Is for |
+| --- | --- | --- | --- |
+| `HandleInterceptor`, of a Dispatcher | each `@HandleMethod`, once for a message | the context, the handler's `Method`, the message | what is about a request: a login check, a feature switched off while it is fixed, a limit by kind of message |
+| `TaskInterceptor`, of the runtime | every task: a handler, an event, an HTTP endpoint, a timer, and what continues a request later | the context | what is about every task: a trace id in the logging context, `context.put`, saving what a task changed |
+
+A request is checked in a `HandleInterceptor`: it knows which handler and which message, and it does not run again for
+the task that continues the request, which a check that changed its mind meanwhile would refuse half done.
+
+### Around handlers
+
+```java
+class FeatureSwitch implements HandleInterceptor {        // a feature that misbehaves is closed while the server runs
+    private final Set<Class<?>> closed = ConcurrentHashMap.newKeySet();
+
+    public boolean before(HandleContext context, Method handler, Object message) {
+        if (!closed.contains(handler.getDeclaringClass())) return true;
+        context.fail(FEATURE_CLOSED);
+        return false;                                     // the handler does not run
+    }
+}
+
+class LoginCheck implements HandleInterceptor {           // only the login domain's handlers run before login
+    public boolean before(HandleContext context, Method handler, Object message) {
+        if (context.domain() == LOGIN || context.businessId() != 0) return true;
+        context.fail(NOT_LOGGED_IN);
+        return false;
+    }
+}
+
+Dispatcher dispatcher = Dispatcher.builder(runtime)
+        .intercept(List.of(new LoginCheck(), new FeatureSwitch()))
+        .register(handlers)
+        .build();
+```
+
+- It runs once for each message, right around the handler, on the handler's route and thread, inside the runtime's
+  `TaskInterceptor`s. So it may read what the route owns, such as the player's level.
+- `handler` is the handler's `java.lang.reflect.Method`: its class, its name, and the annotations the application put
+  on either, such as a `@Feature("shop")` of its own to switch features by name. `message` is what the handler will
+  be given.
+- It serves every entry that dispatches to the Dispatcher, a client gateway and an entry for other servers alike, so
+  a check is written once.
+- It does not run for a task that continues the request, an event or a timer, nor for a message that never reaches a
+  handler: one with no handler, one that cannot be routed, one the runtime refuses.
+- `before` runs in the order interceptors were added, then the handler, then `after` in reverse order, for each
+  interceptor whose `before` returned true. A `before` that returns false keeps the handler and the later `before`s
+  from running, and nothing reaches the error handler, since a refusal is no error. The interceptor answers the
+  request it refuses, or else it fails with `RUNTIME_EXECUTION_ERROR`, since a request is always answered.
+- `after` receives what the handler threw, or a later `before`, or null. An answer the handler returned is already on
+  its way; a void handler may answer later still.
+- An exception from `before` or `after` is handled as one from the handler: the request fails with
+  `RUNTIME_EXECUTION_ERROR`, unless it was answered already, and the exception goes to the error handler.
+- With none added the Dispatcher calls handlers as they are (`DispatchThroughputBenchmark.dispatchIntercepted`
+  measures one that does nothing).
+
+### Around every task
+
 A `TaskInterceptor` runs before and after every task of the runtime, whichever entry gave it: a Dispatcher's
 handler, an event, an HTTP endpoint, a timer or a Cron, or work continued on a route with `runtime.execute`, which
 is a task of its own. It runs on the task's route and thread, with `Context.current()` the task's context. Each
 interceptor sees every task and decides for itself, by its domain or the kind of its context:
 
 ```java
-class LoginCheck implements TaskInterceptor {             // only the login domain's handlers run before login
+class Trace implements TaskInterceptor {                  // every task has a trace id, whichever entry it came through
     public boolean before(Context context) {
-        if (context instanceof HandleContext request && context.domain() != LOGIN && context.businessId() == 0) {
-            request.fail(NOT_LOGGED_IN);
-            return false;                                     // the task does not run
-        }
+        if (!context.metadata().contains(TRACE)) context.put(TRACE, newTraceId());
         return true;
     }
 }
@@ -301,7 +361,7 @@ class SavePlayer implements TaskInterceptor {             // whatever changed th
 GameRuntime runtime = GameRuntime.builder()
         .domain(PLAYER, RouteExecutors.virtualThreads())
         .domain(LOGIN, RouteExecutors.virtualThreads())
-        .intercept(List.of(new LoginCheck(), new SavePlayer()))
+        .intercept(List.of(new Trace(), new SavePlayer()))
         .build();
 ```
 
@@ -309,17 +369,26 @@ GameRuntime runtime = GameRuntime.builder()
   interceptor whose `before` returned true has its `after` run, so what a `before` sets up, such as a trace id in the
   logging context, an `after` always takes down. Every `after` runs even when one throws.
 - A `before` that returns false refuses the task: it and the later `before`s do not run, and nothing reaches the error
-  handler, since a refusal is no error. The interceptor answers a request it refuses, as `LoginCheck` does, or else it
-  fails with `RUNTIME_EXECUTION_ERROR`, since a request is always answered.
+  handler, since a refusal is no error. The interceptor answers a request it refuses, or else it fails with
+  `RUNTIME_EXECUTION_ERROR`, since a request is always answered. It sees no handler and no message, and it also runs
+  for what continues a request, for events and for timers, which have no one to answer: what refuses a request by
+  what it asks belongs in a `HandleInterceptor`.
 - `after` receives what the task threw, or a later `before`, or null, as when a later `before` refused the task. An
   answer the task gave while it ran is already on its way.
+- What a `before` puts in the context with `context.put(key, value)`, as `Trace` does, is read from
+  `context.metadata()` by the later interceptors, by the task, and by what the task starts from then on, which takes
+  the context's metadata as it starts: an event, a timer, a call to another process. It is the one place that
+  reaches every entry: a message's source, an HTTP request and a Cron come with whatever metadata they have, often
+  none.
+- Each message, event and HTTP request has a context of its own, and so has each firing of a periodic or cron timer
+  set with a `GameContext`, which runs with a copy of it; a task that continues a request runs with the request's
+  context and finds what was put before. A context object the application keeps and runs task after task with keeps
+  what was put in it. `put` is for the task's own thread.
 - An exception from `before` or `after` is handled as one from the task: a request fails with
   `RUNTIME_EXECUTION_ERROR`, unless it was answered already, and the exception goes to the error handler. A `before`
   that throws also keeps the task and the later `before`s from running.
 - With none added the runtime runs tasks as they are; each one added costs a task its two calls
   (`ExecuteThroughputBenchmark.executeIntercepted` measures one that does nothing).
-- Checks that need the message itself, such as limits per message kind, belong in the application's entry before it
-  dispatches, where the message and the packet's command are at hand, or in the handler.
 
 ## Events
 
@@ -370,6 +439,8 @@ timer.close();
   skipped, so a task slower than its period lags instead of filling its route: business code that ticks reads how much
   time went by rather than counting firings. A firing the runtime refuses (a full route) is logged and skipped too;
   once the runtime shuts down, the timer stops.
+- Each firing of `every` or `cron` set with a `GameContext` runs with a copy of it: a firing is a task of its own, so
+  what one puts in its context, such as a trace id an interceptor gives it, is not the next one's.
 - `after` has no later firing to make up for one refused, so it runs however full its route is: what a task set a timer
   for, a buff ending or a building finished, happens. It is lost only when it comes due after the runtime shut down.
 - After `close()` a timer can still be set: it comes back cancelled and never fires, so a task still finishing while
@@ -578,7 +649,7 @@ Through `System.Logger`, so any backend can take it; see the workspace README.
 | Logger | Logs |
 | --- | --- |
 | `cn.managame.runtime` | INFO: the runtime started (each domain and its executor, and how many task interceptors), shutting down and closed. DEBUG: each refused task, idle route queues retired. WARNING: a slow task, with `slowTask` set. ERROR: a task that failed, from the default error handler. |
-| `cn.managame.runtime.dispatch` | INFO: the Dispatcher's handlers. DEBUG: each message's handler, each rejected message. ERROR: a handler that could not run. |
+| `cn.managame.runtime.dispatch` | INFO: the Dispatcher's handlers and interceptors. DEBUG: each message's handler, each rejected message, each message an interceptor refused. ERROR: a handler that could not run. |
 | `cn.managame.runtime.event` | INFO: the event bus's subscribers. DEBUG: each event's subscribers. |
 | `cn.managame.runtime.http` | INFO: the HTTP endpoints. DEBUG: each endpoint, each bad request. ERROR: a request that could not run or be answered. |
 | `cn.managame.runtime.timer` | INFO: each `@Cron` method scheduled. DEBUG: each `timer.cron`. WARNING: a firing refused or skipped. ERROR: a firing that failed. |
@@ -635,5 +706,6 @@ mvn -o clean install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 Install managame-common and managame-network first. Tests cover ordering and refusal in the runtime and its
-executors, route keys, the Dispatcher with replies and failures, task interceptors around every entry, a player
+executors, route keys, the Dispatcher with replies and failures, interceptors around handlers (a feature switched
+off, once for a message), task interceptors around every entry, a player
 gateway over real TCP, events, timers, and HTTP routes over real connections.

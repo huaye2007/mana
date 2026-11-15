@@ -1,6 +1,7 @@
 package cn.managame.runtime.dispatch;
 
 import cn.managame.Metadata;
+import cn.managame.MetadataKey;
 import cn.managame.runtime.RequestContext;
 import cn.managame.runtime.Route;
 import cn.managame.runtime.TaskKind;
@@ -17,7 +18,7 @@ import java.util.function.Consumer;
  */
 public final class HandleContext implements RequestContext {
     private final Route route;
-    private final Metadata metadata;
+    private volatile Metadata metadata;
     private final Consumer<HandleResult> onAnswer;
     private final TaskKind kind;
     private final AtomicBoolean answered = new AtomicBoolean();
@@ -36,6 +37,9 @@ public final class HandleContext implements RequestContext {
     @Override public byte businessType() { return route.businessType(); }
     @Override public long businessId() { return route.businessId(); }
     @Override public Metadata metadata() { return metadata; }
+
+    /** In this message's context only: the source it was dispatched with keeps its metadata. */
+    @Override public <T> void put(MetadataKey<T> key, T value) { metadata = metadata.with(key, value); }
 
     @Override public boolean reply(Object result) { return answer(HandleResult.ok(result)); }
 

@@ -9,6 +9,7 @@ import cn.managame.runtime.RouteKeys;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.annotation.HandleMethod;
 import cn.managame.runtime.dispatch.Dispatcher;
+import cn.managame.runtime.dispatch.HandleInterceptor;
 import cn.managame.runtime.dispatch.HandleResult;
 import java.util.List;
 import java.util.concurrent.Semaphore;
@@ -34,6 +35,8 @@ import org.openjdk.jmh.annotations.Warmup;
  * Player requests answered per second through the Dispatcher, as a gateway hands them over: four threads dispatch
  * decoded messages from the players of one domain to an annotated handler, whose answer comes back through the
  * answer callback, sharing a window of requests not yet answered. A request that fails fails the benchmark.
+ * {@code dispatchIntercepted} dispatches the same messages through a Dispatcher with one interceptor that does nothing,
+ * the cost of having interceptors around handlers.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -51,7 +54,7 @@ public class DispatchThroughputBenchmark {
     private final GameContext[] players = new GameContext[PLAYERS];
     private final AtomicLong failures = new AtomicLong();
     private GameRuntime runtime;
-    private Dispatcher dispatcher;
+    private Dispatcher dispatcher, intercepted;
     private Semaphore inFlight;
     private Consumer<HandleResult> onAnswer;
 
@@ -80,6 +83,7 @@ public class DispatchThroughputBenchmark {
                 .metrics(metrics())
                 .build();
         dispatcher = Dispatcher.builder(runtime).register(List.of(new Shop(), new Guild())).build();
+        intercepted = Dispatcher.builder(runtime).intercept(List.of(new HandleInterceptor() {})).register(List.of(new Shop(), new Guild())).build();
         for (int id = 0; id < PLAYERS; id++) players[id] = GameContext.of(PLAYER, id, ExecuteThroughputBenchmark.ROLE, id);
     }
 
@@ -98,6 +102,12 @@ public class DispatchThroughputBenchmark {
         inFlight.acquire();
         int id = player.next();
         dispatcher.dispatch(players[id], new Buy(id), onAnswer);
+    }
+
+    @Benchmark public void dispatchIntercepted(ExecuteThroughputBenchmark.Player player) throws InterruptedException {
+        inFlight.acquire();
+        int id = player.next();
+        intercepted.dispatch(players[id], new Buy(id), onAnswer);
     }
 
     /** The same, in a domain whose handler routes by a member of its message, the guild it donates to. */

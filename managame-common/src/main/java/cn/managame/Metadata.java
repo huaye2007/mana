@@ -46,6 +46,31 @@ public final class Metadata {
         return builder;
     }
 
+    /**
+     * These entries with {@code key} set to {@code value}, in place of the value it had or added after the others;
+     * this metadata stays as it was. The same as {@code toBuilder().put(key, value).build()}, in one copy of the bytes.
+     *
+     * @throws IllegalArgumentException when the value or the metadata would exceed 65535 bytes
+     */
+    public <T> Metadata with(MetadataKey<T> key, T value) {
+        byte[] encoded = Objects.requireNonNull(key.codec().encode(Objects.requireNonNull(value)));
+        if (encoded.length > 65535) throw new IllegalArgumentException("Value too large");
+        int found = offset(key.id());
+        int at = found < 0 ? bytes.length : found;
+        int after = found < 0 ? bytes.length : found + 4 + u16(bytes, found + 2);
+        int length = at + 4 + encoded.length + bytes.length - after;
+        if (length > 65535) throw new IllegalArgumentException("Metadata too large");
+        byte[] result = new byte[length];
+        System.arraycopy(bytes, 0, result, 0, at);
+        result[at] = (byte) (key.id() >>> 8);
+        result[at + 1] = (byte) key.id();
+        result[at + 2] = (byte) (encoded.length >>> 8);
+        result[at + 3] = (byte) encoded.length;
+        System.arraycopy(encoded, 0, result, at + 4, encoded.length);
+        System.arraycopy(bytes, after, result, at + 4 + encoded.length, bytes.length - after);
+        return new Metadata(result);
+    }
+
     public <T> T get(MetadataKey<T> key) {
         int p = offset(key.id());
         return p < 0 ? null : key.codec().decode(bytes, p + 4, u16(bytes, p + 2));

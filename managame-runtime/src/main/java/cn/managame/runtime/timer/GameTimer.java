@@ -47,7 +47,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * finished is logged and skipped, so a task slower than its period lags instead of filling its route, a firing the
  * runtime refuses, for example because the route is full, is too, and once the runtime is shut down the timer stops.
  * A timer due once has no later firing, so it runs however full its route is, and is lost only to a runtime shut down.
- * A timer cancelled on its own route does not run afterwards, even when a firing already waits there.
+ * A timer cancelled on its own route does not run afterwards, even when a firing already waits there. Each firing of a
+ * periodic or cron timer set with a GameContext runs with a copy of it, so what a firing {@link Context#put}s in its
+ * context, such as a trace id an interceptor gives it, is its own.
  */
 public final class GameTimer implements AutoCloseable {
     public static final Duration DEFAULT_TICK = Duration.ofMillis(10);
@@ -276,6 +278,13 @@ public final class GameTimer implements AutoCloseable {
         private boolean once() { return periodNanos == 0 && cron == null; }
 
         /**
+         * What a firing of a timer that repeats runs with: a copy of a GameContext, as each firing is a task of its own
+         * and what one puts in its context is not for the next; any other context as it is.
+         */
+        @SuppressWarnings("unchecked") // a GameContext is final, so its copy is a C too
+        private C firingContext() { return context instanceof GameContext plain ? (C) GameContext.copyOf(plain) : context; }
+
+        /**
          * Hands the task to the runtime, unless the last firing has not finished; a refusal is logged, and one because
          * the runtime is closed stops the timer. A one-shot timer goes past the limits on load, as it has no later firing
          * to make up for one refused; a periodic or cron timer keeps to them and skips.
@@ -289,7 +298,7 @@ public final class GameTimer implements AutoCloseable {
             handed = true;
             try {
                 if (once()) runtime.handOn(kind, context, this);
-                else runtime.execute(kind, context, this);
+                else runtime.execute(kind, firingContext(), this);
             } catch (GameRuntimeException refused) {
                 if (refused.errorCode() == RUNTIME_CLOSED) {
                     cancel();

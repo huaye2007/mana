@@ -15,7 +15,8 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * Metadata as every message carries it: a trace id, the calling server and the acting role. Building it, reading a
- * value back, and wrapping received bytes, which validates them.
+ * value back, wrapping received bytes, which validates them, and setting one more value, as what runs around every
+ * task does when it gives a context without a trace id one.
  */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -29,6 +30,7 @@ public class MetadataBenchmark {
     private static final MetadataKey<Long> ROLE = MetadataKey.longKey(3);
     private final Metadata metadata = build("4bf92f3577b34da6a3ce929d0e0e4736", 101, 1001L);
     private final byte[] received = metadata.bytes().clone();
+    private final Metadata untraced = Metadata.builder().put(SERVER, 101).put(ROLE, 1001L).build();
     private String trace = "4bf92f3577b34da6a3ce929d0e0e4736";
     private int server = 101;
     private long role = 1001L;
@@ -42,4 +44,6 @@ public class MetadataBenchmark {
     @Benchmark public Long get() { return metadata.get(ROLE); }
 
     @Benchmark public Metadata wrap() { return Metadata.wrap(received); }
+
+    @Benchmark public Metadata with() { return untraced.with(TRACE, trace); }
 }

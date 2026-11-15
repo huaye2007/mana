@@ -4,6 +4,7 @@ import static cn.managame.FrameworkErrorCodes.RUNTIME_EXECUTION_ERROR;
 
 import cn.managame.FrameworkErrorCodes;
 import cn.managame.Metadata;
+import cn.managame.MetadataKey;
 import cn.managame.network.http.HttpExchange;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.RequestContext;
@@ -24,7 +25,7 @@ public final class HttpRequestContext implements RequestContext {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime.http");
     private static final String[] NO_ARGS = {};
     private final Route route;
-    private final Metadata metadata;
+    private volatile Metadata metadata;
     private final HttpExchange exchange;
     private final HttpCodec codec;
     private final TaskKind kind;
@@ -57,6 +58,8 @@ public final class HttpRequestContext implements RequestContext {
     @Override public byte businessType() { return route.businessType(); }
     @Override public long businessId() { return route.businessId(); }
     @Override public Metadata metadata() { return metadata; }
+
+    @Override public <T> void put(MetadataKey<T> key, T value) { metadata = metadata.with(key, value); }
 
     /** The request, for its headers or query; readable until the endpoint returns. */
     public FullHttpRequest request() { return exchange.request(); }

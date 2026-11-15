@@ -3,6 +3,7 @@ package cn.managame.runtime.timer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -44,6 +45,7 @@ class GameTimerTest {
 
     private record Request(int domain, long routeKey, byte businessType, long businessId, Metadata metadata)
             implements RequestContext {
+        @Override public <T> void put(MetadataKey<T> key, T value) { throw new UnsupportedOperationException("nothing is put here"); }
         @Override public boolean reply(Object result) { return true; }
         @Override public boolean fail(int errorCode) { return true; }
     }
@@ -83,6 +85,20 @@ class GameTimerTest {
         assertFalse(fired instanceof RequestContext, "a timer cannot answer the request that set it");
         assertThrows(IllegalStateException.class, () -> timer.after(Duration.ofMillis(10), context -> {}),
                 "outside a task there is no context to take");
+    }
+
+    /** Each firing is a task of its own: what one puts in its context, as an interceptor giving it a trace id, is not the next one's. */
+    @Test void eachFiringOfATimerThatRepeatsHasACopyOfItsContext() throws Exception {
+        BlockingQueue<String> seen = new LinkedBlockingQueue<>();
+        GameContext world = GameContext.of(WORLD, 0);
+        Scheduled ticking = timer.every(world, Duration.ofMillis(20), context -> {
+            seen.add("came with " + context.metadata().get(TRACE));
+            context.put(TRACE, "put by a firing");
+        });
+        assertEquals("came with null", seen.poll(5, TimeUnit.SECONDS));
+        assertEquals("came with null", seen.poll(5, TimeUnit.SECONDS), "what the first firing put is not in the second's context");
+        assertTrue(ticking.cancel());
+        assertTrue(world.metadata().isEmpty(), "nor in the context the timer was set with");
     }
 
     @Test void periodicTimersRepeatUntilCancelled() throws Exception {
@@ -284,8 +300,10 @@ class GameTimerTest {
         BlockingQueue<Object> seen = new LinkedBlockingQueue<>();
         GameContext world = GameContext.of(WORLD, 0);
         Scheduled everySecond = timer.cron(world, "* * * * * *", context -> seen.add(Context.current()));
-        assertSame(world, seen.poll(3, TimeUnit.SECONDS));
-        assertSame(world, seen.poll(3, TimeUnit.SECONDS), "and again the next second");
+        Object first = seen.poll(3, TimeUnit.SECONDS), second = seen.poll(3, TimeUnit.SECONDS);
+        assertEquals(world, first);
+        assertEquals(world, second, "and again the next second");
+        assertNotSame(first, second, "each firing with a copy of its own");
         assertTrue(everySecond.cancel());
         assertTrue(everySecond.isDone());
         assertThrows(IllegalArgumentException.class, () -> timer.cron(world, "0 0 5 * *", context -> {}));

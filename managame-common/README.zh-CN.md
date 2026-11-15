@@ -57,6 +57,7 @@ Metadata received = Metadata.wrap(wire);  // 校验格式，不复制
 - 整体编码最多 65535 字节，超出时 `build()` 和 `wrap()` 抛 `IllegalArgumentException`；`wrap()` 还会拒绝被截断或键重复的数据。
 - 每次 `build()` 返回一份独立的快照；`Metadata.empty()` 是共享的空实例。
 - `metadata.toBuilder()` 在现有内容上增加或替换一些值，得到新的 metadata，原来的不变：`metadata.toBuilder().put(FROM_SERVER, 8L).build()`。
+- `metadata.with(key, value)` 只设置这一个值，得到新的 metadata，字节只拷贝一次：`metadata.with(FROM_SERVER, 8L)`。metadata 本身从不改变，所以可以在线程和上下文之间随意共享；持有它的一方换成新的那份，比如 runtime 的上下文（`context.put(key, value)`）。
 - 键 id 由业务分配。请集中定义，保证集群里所有服务器一致。
 
 ## 唯一 id
