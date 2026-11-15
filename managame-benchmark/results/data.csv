@@ -1,0 +1,13 @@
+# recorded 2026-11-16 on Windows 11 amd64, the 8 faster of 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99,alloc_mb_per_s,gc_count,gc_ms,cpu_ns_per_op,cpu_caller_ns_per_op,cpu_eventloop_ns_per_op,cpu_other_ns_per_op,cpu_jvm_ns_per_op,direct_mib,sent_bytes_per_op,received_bytes_per_op,busy_percent,peer_cpu_ns_per_op,peer_cpu_eventloop_ns_per_op,peer_cpu_other_ns_per_op,peer_cpu_jvm_ns_per_op,peer_alloc_bytes_per_op,peer_gc_count,peer_gc_ms,peer_direct_mib
+LogThroughputBenchmark.insert,,thrpt,13762346.483,2361726.890,ops/s,28.750,,,335.286,3.000,7.000,138.498,138.260,0.000,0.000,0.238,0.000,,,2.610,,,,,,,,
+UpdateThroughputBenchmark.update,,thrpt,22478802.437,634232.144,ops/s,23.363,,,445.781,4.000,11.000,206.762,171.598,0.000,34.330,0.973,0.000,,,2.440,,,,,,,,
+WriteThroughputBenchmark.update,,thrpt,6129264.191,463832.303,ops/s,211.064,,,1223.401,10.000,24.000,266.872,160.985,0.000,95.751,10.136,0.000,,,1.648,,,,,,,,
+RepositoryBenchmark.get,,avgt,57.500,1.756,ns/op,0.032,,,0.527,0.000,,118.604,57.241,0.000,61.182,0.181,0.000,,,2.600,,,,,,,,
+RepositoryBenchmark.getAll,,avgt,4219.146,581.309,ns/op,3113.214,,,698.604,6.000,17.000,8645.120,4109.410,0.000,4205.327,330.383,0.000,,,1.992,,,,,,,,
+RepositoryBenchmark.getGroup,,avgt,69.236,1.770,ns/op,0.036,,,0.486,0.000,,142.066,68.758,0.000,72.878,0.430,0.000,,,1.735,,,,,,,,
+RepositoryBenchmark.getPreloaded,,avgt,7.394,0.131,ns/op,0.001,,,0.186,0.000,,7.478,7.386,0.000,0.023,0.069,0.000,,,3.641,,,,,,,,
+RepositoryBenchmark.update,,avgt,86.694,5.150,ns/op,21.028,,,229.381,2.000,6.000,175.147,85.550,0.000,89.323,0.273,0.000,,,2.512,,,,,,,,
+RepositoryBenchmark.updateById,,avgt,90.631,1.382,ns/op,0.042,,,0.438,0.000,,186.733,90.533,0.000,95.633,0.567,0.000,,,2.083,,,,,,,,
+RepositoryBenchmark.updateInGroup,,avgt,136.111,7.624,ns/op,92.672,,,643.970,6.000,16.000,272.836,135.548,0.000,136.006,1.282,0.000,,,2.082,,,,,,,,
+RepositoryBenchmark.updateInGroupByKeys,,avgt,120.089,11.929,ns/op,23.673,,,186.496,2.000,6.000,239.200,119.609,0.000,119.216,0.376,0.000,,,1.821,,,,,,,,

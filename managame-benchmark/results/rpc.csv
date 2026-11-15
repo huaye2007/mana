@@ -1,13 +1,28 @@
-# recorded 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
-benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99
-CallThroughputBenchmark.call,connections=1 payload=64 window=1024,thrpt,624271.036,19005.730,ops/s,1009.971,,
-CallThroughputBenchmark.call,connections=1 payload=1024 window=1024,thrpt,417916.770,54372.452,ops/s,1018.881,,
-CallThroughputBenchmark.call,connections=4 payload=64 window=1024,thrpt,1108501.567,73629.974,ops/s,1012.305,,
-CallThroughputBenchmark.call,connections=4 payload=1024 window=1024,thrpt,962983.243,50614.977,ops/s,1012.493,,
-NotifyThroughputBenchmark.notifyPeer,connections=1 payload=64 window=1024,thrpt,827067.349,15596.085,ops/s,404.728,,
-NotifyThroughputBenchmark.notifyPeer,connections=1 payload=1024 window=1024,thrpt,727007.158,49613.190,ops/s,404.637,,
-NotifyThroughputBenchmark.notifyPeer,connections=4 payload=64 window=1024,thrpt,2164576.684,281056.882,ops/s,404.068,,
-NotifyThroughputBenchmark.notifyPeer,connections=4 payload=1024 window=1024,thrpt,2047847.202,202825.708,ops/s,401.312,,
-CallLatencyBenchmark.call,payload=64,sample,47.076,0.172,us/op,1335.671,43.648,110.556
-CallLatencyBenchmark.call,payload=1024,sample,49.844,0.193,us/op,1337.161,44.480,128.512
-CallLatencyBenchmark.call,payload=16384,sample,55.608,0.141,us/op,1401.129,50.880,126.720
+# recorded 2026-11-16 on Windows 11 amd64, the 8 faster of 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99,alloc_mb_per_s,gc_count,gc_ms,cpu_ns_per_op,cpu_caller_ns_per_op,cpu_eventloop_ns_per_op,cpu_other_ns_per_op,cpu_jvm_ns_per_op,direct_mib,sent_bytes_per_op,received_bytes_per_op,busy_percent,peer_cpu_ns_per_op,peer_cpu_eventloop_ns_per_op,peer_cpu_other_ns_per_op,peer_cpu_jvm_ns_per_op,peer_alloc_bytes_per_op,peer_gc_count,peer_gc_ms,peer_direct_mib
+CallThroughputBenchmark.call,connections=1 payload=64 window=1024,thrpt,720254.231,79143.124,ops/s,932.853,,,597.865,11.000,34.000,3587.533,854.698,2650.336,26.080,56.419,3.875,100.000,79.000,4.725,,,,,,,,
+CallThroughputBenchmark.call,connections=1 payload=1024 window=1024,thrpt,479753.082,36180.795,ops/s,943.659,,,401.219,7.000,24.000,3767.071,647.730,2941.107,42.440,135.794,10.501,1060.000,1039.000,2.644,,,,,,,,
+CallThroughputBenchmark.call,connections=4 payload=64 window=1024,thrpt,1191824.780,115093.998,ops/s,884.667,,,934.234,17.000,30.000,5188.371,516.002,4589.906,34.020,48.443,14.500,100.000,79.000,3.555,,,,,,,,
+CallThroughputBenchmark.call,connections=4 payload=1024 window=1024,thrpt,1089932.346,101578.355,ops/s,888.400,,,857.498,16.000,31.000,5625.533,498.182,5046.986,37.440,42.925,28.501,1060.000,1039.000,2.862,,,,,,,,
+NotifyThroughputBenchmark.notifyPeer,connections=1 payload=64 window=1024,thrpt,899173.979,24194.731,ops/s,446.013,,,354.982,6.000,20.000,2224.573,440.922,1740.043,10.459,33.147,1.875,92.000,0.000,7.076,,,,,,,,
+NotifyThroughputBenchmark.notifyPeer,connections=1 payload=1024 window=1024,thrpt,801460.132,42481.403,ops/s,449.124,,,318.457,6.000,20.000,2476.057,486.965,1932.499,25.371,31.222,3.626,1052.000,0.000,3.335,,,,,,,,
+NotifyThroughputBenchmark.notifyPeer,connections=4 payload=64 window=1024,thrpt,861016.521,73421.038,ops/s,449.569,,,342.979,6.000,20.000,4809.452,802.127,3922.953,12.590,71.782,7.250,92.000,0.000,3.335,,,,,,,,
+NotifyThroughputBenchmark.notifyPeer,connections=4 payload=1024 window=1024,thrpt,836675.093,66996.552,ops/s,445.052,,,329.614,6.000,20.000,4996.518,796.909,4124.285,26.057,49.267,21.001,1052.000,0.000,3.293,,,,,,,,
+CallLatencyBenchmark.call,payload=64,sample,41.257,0.190,us/op,1212.399,39.744,77.019,27.971,1.000,5.000,54672.449,7039.115,42641.248,583.695,4408.390,1.625,100.000,79.000,4.032,,,,,,,,
+CallLatencyBenchmark.call,payload=1024,sample,44.526,0.189,us/op,1212.396,42.944,79.488,25.923,1.000,4.000,51528.330,5404.189,43220.515,137.887,2765.739,2.626,1060.000,1039.000,2.819,,,,,,,,
+CallLatencyBenchmark.call,payload=16384,sample,48.275,0.228,us/op,1214.293,45.696,97.280,23.958,1.000,4.000,61423.332,6463.632,50842.834,301.777,3815.089,1.891,16420.000,16399.000,5.116,,,,,,,,
+CallThroughputMeteredBenchmark.call,connections=1 payload=64 window=1024,thrpt,711468.059,71842.707,ops/s,933.223,,,591.284,11.000,33.000,3546.140,782.633,2655.733,41.552,66.223,3.875,100.000,79.000,2.293,,,,,,,,
+CallThroughputMeteredBenchmark.call,connections=1 payload=1024 window=1024,thrpt,444700.787,142948.364,ops/s,942.883,,,367.172,7.000,27.000,3818.141,569.383,3087.415,31.848,129.496,22.126,1060.000,1039.000,9.362,,,,,,,,
+CallThroughputMeteredBenchmark.call,connections=4 payload=64 window=1024,thrpt,1205560.348,101534.700,ops/s,884.510,,,944.840,17.000,31.000,5167.338,434.121,4665.751,46.503,20.962,14.375,100.000,79.000,3.035,,,,,,,,
+CallThroughputMeteredBenchmark.call,connections=4 payload=1024 window=1024,thrpt,1042636.968,314508.554,ops/s,888.211,,,815.090,15.000,28.000,5756.809,565.697,5100.686,31.065,59.361,27.501,1060.000,1039.000,3.803,,,,,,,,
+CallThroughputProcessBenchmark.call,connections=1 payload=64 window=1024,thrpt,738997.027,12311.423,ops/s,590.353,,,385.984,7.000,24.000,2150.405,745.784,1343.443,19.017,42.161,1.625,100.000,79.000,2.263,1290.586,1220.876,19.004,50.706,347.799,4.000,12.000,1.875
+CallThroughputProcessBenchmark.call,connections=1 payload=1024 window=1024,thrpt,495464.333,78502.223,ops/s,593.202,,,261.064,5.000,17.000,2312.275,636.756,1600.327,46.712,28.479,3.126,1060.000,1039.000,1.908,1344.326,1306.054,12.461,25.811,355.782,2.000,5.000,5.875
+CallThroughputProcessBenchmark.call,connections=4 payload=64 window=1024,thrpt,1315691.995,122549.702,ops/s,535.151,,,624.951,11.000,29.000,2705.661,434.024,2223.710,25.024,22.903,7.125,100.000,79.000,3.293,2080.465,2050.560,10.805,19.099,347.392,7.000,19.000,7.000
+CallThroughputProcessBenchmark.call,connections=4 payload=1024 window=1024,thrpt,1172045.401,37253.188,ops/s,557.343,,,579.805,11.000,32.000,3214.721,450.361,2650.831,37.310,76.219,23.251,1060.000,1039.000,2.689,2166.277,2135.581,15.945,14.751,349.777,7.000,19.000,12.500
+NotifyThroughputProcessBenchmark.notifyPeer,connections=1 payload=64 window=1024,thrpt,826005.645,33456.508,ops/s,342.699,,,250.520,4.000,13.000,1805.033,523.493,1190.621,7.615,83.305,0.625,92.000,0.437,2.686,642.327,583.745,5.642,52.940,102.914,1.000,3.000,1.625
+NotifyThroughputProcessBenchmark.notifyPeer,connections=1 payload=1024 window=1024,thrpt,751408.110,33484.648,ops/s,342.741,,,227.697,4.000,14.000,1850.875,494.552,1300.387,4.164,51.772,0.626,1052.000,0.438,2.865,749.721,693.501,8.266,47.954,103.423,1.000,3.000,3.375
+NotifyThroughputProcessBenchmark.notifyPeer,connections=4 payload=64 window=1024,thrpt,1078971.632,84307.933,ops/s,342.990,,,327.934,6.000,19.000,2293.532,259.619,1980.921,5.713,47.279,2.750,92.000,0.438,7.543,1039.395,1007.410,5.833,26.152,104.583,2.000,7.000,5.750
+NotifyThroughputProcessBenchmark.notifyPeer,connections=4 payload=1024 window=1024,thrpt,1054976.894,35914.518,ops/s,342.983,,,320.026,6.000,19.000,2452.009,233.658,2157.645,16.361,44.345,2.751,1052.000,0.438,5.287,1133.790,1080.711,19.216,33.862,104.867,2.000,6.000,11.250
+CallLatencyProcessBenchmark.call,payload=64,sample,41.621,0.152,us/op,766.181,40.960,78.464,17.460,0.000,,37347.689,6210.661,26592.554,197.884,4346.591,0.875,100.000,79.000,3.514,19208.121,16554.946,196.173,2457.002,450.841,0.000,0.000,0.750
+CallLatencyProcessBenchmark.call,payload=1024,sample,42.491,0.176,us/op,769.537,40.896,81.408,17.191,0.000,,36605.271,5538.587,27130.835,463.925,3471.924,0.376,1060.000,1039.000,2.603,18130.228,16925.089,0.000,1205.139,451.056,0.000,0.000,1.250
+CallLatencyProcessBenchmark.call,payload=16384,sample,48.083,0.145,us/op,766.274,46.144,88.960,15.122,0.000,,39386.764,7107.226,29576.302,525.886,2177.351,0.641,16420.000,16399.000,2.047,18793.144,16915.469,224.436,1653.239,451.259,0.000,0.000,0.500

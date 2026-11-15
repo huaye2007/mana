@@ -1,5 +1,16 @@
-# recorded 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
-benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99
-MetadataBenchmark.build,,avgt,86.658,1.765,ns/op,776.001,,
-MetadataBenchmark.get,,avgt,5.308,0.272,ns/op,24.000,,
-MetadataBenchmark.wrap,,avgt,8.939,0.127,ns/op,40.000,,
+# recorded 2026-11-15 on Windows 11 amd64, the 8 faster of 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99,alloc_mb_per_s,gc_count,gc_ms,cpu_ns_per_op,cpu_caller_ns_per_op,cpu_eventloop_ns_per_op,cpu_other_ns_per_op,cpu_jvm_ns_per_op,direct_mib,sent_bytes_per_op,received_bytes_per_op,busy_percent,peer_cpu_ns_per_op,peer_cpu_eventloop_ns_per_op,peer_cpu_other_ns_per_op,peer_cpu_jvm_ns_per_op,peer_alloc_bytes_per_op,peer_gc_count,peer_gc_ms,peer_direct_mib
+MetadataBenchmark.build,,avgt,86.067,2.451,ns/op,808.011,,,8884.823,73.000,66.000,87.046,84.110,0.000,0.534,2.402,0.000,,,3.295,,,,,,,,
+MetadataBenchmark.get,,avgt,5.267,0.123,ns/op,24.001,,,4312.101,36.000,33.000,5.246,5.147,0.000,0.049,0.050,0.000,,,2.686,,,,,,,,
+MetadataBenchmark.wrap,,avgt,9.105,0.278,ns/op,40.001,,,4157.002,34.000,31.000,9.322,9.037,0.000,0.000,0.285,0.000,,,2.510,,,,,,,,
+IdGeneratorBenchmark.next,,avgt,248.559,22.152,ns/op,0.031,,,0.118,0.000,,245.557,242.488,0.000,0.000,3.069,0.000,,,5.890,,,,,,,,
+IdGeneratorBenchmark.nextShared,,avgt,216.238,13.115,ns/op,0.007,,,0.130,0.000,,213.459,213.121,0.000,0.000,0.338,0.000,,,3.806,,,,,,,,
+IdGeneratorBenchmark.nextUnbounded,,avgt,8.022,0.364,ns/op,0.001,,,0.118,0.000,,8.089,7.964,0.000,0.075,0.050,0.000,,,3.555,,,,,,,,
+IdGeneratorBenchmark.sequence,,avgt,4.279,0.064,ns/op,0.001,,,0.118,0.000,,4.301,4.247,0.000,0.027,0.027,0.000,,,3.296,,,,,,,,
+MetadataBenchmark.with,,avgt,19.768,0.265,ns/op,136.002,,,6510.905,54.000,49.000,19.998,19.502,0.000,0.123,0.372,0.000,,,3.467,,,,,,,,
+MetricsBenchmark.adder,,avgt,7.402,0.164,ns/op,0.001,,,0.118,0.000,,7.371,7.278,0.000,0.023,0.069,0.000,,,2.771,,,,,,,,
+MetricsBenchmark.adderShared,,avgt,7.771,0.273,ns/op,0.000,,,0.130,0.000,,7.799,7.757,0.000,0.012,0.030,0.000,,,4.502,,,,,,,,
+MetricsBenchmark.counter,,avgt,7.439,0.287,ns/op,0.001,,,0.118,0.000,,7.456,7.294,0.000,0.093,0.069,0.000,,,6.756,,,,,,,,
+MetricsBenchmark.counterShared,,avgt,7.832,0.219,ns/op,0.000,,,0.130,0.000,,7.866,7.830,0.000,0.018,0.024,0.000,,,2.853,,,,,,,,
+MetricsBenchmark.noopCounter,,avgt,0.399,0.018,ns/op,0.000,,,0.118,0.000,,0.399,0.395,0.000,0.001,0.003,0.000,,,2.601,,,,,,,,
+MetricsBenchmark.nothing,,avgt,0.244,0.006,ns/op,0.000,,,0.118,0.000,,0.242,0.241,0.000,0.001,0.000,0.000,,,3.120,,,,,,,,
