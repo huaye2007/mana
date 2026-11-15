@@ -41,7 +41,9 @@ public interface Context {
      * not to what took the metadata before, such as the source a message was dispatched with or a copy made earlier.
      *
      * <p>For the task's own thread, its interceptors and the task itself: two threads putting at once may lose one of
-     * the values, while any thread may read meanwhile. A context that runs several tasks keeps for the next what was
+     * the values. Another thread reads what was put once the task's work reaches it, as a callback or a later task
+     * does; one that reads at the very moment of a put, with nothing handed to it since, sees the metadata of before
+     * or of after, never a mix. A context that runs several tasks keeps for the next what was
      * put in one: the work a task continues on its route is the same work going on, but so does a context object an
      * application keeps and runs task after task with.
      */

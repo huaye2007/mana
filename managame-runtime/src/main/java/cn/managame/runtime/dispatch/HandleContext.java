@@ -18,7 +18,8 @@ import java.util.function.Consumer;
  */
 public final class HandleContext implements RequestContext {
     private final Route route;
-    private volatile Metadata metadata;
+    /** Not volatile, so that making a context for each message costs no barrier; see {@link cn.managame.runtime.Context#put}. */
+    private Metadata metadata;
     private final Consumer<HandleResult> onAnswer;
     private final TaskKind kind;
     private final AtomicBoolean answered = new AtomicBoolean();

@@ -14,7 +14,8 @@ public final class GameContext implements Context {
     private final long routeKey;
     private final byte businessType;
     private final long businessId;
-    private volatile Metadata metadata;
+    /** Not volatile: only its task's thread puts, a Metadata never changes, and handing work to another thread publishes it. */
+    private Metadata metadata;
 
     public GameContext(int domain, long routeKey, byte businessType, long businessId, Metadata metadata) {
         this.domain = domain;

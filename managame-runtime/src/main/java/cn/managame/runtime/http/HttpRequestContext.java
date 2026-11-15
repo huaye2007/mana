@@ -25,7 +25,7 @@ public final class HttpRequestContext implements RequestContext {
     private static final System.Logger LOG = System.getLogger("cn.managame.runtime.http");
     private static final String[] NO_ARGS = {};
     private final Route route;
-    private volatile Metadata metadata;
+    private Metadata metadata;
     private final HttpExchange exchange;
     private final HttpCodec codec;
     private final TaskKind kind;
