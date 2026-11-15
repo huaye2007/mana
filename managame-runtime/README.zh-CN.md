@@ -50,9 +50,10 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 
 ### 回到原路由继续执行
 
-回调在投递它的那个线程上运行，而不是在发起工作的任务所在的路由上，在回调里直接改玩家状态会破坏"同一路由串行"的保证。所有
-情况都是同一条规则：**结果从别的线程或别的路由回来时，把剩下的工作交给 `runtime.execute(context, task)`，传入想继续执行的
-那个 context**，也就是任务自己的或它的请求。
+回调在投递它的那个线程上运行，而不是在发起工作的任务所在的路由上，在回调里直接改玩家状态会破坏"同一路由串行"的保证。剩下的
+工作怎么回来，看结果从哪里来：**从别的路由回来，用 `runtime.call`，或者把剩下的工作交给 `runtime.execute(context, task)`，
+传入想继续执行的那个 context**，也就是任务自己的或它的请求；**从 runtime 之外回来，比如对别的服务器的调用，用任务自己的
+`runtime.continuation()`**。
 
 ```java
 // 交易：先在对方的路由上扣对方的物品，再回到自己的路由上加给自己
@@ -68,14 +69,31 @@ runtime.execute(GameContext.of(PLAYER, 1001, ROLE, 1001), context -> players.get
 
 // 只读别的玩家：应答可以在任意线程上发出，不用再回来
 runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(target)));
+
+// 问别的服务器：应答在它自己的线程上回来，经任务的 continuation 回到这里继续
+@HandleMethod void enterWorld(HandleContext request, EnterWorld enter) {
+    Continuation back = runtime.continuation();                       // 在任务里取得
+    world.join(request.businessId(), joined ->                        // 游戏自己的调用，回调在别的线程上执行
+            back.execute(_ -> {                                       // 回到这个玩家的路由上
+                players.get(request.businessId()).enter(joined);
+                request.reply(joined);
+            }));
+}
 ```
 
 `runtime.call(target, work, then)` 用于游戏任务需要从别的路由拿结果的情况：`work` 在目标路由上执行，`then` 带着结果排回当前任务的路由队列。两段互不等待，所以虚拟线程和普通线程上行为一样，两条路由互相调用也不会死锁。一次调用的两段按顺序执行，但两段之间这条路由的其他任务可能插进来，所以 `then` 要以当时的状态为准。`work` 抛异常或被拦截器拒绝时，`then` 不执行，请求以 `RUNTIME_EXECUTION_ERROR` 失败。
 
-框架提供的只有 `runtime.execute`、`runtime.call`、`GameContext.of` 和请求的 `reply`、`fail`；`Trade`、`bags`、`profiles`、`NOT_ENOUGH`
-都是游戏自己的，任务用不到的 context 写成 `_`。继续执行的任务里 `Context.current()` 就是这个 context，请求只应答一次，任务
-抛异常或被拒绝时请求会以错误码失败：不需要再记别的。任务里交出去的工作不会因为过载或关闭被拒绝，所以两条路由上的两步都会执行。RPC 回调这类从任务之外回来的工作算入口，路由满时可能被拒绝：这时请求以拒绝的错误码
-失败，把第一步已经做完的事还原是游戏自己的事。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
+`runtime.continuation()` 用于游戏任务在 runtime 之外发起了工作、结果在别的线程上回来的情况：任务先取得它，带回结果的一方再把
+剩下的工作交给它的 `execute(task)`，可以在任意线程调用，来几个结果就调用几次，失败也一样交回来。回调返回时缓冲区就释放的
+地方，先把结果解析完再交。这样继续的是任务自己的工作，不算入口，所以路由满了也不会被拒绝，第一步做完的事不用还原。只有已关闭的
+runtime 才会拒绝它；先关闭带回结果的一方，再关闭 runtime，它们就都能先进来，见[错误与关闭](#错误与关闭)。在游戏任务之外调用
+`continuation()` 抛 `IllegalStateException`。
+
+框架提供的只有 `runtime.execute`、`runtime.call`、`runtime.continuation`、`GameContext.of` 和请求的 `reply`、`fail`；`Trade`、
+`bags`、`profiles`、`world`、`players`、`NOT_ENOUGH` 都是游戏自己的，任务用不到的 context 写成 `_`。继续执行的任务里
+`Context.current()` 就是这个 context，请求只应答一次，任务
+抛异常或被拒绝时请求会以错误码失败：不需要再记别的。任务里交出去的工作不会因为过载或关闭被拒绝，所以两条路由上的两步都会执行；经 continuation 回来的工作只会被已关闭的 runtime 拒绝。回调如果改走
+`runtime.execute`，就算入口，路由满时会被拒绝。在虚拟线程路由上，查数据库这类阻塞调用不需要回调，它只会卡住自己的键；回调只用于等待别的路由（原地等待可能让两条路由
 互相等待），或者本来就是异步的 API。
 
 ## Domain、执行器与路由键
@@ -405,8 +423,8 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
 - 任务不会执行时，会调用它的 `refused(context)` 来代替 `run`：被拦截器拦下、拦截器在它之前抛了异常，或者 runtime 没有接受它。持有东西的任务（比如 `HttpRoutes` 交给 runtime 的任务持有请求缓冲区）在 `run` 结束时和 `refused` 里都要归还。lambda 不持有东西，两处都不用管。
 - 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
-- 限流和关闭只针对从外部进来的工作。在游戏任务里调用 `execute` 不会因为过载或关闭被拒绝，已接受的工作能把开始的事做完。其它调用方都算入口，包括 RPC 回调，它们的任务可能被拒绝。任务不断给自己交工作时同样会越过所有限制，可以从 `routes.max_pending` 发现。
-- `shutdown()` 拒绝来自外部的任务，并立即返回。已接受的任务继续执行，也可以继续交出工作，所有 domain 都没有工作后执行器才关闭；`awaitTermination(timeout)` 等到这一步，`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、RPC、定时器等），再关闭 runtime，这样 RPC 回调回来时 runtime 还能接受。
+- 限流和关闭只针对从外部进来的工作。在游戏任务里调用 `execute` 不会因为过载或关闭被拒绝，已接受的工作能把开始的事做完。任务在 runtime 之外发起的工作经它的 `continuation()` 回来，同样不会因为过载被拒绝：一条路由超出上限的量，最多是正在回来路上的结果数；只有已关闭的 runtime 会以 `RUNTIME_CLOSED` 拒绝它。其它调用方都算入口，它们的任务可能被拒绝。任务不断给自己交工作时同样会越过所有限制，可以从 `routes.max_pending` 发现。
+- `shutdown()` 拒绝来自外部的任务，并立即返回。已接受的任务继续执行，也可以继续交出工作，所有 domain 都没有工作后执行器才关闭；`awaitTermination(timeout)` 等到这一步，`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、RPC、定时器等），再关闭 runtime，这样 RPC 回调带回来的工作进来时 runtime 还能接受。
 - runtime 不统计进行中的任务：它等的是各 domain 的 `pending`，即执行器本来就持有的状态。没有工作后，`striped` 用其 ThreadPoolExecutor 自带的关闭，`virtualThreads` 不再新建队列、每个队列排空后就退休。
 
 ## 游戏时间
@@ -459,7 +477,7 @@ GameTime.resetClock();                           // 回到系统时钟，保留�
 `handler` 标签的取值：
 
 - 处理器、事件订阅者、HTTP 接口或 `@Cron` 方法：类名加方法名，`com.game.ShopHandle#buy`；
-- 用请求的 context 继续执行的工作，比如 RPC 回调：这个请求的处理器，所以带一个回调的请求算两个任务；
+- 用请求的 context 继续执行的工作，经它的 continuation 或 `execute`：这个请求的处理器，所以继续一次的请求算两个任务；
 - 手写的任务，也就是交给 `execute` 或定时器的 lambda、方法引用或匿名类：写它的那个类，`com.game.TradeHandle`；
 - 写成具名类的任务：这个类本身，`com.game.TradeHandle$Settle`，用于需要单独统计的任务。
 

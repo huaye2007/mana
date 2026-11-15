@@ -48,7 +48,7 @@ set timers and publish events, and what comes of those returns as tasks on a rou
 | --- | --- | --- |
 | Clients come in | a `ConnectionHandler`, its gateway | Keeps a session per connection, builds each message's context from it, dispatches, and writes the answer in its own packet format ([runtime: Dispatcher](managame-runtime/README.md)) |
 | Other processes come in | an `RpcHandler` | Decodes a request and dispatches it as the gateway does, to the same handlers, answering with `rpcPeer.reply(connection, response)` ([rpc](managame-rpc/README.md)) |
-| A task calls another process | a wrapper round `peer.call` | Decodes the answer in the callback, where it is released on return, then goes back to the calling task's route with `runtime.execute(context, task)`: a callback runs on an EventLoop, never on the route |
+| A task calls another process | a wrapper round `peer.call` | Takes the task's `runtime.continuation()` before calling; decodes the answer in the callback, where it is released on return, then goes back to the calling task's route through the continuation's `execute(task)`, which a full route does not refuse: a callback runs on an EventLoop, never on the route |
 | Who is online | a map of roles to sessions | Pushes to a player outside a request, and finds the session a new login replaces |
 | A player online | an object of its own per player, in memory | Holds what lasts as long as the player is online, such as the session and a `TimerGroup`; never a `Context`, which each message brings |
 

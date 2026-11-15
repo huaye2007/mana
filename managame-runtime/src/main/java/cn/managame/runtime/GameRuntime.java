@@ -93,8 +93,9 @@ public final class GameRuntime implements AutoCloseable {
 
     /**
      * Queues {@code task} on the route of {@code context} and returns; the task later runs with the context as
-     * {@link Context#current()}. It is also how work comes back from another thread or route, such as an RPC callback
-     * or a visit to another player's route: execute with the context to continue on, the task's own or its request.
+     * {@link Context#current()}. It is also how work comes back from another route, such as a visit to another player's:
+     * execute with the context to continue on, the task's own or its request. What a task began outside the runtime,
+     * such as a call to another server, comes back through the task's {@link #continuation()} instead.
      * Throws GameRuntimeException with RUNTIME_CLOSED after shutdown (ROUTE_EXECUTOR_CLOSED when the domain's executor
      * refuses a task given while it shuts down) or ROUTE_EXECUTOR_OVERLOADED when the domain's executor is full; the
      * task then never runs, its {@link GameTask#refused} does, and a RequestContext is first failed with that code, so a
@@ -103,7 +104,8 @@ public final class GameRuntime implements AutoCloseable {
      * <p>
      * Refusing is for what comes in from outside. Called from a game task, this takes the work past every limit on load
      * and during shutdown, so that what was accepted finishes what it began, such as the second step of a trade. Any
-     * other caller is an entry, an RPC callback too, as a task's context does not travel with it.
+     * other caller is an entry, as a task's context does not travel with it: a callback that brings a task the result
+     * of what it began goes on through the task's {@link #continuation()}, which no load refuses.
      * <p>
      * The runtime counts no task in flight: each domain's executor knows its own work, and shutdown waits for them to
      * have none. Close the entries that hand it work (servers, RPC, timers and the like) first, so nothing races with
@@ -115,9 +117,9 @@ public final class GameRuntime implements AutoCloseable {
     public <C extends Context> void execute(TaskKind kind, C context, GameTask<? super C> task) { execute(kind, context, task, false); }
 
     /**
-     * {@link #execute(TaskKind, Context, GameTask)} past every limit on load, as from a game task: for an entry holding
-     * what was accepted earlier and happens only now, such as a timer due once. Still refused with RUNTIME_CLOSED after
-     * shutdown, when no executor may be left to run it. Not API.
+     * {@link #execute(TaskKind, Context, GameTask)} past every limit on load, as from a game task: for a
+     * {@link Continuation}, and for an entry holding what was accepted earlier and happens only now, such as a timer due
+     * once. Still refused with RUNTIME_CLOSED after shutdown, when no executor may be left to run it. Not API.
      */
     public <C extends Context> void handOn(TaskKind kind, C context, GameTask<? super C> task) { execute(kind, context, task, true); }
 
@@ -167,6 +169,15 @@ public final class GameRuntime implements AutoCloseable {
             @Override public void refused(Context context) { failRequest(back); }
         });
     }
+
+    /**
+     * The way back to the route of the task calling this, for what the task begins outside the runtime and whose result
+     * comes on another thread, such as a call to another server: whatever brings the result hands the rest of the work
+     * to it, from any thread, and no load refuses that. See {@link Continuation}.
+     *
+     * @throws IllegalStateException outside a game task
+     */
+    public Continuation continuation() { return new Continuation(this, Context.current()); }
 
     private static void failRequest(Context context) {
         if (context instanceof RequestContext request) request.fail(RUNTIME_EXECUTION_ERROR);

@@ -1,6 +1,8 @@
 package cn.managame.benchmark.runtime;
 
 import cn.managame.metrics.Metrics;
+import cn.managame.runtime.Context;
+import cn.managame.runtime.Continuation;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameTask;
@@ -9,6 +11,7 @@ import cn.managame.runtime.TaskInterceptor;
 import cn.managame.runtime.executor.RouteExecutor;
 import cn.managame.runtime.executor.RouteExecutors;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -48,16 +51,29 @@ public class ExecuteThroughputBenchmark {
     public int window;
     private final GameContext[] players = new GameContext[PLAYERS];
     private GameRuntime runtime, intercepted;
+    /** Each player's way back, taken once in a task of the player's: what a task keeps while another server answers. */
+    private final Continuation[] backs = new Continuation[PLAYERS];
     private Semaphore inFlight;
     private GameTask<GameContext> task;
+    private GameTask<Context> continued;
 
-    @Setup(Level.Trial) public void start() {
+    @Setup(Level.Trial) public void start() throws InterruptedException {
         inFlight = new Semaphore(window);
         task = context -> inFlight.release();
+        continued = context -> inFlight.release();
         runtime = GameRuntime.builder().domain(PLAYER, executor(executor), RouteKeys.businessId()).metrics(metrics()).build();
         intercepted = GameRuntime.builder().domain(PLAYER, executor(executor), RouteKeys.businessId())
                 .intercept(List.of(new TaskInterceptor() {})).build();
-        for (int id = 0; id < PLAYERS; id++) players[id] = GameContext.of(PLAYER, id, ROLE, id);
+        CountDownLatch taken = new CountDownLatch(PLAYERS);
+        for (int id = 0; id < PLAYERS; id++) {
+            int player = id;
+            players[id] = GameContext.of(PLAYER, id, ROLE, id);
+            runtime.execute(players[id], context -> {
+                backs[player] = runtime.continuation();
+                taken.countDown();
+            });
+        }
+        taken.await();
     }
 
     /** Where the runtime reports; here nowhere. */
@@ -92,6 +108,15 @@ public class ExecuteThroughputBenchmark {
         inFlight.acquire();
         int id = player.next();
         runtime.execute(players[id], context -> runtime.call(players[(id + 1) & (PLAYERS - 1)], () -> id, done -> inFlight.release()));
+    }
+
+    /**
+     * What comes back to a player's route through its {@code Continuation}, from threads that are no game tasks, as the
+     * answers of calls to another server do: the same tasks as {@code execute}, handed over past the limits on load.
+     */
+    @Benchmark public void continuation(Player player) throws InterruptedException {
+        inFlight.acquire();
+        backs[player.next()].execute(continued);
     }
 
     /** Sixteen submitting threads, as many business threads handing work on: how far the runtime's shared state scales. */

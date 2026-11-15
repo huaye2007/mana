@@ -227,6 +227,37 @@ class RuntimeMetricsTest {
         assertEquals(2, count("calls", SHOP + "later"), "the handler, then its continuation");
     }
 
+    record Ask(long other) {}
+
+    /** Asks another server and keeps the way back for its answer. */
+    @Domain(PLAYER)
+    static class Asker {
+        private final GameRuntime runtime;
+        final AtomicReference<Continuation> back = new AtomicReference<>();
+        final CountDownLatch asked = new CountDownLatch(1);
+
+        Asker(GameRuntime runtime) { this.runtime = runtime; }
+
+        @HandleMethod void ask(HandleContext request, Ask ask) {
+            back.set(runtime.continuation());
+            asked.countDown();
+        }
+    }
+
+    @Test void whatComesBackThroughAContinuationCountsUnderItsHandler() throws Exception {
+        GameRuntime runtime = observed();
+        Asker asker = new Asker(runtime);
+        Dispatcher dispatcher = Dispatcher.builder(runtime).register(List.of(asker)).build();
+        List<Object> answers = new CopyOnWriteArrayList<>();
+        dispatcher.dispatch(PLAYER_ONE, new Ask(2), result -> answers.add(result.data()));
+        assertTrue(asker.asked.await(5, TimeUnit.SECONDS));
+        asker.back.get().execute(context -> ((HandleContext) context).reply("answered"));
+        runtime.close();
+
+        assertEquals(List.of("answered"), answers);
+        assertEquals(2, count("calls", RuntimeMetricsTest.class.getName() + "$Asker#ask"), "the handler, then what came back");
+    }
+
     record Visit(long other) {}
 
     @Domain(PLAYER)

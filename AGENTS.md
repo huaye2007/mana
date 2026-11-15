@@ -114,12 +114,15 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   `GameTask.refused`, which runs instead when an interceptor or a refusal keeps it from running.
 - **One entry for business logic.** In an application on the runtime, player requests, events, timers, HTTP and
   (through the application's own RpcHandler) RPC all run through `GameRuntime.execute`. Tasks with the same `(domain, routeKey)` run one at a time in submission order.
-  Work that comes back from another thread or route (an RPC callback, a visit to another player's route) goes on
+  Work that comes back from another route (a visit to another player's route) goes on
   through `GameRuntime.execute(context, task)` with the context to continue on; a game task that needs a result from
   another route uses `GameRuntime.call(target, work, then)`, which is the same two steps and never waits, as business
   code must not depend on the kind of thread under it. Called from a
-  game task it is never refused, for load or shutdown, so what was accepted finishes what it began; any other caller is
-  an entry, an RPC callback too, and shutdown refuses entries first and shuts executors down once none has work. A
+  game task it is never refused, for load or shutdown, so what was accepted finishes what it began. Work that comes
+  back from outside the runtime (an RPC callback) goes on through the `Continuation` its task took with
+  `GameRuntime.continuation()`: it is the task's own work going on, so no load refuses it, only a runtime shut down,
+  and it holds the runtime and the context and counts nothing. Any other caller is
+  an entry, and shutdown refuses entries first and shuts executors down once none has work. A
   timer due once is the exception among entries: it has no later firing to make up for one refused, so it passes the
   limits on load, and is lost only to a runtime shut down. Timers by key are a `TimerGroup` (`timer.group()`)
   that the application keeps with a route's state in memory and uses from that route's tasks; `GameTimer` keeps none,

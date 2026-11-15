@@ -59,9 +59,10 @@ Every piece of business logic runs with a `Context`:
 ### Continuing on a route
 
 A callback runs on whatever thread delivers it, not on the route of the task that started the work, so touching a
-player's state there would break the one-at-a-time rule. One rule covers every case: **when a result comes back from
-another thread or another route, hand the rest to `runtime.execute(context, task)` with the context to continue on**,
-the task's own or its request.
+player's state there would break the one-at-a-time rule. Where the result comes from says how the rest gets back:
+**from another route, through `runtime.call`, or `runtime.execute(context, task)` with the context to continue on**,
+the task's own or its request; **from outside the runtime, such as a call to another server, through the task's
+`runtime.continuation()`**.
 
 ```java
 // A trade: take from the other player on their route, then give to this player back on its own
@@ -77,6 +78,16 @@ the task's own or its request.
 
 // Only reading another player: an answer may come from any thread, so there is no way back to take
 runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(target)));
+
+// Asking another server: its answer comes on a thread of its own, and goes on here through the task's continuation
+@HandleMethod void enterWorld(HandleContext request, EnterWorld enter) {
+    Continuation back = runtime.continuation();                       // taken in the task
+    world.join(request.businessId(), joined ->                        // the game's own call; its callback runs elsewhere
+            back.execute(_ -> {                                       // back on this player's route
+                players.get(request.businessId()).enter(joined);
+                request.reply(joined);
+            }));
+}
 ```
 
 `runtime.call(target, work, then)` is for a game task that needs a result from another route: `work` runs there, and
@@ -85,13 +96,21 @@ and platform threads and two routes calling each other cannot deadlock. The step
 tasks of this route may run between them, so `then` goes by the state as it is by then. If `work` throws or an
 interceptor refuses it, `then` does not run and the request fails with `RUNTIME_EXECUTION_ERROR`.
 
-The framework's part is `runtime.execute`, `runtime.call`, `GameContext.of` and the request's `reply` and `fail`; `Trade`, `bags`,
-`profiles` and `NOT_ENOUGH` are the game's own, and a task that does not use its context names it `_`. The continued
+`runtime.continuation()` is for a game task that begins something outside the runtime, whose result comes on another
+thread: the task takes it, and whatever brings the result hands the rest to its `execute(task)`, from any thread and as
+often as results come, a failure in place of a result too. Decode the result before handing over, where a buffer is
+released when the callback returns. What goes on this way is the task's own work, not an entry, so a full route does
+not refuse it and what the first step did need not be put back. Only a runtime shut down refuses it, and closing what
+brings results before the runtime lets every one in first; see [Errors and shutdown](#errors-and-shutdown). Outside a
+game task `continuation()` throws `IllegalStateException`.
+
+The framework's part is `runtime.execute`, `runtime.call`, `runtime.continuation`, `GameContext.of` and the request's
+`reply` and `fail`; `Trade`, `bags`, `profiles`, `world`, `players` and `NOT_ENOUGH` are the game's own, and a task that
+does not use its context names it `_`. The continued
 task sees `Context.current()` as that context, answers its request once, and, if it throws or is refused, fails the
 request with a code: nothing more to remember. A task handing work on is never refused, for load or shutdown, so steps
-on two routes both run. Work that comes back from outside a task, such as an RPC callback, is an entry and may be
-refused when its route is full: the request then fails with the refusal's code, and putting back what the first step
-did is the game's. On a virtual-thread
+on two routes both run, and what comes back through a continuation is refused only by a runtime shut down. A callback
+that goes through `runtime.execute` instead is an entry, refused when its route is full. On a virtual-thread
 route, a blocking call such as a
 database query needs no callback at all, as it holds up only its own key; a callback is for waiting on another route,
 where waiting in place could leave two routes waiting on each other, or on an API that is asynchronous anyway.
@@ -524,12 +543,14 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
   neither to think of.
 - What a task throws goes to the error handler, which logs by default (`builder.errorHandler((context, cause) -> ...)`).
 - Limits and shutdown are for what comes in from outside. `execute` called from a game task is never refused for load
-  or shutdown, so what was accepted finishes what it began. Any other caller is an entry, an RPC callback too, and its
+  or shutdown, so what was accepted finishes what it began. What a task began outside the runtime comes back through
+  its `continuation()`, which no load refuses either: a route goes past its limit by no more than the results on their
+  way to it, and only a runtime shut down refuses one, with `RUNTIME_CLOSED`. Any other caller is an entry, and its
   task may be refused. A task that hands work to itself without end passes every limit too; `routes.max_pending` shows it.
 - `shutdown()` refuses tasks from outside and returns at once. Accepted tasks still run and may hand work on, and the
   executors shut down once no domain has work left; `awaitTermination(timeout)` waits for that, and `close()` does both
-  and must not be called from a task. Close the entries (servers, RPC, timers and the like) before the runtime, so RPC
-  callbacks come in while the runtime still takes them.
+  and must not be called from a task. Close the entries (servers, RPC, timers and the like) before the runtime, so what
+  RPC callbacks bring back comes in while the runtime still takes it.
 - The runtime counts no task in flight: it waits on each domain's `pending`, what its executor holds anyway. Once nothing
   is left, `striped` shuts down through its ThreadPoolExecutors' own shutdown, and `virtualThreads` makes no new queue and
   retires each as it drains.
@@ -590,8 +611,8 @@ By what ran, tagged `handler`:
 The `handler` tag names:
 
 - a handler, subscriber, HTTP endpoint or `@Cron` method: its class and method, `com.game.ShopHandle#buy`;
-- work continued on a request's context, such as an RPC callback: the handler of that request, so a request with one
-  callback counts as two tasks;
+- work continued on a request's context, through its continuation or `execute`: the handler of that request, so a
+  request that goes on once counts as two tasks;
 - a task written by hand, a lambda, method reference or anonymous class given to `execute` or a timer: the class it was
   written in, `com.game.TradeHandle`;
 - a task written as a named class: that class, `com.game.TradeHandle$Settle`, for one worth a line of its own.
