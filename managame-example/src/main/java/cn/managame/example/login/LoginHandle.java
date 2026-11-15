@@ -14,6 +14,6 @@ public class LoginHandle {
 
     @HandleMethod(routeKey = "userId")
     public HandleResult login(Login.LoginReq loginReq){
-        return HandleResult.ok(loginService.login(loginReq));
+        return loginService.login(loginReq);
     }
 }

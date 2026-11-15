@@ -1,6 +1,7 @@
 package cn.managame.example.login;
 
 import cn.managame.example.proto.Login;
+import cn.managame.runtime.dispatch.HandleResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -10,7 +11,7 @@ public class LoginService {
     private UserRepository userRepository;
 
 
-    public Login.LoginRes login(Login.LoginReq loginReq){
+    public HandleResult login(Login.LoginReq loginReq){
         User user = userRepository.get(loginReq.getUserId());
         if(user == null){
             user = new User();
@@ -25,6 +26,6 @@ public class LoginService {
         }
         Login.LoginRes.Builder builder = Login.LoginRes.newBuilder();
         builder.setRoleId(roleId);
-        return builder.build();
+        return HandleResult.ok(builder.build());
     }
 }
