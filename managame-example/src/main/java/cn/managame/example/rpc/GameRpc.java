@@ -12,6 +12,7 @@ import cn.managame.rpc.RpcPeer;
 import cn.managame.rpc.RpcRequest;
 import cn.managame.rpc.RpcResponse;
 import cn.managame.runtime.Context;
+import cn.managame.runtime.Continuation;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeException;
 import cn.managame.runtime.RequestContext;
@@ -34,7 +35,8 @@ import java.util.function.Consumer;
  * 回调的参数类型就是应答消息的类型，要写在 lambda 上；写错时回调抛 ClassCastException，按业务 bug 处理。对端处理器返回
  * {@code HandleResult.ok(null)} 时回调收到 null。
  *
- * <p>回调回到发起调用的任务的路由上执行，所以可以直接改这条路由的数据。失败不进回调，这里统一处理：对端返回的错误码和参数，
+ * <p>回调回到发起调用的任务的路由上执行，所以可以直接改这条路由的数据；它是这个任务没做完的部分，不是新来的请求，所以走任务的
+ * {@code runtime.continuation()}，路由满了也不会被拒绝。失败不进回调，这里统一处理：对端返回的错误码和参数，
  * 以及超时、连不上、对端繁忙等 RPC 自己的错误码，都当作当前请求的失败回给请求方；当前任务不是请求（定时器、事件）时，没有
  * 人可回，只记日志。
  */
@@ -69,11 +71,12 @@ public final class GameRpc {
         }
         RpcRequest sending = RpcRequest.of(protocols.commandOf(request), context.routeKey(), context.businessType(),
                 context.businessId(), context.metadata(), body(request));
-        peer.call(sending, (sent, response) -> answered(context, response, onResponse));
+        Continuation back = runtime.continuation();
+        peer.call(sending, (sent, response) -> answered(context, back, response, onResponse));
     }
 
-    /** 在 EventLoop 或时间轮上执行，response 在这里解析完就释放了，所以解析好再回到路由上。 */
-    private <R extends Message> void answered(Context context, RpcResponse response, Consumer<R> onResponse) {
+    /** 在 EventLoop 或时间轮上执行，response 在这里解析完就释放了，所以解析好再经 back 回到路由上。 */
+    private <R extends Message> void answered(Context context, Continuation back, RpcResponse response, Consumer<R> onResponse) {
         if (!response.isSuccess()) {
             fail(context, response.code(), args(response.body()));
             return;
@@ -87,9 +90,9 @@ public final class GameRpc {
             return;
         }
         try {
-            runtime.execute(context, task -> onResponse.accept(message));
+            back.execute(task -> onResponse.accept(message));
         } catch (GameRuntimeException refused) {
-            // 回调是外部入口，路由已满或已停服时会被拒绝；请求已经以这个错误码应答了
+            // 只有 runtime 已经关闭才回不去：节点先于 runtime 关闭，正常停服走不到这里；请求已经以这个错误码应答了
             LOG.log(Level.WARNING, "RPC 应答回不到路由上：" + FrameworkErrorCodes.describe(refused.errorCode()));
         }
     }
