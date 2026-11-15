@@ -42,6 +42,21 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 
 `jdk.net.unixdomain.tmpdir` 会传给运行基准的 JVM。在 Windows 上，JDK 的 selector 需要用它指定一个可写目录。每个基准 JVM 都使用 1 GiB 堆，并关闭 Netty 的泄漏检测。跑完一个组件需要一到四分钟，用 `--against` 时是四倍。
 
+### 只用较快的核
+
+笔记本处理器有快慢两种核，Windows 会把程序在两种核之间挪动：基准一旦落到能效核上，所有结果会减半，持续几分钟，而代码一行没变。所以在核有快慢之分的机器上，Bench 只用最快的那些核，启动时会说明：
+
+```
+Kept to the 8 CPUs of the machine's faster cores, of its 18: on the slower ones every result halves
+```
+
+具体做法有两步：
+
+- Bench 把自己限制在这些核上。它启动的每个进程都会继承这个限制，包括基准 JVM、对端进程和 `--against` 的另一个 jar。
+- Bench 告诉每个 JVM 这些核一共是几个处理器（`-XX:ActiveProcessorCount`）。受限的 JVM 仍可能按整台机器的 CPU 数来计算（在 Windows 11 上的 Java 25 就观察到了这种情况），然后按这个数字安排 GC 线程、虚拟线程调度器和 Netty 的 EventLoop。
+
+这样得到的是这么多个 CPU 上的结果，基线第一行会写明（`the 8 faster of 18 CPUs`）。结果不再取决于系统把这次运行放在哪些核上，但和用全部 CPU 跑出来的数字不同。各个核一样快的机器不做任何限制。目前只在 Windows 上区分快慢核，其它系统都当作各核相同。
+
 ## 基线
 
 `results/<component>.csv` 第一行写明记录时的机器和日期，之后每行对应一个基准的一组参数。除了得分，每次运行还会用 JMH 的 GC profiler 和本项目的 `CostProfiler`，在基准 JVM 里围绕每一轮迭代测量开销：
@@ -60,7 +75,7 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 | `cpu_jvm_ns_per_op` | 花在 JVM 自身工作上的部分：GC 和 JIT 编译 |
 | `direct_mib` | 迭代结束时 Netty 占用的直接内存，取各轮中的最大值 |
 | `sent_bytes_per_op`、`received_bytes_per_op` | 每次操作在线上收发的字节数，不含 TCP/IP 头，由主动连接一方的 `CountingSocketChannel` 统计 |
-| `busy_percent` | 其他程序占用了机器多少 CPU，取各轮中的最大值；对端进程不算在内 |
+| `busy_percent` | 其他程序占用了机器多少 CPU，取各轮中的最大值：在每轮迭代的开始和结束各读一次所有进程的 CPU 时间，基准 JVM 和它的对端进程不算在内 |
 | `peer_cpu_ns_per_op`、`peer_cpu_eventloop_ns_per_op`、`peer_cpu_other_ns_per_op`、`peer_cpu_jvm_ns_per_op` | `…ProcessBenchmark` 中服务端进程每次操作的 CPU 时间，拆分方式同上 |
 | `peer_alloc_bytes_per_op`、`peer_gc_count`、`peer_gc_ms`、`peer_direct_mib` | 服务端进程每次操作的堆分配、GC 次数和耗时、直接内存 |
 
@@ -69,7 +84,7 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 每次运行都会把各项结果和基线并排打印出来，第二行是开销；带宽等于每次操作的字节数乘以每秒操作数：
 
 ```
-== rpc: against the baseline 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
+== rpc: against the baseline 2026-11-15 on Windows 11 amd64, the 8 faster of 18 CPUs, Java 25.0.3
 CallThroughputBenchmark.call   connections=1 payload=64 window=1024   612,000 -> 598,000 ops/s  -2.3% same  alloc 1,010 B/op
     cpu 4,210 -> 4,305 ns/op (caller 610, eventloop 3,400, other 25, jvm 270)  |  gc 41 in 52 ms  |  direct 16.0 MiB  |  net 100+79 -> 100+79 B/op, 107.0 MB/s  |  busy 4%
 ```
@@ -78,7 +93,7 @@ CallThroughputBenchmark.call   connections=1 payload=64 window=1024   612,000 ->
 - 结果的变化同时超过阈值和两次误差之和，才标为 `better` 或 `WORSE`，否则标为 `same`。
 - 分配量的变化同时超过阈值和 32 字节，线上字节数的变化同时超过阈值和 4 字节，才会被标出。这两项不受机器状态影响，所以 `MORE ALLOCATION` 和 `MORE BYTES` 都算变差。
 - 每次操作的 CPU 时间只显示、不参与判定，因为被调度到较慢的核上时它也会升高。
-- 其他程序占用超过机器十分之一的 CPU 时，得分会被拖慢：这时变差的得分标为 `unsure (machine N% busy)`，`--save` 也不会保存这个组件的结果。
+- 其他程序占用超过机器十分之一的 CPU 时，得分会被拖慢：这时变差的得分标为 `unsure (machine N% busy)`，`--save` 也不会保存这个组件的结果。占用量是从各个进程直接读出来的，系统服务也算在内；不用"整机负载减去基准自己的占用"来推算，因为这个差值在没有别的程序运行时也会显示占用了十分之一以上。
 - 有任何一项变差，退出码为 1；没有变差但有 `unsure` 时为 3；否则为 0。
 
 ## 两个进程
@@ -95,7 +110,7 @@ CallThroughputProcessBenchmark.call   connections=1 payload=64 window=1024   598
 
 ## 与改动前的代码对比
 
-基线是在另一个时间点记录的，而机器此刻的状态未必和当时一样。在同时有性能核和能效核的笔记本上，前台程序忙的时候，Windows 会把后台运行的基准挪到较慢的核上，所有结果可能在几分钟内下降一半，而代码一行没变。每次操作的分配量不随机器变化，所以"结果变差、分配量没变"正是需要核实的情况。
+基线是在另一个时间点记录的，而机器此刻的状态未必和当时一样：笔记本发热、用电池供电或者换了电源模式时，所有程序都会变慢，而代码一行没变。另外，如果一个基准的线程要共用它被限制在的那几个核，它的结果在两次运行之间本来就会有百分之几的波动。每次操作的分配量不随机器变化，所以"结果变差、分配量没变"正是需要核实的情况。
 
 `--against` 用来区分是机器的原因还是代码的原因。先用改动前的代码构建一个基准 jar，放在 `target/` 之外，再用当前版本和它对比：
 
@@ -109,7 +124,7 @@ cd ../managame-benchmark && mvn -o clean package
 java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc --against=D:\tmp\before.jar
 ```
 
-两个 jar 交替运行，对方先跑，各跑两次，这样两者面对的是同一时段里的机器。对方 jar 的输出写进一个临时目录下的日志文件，运行结束时会打印这个目录。
+两个 jar 交替运行，对方先跑，各跑两次，这样两者面对的是同一时段里的机器，用的是同样的核，被告知的处理器数也相同。对方 jar 的输出写进一个临时目录下的日志文件，运行结束时会打印这个目录。如果对方 jar 没有保存任何结果（比如它认为机器太忙），运行会停下来并指出它的日志文件。
 
 ```
 == rpc: against D:\tmp\before.jar, each run 2 times in turn, it first

@@ -45,8 +45,14 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
  * is unsure. {@code --save} records the run as the new baseline, unless the machine was that busy; saving a run of
  * some benchmarks replaces their lines and keeps the others.
  *
- * <p>A machine that is not steady, such as a laptop whose busy foreground apps push the benchmarks onto slower
- * cores, can move every result at once. {@code --against=<jar>} tells that from a change of code: the other jar,
+ * <p>On a machine whose cores differ, a laptop with performance and efficiency cores, the system moves a program
+ * between them, and a run on the slower ones halves every result with the code unchanged. So Bench keeps to the
+ * fastest cores ({@link Machine#useFastestCores}): it confines itself to them, which every JVM it starts inherits,
+ * the other jar's of {@code --against} too, and tells each how many processors that is, so that it sizes its threads
+ * for them. Results are then those of that many CPUs, which a baseline's first line names.
+ *
+ * <p>A machine can still move every result at once, as a laptop does when it gets warm or runs on its battery.
+ * {@code --against=<jar>} tells that from a change of code: the other jar,
  * built from the code before the change, and this one run in turn, the other first, twice each, so that both meet
  * the machine as it is during the session. A result is better or worse only when it moved by more than the
  * threshold, both runs of this jar fall on the same side of both runs of the other, and the two means differ by
@@ -77,6 +83,8 @@ public final class Bench {
             CPU_EVENT_LOOP, CPU_OTHER, CPU_JVM, DIRECT, SENT, RECEIVED, BUSY, PEER_CPU, PEER_CPU_EVENT_LOOP,
             PEER_CPU_OTHER, PEER_CPU_JVM, PEER_ALLOC, PEER_GC_COUNT, PEER_GC_MS, PEER_DIRECT);
     /** The JMH result each column but the percentiles comes from: the GC profiler's, then {@link CostProfiler}'s. */
+    /** How many logical CPUs the benchmarks are confined to, the machine's fastest cores; 0 when its cores are alike. */
+    private static int confined;
     private static final Map<String, String> SOURCES = sources(ALLOC, "gc.alloc.rate.norm", ALLOC_RATE, "gc.alloc.rate",
             GC_COUNT, "gc.count", GC_MS, "gc.time", CPU, "cost.cpu", CPU_CALLER, "cost.cpu.caller",
             CPU_EVENT_LOOP, "cost.cpu.eventloop", CPU_OTHER, "cost.cpu.other", CPU_JVM, "cost.cpu.jvm",
@@ -112,6 +120,9 @@ public final class Bench {
         if (components.isEmpty()) usage("Name the components to run");
         if (against != null && save) usage("--save records a run compared with the baseline, not one --against another jar");
         if (against != null && !Files.isRegularFile(against)) usage("No jar at " + against);
+        confined = Machine.useFastestCores();
+        if (confined > 0) System.out.println("Kept to the " + confined + " CPUs of the machine's faster cores, of its "
+                + Machine.cpus() + ": on the slower ones every result halves");
         boolean worse = false, unsure = false;
         for (String component : components) {
             Outcome outcome;
@@ -144,9 +155,14 @@ public final class Bench {
         System.exit(2);
     }
 
-    /** One fork per benchmark, with the JVM settings every recorded run uses and both profilers. */
+    /**
+     * One fork per benchmark, with the JVM settings every recorded run uses and both profilers. Native access is for
+     * {@link Machine}, which a fork's {@link CostProfiler} reads the other processes with.
+     */
     private static Collection<RunResult> run(String component, String include) throws Exception {
-        List<String> jvm = new ArrayList<>(List.of("-Xms1g", "-Xmx1g", "-Dio.netty.leakDetection.level=disabled"));
+        List<String> jvm = new ArrayList<>(List.of("-Xms1g", "-Xmx1g", "-Dio.netty.leakDetection.level=disabled",
+                "--enable-native-access=ALL-UNNAMED"));
+        if (confined > 0) jvm.add(processors());
         String unixTmp = System.getProperty("jdk.net.unixdomain.tmpdir");
         if (unixTmp != null) jvm.add("-Djdk.net.unixdomain.tmpdir=" + unixTmp);
         ChainedOptionsBuilder options = new OptionsBuilder()
@@ -157,6 +173,13 @@ public final class Bench {
                 .shouldFailOnError(true);
         return new Runner(options.build()).run();
     }
+
+    /**
+     * Tells a JVM how many processors the cores it is confined to are. Left to itself it may count every CPU of the
+     * machine, as Java 25 was seen to on Windows 11, and size its collector, its virtual thread scheduler and
+     * Netty's EventLoops for CPUs it cannot run on.
+     */
+    private static String processors() { return "-XX:ActiveProcessorCount=" + confined; }
 
     private static List<Row> rows(String component, Collection<RunResult> runs) {
         List<Row> rows = new ArrayList<>();
@@ -314,18 +337,25 @@ public final class Bench {
         return new Outcome(worse, unsure);
     }
 
-    /** Runs {@code jar}'s own runner for {@code component} and reads the rows it saves into {@code dir}. */
+    /**
+     * Runs {@code jar}'s own runner for {@code component} and reads the rows it saves into {@code dir}. Its JVMs are
+     * confined to the cores this one is, and told their number through the environment, as that jar's runner starts
+     * them and may be from before it told them itself.
+     */
     private static Map<String, Row> runJar(Path jar, String component, String include, Path dir) throws Exception {
         List<String> command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString()));
         String unixTmp = System.getProperty("jdk.net.unixdomain.tmpdir");
         if (unixTmp != null) command.add("-Djdk.net.unixdomain.tmpdir=" + unixTmp);
         command.addAll(List.of("-jar", jar.toString(), component, "--save", "--results=" + dir));
         if (!include.isEmpty()) command.add("--include=" + include);
-        Path log = Path.of(dir + ".log");
+        Path log = Path.of(dir + ".log"), saved = dir.resolve(component + ".csv");
         System.out.println("Running " + jar + " for " + component + ", logging to " + log);
-        int exit = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log.toFile()).start().waitFor();
+        ProcessBuilder runner = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log.toFile());
+        if (confined > 0) runner.environment().merge("JAVA_TOOL_OPTIONS", processors(), (set, ours) -> set + " " + ours);
+        int exit = runner.start().waitFor();
         if (exit != 0) throw new IllegalStateException(jar + " failed with exit code " + exit + "; see " + log);
-        return Baseline.read(dir.resolve(component + ".csv")).rows();
+        if (!Files.exists(saved)) throw new IllegalStateException(jar + " saved no results, so there is nothing to compare with; see " + log);
+        return Baseline.read(saved).rows();
     }
 
     private static List<Row> runsOf(List<Map<String, Row>> runs, String key) {
@@ -336,9 +366,11 @@ public final class Bench {
         return runs.stream().map(row -> number(row.score())).collect(Collectors.joining("/"));
     }
 
+    /** When and where a run was taken: the machine, and how many of its CPUs the benchmarks had. */
     private static String environment() {
+        String cpus = confined > 0 ? "the " + confined + " faster of " + Machine.cpus() + " CPUs" : Machine.cpus() + " CPUs";
         return LocalDate.now() + " on " + System.getProperty("os.name") + " " + System.getProperty("os.arch") + ", "
-                + Runtime.getRuntime().availableProcessors() + " CPUs, Java " + System.getProperty("java.version");
+                + cpus + ", Java " + System.getProperty("java.version");
     }
 
     private static double finite(double value) { return Double.isFinite(value) ? value : 0; }

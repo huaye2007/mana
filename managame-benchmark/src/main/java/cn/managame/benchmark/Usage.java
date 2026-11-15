@@ -91,9 +91,6 @@ final class Usage {
         }
     }
 
-    /** The share of the machine's CPU everything used since the previous call, from 0 to 1; negative when unknown. */
-    double machineLoad() { return os.getCpuLoad(); }
-
     private static int kind(Thread thread) {
         if (thread.getName().contains("jmh-worker")) return CALLER;
         return thread instanceof FastThreadLocalThread ? EVENT_LOOP : OTHER;

@@ -61,6 +61,9 @@ public final class PeerProcess implements AutoCloseable {
     /** The port the peer listens on, on the loopback address. */
     public int port() { return port; }
 
+    /** The peer's process id, which tells its CPU time from other programs'. */
+    long pid() { return process.pid(); }
+
     /** The peer starts measuring what it uses; nothing once it is closed. */
     synchronized void begin() {
         if (closed) return;

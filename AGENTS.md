@@ -53,9 +53,12 @@ baseline in `managame-benchmark/results/<component>.csv`; its README has the det
   `WORSE`, `MORE ALLOCATION` or `MORE BYTES`, and look into them before calling the change done. Each result also
   shows CPU per operation by kind of thread (caller, eventloop, other, jvm), GC, Netty's direct memory and bytes on
   the wire; use them to tell where a cost went.
-- The machine moves results too: the maintainer's laptop has performance and efficiency cores, and Windows at
-  times runs background benchmarks on the slower ones, halving every result with the code unchanged. When a result
-  is `WORSE` and its allocation did not move, build the code before the change into a jar and rerun with
+- The machine moves results too. The maintainer's laptop has performance and efficiency cores, and Windows at
+  times ran benchmarks on the slower ones, halving every result with the code unchanged: Bench now keeps itself and
+  every JVM it starts to the faster cores and tells each how many processors they are, so run it as it is, with no
+  affinity of your own, and read results as those of that many CPUs (`the 8 faster of 18 CPUs`). What is left is
+  smaller: a benchmark whose threads share those cores moves by some percent between runs. When a result is `WORSE`
+  and its allocation did not move, build the code before the change into a jar and rerun with
   `--against=<that jar>` before looking for a cause in the code. Only a difference that holds against it counts; a
   large regression that holds is traced to its cause and fixed, a small one is explained. `unsure` means run again
   on a steadier machine.

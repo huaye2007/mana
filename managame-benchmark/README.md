@@ -48,6 +48,24 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 writable directory. Every benchmark JVM runs with a 1 GiB heap and Netty's leak detection off. A component takes
 from one to four minutes, four times that with `--against`.
 
+### The faster cores
+
+A laptop's processor has cores of two speeds, and Windows moves a program between them: a benchmark that lands on
+the efficiency cores gives half its results, for minutes, with the code unchanged. So on a machine whose cores
+differ Bench keeps to the fastest ones, and says so as it starts:
+
+```
+Kept to the 8 CPUs of the machine's faster cores, of its 18: on the slower ones every result halves
+```
+
+It confines itself to them, which every process it starts inherits: the benchmark JVMs, their peer processes, the
+other jar of `--against`. It also tells each JVM how many processors that is (`-XX:ActiveProcessorCount`), since a
+JVM started under such a limit may still count every CPU of the machine, as Java 25 was seen to on Windows 11,
+and size its collector, its virtual thread scheduler and Netty's EventLoops for them. Results are then those of that
+many CPUs, which a baseline's first line names (`the 8 faster of 18 CPUs`): they no longer depend on where the
+system put the run, and differ from results on all the CPUs. Where the cores are alike nothing is confined. Cores are
+told apart on Windows only; elsewhere they are taken to be alike.
+
 ## Baselines
 
 `results/<component>.csv` holds one line per benchmark and parameter set, under a line naming the machine and
@@ -68,7 +86,7 @@ benchmarks' own `CostProfiler`, around every iteration in the benchmark JVM:
 | `cpu_jvm_ns_per_op` | ... on the JVM's own work: garbage collection and compilation |
 | `direct_mib` | Direct memory Netty holds at the end of an iteration, the highest of them |
 | `sent_bytes_per_op`, `received_bytes_per_op` | Bytes on the wire per operation, without TCP and IP headers, counted by the dialing side's `CountingSocketChannel` |
-| `busy_percent` | How much of the machine's CPU other programs used, the highest of the iterations; the peer process does not count |
+| `busy_percent` | How much of the machine's CPU other programs used, the highest of the iterations: the CPU time of every process but the benchmark JVM and its peer, read at both ends of an iteration |
 | `peer_cpu_ns_per_op`, `peer_cpu_eventloop_ns_per_op`, `peer_cpu_other_ns_per_op`, `peer_cpu_jvm_ns_per_op` | For a `…ProcessBenchmark`, the server process's CPU per operation, split the same way |
 | `peer_alloc_bytes_per_op`, `peer_gc_count`, `peer_gc_ms`, `peer_direct_mib` | ... and its heap allocated per operation, garbage collections and direct memory |
 
@@ -80,7 +98,7 @@ Each run prints every result next to its baseline, and what it cost on a second 
 per operation times the operations per second:
 
 ```
-== rpc: against the baseline 2026-10-28 on Windows 11 amd64, 18 CPUs, Java 25.0.3
+== rpc: against the baseline 2026-11-15 on Windows 11 amd64, the 8 faster of 18 CPUs, Java 25.0.3
 CallThroughputBenchmark.call   connections=1 payload=64 window=1024   612,000 -> 598,000 ops/s  -2.3% same  alloc 1,010 B/op
     cpu 4,210 -> 4,305 ns/op (caller 610, eventloop 3,400, other 25, jvm 270)  |  gc 41 in 52 ms  |  direct 16.0 MiB  |  net 100+79 -> 100+79 B/op, 107.0 MB/s  |  busy 4%
 ```
@@ -91,8 +109,10 @@ on the wire by the threshold and 4 bytes: neither depends on the machine, so `MO
 count as worse. CPU time per operation is shown, not judged, as a slower core raises it too.
 
 Other programs that use more than a tenth of the machine move the scores: a score that got worse then is
-`unsure (machine N% busy)`, and `--save` saves nothing of that component. The exit code is 1 when anything got
-worse, 3 when nothing did but something is unsure, and 0 otherwise.
+`unsure (machine N% busy)`, and `--save` saves nothing of that component. What they used is read from the processes
+themselves, the system's services included, not worked out as the machine's load less the benchmark's own: that
+difference showed a tenth of the machine and more in use with nothing else running. The exit code is 1 when anything
+got worse, 3 when nothing did but something is unsure, and 0 otherwise.
 
 ## Two processes
 
@@ -113,10 +133,10 @@ call at the end of each iteration with those not acknowledged yet. `SERVER ALLOC
 
 ## Against the code before a change
 
-A baseline was recorded at another time, and the machine may not be the same now: on a laptop with performance
-and efficiency cores, Windows moves a background benchmark onto the slower cores while foreground apps are busy,
-and every result can drop by half for minutes, with the code unchanged. Allocation per operation does not move
-with the machine, so a result that got worse while its allocation stayed is the case to check.
+A baseline was recorded at another time, and the machine may not be the same now: a laptop that is warm, on its
+battery or in another power mode runs everything slower, with the code unchanged, and a benchmark whose threads
+share the cores it is kept to moves by some percent from run to run. Allocation per operation does not move with
+the machine, so a result that got worse while its allocation stayed is the case to check.
 
 `--against` tells the machine from the code. Build the benchmarks from the code before the change into a jar kept
 outside `target/`, then run this build against it:
@@ -131,8 +151,10 @@ cd ../managame-benchmark && mvn -o clean package
 java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc --against=D:\tmp\before.jar
 ```
 
-The two jars run in turn, the other first and twice each, so both meet the machine as it is during the session.
-The other jar's output goes to log files in a temporary directory the run names at the end.
+The two jars run in turn, the other first and twice each, so both meet the machine as it is during the session,
+on the same cores and told of the same number of processors. The other jar's output goes to log files in a
+temporary directory the run names at the end; when that jar saves no results, as one does that found the machine
+busy, the run stops and names its log.
 
 ```
 == rpc: against D:\tmp\before.jar, each run 2 times in turn, it first
