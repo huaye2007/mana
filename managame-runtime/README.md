@@ -108,6 +108,22 @@ not refuse it and what the first step did need not be put back. Only a runtime s
 brings results before the runtime lets every one in first; see [Errors and shutdown](#errors-and-shutdown). Outside a
 game task `continuation()` throws `IllegalStateException`.
 
+`runtime.handOn(context, task)` is for what has already happened outside the runtime and has no second try, such as a
+player's connection closing or another server disconnecting, whose clearing up must run:
+
+```java
+@Override public void onInActive(Connection connection) {           // on the EventLoop, which is no game task
+    long roleId = connection.get(SESSION).roleId();
+    runtime.handOn(GameContext.of(PLAYER, roleId, ROLE, roleId), context -> players.leave(roleId));
+}
+```
+
+It queues the task on the context's route however full that route is: refusing it would not undo what happened, only
+leave what the route keeps out of step with it, and a timer due once passes the limits for the same reason. Only a
+runtime shut down refuses it. It is not for requests: what a client can send again goes through `execute`, whose
+refusals are what keeps a route from filling without bound, while what comes through `handOn` is bounded by what
+causes it, as a connection closes once.
+
 The framework's part is `runtime.execute`, `runtime.call`, `runtime.continuation`, `GameContext.of` and the request's
 `reply` and `fail`; `Trade`, `bags`, `profiles`, `world`, `players` and `NOT_ENOUGH` are the game's own, and a task that
 does not use its context names it `_`. The continued
@@ -617,7 +633,8 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
   or shutdown, so what was accepted finishes what it began. What a task began outside the runtime comes back through
   its `continuation()`, which no load refuses either: a route goes past its limit by no more than the results on their
   way to it, and only a runtime shut down refuses one, with `RUNTIME_CLOSED`. Any other caller is an entry, and its
-  task may be refused. A task that hands work to itself without end passes every limit too; `routes.max_pending` shows it.
+  task may be refused, unless it is handed on with `handOn`, for what already happened and has no second try, which
+  only a runtime shut down refuses too. A task that hands work to itself without end passes every limit too; `routes.max_pending` shows it.
 - `shutdown()` refuses tasks from outside and returns at once. Accepted tasks still run and may hand work on, and the
   executors shut down once no domain has work left; `awaitTermination(timeout)` waits for that, and `close()` does both
   and must not be called from a task. Close the entries (servers, RPC, timers and the like) before the runtime, so what

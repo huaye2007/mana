@@ -48,7 +48,7 @@ set timers and publish events, and what comes of those returns as tasks on a rou
 | --- | --- | --- |
 | Clients come in | a `ConnectionHandler`, its gateway | Keeps a session per connection, builds each message's context from it, dispatches, and writes the answer in its own packet format ([runtime: Dispatcher](managame-runtime/README.md)) |
 | Other processes come in | an `RpcHandler` | Decodes a request and dispatches it as the gateway does, to the same handlers, answering with `rpcPeer.reply(connection, response)` ([rpc](managame-rpc/README.md)) |
-| Another process goes away | the same `RpcHandler`, in `onDisconnected` | Hands the runtime the clearing of what the game kept for that node, such as its players in the world, as the gateway does when a player's connection closes |
+| Another process goes away | the same `RpcHandler`, in `onDisconnected` | Hands the runtime the clearing of what the game kept for that node, such as its players in the world, with `runtime.handOn`, which a full route does not refuse, as the gateway does when a player's connection closes |
 | A task calls another process | a wrapper round `peer.call` | Takes the task's `runtime.continuation()` before calling; decodes the answer in the callback, where it is released on return, then goes back to the calling task's route through the continuation's `execute(task)`, which a full route does not refuse: a callback runs on an EventLoop, never on the route |
 | Who is online | a map of roles to sessions | Pushes to a player outside a request, and finds the session a new login replaces |
 | A player online | an object of its own per player, in memory | Holds what lasts as long as the player is online, such as the session and a `TimerGroup`; never a `Context`, which each message brings |
@@ -72,11 +72,8 @@ timer, a call to another process, whose answer continues on it.
   @Override public void onInActive(Connection connection) {
       Session session = connection.get(SESSION);
       if (session.roleId() == 0 || !sessions.remove(session.roleId(), session)) return;   // never logged in, or replaced by a new login
-      try {
-          runtime.execute(GameContext.of(PLAYER, session.roleId(), ROLE, session.roleId()), context -> players.leave(session.roleId()));
-      } catch (GameRuntimeException refused) {
-          // an entry like any other: refused while the player's route is full, or once the runtime shut down
-      }
+      // handOn, not execute: the connection is gone whatever the load, so a full route must not refuse the leaving
+      runtime.handOn(GameContext.of(PLAYER, session.roleId(), ROLE, session.roleId()), context -> players.leave(session.roleId()));
   }
 
   void leave(long roleId) {                    // on the player's route

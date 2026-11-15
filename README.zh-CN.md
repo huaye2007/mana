@@ -40,7 +40,7 @@ other processes  --> rpc     --> RpcHandler --+                       ^         
 | --- | --- | --- |
 | 客户端进来 | 一个 `ConnectionHandler`，也就是网关 | 每个连接保存一个会话，按会话给每条消息建上下文，交给 Dispatcher，再按自己的包格式写回应答（[runtime：Dispatcher](managame-runtime/README.zh-CN.md)） |
 | 其它进程进来 | 一个 `RpcHandler` | 解析请求，和网关一样交给 Dispatcher，用的是同一批处理器，再用 `rpcPeer.reply(connection, response)` 应答（[rpc](managame-rpc/README.zh-CN.md)） |
-| 其它进程离开 | 同一个 `RpcHandler` 的 `onDisconnected` | 把清理工作交给 runtime：清掉游戏为那个节点保存的东西，比如它在世界里的玩家，和网关在玩家连接断开时做的一样 |
+| 其它进程离开 | 同一个 `RpcHandler` 的 `onDisconnected` | 用 `runtime.handOn` 把清理工作交给 runtime，路由满了也不会被拒绝：清掉游戏为那个节点保存的东西，比如它在世界里的玩家，和网关在玩家连接断开时做的一样 |
 | 任务调用别的进程 | 对 `peer.call` 的一层封装 | 调用之前先取任务的 `runtime.continuation()`；在回调里把应答解析完（回调返回时应答就释放了），再用它的 `execute(task)` 回到发起调用的任务的路由上，路由满了也不会被拒绝：回调在 EventLoop 上执行，不在路由上 |
 | 谁在线 | 一张角色到会话的表 | 在请求之外给玩家推送；新登录时找到要被顶掉的旧会话 |
 | 一个在线玩家 | 应用自己的、每个玩家一个的内存对象 | 保存和在线同寿命的东西，比如会话和一个 `TimerGroup`；不保存 `Context`，上下文是每条消息带来的 |
@@ -57,11 +57,8 @@ other processes  --> rpc     --> RpcHandler --+                       ^         
   @Override public void onInActive(Connection connection) {
       Session session = connection.get(SESSION);
       if (session.roleId() == 0 || !sessions.remove(session.roleId(), session)) return;   // 没登录过，或者已被新登录顶掉
-      try {
-          runtime.execute(GameContext.of(PLAYER, session.roleId(), ROLE, session.roleId()), context -> players.leave(session.roleId()));
-      } catch (GameRuntimeException refused) {
-          // 和其它入口一样：玩家的路由满了，或者 runtime 已经关闭，就会被拒绝
-      }
+      // 用 handOn 而不是 execute：不管负载多高，连接已经断了，路由再满也不能拒绝下线
+      runtime.handOn(GameContext.of(PLAYER, session.roleId(), ROLE, session.roleId()), context -> players.leave(session.roleId()));
   }
 
   void leave(long roleId) {                    // 在玩家的路由上

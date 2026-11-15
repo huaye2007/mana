@@ -90,6 +90,17 @@ runtime.execute(GameContext.of(PLAYER, target), _ -> request.reply(profiles.get(
 runtime 才会拒绝它；先关闭带回结果的一方，再关闭 runtime，它们就都能先进来，见[错误与关闭](#错误与关闭)。在游戏任务之外调用
 `continuation()` 抛 `IllegalStateException`。
 
+`runtime.handOn(context, task)` 用于 runtime 之外已经发生、没有第二次机会的事，比如玩家的连接断开、别的服务器断开，它们的清理必须执行：
+
+```java
+@Override public void onInActive(Connection connection) {           // 在 EventLoop 上，不是游戏任务
+    long roleId = connection.get(SESSION).roleId();
+    runtime.handOn(GameContext.of(PLAYER, roleId, ROLE, roleId), context -> players.leave(roleId));
+}
+```
+
+不管这条路由有多满，任务都会排进去：拒绝它并不能让已经发生的事不发生，只会让路由上保存的状态和事实对不上；只触发一次的定时器不受过载限制，也是这个道理。只有已关闭的 runtime 才会拒绝它。它不是给请求用的：客户端可以重发的东西走 `execute`，正是 `execute` 的拒绝让路由不会无限堆积；而经 `handOn` 进来的量受它的来源限制，一条连接只会断开一次。
+
 框架提供的只有 `runtime.execute`、`runtime.call`、`runtime.continuation`、`GameContext.of` 和请求的 `reply`、`fail`；`Trade`、
 `bags`、`profiles`、`world`、`players`、`NOT_ENOUGH` 都是游戏自己的，任务用不到的 context 写成 `_`。继续执行的任务里
 `Context.current()` 就是这个 context，请求只应答一次，任务
@@ -469,7 +480,7 @@ public FullHttpResponse encodeFailure(int errorCode, String[] args) throws IOExc
 - `execute` 在关闭后抛带 `RUNTIME_CLOSED` 的 `GameRuntimeException`，执行器已满时抛带 `ROUTE_EXECUTOR_OVERLOADED` 的，任务都不会执行；如果是请求，会先以该错误码应答。未注册的 domain 抛 `IllegalArgumentException`。
 - 任务不会执行时，会调用它的 `refused(context)` 来代替 `run`：被拦截器拦下、拦截器在它之前抛了异常，或者 runtime 没有接受它。持有东西的任务（比如 `HttpRoutes` 交给 runtime 的任务持有请求缓冲区）在 `run` 结束时和 `refused` 里都要归还。lambda 不持有东西，两处都不用管。
 - 任务抛出的异常交给错误处理器，默认记录日志（`builder.errorHandler((context, cause) -> ...)`）。
-- 限流和关闭只针对从外部进来的工作。在游戏任务里调用 `execute` 不会因为过载或关闭被拒绝，已接受的工作能把开始的事做完。任务在 runtime 之外发起的工作经它的 `continuation()` 回来，同样不会因为过载被拒绝：一条路由超出上限的量，最多是正在回来路上的结果数；只有已关闭的 runtime 会以 `RUNTIME_CLOSED` 拒绝它。其它调用方都算入口，它们的任务可能被拒绝。任务不断给自己交工作时同样会越过所有限制，可以从 `routes.max_pending` 发现。
+- 限流和关闭只针对从外部进来的工作。在游戏任务里调用 `execute` 不会因为过载或关闭被拒绝，已接受的工作能把开始的事做完。任务在 runtime 之外发起的工作经它的 `continuation()` 回来，同样不会因为过载被拒绝：一条路由超出上限的量，最多是正在回来路上的结果数；只有已关闭的 runtime 会以 `RUNTIME_CLOSED` 拒绝它。其它调用方都算入口，它们的任务可能被拒绝；例外是用 `handOn` 交进来的、已经发生且没有第二次机会的事，它同样只会被已关闭的 runtime 拒绝。任务不断给自己交工作时同样会越过所有限制，可以从 `routes.max_pending` 发现。
 - `shutdown()` 拒绝来自外部的任务，并立即返回。已接受的任务继续执行，也可以继续交出工作，所有 domain 都没有工作后执行器才关闭；`awaitTermination(timeout)` 等到这一步，`close()` 两者都做，不能在任务中调用。先关闭各入口（服务器、RPC、定时器等），再关闭 runtime，这样 RPC 回调带回来的工作进来时 runtime 还能接受。
 - runtime 不统计进行中的任务：它等的是各 domain 的 `pending`，即执行器本来就持有的状态。没有工作后，`striped` 用其 ThreadPoolExecutor 自带的关闭，`virtualThreads` 不再新建队列、每个队列排空后就退休。
 

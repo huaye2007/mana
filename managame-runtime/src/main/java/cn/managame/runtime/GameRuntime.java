@@ -105,7 +105,8 @@ public final class GameRuntime implements AutoCloseable {
      * Refusing is for what comes in from outside. Called from a game task, this takes the work past every limit on load
      * and during shutdown, so that what was accepted finishes what it began, such as the second step of a trade. Any
      * other caller is an entry, as a task's context does not travel with it: a callback that brings a task the result
-     * of what it began goes on through the task's {@link #continuation()}, which no load refuses.
+     * of what it began goes on through the task's {@link #continuation()}, which no load refuses, and what has already
+     * happened outside and has no second try, such as a connection closing, through {@link #handOn(Context, GameTask)}.
      * <p>
      * The runtime counts no task in flight: each domain's executor knows its own work, and shutdown waits for them to
      * have none. Close the entries that hand it work (servers, RPC, timers and the like) first, so nothing races with
@@ -117,9 +118,23 @@ public final class GameRuntime implements AutoCloseable {
     public <C extends Context> void execute(TaskKind kind, C context, GameTask<? super C> task) { execute(kind, context, task, false); }
 
     /**
-     * {@link #execute(TaskKind, Context, GameTask)} past every limit on load, as from a game task: for a
+     * Queues {@code task} on the route of {@code context} however full that route is, and returns: for what has already
+     * happened outside the runtime and has no second try, such as a player's connection closing or another server
+     * disconnecting, whose clearing up must run. Refusing it would not undo what happened, only leave what the route
+     * keeps out of step with it; a timer due once passes the limits on load for the same reason.
+     * <p>
+     * It is refused only once the runtime is shut down, with RUNTIME_CLOSED and as {@link #execute(Context, GameTask)}
+     * refuses a task: close what brings such things, the servers and the RPC node, before the runtime, and all of them
+     * get in. It is not for requests: what a source can send again or slow down goes through execute, whose refusals
+     * keep a route from filling without bound. What comes through here is bounded by what causes it, as a connection
+     * closes once.
+     */
+    public <C extends Context> void handOn(C context, GameTask<? super C> task) { handOn(null, context, task); }
+
+    /**
+     * {@link #handOn(Context, GameTask)} of a task an entry knows the kind of, or null when it does not: also for a
      * {@link Continuation}, and for an entry holding what was accepted earlier and happens only now, such as a timer due
-     * once. Still refused with RUNTIME_CLOSED after shutdown, when no executor may be left to run it. Not API.
+     * once. Not API.
      */
     public <C extends Context> void handOn(TaskKind kind, C context, GameTask<? super C> task) { execute(kind, context, task, true); }
 

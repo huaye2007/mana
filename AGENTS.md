@@ -124,7 +124,10 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   and it holds the runtime and the context and counts nothing. Any other caller is
   an entry, and shutdown refuses entries first and shuts executors down once none has work. A
   timer due once is the exception among entries: it has no later firing to make up for one refused, so it passes the
-  limits on load, and is lost only to a runtime shut down. Timers by key are a `TimerGroup` (`timer.group()`)
+  limits on load, and is lost only to a runtime shut down. So does what has already happened outside and has no
+  second try, a player's connection closing or another server disconnecting: its clearing up goes in through
+  `GameRuntime.handOn(context, task)`, which no load refuses, since refusing it would only leave a route's state out
+  of step with what happened; requests, which a source can send again, stay with `execute`. Timers by key are a `TimerGroup` (`timer.group()`)
   that the application keeps with a route's state in memory and uses from that route's tasks; `GameTimer` keeps none,
   and a group keeps no context: each timer takes one as it is set, the calling task's or one passed with it, as every
   task goes to the runtime with its own. A
