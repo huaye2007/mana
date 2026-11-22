@@ -39,6 +39,7 @@ public final class FrameworkErrorCodes {
     public static final int AI_TIMEOUT = 5003;
     public static final int AI_FAILED = 5004;
     public static final int AI_PROTOCOL_ERROR = 5005;
+    public static final int AI_CIRCUIT_OPEN = 5006;
 
     private static final Map<Integer, String> NAMES = names();
 

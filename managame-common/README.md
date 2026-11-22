@@ -233,6 +233,7 @@ Zero is success and every failure code is positive. The framework uses these:
 | 5003 | `AI_TIMEOUT` | The AI call or stream timed out (idle or total, including queue and codec time) |
 | 5004 | `AI_FAILED` | The AI transport failed to complete the call or stream |
 | 5005 | `AI_PROTOCOL_ERROR` | Encoding an AI request or decoding an AI response failed |
+| 5006 | `AI_CIRCUIT_OPEN` | The AI lane's circuit breaker is open after repeated transport or timeout failures |
 
 The others (`HANDLER_CONTEXT_MISMATCH`, `ROUTE_DOMAIN_MISMATCH`, `ROUTE_EXECUTOR_CLOSED`,
 `ROUTE_CALL_EXECUTION_ERROR`, `ROUTE_CALLBACK_DISPATCH_FAILED`) are allocated for the framework and not raised

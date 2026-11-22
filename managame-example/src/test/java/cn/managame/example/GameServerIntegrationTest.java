@@ -105,16 +105,18 @@ class GameServerIntegrationTest {
             assertEquals(1, tools.catalog(PlayerAiTools.AUDIENCE_PLAYER).tools().size());
             assertEquals(2, tools.catalog(PlayerAiTools.AUDIENCE_OPS).tools().size());
 
-            // 玩家受众可见 queryUserRoles，且以 64 位字符串精确返回角色表
+            // 玩家受众可见 queryUserRoles，且以 AiToolResult + 64 位字符串精确返回角色表
+            assertEquals(1, tools.exportDescriptors(PlayerAiTools.AUDIENCE_PLAYER).size());
             String rolesJson = tools.invokeMap(
                     PlayerAiTools.AUDIENCE_PLAYER,
                     "queryUserRoles",
                     Map.of("userId", Long.toString(userId)),
                     GameContext.of(DomainConstant.LOGIN, userId)).toCompletableFuture().get(4, TimeUnit.SECONDS);
             JsonNode rolesNode = new ObjectMapper().readTree(rolesJson);
-            assertEquals(Long.toString(userId), rolesNode.path("userId").asText());
-            assertEquals(1, rolesNode.path("roles").get(0).path("serverId").asInt());
-            assertEquals(Long.toString(roleId), rolesNode.path("roles").get(0).path("roleId").asText());
+            assertTrue(rolesNode.path("ok").asBoolean());
+            assertEquals(Long.toString(userId), rolesNode.at("/data/userId").asText());
+            assertEquals(1, rolesNode.at("/data/roles/0/serverId").asInt());
+            assertEquals(Long.toString(roleId), rolesNode.at("/data/roles/0/roleId").asText());
 
             // 高危 grantReward 对 player 受众不可见
             UUID opId = UUID.randomUUID();

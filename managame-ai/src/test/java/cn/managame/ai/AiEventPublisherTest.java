@@ -45,7 +45,6 @@ class AiEventPublisherTest {
             assertTrue(publisher.publish("role:42", meta, new Purchase("boots", 1)));
             assertTrue(publisher.publish("role:42", meta, new Purchase("sword", 2)));
             assertTrue(publisher.publish("role:99", meta, new Purchase("helm", 1)));
-            // batchSize=3 reached immediately without waiting for 5s linger
             assertTrue(received.await(2, TimeUnit.SECONDS));
             assertThrows(IllegalArgumentException.class, () -> publisher.publish("unregistered"));
         }
@@ -63,6 +62,52 @@ class AiEventPublisherTest {
         assertEquals(0, metrics.openMeters());
     }
 
+    @Test void respectsMaxBatchBytesAndRetriesTransientFailuresWithErrorHandlerFallback() throws Exception {
+        var batches = new CopyOnWriteArrayList<List<AiEvent>>();
+        var failures = new CopyOnWriteArrayList<AiEventFailure>();
+        var attempts = new AtomicInteger();
+        var metrics = new RecordingMetrics();
+        try (var publisher = AiEventPublisher.builder(batch -> {
+                    if (attempts.incrementAndGet() == 1) throw new RuntimeException("transient MQ blip");
+                    batches.add(batch);
+                })
+                .events(List.of(new AiEventPublisher.EventType("purchase.completed", Purchase.class)))
+                .limits(1, 32, 10, Duration.ofMillis(50))
+                .maxBatchBytes(50) // each Purchase JSON is ~31 bytes, so at most 1 per batch!
+                .retry(2, Duration.ofMillis(10))
+                .errorHandler(failures::add)
+                .metrics(metrics)
+                .build()) {
+            assertTrue(publisher.publish("role:1", new Purchase("long-item-name-1", 1)));
+            assertTrue(publisher.publish("role:1", new Purchase("long-item-name-2", 2)));
+        }
+        // Transient failure on attempt 1 recovered on retry without losing any event
+        assertEquals(2, batches.size());
+        assertEquals(1, batches.get(0).size());
+        assertEquals(1, batches.get(1).size());
+        assertEquals(1, metrics.count("managame.ai.events.retried"));
+        assertEquals(2, metrics.count("managame.ai.events.sent"));
+        assertTrue(failures.isEmpty());
+
+        // Non-retryable error skips retries and reports directly to errorHandler
+        var nonRetryableFailures = new CopyOnWriteArrayList<AiEventFailure>();
+        var nonRetryAttempts = new AtomicInteger();
+        try (var publisher = AiEventPublisher.builder(batch -> {
+                    nonRetryAttempts.incrementAndGet();
+                    throw new IllegalArgumentException("bad schema");
+                })
+                .events(List.of(new AiEventPublisher.EventType("purchase.completed", Purchase.class)))
+                .limits(1, 16, 10, Duration.ZERO)
+                .retry(3, Duration.ofMillis(10), e -> !(e instanceof IllegalArgumentException))
+                .errorHandler(nonRetryableFailures::add)
+                .build()) {
+            assertTrue(publisher.publish(new Purchase("x", 1)));
+        }
+        assertEquals(1, nonRetryAttempts.get());
+        assertEquals(1, nonRetryableFailures.size());
+        assertEquals("purchase.completed", nonRetryableFailures.getFirst().event());
+    }
+
     @Test void lingerWindowFlushesPartialBatchAndCloseWakesLingerImmediately() throws Exception {
         var flushed = new CopyOnWriteArrayList<List<AiEvent>>();
         var firstBatch = new CountDownLatch(1);
@@ -78,7 +123,6 @@ class AiEventPublisherTest {
             assertEquals(1, flushed.getFirst().size());
         }
 
-        // Long linger (10s) must wake immediately when close() is called
         var closedBatch = new CopyOnWriteArrayList<List<AiEvent>>();
         long t0 = System.nanoTime();
         try (var publisher = AiEventPublisher.builder(closedBatch::add)
@@ -96,6 +140,7 @@ class AiEventPublisherTest {
     @Test void dropsWhenQueueFullAndRespectsShutdownTimeout() throws Exception {
         var entered = new CountDownLatch(1);
         var interrupted = new AtomicBoolean();
+        var failures = new CopyOnWriteArrayList<AiEventFailure>();
         var metrics = new RecordingMetrics();
         var publisher = AiEventPublisher.builder(batch -> {
                     entered.countDown();
@@ -104,7 +149,9 @@ class AiEventPublisherTest {
                 })
                 .events(List.of(new AiEventPublisher.EventType("purchase.completed", Purchase.class)))
                 .limits(1, 1, 1, Duration.ZERO)
+                .retry(0, Duration.ZERO)
                 .shutdownTimeout(Duration.ofMillis(120))
+                .errorHandler(failures::add)
                 .metrics(metrics)
                 .build();
 
@@ -119,6 +166,7 @@ class AiEventPublisherTest {
         assertTrue(interrupted.get());
         assertFalse(publisher.publish(new Purchase("after-close", 4)));
         assertTrue(metrics.count("managame.ai.events.lost") >= 3);
+        assertTrue(failures.size() >= 3);
         assertEquals(0, metrics.openMeters());
     }
 

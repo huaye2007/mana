@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.concurrent.CompletionStage;
 
 /**
@@ -17,12 +18,30 @@ import java.util.concurrent.CompletionStage;
  * application {@link Entry} together with the authenticated caller context.
  */
 public final class AiTools {
+    /**
+     * Wire-serializable tool contract descriptor (holds no {@link Class} references), suitable for game servers
+     * to export and register dynamically with standalone AI or MCP gateway processes over RPC or HTTP.
+     */
+    public record Descriptor(String name, String description, List<String> audiences,
+                             String inputSchema, String outputSchema,
+                             boolean requireApproval, boolean readOnly, boolean idempotent) {
+        public Descriptor {
+            audiences = List.copyOf(audiences);
+        }
+    }
+
     /** External tool metadata computed once at registration. The target message is the method's last parameter. */
     public record Tool(String name, String description, List<String> audiences, Class<?> messageType,
                        String inputSchema, String outputSchema,
                        boolean requireApproval, boolean readOnly, boolean idempotent) {
         public Tool {
             audiences = List.copyOf(audiences);
+        }
+
+        /** Pure wire-serializable view of this tool without its Java message class. */
+        public Descriptor descriptor() {
+            return new Descriptor(name, description, audiences, inputSchema, outputSchema,
+                    requireApproval, readOnly, idempotent);
         }
     }
 
@@ -37,12 +56,13 @@ public final class AiTools {
 
     private final String audience;
     private final Map<String, Tool> tools;
+    private final List<Descriptor> descriptors;
     private final AiJson json;
 
     private AiTools(Builder builder) {
         audience = builder.audience;
         json = builder.json;
-        Map<String, Tool> found = new LinkedHashMap<>();
+        Map<String, Tool> found = new TreeMap<>();
         for (Class<?> type : builder.types) {
             for (Method method : type.getMethods()) {
                 AiTool annotation = method.getAnnotation(AiTool.class);
@@ -62,7 +82,8 @@ public final class AiTools {
                     throw new IllegalArgumentException("Duplicate AI tool: " + tool.name());
             }
         }
-        tools = Collections.unmodifiableMap(found);
+        tools = Collections.unmodifiableMap(new LinkedHashMap<>(found));
+        descriptors = found.values().stream().map(Tool::descriptor).toList();
     }
 
     private static List<String> parseAudiences(String[] raw, Method method) {
@@ -98,9 +119,12 @@ public final class AiTools {
 
     public Collection<Tool> tools() { return tools.values(); }
 
+    /** Wire-serializable tool descriptors for reporting this catalog to remote AI/MCP gateways. */
+    public List<Descriptor> descriptors() { return descriptors; }
+
     public Tool tool(String name) { return tools.get(name); }
 
-    /** Encodes a tool result using this catalog's {@link AiJson} codec so output matches input wire rules. */
+    /** Encodes a tool result (or {@link #descriptors()}) using this catalog's {@link AiJson} codec. */
     public String encodeResult(Object result) { return json.encode(result); }
 
     /**

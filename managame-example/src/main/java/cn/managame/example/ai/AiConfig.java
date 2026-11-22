@@ -24,9 +24,9 @@ import org.springframework.context.annotation.DependsOn;
 /**
  * 游戏服的 AI 三平面装配：
  * <ul>
- *   <li>出站事件流：{@link AiEventPublisher}，发布业务事实给 MQ/分析/记忆服务；</li>
- *   <li>出站 AI 调用：{@link AiClient}，按隔离通道（decision / chat）调用独立 AI 服务进程；</li>
- *   <li>入站工具目录：{@link AiToolGateway}，按受众（ops / player）隔离工具并通过 Dispatcher 回到 GameRuntime 路由。</li>
+ *   <li>出站事件流：{@link AiEventPublisher}，带批字节上限、瞬时重试与失败回调；</li>
+ *   <li>出站 AI 调用：{@link AiClient}，按隔离通道（decision 限制单玩家并发防刷，chat 对同一 (roleId:npcId) 会话自动顶替旧流）并配熔断保护；</li>
+ *   <li>入站工具目录：{@link AiToolGateway}，按受众（ops / player）隔离工具并可导出纯值描述符给外部网关。</li>
  * </ul>
  * {@code @DependsOn("gameRuntime")} 保证停服时 Spring 先关闭 AI 客户端和事件发布器，再关闭 GameRuntime。
  */
@@ -40,7 +40,7 @@ public class AiConfig {
         return batch -> LOG.log(Level.DEBUG, () -> "AI event batch (" + batch.size() + "): " + batch.getFirst().event());
     }
 
-    /** 生产环境替换为访问独立 AI 服务进程的 HTTP / gRPC / RPC 实现。 */
+    /** 生产环境替换为访问独立 AI 服务进程的 HTTP / SSE / gRPC / RPC 实现。 */
     @Bean
     public AiTransport aiTransport() {
         return (AiRequest request, Duration remaining) -> {
@@ -61,8 +61,11 @@ public class AiConfig {
         return AiEventPublisher.builder(sink)
                 .events(List.of(
                         new AiEventPublisher.EventType("user.logged_in", GameplayAi.UserLoggedIn.class),
-                        new AiEventPublisher.EventType("purchase.completed", GameplayAi.Purchase.class)))
+                        new AiEventPublisher.EventType("purchase.completed", GameplayAi.Purchase.class),
+                        new AiEventPublisher.EventType("chat.truncated", GameplayAi.ChatTruncated.class)))
                 .limits(1, 4096, 64, Duration.ofMillis(50))
+                .maxBatchBytes(512 * 1024)
+                .retry(2, Duration.ofMillis(100))
                 .build();
     }
 
@@ -70,8 +73,10 @@ public class AiConfig {
     @DependsOn("gameRuntime")
     public AiClient aiClient(AiTransport transport) {
         return AiClient.builder(transport)
-                .lane(GameplayAi.DECISION_LANE, 32, 128)
-                .lane(GameplayAi.CHAT_LANE, 128, 256)
+                .lane(GameplayAi.DECISION_LANE, 32, 128, 2, AiClient.KeyConflict.REJECT)
+                .circuitBreaker(GameplayAi.DECISION_LANE, 5, Duration.ofSeconds(10))
+                .lane(GameplayAi.CHAT_LANE, 128, 256, 1, AiClient.KeyConflict.CANCEL_PREVIOUS)
+                .circuitBreaker(GameplayAi.CHAT_LANE, 5, Duration.ofSeconds(15))
                 .build();
     }
 

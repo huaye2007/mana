@@ -206,6 +206,7 @@ public final class LoggedMetrics implements Metrics {
 | 5003 | `AI_TIMEOUT` | AI 调用或流式响应超时（含空闲超时、总超时及排队编解码时间） |
 | 5004 | `AI_FAILED` | AI 传输调用失败 |
 | 5005 | `AI_PROTOCOL_ERROR` | AI 请求编码或应答解码失败 |
+| 5006 | `AI_CIRCUIT_OPEN` | 对应 AI 隔离通道熔断器已打开，快速失败保护系统 |
 
 其余错误码（`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、`ROUTE_EXECUTOR_CLOSED`、
 `ROUTE_CALL_EXECUTION_ERROR`、`ROUTE_CALLBACK_DISPATCH_FAILED`）已为框架预留，目前不会出现。号段：RPC 2001–2999，

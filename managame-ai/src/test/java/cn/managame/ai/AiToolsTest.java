@@ -124,6 +124,17 @@ class AiToolsTest {
         assertEquals("{\"orderId\":\"9007199254740993\",\"status\":\"OK\"}",
                 playerCatalog.encodeResult(new PurchaseReceipt(snowflake, "OK")));
 
+        // Pure wire-serializable descriptors (no Class<?> fields) and structured AiToolResult
+        String exported = opsCatalog.encodeResult(opsCatalog.descriptors());
+        JsonNode exportedArray = mapper.readTree(exported);
+        assertEquals(2, exportedArray.size());
+        assertEquals("grant", exportedArray.get(0).path("name").asText());
+        assertFalse(exportedArray.get(0).has("messageType"));
+        JsonNode rejected = mapper.readTree(opsCatalog.encodeResult(AiToolResult.reject(1001, "Insufficient coins")));
+        assertFalse(rejected.path("ok").asBoolean());
+        assertEquals(1001, rejected.path("code").asInt());
+        assertFalse(rejected.path("retryable").asBoolean());
+
         // requireApproval routes strictly to propose
         var proposed = (Map<?, ?>) opsCatalog.call("grant", "{\"item\":\"boots\",\"quantity\":2}",
                 new Caller("ops-agent", 0L), entry).toCompletableFuture().join();
