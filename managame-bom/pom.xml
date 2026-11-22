@@ -15,6 +15,7 @@
 
   <dependencyManagement>
     <dependencies>
+      <dependency><groupId>cn.managame</groupId><artifactId>managame-ai</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>cn.managame</groupId><artifactId>managame-common</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>cn.managame</groupId><artifactId>managame-network</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>cn.managame</groupId><artifactId>managame-runtime</artifactId><version>${project.version}</version></dependency>

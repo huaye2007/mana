@@ -33,6 +33,13 @@ public final class FrameworkErrorCodes {
     public static final int DATA_LOG_SAVE_FAILED = 4002;
     public static final int DATA_LOAD_FAILED = 4003;
 
+    // AI 5001..5999
+    public static final int AI_CLOSED = 5001;
+    public static final int AI_OVERLOADED = 5002;
+    public static final int AI_TIMEOUT = 5003;
+    public static final int AI_FAILED = 5004;
+    public static final int AI_PROTOCOL_ERROR = 5005;
+
     private static final Map<Integer, String> NAMES = names();
 
     private FrameworkErrorCodes() {}

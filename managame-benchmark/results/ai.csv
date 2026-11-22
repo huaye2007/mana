@@ -1,0 +1,4 @@
+# recorded 2026-11-22 on Windows 11 amd64, the 8 faster of 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99,alloc_mb_per_s,gc_count,gc_ms,cpu_ns_per_op,cpu_caller_ns_per_op,cpu_eventloop_ns_per_op,cpu_other_ns_per_op,cpu_jvm_ns_per_op,direct_mib,sent_bytes_per_op,received_bytes_per_op,busy_percent,peer_cpu_ns_per_op,peer_cpu_eventloop_ns_per_op,peer_cpu_other_ns_per_op,peer_cpu_jvm_ns_per_op,peer_alloc_bytes_per_op,peer_gc_count,peer_gc_ms,peer_direct_mib
+AiBenchmark.decodeToolCall,,avgt,167.091,4.858,ns/op,784.024,,,4423.196,37.000,36.000,166.914,162.724,0.000,0.526,3.664,0.000,,,4.069,,,,,,,,
+AiBenchmark.encodeEvent,,avgt,85.467,1.083,ns/op,536.012,,,5913.090,48.000,42.000,86.982,84.583,0.000,0.267,2.399,0.000,,,2.773,,,,,,,,

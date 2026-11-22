@@ -12,6 +12,7 @@
   <modules>
     <module>managame-bom</module>
     <module>managame-common</module>
+    <module>managame-ai</module>
     <module>managame-network</module>
     <module>managame-runtime</module>
     <module>managame-rpc</module>

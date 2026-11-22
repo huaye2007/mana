@@ -7,6 +7,7 @@ ones it needs:
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
+| [managame-ai](managame-ai/README.md) | common, Jackson (optional ProtoJSON) | Three-plane AI boundary: batched event publishing (`AiEventPublisher`), lane-isolated AI service calls and streaming (`AiClient`), and audience-scoped tool contracts (`AiTools`) |
 | [managame-common](managame-common/README.md) | nothing | `Metadata`, `MetadataKey`, unique id generators, the shared error codes, and `Metrics`: counters, gauges and timers an application binds to its own backend |
 | [managame-network](managame-network/README.md) | common, Netty (the modules it uses) | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
 | [managame-runtime](managame-runtime/README.md) | common, network | Every piece of business logic through one entry, with tasks of one domain and route key run one at a time: routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |
@@ -119,7 +120,7 @@ on the data, the Dispatcher on the runtime, and the servers and the node on the 
 | data's write threads | Writing changes, reading each entity as it is written | Keep an entity's collections thread-safe |
 
 A request is always answered, with what its handler returns or with a code from common's `FrameworkErrorCodes`, one
-table for every component: RPC 2001–2999, runtime 3001–3999, data 4001–4999. And one `Metrics` and one logging bridge,
+table for every component: RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999. And one `Metrics` and one logging bridge,
 bound once, serve them all.
 
 ## Logging
@@ -152,6 +153,7 @@ Loggers are named `cn.managame.<component>`, and below it by area, so one settin
 | `cn.managame.runtime`, `.runtime.dispatch`, `.runtime.event`, `.runtime.http`, `.runtime.timer` | runtime |
 | `cn.managame.rpc` | rpc |
 | `cn.managame.data`, `cn.managame.data.mysql` | data, data-mysql |
+| `cn.managame.ai` | ai |
 
 Each component's README lists what its loggers say. Levels mean the same everywhere:
 

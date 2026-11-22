@@ -62,7 +62,7 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
  * unsure.
  */
 public final class Bench {
-    static final List<String> COMPONENTS = List.of("common", "network", "runtime", "rpc", "data", "mysql", "mysqlserver", "mongo");
+    static final List<String> COMPONENTS = List.of("common", "ai", "network", "runtime", "rpc", "data", "mysql", "mysqlserver", "mongo");
     /** Components that need a real database server; {@code all} leaves them out. */
     static final List<String> SERVER_COMPONENTS = List.of("mysqlserver", "mongo");
     private static final String PACKAGE = "cn.managame.benchmark.";

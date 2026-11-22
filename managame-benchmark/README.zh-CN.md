@@ -6,6 +6,7 @@
 
 | 包 | 基准 | 测量内容 |
 | --- | --- | --- |
+| `cn.managame.benchmark.ai` | `AiBenchmark` | 事件 JSON 编码，以及工具查找、参数解码和分发（ns/op） |
 | `cn.managame.benchmark.common` | `MetadataBenchmark`、`IdGeneratorBenchmark`、`MetricsBenchmark` | 构建 metadata、读取一个值、包装收到的字节、再设置一个值；生成 id；用 no-op 指标计数，与什么都不做对比；经 `Metrics` 用 LongAdder 计数，与直接用 LongAdder 对比，单线程和四线程（ns/op） |
 | `cn.managame.benchmark.network` | `EchoThroughputBenchmark`、`EchoLatencyBenchmark`，以及对应的 `…ProcessBenchmark` | 在回环地址上回显带长度前缀的消息：多个消息在途时的每秒吞吐，以及单条消息的往返时间 |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`、`DispatchThroughputBenchmark` | 每秒经过 `GameRuntime.execute` 执行的任务数（不带和带一个拦截器）、经 `Continuation` 回到路由的任务数，以及每秒经 `Dispatcher` 交给注解处理器的玩家请求数（不带和带一个拦截器） |
