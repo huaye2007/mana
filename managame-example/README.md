@@ -18,8 +18,8 @@ Reference game server application assembled with plain Spring (`spring-context`)
 
 ## AI integration (`cn.managame.example.ai`)
 
-- [AiConfig](src/main/java/cn/managame/example/ai/AiConfig.java): configures `AiEventPublisher` (batched game events), `AiClient` (isolated `decision` and `chat` lanes), `GameplayAi` and `AiToolGateway`.
-- [GameplayAi](src/main/java/cn/managame/example/ai/GameplayAi.java): called on game routes to emit login/purchase events, request equipment/NPC decisions on the `decision` lane, and stream dialogue on the `chat` lane.
+- [AiConfig](src/main/java/cn/managame/example/ai/AiConfig.java): configures `AiEventPublisher` (batched game events), `AiClient` (isolated `decision` and `chat` services), `GameplayAi` and `AiToolGateway`.
+- [GameplayAi](src/main/java/cn/managame/example/ai/GameplayAi.java): called on game routes to emit login/purchase events, request equipment/NPC decisions from the `decision` service, and stream dialogue from the `chat` service.
 - [PlayerAiTools](src/main/java/cn/managame/example/ai/PlayerAiTools.java) & [AiToolGateway](src/main/java/cn/managame/example/ai/AiToolGateway.java): demonstrates audience-isolated tools (`ops` vs `player`) backed by `UserRepository` on normal `GameRuntime` routes, with 64-bit string-long encoding and mandatory approval routing for high-risk ops tools.
 
 ## Run tests

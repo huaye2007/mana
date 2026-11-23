@@ -69,8 +69,8 @@ class GameplayAiTest {
                      .limits(1, 64, 16, Duration.ofMillis(10))
                      .build();
              var client = AiClient.builder(aiGateway)
-                     .lane(GameplayAi.DECISION_LANE, 8, 32, 2, AiClient.KeyConflict.REJECT)
-                     .lane(GameplayAi.CHAT_LANE, 32, 64, 1, AiClient.KeyConflict.CANCEL_PREVIOUS)
+                     .service(GameplayAi.DECISION_SERVICE, s -> s.limits(8, 32).perKey(2, AiClient.KeyConflict.REJECT))
+                     .service(GameplayAi.CHAT_SERVICE, s -> s.limits(32, 64).perKey(1, AiClient.KeyConflict.CANCEL_PREVIOUS))
                      .build()) {
             var game = new GameplayAi(publisher, client, runtime);
             var suggestion = new CompletableFuture<String>();

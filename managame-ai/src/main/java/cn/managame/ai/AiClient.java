@@ -41,8 +41,8 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
- * Outbound client for calling external AI service processes with per-lane bulkhead isolation, optional per-key
- * concurrency/session control ({@link KeyConflict}), and optional lane circuit breaking.
+ * Outbound client for calling external AI service processes with per-service isolation, optional per-key
+ * concurrency/session control ({@link KeyConflict}), and optional per-service circuit breaking.
  * Supports typed request-response ({@link #call}, blocking or non-blocking via {@link AiTransport#callAsync}) and
  * typed streaming ({@link #stream}, blocking or non-blocking via {@link AiTransport#streamAsync}) with independent
  * idle and total timeouts and TTFT latency buckets sized for external AI workloads (50ms to 30s).
@@ -50,14 +50,14 @@ import java.util.function.Supplier;
  * Close after stopping submissions and before closing the game runtime.
  */
 public final class AiClient implements AutoCloseable {
-    public static final String DEFAULT_LANE = "default";
+    public static final String DEFAULT_SERVICE = "default";
     public static final int DEFAULT_WORKERS = 8;
     public static final int DEFAULT_CAPACITY = 64;
     public static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(10);
     private static final long[] AI_LATENCY_BOUNDS_MS = {50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000};
     private static final System.Logger LOG = System.getLogger("cn.managame.ai");
 
-    /** How a lane handles concurrent invocations sharing the same non-null {@code routingKey}. */
+    /** How a service handles concurrent invocations sharing the same non-null {@code routingKey}. */
     public enum KeyConflict {
         /** Reject the new invocation with {@code AI_OVERLOADED} once the key hits its per-key limit. */
         REJECT,
@@ -65,25 +65,71 @@ public final class AiClient implements AutoCloseable {
         CANCEL_PREVIOUS
     }
 
-    /** Per-invocation routing, correlation and metadata options. */
-    public record CallOptions(String lane, String routingKey, String requestId, Metadata metadata) {
+    /** Per-invocation target service, routing, correlation and metadata options. */
+    public record CallOptions(String service, String routingKey, String requestId, Metadata metadata) {
         public CallOptions {
-            if (lane == null || lane.isBlank()) throw new IllegalArgumentException("Empty lane");
+            if (service == null || service.isBlank()) throw new IllegalArgumentException("Empty service");
             Objects.requireNonNull(metadata, "metadata");
         }
 
-        public static CallOptions of(String lane) { return new CallOptions(lane, null, null, Metadata.empty()); }
-        public static CallOptions defaults() { return of(DEFAULT_LANE); }
+        public static CallOptions service(String service) { return new CallOptions(service, null, null, Metadata.empty()); }
+        public static CallOptions defaults() { return service(DEFAULT_SERVICE); }
 
-        public CallOptions routingKey(String routingKey) { return new CallOptions(lane, routingKey, requestId, metadata); }
-        public CallOptions requestId(String requestId) { return new CallOptions(lane, routingKey, requestId, metadata); }
-        public CallOptions metadata(Metadata metadata) { return new CallOptions(lane, routingKey, requestId, metadata); }
+        public CallOptions routingKey(String routingKey) { return new CallOptions(service, routingKey, requestId, metadata); }
+        public CallOptions requestId(String requestId) { return new CallOptions(service, routingKey, requestId, metadata); }
+        public CallOptions metadata(Metadata metadata) { return new CallOptions(service, routingKey, requestId, metadata); }
+    }
+
+    /** Fluent configuration for one isolated external AI service (concurrency, queue, per-key policy, circuit breaker). */
+    public static final class ServiceConfig {
+        private int workers = DEFAULT_WORKERS;
+        private int capacity = DEFAULT_CAPACITY;
+        private int maxPerKey;
+        private KeyConflict keyConflict = KeyConflict.REJECT;
+        private BreakerSpec breaker;
+
+        private ServiceConfig() {}
+
+        /** Set max concurrent invocations and bounded wait queue capacity. */
+        public ServiceConfig limits(int workers, int capacity) {
+            if (workers < 1 || capacity < 1) throw new IllegalArgumentException("Positive service limits required");
+            this.workers = workers;
+            this.capacity = capacity;
+            return this;
+        }
+
+        /**
+         * Cap concurrent/queued invocations sharing the same non-null {@code routingKey}.
+         * Use {@link KeyConflict#CANCEL_PREVIOUS} with {@code maxPerKey = 1} to keep stateful per-session streams
+         * (such as one player chatting with one NPC) mutually exclusive, or {@link KeyConflict#REJECT} for fairness.
+         */
+        public ServiceConfig perKey(int maxPerKey, KeyConflict conflict) {
+            if (maxPerKey < 1) throw new IllegalArgumentException("Positive maxPerKey required");
+            this.maxPerKey = maxPerKey;
+            this.keyConflict = Objects.requireNonNull(conflict, "conflict");
+            return this;
+        }
+
+        /**
+         * Open this service's circuit breaker after {@code failureThreshold} consecutive transport/timeout failures,
+         * fast-failing with {@code AI_CIRCUIT_OPEN} for {@code openDuration} before allowing a single recovery probe.
+         */
+        public ServiceConfig circuitBreaker(int failureThreshold, Duration openDuration) {
+            if (failureThreshold < 1 || openDuration == null || !openDuration.isPositive())
+                throw new IllegalArgumentException("Positive failureThreshold and openDuration required");
+            this.breaker = new BreakerSpec(failureThreshold, openDuration);
+            return this;
+        }
+
+        private ServiceSpec toSpec() {
+            return new ServiceSpec(workers, capacity, maxPerKey, keyConflict, breaker);
+        }
     }
 
     private final AiTransport transport;
     private final AiJson json;
     private final Supplier<String> idGenerator;
-    private final Map<String, Lane> lanes;
+    private final Map<String, Service> services;
     private final ConcurrentHashMap<Class<?>, Optional<String>> responseSchemas = new ConcurrentHashMap<>();
     private final Set<Thread> activeWorkers = ConcurrentHashMap.newKeySet();
     private final Set<CallTask<?>> activeCalls = ConcurrentHashMap.newKeySet();
@@ -100,10 +146,10 @@ public final class AiClient implements AutoCloseable {
         idGenerator = builder.idGenerator;
         shutdownTimeoutNanos = builder.shutdownTimeout.toNanos();
         observing = builder.metrics != Metrics.noop();
-        Map<String, Lane> built = new LinkedHashMap<>();
-        builder.lanes.forEach((name, spec) -> built.put(name, new Lane(name, spec, builder.breakers.get(name), builder.metrics)));
-        lanes = Map.copyOf(built);
-        LOG.log(Level.INFO, "AI client started with lanes {0}", lanes.keySet());
+        Map<String, Service> built = new LinkedHashMap<>();
+        builder.services.forEach((name, spec) -> built.put(name, new Service(name, spec, builder.metrics)));
+        services = Map.copyOf(built);
+        LOG.log(Level.INFO, "AI client started with services {0}", services.keySet());
     }
 
     public static Builder builder(AiTransport transport) { return new Builder(transport); }
@@ -113,19 +159,19 @@ public final class AiClient implements AutoCloseable {
         return Objects.requireNonNull(idGenerator.get(), "idGenerator returned null");
     }
 
-    /** Call an external AI operation on the default lane with empty metadata. */
+    /** Call an external AI operation on the default service with empty metadata. */
     public <T> CompletableFuture<T> call(String operation, Object request, Class<T> response, Duration timeout) {
         return call(CallOptions.defaults(), operation, request, response, timeout);
     }
 
-    /** Call an external AI operation on {@code lane} with {@code metadata}. */
-    public <T> CompletableFuture<T> call(String lane, String operation, Metadata metadata, Object request,
+    /** Call an external AI operation on {@code service} with {@code metadata}. */
+    public <T> CompletableFuture<T> call(String service, String operation, Metadata metadata, Object request,
                                          Class<T> response, Duration timeout) {
-        return call(CallOptions.of(lane).metadata(metadata), operation, request, response, timeout);
+        return call(CallOptions.service(service).metadata(metadata), operation, request, response, timeout);
     }
 
     /**
-     * Call an external AI operation with full {@link CallOptions} (lane, optional routingKey, optional requestId, metadata).
+     * Call an external AI operation with full {@link CallOptions} (service, optional routingKey, optional requestId, metadata).
      * Completes once with the decoded result or an {@link AiException} carrying one of {@link cn.managame.FrameworkErrorCodes}
      * ({@code AI_CLOSED}, {@code AI_OVERLOADED}, {@code AI_TIMEOUT}, {@code AI_PROTOCOL_ERROR}, {@code AI_FAILED},
      * {@code AI_CIRCUIT_OPEN}), or cancellation.
@@ -133,7 +179,7 @@ public final class AiClient implements AutoCloseable {
     public <T> CompletableFuture<T> call(CallOptions options, String operation, Object request,
                                          Class<T> response, Duration timeout) {
         Objects.requireNonNull(options, "options");
-        Lane target = requireLane(options.lane());
+        Service target = requireService(options.service());
         validateCommon(operation, request, response);
         if (timeout == null || !timeout.isPositive()) throw new IllegalArgumentException("Positive timeout required");
         String reqId = options.requestId() != null ? options.requestId() : nextRequestId();
@@ -141,17 +187,17 @@ public final class AiClient implements AutoCloseable {
                 request, response, null, 0L, timeout.toNanos()));
     }
 
-    /** Stream typed chunks on the default lane with empty metadata. */
+    /** Stream typed chunks on the default service with empty metadata. */
     public <T> CompletableFuture<Void> stream(String operation, Object request, Class<T> chunkType,
                                               Duration idleTimeout, Duration totalTimeout, Consumer<? super T> onChunk) {
         return stream(CallOptions.defaults(), operation, request, chunkType, idleTimeout, totalTimeout, onChunk);
     }
 
-    /** Stream typed chunks on {@code lane} with {@code metadata}. */
-    public <T> CompletableFuture<Void> stream(String lane, String operation, Metadata metadata, Object request,
+    /** Stream typed chunks on {@code service} with {@code metadata}. */
+    public <T> CompletableFuture<Void> stream(String service, String operation, Metadata metadata, Object request,
                                               Class<T> chunkType, Duration idleTimeout, Duration totalTimeout,
                                               Consumer<? super T> onChunk) {
-        return stream(CallOptions.of(lane).metadata(metadata), operation, request, chunkType, idleTimeout, totalTimeout, onChunk);
+        return stream(CallOptions.service(service).metadata(metadata), operation, request, chunkType, idleTimeout, totalTimeout, onChunk);
     }
 
     /**
@@ -162,7 +208,7 @@ public final class AiClient implements AutoCloseable {
     public <T> CompletableFuture<Void> stream(CallOptions options, String operation, Object request, Class<T> chunkType,
                                               Duration idleTimeout, Duration totalTimeout, Consumer<? super T> onChunk) {
         Objects.requireNonNull(options, "options");
-        Lane target = requireLane(options.lane());
+        Service target = requireService(options.service());
         validateCommon(operation, request, chunkType);
         Objects.requireNonNull(onChunk, "onChunk");
         if (idleTimeout == null || !idleTimeout.isPositive() || totalTimeout == null || !totalTimeout.isPositive())
@@ -174,10 +220,10 @@ public final class AiClient implements AutoCloseable {
                 request, chunkType, onChunk, idleNanos, totalNanos));
     }
 
-    private Lane requireLane(String name) {
-        Lane lane = lanes.get(Objects.requireNonNull(name, "lane"));
-        if (lane == null) throw new IllegalArgumentException("Unknown AI lane: " + name);
-        return lane;
+    private Service requireService(String name) {
+        Service service = services.get(Objects.requireNonNull(name, "service"));
+        if (service == null) throw new IllegalArgumentException("Unknown AI service: " + name);
+        return service;
     }
 
     private static void validateCommon(String operation, Object request, Class<?> type) {
@@ -191,28 +237,28 @@ public final class AiClient implements AutoCloseable {
     }
 
     private <R> CompletableFuture<R> submit(CallTask<R> task) {
-        Lane lane = task.lane;
+        Service service = task.service;
         if (closed) {
             task.inner.completeExceptionally(new AiException(AI_CLOSED, "AiClient is closed"));
             return task.exposed;
         }
-        if (lane.breaker != null) {
-            int acquired = lane.breaker.tryAcquire();
+        if (service.breaker != null) {
+            int acquired = service.breaker.tryAcquire();
             if (acquired == CircuitBreaker.REJECTED) {
-                task.inner.completeExceptionally(new AiException(AI_CIRCUIT_OPEN, "AI lane '" + lane.name + "' circuit breaker is open"));
+                task.inner.completeExceptionally(new AiException(AI_CIRCUIT_OPEN, "AI service '" + service.name + "' circuit breaker is open"));
                 return task.exposed;
             }
             task.circuitProbe = acquired == CircuitBreaker.PROBE;
         }
-        if (lane.maxPerKey > 0 && task.routingKey != null) {
+        if (service.maxPerKey > 0 && task.routingKey != null) {
             CallTask<?>[] evicted = new CallTask<?>[1];
             boolean[] admitted = new boolean[1];
-            lane.byKey.compute(task.routingKey, (key, deque) -> {
-                if (deque == null) deque = new ArrayDeque<>(Math.min(lane.maxPerKey, 4));
-                if (deque.size() < lane.maxPerKey) {
+            service.byKey.compute(task.routingKey, (key, deque) -> {
+                if (deque == null) deque = new ArrayDeque<>(Math.min(service.maxPerKey, 4));
+                if (deque.size() < service.maxPerKey) {
                     deque.addLast(task);
                     admitted[0] = true;
-                } else if (lane.keyConflict == KeyConflict.CANCEL_PREVIOUS) {
+                } else if (service.keyConflict == KeyConflict.CANCEL_PREVIOUS) {
                     evicted[0] = deque.pollFirst();
                     deque.addLast(task);
                     admitted[0] = true;
@@ -221,7 +267,7 @@ public final class AiClient implements AutoCloseable {
             });
             if (!admitted[0]) {
                 task.inner.completeExceptionally(new AiException(AI_OVERLOADED,
-                        "AI key '" + task.routingKey + "' reached max in-flight " + lane.maxPerKey));
+                        "AI key '" + task.routingKey + "' reached max in-flight " + service.maxPerKey));
                 return task.exposed;
             }
             task.trackedByKey = true;
@@ -232,50 +278,50 @@ public final class AiClient implements AutoCloseable {
         if (task.idleNanos > 0 && task.idleNanos < task.totalNanos) {
             task.armIdleWatch(task.idleNanos);
         }
-        if (lane.permits.tryAcquire()) {
+        if (service.permits.tryAcquire()) {
             if (closed) {
-                lane.permits.release();
+                service.permits.release();
                 task.inner.completeExceptionally(new AiException(AI_CLOSED, "AiClient is closed"));
                 return task.exposed;
             }
-            startWorker(lane, task);
+            startWorker(service, task);
             return task.exposed;
         }
-        if (!lane.queue.offer(task)) {
-            task.inner.completeExceptionally(new AiException(AI_OVERLOADED, "AI lane '" + lane.name + "' queue is full"));
+        if (!service.queue.offer(task)) {
+            task.inner.completeExceptionally(new AiException(AI_OVERLOADED, "AI service '" + service.name + "' queue is full"));
             return task.exposed;
         }
-        if (closed && lane.queue.remove(task)) {
+        if (closed && service.queue.remove(task)) {
             task.inner.completeExceptionally(new AiException(AI_CLOSED, "AiClient is closed"));
             return task.exposed;
         }
-        maybeStartWorker(lane);
+        maybeStartWorker(service);
         return task.exposed;
     }
 
-    private void maybeStartWorker(Lane lane) {
-        if (!forceStopped && !lane.queue.isEmpty() && lane.permits.tryAcquire()) {
-            CallTask<?> next = lane.queue.poll();
+    private void maybeStartWorker(Service service) {
+        if (!forceStopped && !service.queue.isEmpty() && service.permits.tryAcquire()) {
+            CallTask<?> next = service.queue.poll();
             if (next == null) {
-                lane.permits.release();
+                service.permits.release();
                 return;
             }
-            startWorker(lane, next);
+            startWorker(service, next);
         }
     }
 
-    private void startWorker(Lane lane, CallTask<?> first) {
+    private void startWorker(Service service, CallTask<?> first) {
         inFlight.incrementAndGet();
         try {
-            lane.threads.newThread(() -> runWorker(lane, first)).start();
+            service.threads.newThread(() -> runWorker(service, first)).start();
         } catch (Throwable failure) {
-            lane.permits.release();
+            service.permits.release();
             first.inner.completeExceptionally(new AiException(AI_FAILED, "Cannot start AI worker", failure));
             finishFlight();
         }
     }
 
-    private void runWorker(Lane lane, CallTask<?> first) {
+    private void runWorker(Service service, CallTask<?> first) {
         Thread self = Thread.currentThread();
         activeWorkers.add(self);
         boolean handedOff = false;
@@ -287,19 +333,19 @@ public final class AiClient implements AutoCloseable {
                     if (handedOff) return;
                 }
                 Thread.interrupted();
-                task = lane.queue.poll();
+                task = service.queue.poll();
             }
         } finally {
             activeWorkers.remove(self);
             if (!handedOff) {
-                lane.permits.release();
-                if (!forceStopped && !lane.queue.isEmpty()) maybeStartWorker(lane);
+                service.permits.release();
+                if (!forceStopped && !service.queue.isEmpty()) maybeStartWorker(service);
                 finishFlight();
             }
         }
     }
 
-    /** Returns true when lane permit and inFlight ownership moved to an async transport stage or stream. */
+    /** Returns true when service permit and inFlight ownership moved to an async transport stage or stream. */
     private <R> boolean execute(CallTask<R> task, Thread self) {
         long remaining = task.remainingNanos();
         if (remaining <= 0) {
@@ -318,7 +364,7 @@ public final class AiClient implements AutoCloseable {
             task.failTimeout("AI call timed out: " + task.operation);
             return false;
         }
-        AiRequest wireRequest = new AiRequest(task.requestId, task.lane.name, task.operation, task.routingKey,
+        AiRequest wireRequest = new AiRequest(task.requestId, task.service.name, task.operation, task.routingKey,
                 task.metadata, payload, responseSchema(task.responseType));
         if (task.isStream()) {
             return executeStream(task, wireRequest, remaining, self);
@@ -395,7 +441,7 @@ public final class AiClient implements AutoCloseable {
                 }
                 task.lastActivityNanos = now;
                 if (observing && task.firstChunkSeen.compareAndSet(false, true)) {
-                    task.lane.ttft.record(Math.max(0L, now - task.startedNanos));
+                    task.service.ttft.record(Math.max(0L, now - task.startedNanos));
                 }
                 Object chunk;
                 try {
@@ -465,7 +511,7 @@ public final class AiClient implements AutoCloseable {
                     throw new AiException(AI_TIMEOUT, "AI stream timed out: " + task.operation);
                 task.lastActivityNanos = now;
                 if (observing && task.firstChunkSeen.compareAndSet(false, true)) {
-                    task.lane.ttft.record(Math.max(0L, now - task.startedNanos));
+                    task.service.ttft.record(Math.max(0L, now - task.startedNanos));
                 }
                 Object chunk;
                 try {
@@ -501,7 +547,7 @@ public final class AiClient implements AutoCloseable {
     }
 
     private boolean queuesEmpty() {
-        for (Lane lane : lanes.values()) if (!lane.queue.isEmpty()) return false;
+        for (Service service : services.values()) if (!service.queue.isEmpty()) return false;
         return true;
     }
 
@@ -515,7 +561,7 @@ public final class AiClient implements AutoCloseable {
             if (closed) return;
             closed = true;
         }
-        lanes.values().forEach(this::maybeStartWorker);
+        services.values().forEach(this::maybeStartWorker);
         long deadline = System.nanoTime() + shutdownTimeoutNanos;
         boolean interrupted = false;
         synchronized (drainLock) {
@@ -535,19 +581,19 @@ public final class AiClient implements AutoCloseable {
         for (CallTask<?> task : activeCalls) {
             task.inner.completeExceptionally(new AiException(AI_CLOSED, "AiClient closed before completion"));
         }
-        lanes.values().forEach(lane -> {
-            lane.queue.clear();
-            if (lane.byKey != null) lane.byKey.clear();
-            lane.meters.forEach(Meter::close);
+        services.values().forEach(service -> {
+            service.queue.clear();
+            if (service.byKey != null) service.byKey.clear();
+            service.meters.forEach(Meter::close);
         });
         if (interrupted) Thread.currentThread().interrupt();
         LOG.log(Level.INFO, "AI client closed");
     }
 
-    private record LaneSpec(int workers, int capacity, int maxPerKey, KeyConflict keyConflict) {}
     private record BreakerSpec(int failureThreshold, Duration openDuration) {}
+    private record ServiceSpec(int workers, int capacity, int maxPerKey, KeyConflict keyConflict, BreakerSpec breaker) {}
 
-    /** Lock-free 3-state circuit breaker per lane. */
+    /** Lock-free 3-state circuit breaker per service. */
     private static final class CircuitBreaker {
         static final int REJECTED = 0, ADMITTED = 1, PROBE = 2;
         private static final int CLOSED = 0, OPEN = 1, HALF_OPEN = 2;
@@ -594,7 +640,7 @@ public final class AiClient implements AutoCloseable {
         boolean isOpen() { return state.get() == OPEN; }
     }
 
-    private static final class Lane {
+    private static final class Service {
         final String name;
         final ArrayBlockingQueue<CallTask<?>> queue;
         final Semaphore permits;
@@ -608,31 +654,32 @@ public final class AiClient implements AutoCloseable {
         final LatencyBuckets ttft = LatencyBuckets.ofMillis(AI_LATENCY_BOUNDS_MS);
         final List<Meter> meters;
 
-        Lane(String name, LaneSpec spec, BreakerSpec breakerSpec, Metrics metrics) {
+        Service(String name, ServiceSpec spec, Metrics metrics) {
             this.name = name;
             queue = new ArrayBlockingQueue<>(spec.capacity());
             permits = new Semaphore(spec.workers());
             maxPerKey = spec.maxPerKey();
             keyConflict = spec.keyConflict();
             byKey = maxPerKey > 0 ? new ConcurrentHashMap<>() : null;
-            breaker = breakerSpec != null ? new CircuitBreaker(breakerSpec.failureThreshold(), breakerSpec.openDuration().toNanos()) : null;
+            breaker = spec.breaker() != null
+                    ? new CircuitBreaker(spec.breaker().failureThreshold(), spec.breaker().openDuration().toNanos()) : null;
             threads = Thread.ofVirtual().name("game-ai-" + name + "-", 0).factory();
-            succeeded = metrics.counter("managame.ai.client.succeeded", "lane", name);
-            refused = metrics.counter("managame.ai.client.refused", "lane", name);
-            failed = metrics.counter("managame.ai.client.failed", "lane", name);
+            succeeded = metrics.counter("managame.ai.client.succeeded", "service", name);
+            refused = metrics.counter("managame.ai.client.refused", "service", name);
+            failed = metrics.counter("managame.ai.client.failed", "service", name);
             List<Meter> registered = new ArrayList<>();
-            registered.add(metrics.gauge("managame.ai.client.queued", queue::size, "lane", name));
+            registered.add(metrics.gauge("managame.ai.client.queued", queue::size, "service", name));
             if (breaker != null) {
-                registered.add(metrics.gauge("managame.ai.client.circuit_open", () -> breaker.isOpen() ? 1.0 : 0.0, "lane", name));
+                registered.add(metrics.gauge("managame.ai.client.circuit_open", () -> breaker.isOpen() ? 1.0 : 0.0, "service", name));
             }
-            registered.addAll(latency.report(metrics, "managame.ai.client.latency", "lane", name));
-            registered.addAll(ttft.report(metrics, "managame.ai.client.ttft", "lane", name));
+            registered.addAll(latency.report(metrics, "managame.ai.client.latency", "service", name));
+            registered.addAll(ttft.report(metrics, "managame.ai.client.ttft", "service", name));
             meters = List.copyOf(registered);
         }
     }
 
     private final class CallTask<R> {
-        final Lane lane;
+        final Service service;
         final String requestId;
         final String operation;
         final String routingKey;
@@ -658,9 +705,9 @@ public final class AiClient implements AutoCloseable {
         volatile CompletionStage<?> asyncStage;
         volatile AutoCloseable cancelHandle;
 
-        CallTask(Lane lane, String requestId, String operation, String routingKey, Metadata metadata,
+        CallTask(Service service, String requestId, String operation, String routingKey, Metadata metadata,
                  Object request, Class<?> responseType, Consumer<?> onChunk, long idleNanos, long totalNanos) {
-            this.lane = lane;
+            this.service = service;
             this.requestId = requestId;
             this.operation = operation;
             this.routingKey = routingKey;
@@ -686,8 +733,8 @@ public final class AiClient implements AutoCloseable {
 
         void releaseHandoff() {
             if (handoffActive && permitReleased.compareAndSet(false, true)) {
-                lane.permits.release();
-                if (!forceStopped && !lane.queue.isEmpty()) maybeStartWorker(lane);
+                service.permits.release();
+                if (!forceStopped && !service.queue.isEmpty()) maybeStartWorker(service);
                 finishFlight();
             }
         }
@@ -732,8 +779,8 @@ public final class AiClient implements AutoCloseable {
 
         private void onInnerComplete(R value, Throwable failure) {
             activeCalls.remove(this);
-            if (trackedByKey && lane.byKey != null && routingKey != null) {
-                lane.byKey.computeIfPresent(routingKey, (key, deque) -> {
+            if (trackedByKey && service.byKey != null && routingKey != null) {
+                service.byKey.computeIfPresent(routingKey, (key, deque) -> {
                     deque.remove(this);
                     return deque.isEmpty() ? null : deque;
                 });
@@ -752,19 +799,19 @@ public final class AiClient implements AutoCloseable {
                 exposed.completeExceptionally(translated);
             }
             if (counted.compareAndSet(false, true)) {
-                if (observing) lane.latency.record(Math.max(0L, System.nanoTime() - startedNanos));
+                if (observing) service.latency.record(Math.max(0L, System.nanoTime() - startedNanos));
                 updateCircuitBreaker(translated);
                 if (translated == null) {
-                    lane.succeeded.increment();
+                    service.succeeded.increment();
                 } else if (translated instanceof AiException ai
                         && (ai.errorCode() == AI_OVERLOADED || ai.errorCode() == AI_CLOSED || ai.errorCode() == AI_CIRCUIT_OPEN)) {
-                    lane.refused.increment();
+                    service.refused.increment();
                 } else {
-                    lane.failed.increment();
+                    service.failed.increment();
                 }
             }
             if (translated != null) {
-                lane.queue.remove(this);
+                service.queue.remove(this);
                 Thread thread = runningThread;
                 if (thread != null) thread.interrupt();
                 CompletionStage<?> stage = asyncStage;
@@ -775,22 +822,21 @@ public final class AiClient implements AutoCloseable {
         }
 
         private void updateCircuitBreaker(Throwable translated) {
-            if (lane.breaker == null) return;
+            if (service.breaker == null) return;
             if (translated == null) {
-                lane.breaker.onSuccess();
+                service.breaker.onSuccess();
             } else if (translated instanceof AiException ai
                     && (ai.errorCode() == AI_FAILED || ai.errorCode() == AI_TIMEOUT)) {
-                lane.breaker.onFailure(circuitProbe);
+                service.breaker.onFailure(circuitProbe);
             } else if (circuitProbe) {
-                lane.breaker.releaseAbortedProbe();
+                service.breaker.releaseAbortedProbe();
             }
         }
     }
 
     public static final class Builder {
         private final AiTransport transport;
-        private final Map<String, LaneSpec> lanes = new LinkedHashMap<>();
-        private final Map<String, BreakerSpec> breakers = new LinkedHashMap<>();
+        private final Map<String, ServiceSpec> services = new LinkedHashMap<>();
         private AiJson json = AiJson.jackson();
         private Supplier<String> idGenerator = () -> UUID.randomUUID().toString();
         private Metrics metrics = Metrics.noop();
@@ -798,47 +844,35 @@ public final class AiClient implements AutoCloseable {
 
         private Builder(AiTransport transport) {
             this.transport = Objects.requireNonNull(transport, "transport");
-            lanes.put(DEFAULT_LANE, new LaneSpec(DEFAULT_WORKERS, DEFAULT_CAPACITY, 0, KeyConflict.REJECT));
+            services.put(DEFAULT_SERVICE, new ServiceConfig().toSpec());
         }
 
-        /** Configure the default lane's concurrency and queue capacity. */
-        public Builder defaultLane(int workers, int capacity) { return lane(DEFAULT_LANE, workers, capacity); }
+        /** Configure the default service's concurrency and queue capacity. */
+        public Builder defaultService(int workers, int capacity) {
+            return service(DEFAULT_SERVICE, s -> s.limits(workers, capacity));
+        }
 
-        /** Define or override an isolated bulkhead lane without per-key limits. */
-        public Builder lane(String name, int workers, int capacity) {
-            return registerLane(name, workers, capacity, 0, KeyConflict.REJECT);
+        /** Configure the default service with full {@link ServiceConfig} options. */
+        public Builder defaultService(Consumer<ServiceConfig> configure) {
+            return service(DEFAULT_SERVICE, configure);
+        }
+
+        /** Define or override an isolated external AI service with concurrency and queue limits. */
+        public Builder service(String name, int workers, int capacity) {
+            return service(name, s -> s.limits(workers, capacity));
         }
 
         /**
-         * Define or override an isolated bulkhead lane with per-{@code routingKey} concurrency control.
-         * Use {@link KeyConflict#CANCEL_PREVIOUS} with {@code maxPerKey = 1} to keep stateful per-session streams
-         * (such as one player chatting with one NPC) mutually exclusive, or {@link KeyConflict#REJECT} to cap per-player
-         * concurrency and prevent one actor from exhausting the lane.
+         * Define or override an isolated external AI service (for example {@code "decision"}, {@code "chat"}).
+         * Service names appear in metric tags and must be lowercase identifiers.
          */
-        public Builder lane(String name, int workers, int capacity, int maxPerKey, KeyConflict conflict) {
-            if (maxPerKey < 1) throw new IllegalArgumentException("Positive maxPerKey required");
-            Objects.requireNonNull(conflict, "conflict");
-            return registerLane(name, workers, capacity, maxPerKey, conflict);
-        }
-
-        private Builder registerLane(String name, int workers, int capacity, int maxPerKey, KeyConflict conflict) {
+        public Builder service(String name, Consumer<ServiceConfig> configure) {
             if (name == null || !name.matches("[a-z0-9_-]{1,32}"))
-                throw new IllegalArgumentException("Invalid lane name: " + name);
-            if (workers < 1 || capacity < 1) throw new IllegalArgumentException("Positive lane limits required");
-            lanes.put(name, new LaneSpec(workers, capacity, maxPerKey, conflict));
-            return this;
-        }
-
-        /**
-         * Enable a circuit breaker on {@code lane}: after {@code failureThreshold} consecutive transport/timeout
-         * failures, new invocations fast-fail with {@code AI_CIRCUIT_OPEN} for {@code openDuration}, then allow
-         * one probe invocation to test recovery.
-         */
-        public Builder circuitBreaker(String lane, int failureThreshold, Duration openDuration) {
-            if (!lanes.containsKey(lane)) throw new IllegalArgumentException("Define lane before its circuit breaker: " + lane);
-            if (failureThreshold < 1 || openDuration == null || !openDuration.isPositive())
-                throw new IllegalArgumentException("Positive failureThreshold and openDuration required");
-            breakers.put(lane, new BreakerSpec(failureThreshold, openDuration));
+                throw new IllegalArgumentException("Invalid service name: " + name);
+            Objects.requireNonNull(configure, "configure");
+            ServiceConfig config = new ServiceConfig();
+            configure.accept(config);
+            services.put(name, config.toSpec());
             return this;
         }
 

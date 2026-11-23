@@ -5,7 +5,7 @@
 游戏服务器侧的 AI 边界组件（`cn.managame:managame-ai`），按三个正交平面解耦设计；记忆、Prompt、推理编排、模型路由、第三方 AI SDK、MCP 服务端以及离线/实时聚合分析均保留在外部独立服务进程中：
 
 1. **出站事件流（`AiEventPublisher` + `AiEventSink`）**：为游戏事实事件附带 `eventId`、`partitionKey`、`occurredAt` 与 `Metadata`，按条数/字节上限/时间窗三触发攒批投递给 MQ 或分析/记忆服务，并支持有限次重试与失败回调。
-2. **出站 AI 服务调用（`AiClient` + `AiTransport`）**：按命名隔离通道（Lane）调用外部 AI 服务进程，支持 `call` / `callAsync`、同步/非阻塞流式 `stream` / `streamAsync`、按 `routingKey` 限流或会话互斥顶替、通道熔断保护、响应 Schema 透传、空闲+总时长双超时以及适配 AI 耗时的延迟/TTFT 分桶（`50ms`–`30s`）。
+2. **出站 AI 服务调用（`AiClient` + `AiTransport`）**：按目标 AI 服务隔离调用外部 AI 进程，支持 `call` / `callAsync`、同步/非阻塞流式 `stream` / `streamAsync`、按 `routingKey` 限流或会话互斥顶替、服务级熔断保护、响应 Schema 透传、空闲+总时长双超时以及适配 AI 耗时的延迟/TTFT 分桶（`50ms`–`30s`）。
 3. **入站工具目录（`AiTools` + `@AiTool` + `@AiParam`）**：按受众（`audience`）隔离工具目录，生成严格的入参/出参 JSON Schema、可跨进程导出的纯值 `Descriptor` 与结构化 `AiToolResult`，显式分离可信调用者身份与 AI 不可信参数，并强制高危操作走审批入口（`requireApproval -> entry.propose`）。
 
 完整装配示例见 [managame-example](../managame-example/README.zh-CN.md)，演示了在游戏服中将 AI 三平面与 `GameRuntime`、`RpcNode`、`GameData` 协同使用。
@@ -39,26 +39,30 @@ record Choice(@AiParam("选中的动作") String selected) {}
 record ChatChunk(String text) {}
 
 try (AiClient ai = AiClient.builder(transport)
-        .lane("decision", 32, 128, 2, AiClient.KeyConflict.REJECT)
-        .circuitBreaker("decision", 5, Duration.ofSeconds(10))
-        .lane("chat", 256, 512, 1, AiClient.KeyConflict.CANCEL_PREVIOUS)
-        .circuitBreaker("chat", 5, Duration.ofSeconds(15))
+        .service("decision", s -> s
+                .limits(32, 128)
+                .perKey(2, AiClient.KeyConflict.REJECT)
+                .circuitBreaker(5, Duration.ofSeconds(10)))
+        .service("chat", s -> s
+                .limits(256, 512)
+                .perKey(1, AiClient.KeyConflict.CANCEL_PREVIOUS)
+                .circuitBreaker(5, Duration.ofSeconds(15)))
         .build()) {
-    var move = ai.call(AiClient.CallOptions.of("decision").routingKey(Long.toString(roleId)).metadata(metadata),
+    var move = ai.call(AiClient.CallOptions.service("decision").routingKey(Long.toString(roleId)).metadata(metadata),
             "chooseMove", request, Choice.class, Duration.ofMillis(250));
-    var chat = ai.stream(AiClient.CallOptions.of("chat").routingKey(roleId + ":" + npcId).metadata(metadata),
+    var chat = ai.stream(AiClient.CallOptions.service("chat").routingKey(roleId + ":" + npcId).metadata(metadata),
             "npcChat", chatReq, ChatChunk.class, Duration.ofSeconds(5), Duration.ofSeconds(30),
             chunk -> push(chunk.text()));
 }
 ```
 
-- **命名隔离通道与单键控制**：每个通道拥有独立的并发上限、有界队列与指标。按 `routingKey` 可选 `KeyConflict.CANCEL_PREVIOUS`（适合 `roleId:npcId` 这类带外部记忆的 NPC 聊天会话，新消息自动取消旧流防记忆并发写乱）或 `KeyConflict.REJECT`（单玩家并发上限防刷）。
-- **通道级熔断器**：`circuitBreaker(lane, failureThreshold, openDuration)` 在连续传输/超时失败达阈值后打开，快速以 `AI_CIRCUIT_OPEN` 失败，等待窗口后放行单个探针恢复。
-- **`AiRequest` 契约**：携带唯一 `requestId`（自动生成或通过 `client.nextRequestId()` 预分配）、`lane`、`operation`、可选 `routingKey`（供外部有状态 AI 集群做黏性路由）、`metadata`、`payload` 及缓存的 `responseSchema`。
+- **按服务隔离与单键控制**：每个已配置的外部 AI 服务拥有独立的并发上限、有界队列与指标。可选的 `perKey(maxPerKey, conflict)` 支持 `KeyConflict.CANCEL_PREVIOUS`（适合 `roleId:npcId` 这类带外部记忆的 NPC 聊天会话，新消息自动取消旧流防记忆并发写乱）或 `KeyConflict.REJECT`（单玩家并发上限防刷）。
+- **服务级熔断器**：`circuitBreaker(failureThreshold, openDuration)` 在连续传输/超时失败达阈值后打开，快速以 `AI_CIRCUIT_OPEN` 失败，等待窗口后放行单个探针恢复。
+- **`AiRequest` 契约**：携带唯一 `requestId`（自动生成或通过 `client.nextRequestId()` 预分配）、`service`、`operation`、可选 `routingKey`（供外部有状态 AI 集群做黏性路由）、`metadata`、`payload` 及缓存的 `responseSchema`。
 - **非阻塞与流式传输**：可覆写 `AiTransport.callAsync` 或 `AiTransport.streamAsync`（返回 `AutoCloseable` 取消句柄；在主动取消、超时、新流顶替或关服时立即关闭上游流止损 Token）。
 - `stream(...)` 同时校验 `idleTimeout`（首字/中途卡顿）与 `totalTimeout`（总时长上限）。
 - 失败或拒绝统一以携带 `FrameworkErrorCodes`（`AI_CLOSED`、`AI_OVERLOADED`、`AI_TIMEOUT`、`AI_FAILED`、`AI_PROTOCOL_ERROR`、`AI_CIRCUIT_OPEN`）的 `AiException` 结束。
-- 指标（带 `lane` 标签，使用 `50ms`–`30s` 分桶）：`managame.ai.client.queued`、`managame.ai.client.succeeded`、`managame.ai.client.refused`、`managame.ai.client.failed`、`managame.ai.client.circuit_open`、`managame.ai.client.latency`、`managame.ai.client.ttft`。
+- 指标（带 `service` 标签，使用 `50ms`–`30s` 分桶）：`managame.ai.client.queued`、`managame.ai.client.succeeded`、`managame.ai.client.refused`、`managame.ai.client.failed`、`managame.ai.client.circuit_open`、`managame.ai.client.latency`、`managame.ai.client.ttft`。
 
 在游戏任务里先捕获 `runtime.continuation()` 并透传 `Context.current().metadata()`；若流式聊天已向玩家展示部分文本后被打断，可用相同的 `requestId` 经 `AiEventPublisher` 上报截断事件供外部记忆服务对齐。见 [GameplayAi](../managame-example/src/main/java/cn/managame/example/ai/GameplayAi.java)。
 

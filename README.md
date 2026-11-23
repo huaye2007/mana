@@ -7,7 +7,7 @@ ones it needs:
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
-| [managame-ai](managame-ai/README.md) | common, Jackson (optional ProtoJSON) | Three-plane AI boundary: batched event publishing (`AiEventPublisher`), lane-isolated AI service calls and streaming (`AiClient`), and audience-scoped tool contracts (`AiTools`) |
+| [managame-ai](managame-ai/README.md) | common, Jackson (optional ProtoJSON) | Three-plane AI boundary: batched event publishing (`AiEventPublisher`), service-isolated external AI calls and streaming (`AiClient`), and audience-scoped tool contracts (`AiTools`) |
 | [managame-common](managame-common/README.md) | nothing | `Metadata`, `MetadataKey`, unique id generators, the shared error codes, and `Metrics`: counters, gauges and timers an application binds to its own backend |
 | [managame-network](managame-network/README.md) | common, Netty (the modules it uses) | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
 | [managame-runtime](managame-runtime/README.md) | common, network | Every piece of business logic through one entry, with tasks of one domain and route key run one at a time: routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |

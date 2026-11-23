@@ -18,8 +18,8 @@
 
 ## AI 三平面接入（`cn.managame.example.ai`）
 
-- [AiConfig](src/main/java/cn/managame/example/ai/AiConfig.java)：统一装配 `AiEventPublisher`（批量事件发布）、`AiClient`（`decision` 与 `chat` 隔离通道）、`GameplayAi` 与 `AiToolGateway`。
-- [GameplayAi](src/main/java/cn/managame/example/ai/GameplayAi.java)：在业务路由中上报登录/购买事件、在 `decision` 通道请求装备推荐与 NPC 决策、在 `chat` 通道流式拉取 NPC 对话。
+- [AiConfig](src/main/java/cn/managame/example/ai/AiConfig.java)：统一装配 `AiEventPublisher`（批量事件发布）、`AiClient`（隔离的 `decision` 与 `chat` 服务配置）、`GameplayAi` 与 `AiToolGateway`。
+- [GameplayAi](src/main/java/cn/managame/example/ai/GameplayAi.java)：在业务路由中上报登录/购买事件、调用 `decision` 服务请求装备推荐与 NPC 决策、调用 `chat` 服务流式拉取 NPC 对话。
 - [PlayerAiTools](src/main/java/cn/managame/example/ai/PlayerAiTools.java) 与 [AiToolGateway](src/main/java/cn/managame/example/ai/AiToolGateway.java)：演示同一处理器内按受众隔离（`ops` / `player`）工具目录、复用 `UserRepository` 走正常业务路由、64 位雪花 ID 字符串编码以及高危工具强制进入审批提案入口。
 
 ## 运行测试

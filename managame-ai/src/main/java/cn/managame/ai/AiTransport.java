@@ -6,8 +6,8 @@ import java.util.function.Consumer;
 
 /**
  * Application binding to external AI service processes (decision models, reasoning/memory LLMs, chat gateways).
- * Invoked concurrently up to each lane's configured limits. Implementations must bound I/O and honor interruption,
- * cancellation handles, and the remaining timeout.
+ * Invoked concurrently up to each service's configured limits; route by {@link AiRequest#service()}.
+ * Implementations must bound I/O and honor interruption, cancellation handles, and the remaining timeout.
  */
 public interface AiTransport {
 

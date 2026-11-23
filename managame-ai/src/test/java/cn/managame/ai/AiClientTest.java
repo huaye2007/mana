@@ -39,13 +39,13 @@ class AiClientTest {
     public record Choice(@AiParam("Selected action") String selected) {}
     public record Chunk(String token) {}
 
-    @Test void callPassesRequestIdRoutingKeyMetadataAndResponseSchemaAndIsolatesLanes() throws Exception {
+    @Test void callPassesRequestIdRoutingKeyMetadataAndResponseSchemaAndIsolatesServices() throws Exception {
         var chatStarted = new CountDownLatch(1);
         var releaseChat = new CountDownLatch(1);
         var capturedRequest = new CompletableFuture<AiRequest>();
 
         AiTransport transport = (request, remaining) -> {
-            if ("chat".equals(request.lane())) {
+            if ("chat".equals(request.service())) {
                 chatStarted.countDown();
                 releaseChat.await();
                 return "{\"selected\":\"chat-done\"}";
@@ -55,8 +55,8 @@ class AiClientTest {
         };
 
         try (var client = AiClient.builder(transport)
-                .lane("decision", 2, 4)
-                .lane("chat", 1, 1)
+                .service("decision", 2, 4)
+                .service("chat", 1, 1)
                 .build()) {
             var chat1 = client.call("chat", "npcChat", Metadata.empty(), Map.of("q", "hi"), Choice.class, Duration.ofSeconds(5));
             assertTrue(chatStarted.await(3, TimeUnit.SECONDS));
@@ -66,14 +66,14 @@ class AiClientTest {
                     assertThrows(CompletionException.class, chat3::join).getCause()).errorCode());
 
             Metadata meta = Metadata.builder().put(TRACE, "trace-99").build();
-            var opts = AiClient.CallOptions.of("decision").routingKey("role:42").requestId("req-42").metadata(meta);
+            var opts = AiClient.CallOptions.service("decision").routingKey("role:42").requestId("req-42").metadata(meta);
             var decision = client.call(opts, "chooseNpcMove", List.of("wait", "wave"), Choice.class, Duration.ofSeconds(2));
             assertEquals(new Choice("wave"), decision.get(2, TimeUnit.SECONDS));
 
             AiRequest req = capturedRequest.get(1, TimeUnit.SECONDS);
             assertEquals("req-42", req.requestId());
             assertEquals("role:42", req.routingKey());
-            assertEquals("decision", req.lane());
+            assertEquals("decision", req.service());
             assertEquals("chooseNpcMove", req.operation());
             assertEquals("trace-99", req.metadata().get(TRACE));
             assertNotNull(req.responseSchema());
@@ -109,35 +109,31 @@ class AiClientTest {
         };
 
         try (var client = AiClient.builder(asyncStreamTransport)
-                .lane("chat", 4, 8, 1, AiClient.KeyConflict.CANCEL_PREVIOUS)
-                .lane("decision", 4, 8, 1, AiClient.KeyConflict.REJECT)
+                .service("chat", s -> s.limits(4, 8).perKey(1, AiClient.KeyConflict.CANCEL_PREVIOUS))
+                .service("decision", s -> s.limits(4, 8).perKey(1, AiClient.KeyConflict.REJECT))
                 .build()) {
-            // Two players chat with the SAME NPC: 42:blacksmith vs 99:blacksmith
             var p42Turn1Chunks = new CopyOnWriteArrayList<String>();
-            var p42Turn1 = client.stream(AiClient.CallOptions.of("chat").routingKey("42:blacksmith").requestId("r1"),
+            var p42Turn1 = client.stream(AiClient.CallOptions.service("chat").routingKey("42:blacksmith").requestId("r1"),
                     "npcChat", Map.of("q", "sword"), Chunk.class, Duration.ofSeconds(5), Duration.ofSeconds(10),
                     c -> p42Turn1Chunks.add(c.token()));
             var p99Chunks = new CopyOnWriteArrayList<String>();
-            var p99Turn1 = client.stream(AiClient.CallOptions.of("chat").routingKey("99:blacksmith").requestId("r-other"),
+            var p99Turn1 = client.stream(AiClient.CallOptions.service("chat").routingKey("99:blacksmith").requestId("r-other"),
                     "npcChat", Map.of("q", "shield"), Chunk.class, Duration.ofSeconds(5), Duration.ofSeconds(10),
                     c -> p99Chunks.add(c.token()));
             assertTrue(firstStarted.await(2, TimeUnit.SECONDS));
             assertTrue(otherStarted.await(2, TimeUnit.SECONDS));
 
-            // Player 42 interrupts turn 1 with turn 2 on the same NPC key -> turn 1 is cancelled & handle closed
             var p42Turn2Chunks = new CopyOnWriteArrayList<String>();
-            var p42Turn2 = client.stream(AiClient.CallOptions.of("chat").routingKey("42:blacksmith").requestId("r2"),
+            var p42Turn2 = client.stream(AiClient.CallOptions.service("chat").routingKey("42:blacksmith").requestId("r2"),
                     "npcChat", Map.of("q", "actually shield"), Chunk.class, Duration.ofSeconds(5), Duration.ofSeconds(10),
                     c -> p42Turn2Chunks.add(c.token()));
             assertTrue(p42Turn1.isCancelled());
             assertTrue(firstClosed.await(2, TimeUnit.SECONDS));
             assertTrue(secondStarted.await(2, TimeUnit.SECONDS));
 
-            // Late chunk from turn 1 is rejected (never interleaves)
             assertFalse(observers.get("r1").onChunk("{\"token\":\"stale\"}"));
             assertTrue(p42Turn1Chunks.isEmpty());
 
-            // Player 42 turn 2 and Player 99 turn 1 both complete cleanly in parallel
             assertTrue(observers.get("r2").onChunk("{\"token\":\"shield ok\"}"));
             observers.get("r2").onComplete();
             assertTrue(observers.get("r-other").onChunk("{\"token\":\"for 99\"}"));
@@ -147,10 +143,9 @@ class AiClientTest {
             assertEquals(List.of("shield ok"), p42Turn2Chunks);
             assertEquals(List.of("for 99"), p99Chunks);
 
-            // REJECT policy caps per-player concurrency without affecting other players
-            var d1 = client.call(AiClient.CallOptions.of("decision").routingKey("42"), "decide", 1, Choice.class, Duration.ofSeconds(3));
-            var d2 = client.call(AiClient.CallOptions.of("decision").routingKey("42"), "decide", 2, Choice.class, Duration.ofSeconds(3));
-            var dOther = client.call(AiClient.CallOptions.of("decision").routingKey("99"), "decide", 3, Choice.class, Duration.ofSeconds(3));
+            var d1 = client.call(AiClient.CallOptions.service("decision").routingKey("42"), "decide", 1, Choice.class, Duration.ofSeconds(3));
+            var d2 = client.call(AiClient.CallOptions.service("decision").routingKey("42"), "decide", 2, Choice.class, Duration.ofSeconds(3));
+            var dOther = client.call(AiClient.CallOptions.service("decision").routingKey("99"), "decide", 3, Choice.class, Duration.ofSeconds(3));
             assertEquals(AI_OVERLOADED, assertInstanceOf(AiException.class,
                     assertThrows(CompletionException.class, d2::join).getCause()).errorCode());
             assertEquals(new Choice("ok"), d1.get(3, TimeUnit.SECONDS));
@@ -167,22 +162,18 @@ class AiClientTest {
             return "{\"selected\":\"recovered\"}";
         };
         try (var client = AiClient.builder(flaky)
-                .lane("decision", 4, 8)
-                .circuitBreaker("decision", 2, Duration.ofMillis(120))
+                .service("decision", s -> s.limits(4, 8).circuitBreaker(2, Duration.ofMillis(120)))
                 .build()) {
-            // 2 consecutive failures trip breaker open
             assertEquals(AI_FAILED, assertInstanceOf(AiException.class, assertThrows(CompletionException.class,
                     () -> client.call("decision", "op", Metadata.empty(), 1, Choice.class, Duration.ofSeconds(2)).join()).getCause()).errorCode());
             assertEquals(AI_FAILED, assertInstanceOf(AiException.class, assertThrows(CompletionException.class,
                     () -> client.call("decision", "op", Metadata.empty(), 2, Choice.class, Duration.ofSeconds(2)).join()).getCause()).errorCode());
             assertEquals(2, calls.get());
 
-            // 3rd call fast-fails with AI_CIRCUIT_OPEN without touching transport
             assertEquals(AI_CIRCUIT_OPEN, assertInstanceOf(AiException.class, assertThrows(CompletionException.class,
                     () -> client.call("decision", "op", Metadata.empty(), 3, Choice.class, Duration.ofSeconds(2)).join()).getCause()).errorCode());
             assertEquals(2, calls.get());
 
-            // Wait for openDuration, let probe succeed -> circuit closes
             Thread.sleep(160);
             shouldFail.set(false);
             assertEquals(new Choice("recovered"), client.call("decision", "op", Metadata.empty(), 4, Choice.class, Duration.ofSeconds(2))
@@ -212,22 +203,20 @@ class AiClientTest {
             }
         };
 
-        try (var client = AiClient.builder(transport).lane("chat", 1, 2).metrics(metrics).build()) {
+        try (var client = AiClient.builder(transport).service("chat", 1, 2).metrics(metrics).build()) {
             var tokens = new ArrayList<String>();
             client.stream("chat", "ok", Metadata.empty(), 1, Chunk.class, Duration.ofSeconds(2), Duration.ofSeconds(5),
                     c -> tokens.add(c.token())).get(2, TimeUnit.SECONDS);
             assertEquals(List.of("hi"), tokens);
-            assertEquals(1, metrics.count("managame.ai.client.ttft_bucket[lane=chat,le=30000]"));
-            assertEquals(1, metrics.count("managame.ai.client.latency_bucket[lane=chat,le=30000]"));
+            assertEquals(1, metrics.count("managame.ai.client.ttft_bucket[service=chat,le=30000]"));
+            assertEquals(1, metrics.count("managame.ai.client.latency_bucket[service=chat,le=30000]"));
 
-            // Cancel async stream -> closes upstream handle and frees the 1 worker permit immediately
             var hanging = client.stream("chat", "hang", Metadata.empty(), 2, Chunk.class, Duration.ofSeconds(5), Duration.ofSeconds(10), c -> {});
             assertTrue(started.await(2, TimeUnit.SECONDS));
             assertTrue(hanging.cancel(true));
             assertTrue(handleClosed.await(2, TimeUnit.SECONDS));
             assertThrows(CancellationException.class, hanging::join);
 
-            // Permit was released so a new stream runs immediately on the 1-worker lane
             client.stream("chat", "ok", Metadata.empty(), 3, Chunk.class, Duration.ofSeconds(2), Duration.ofSeconds(5), c -> {})
                     .get(2, TimeUnit.SECONDS);
         }
@@ -245,7 +234,7 @@ class AiClientTest {
             return "1";
         };
         var metrics = new RecordingMetrics();
-        try (var client = AiClient.builder(transport).defaultLane(1, 1).metrics(metrics).build()) {
+        try (var client = AiClient.builder(transport).defaultService(1, 1).metrics(metrics).build()) {
             var slow = client.call("slow", 1, Integer.class, Duration.ofSeconds(8));
             try {
                 assertTrue(entered.await(3, TimeUnit.SECONDS));
@@ -267,14 +256,14 @@ class AiClientTest {
                     () -> client.call("bad-json", 1, Choice.class, Duration.ofSeconds(3)).join()).getCause());
             assertEquals(AI_PROTOCOL_ERROR, proto.errorCode());
         }
-        assertEquals(1, metrics.count("managame.ai.client.succeeded[lane=default]"));
-        assertEquals(1, metrics.count("managame.ai.client.refused[lane=default]"));
-        assertEquals(3, metrics.count("managame.ai.client.failed[lane=default]"));
-        assertTrue(metrics.count("managame.ai.client.latency_bucket[lane=default,le=+Inf]") >= 5);
+        assertEquals(1, metrics.count("managame.ai.client.succeeded[service=default]"));
+        assertEquals(1, metrics.count("managame.ai.client.refused[service=default]"));
+        assertEquals(3, metrics.count("managame.ai.client.failed[service=default]"));
+        assertTrue(metrics.count("managame.ai.client.latency_bucket[service=default,le=+Inf]") >= 5);
         assertEquals(0, metrics.openMeters());
     }
 
-    @Test void asyncTransportRespectsLaneLimitsWithoutBlockingWorkers() throws Exception {
+    @Test void asyncTransportRespectsServiceLimitsWithoutBlockingWorkers() throws Exception {
         var inFlight = new AtomicInteger();
         var pending = new CompletableFuture<String>();
         AiTransport asyncTransport = new AiTransport() {
@@ -284,7 +273,7 @@ class AiClientTest {
                 return pending;
             }
         };
-        try (var client = AiClient.builder(asyncTransport).defaultLane(1, 1).build()) {
+        try (var client = AiClient.builder(asyncTransport).defaultService(1, 1).build()) {
             var first = client.call("op", 1, Choice.class, Duration.ofSeconds(3));
             var second = client.call("op", 2, Choice.class, Duration.ofSeconds(3));
             var third = client.call("op", 3, Choice.class, Duration.ofSeconds(3));
@@ -324,7 +313,7 @@ class AiClientTest {
             }
         };
 
-        try (var client = AiClient.builder(transport).lane("stream", 4, 8).build()) {
+        try (var client = AiClient.builder(transport).service("stream", 4, 8).build()) {
             var tokens = new ArrayList<String>();
             client.stream("stream", "steady", Metadata.empty(), Map.of(), Chunk.class,
                     Duration.ofMillis(180), Duration.ofSeconds(3), c -> tokens.add(c.token()))

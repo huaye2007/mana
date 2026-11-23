@@ -25,7 +25,7 @@ import org.springframework.context.annotation.DependsOn;
  * 游戏服的 AI 三平面装配：
  * <ul>
  *   <li>出站事件流：{@link AiEventPublisher}，带批字节上限、瞬时重试与失败回调；</li>
- *   <li>出站 AI 调用：{@link AiClient}，按隔离通道（decision 限制单玩家并发防刷，chat 对同一 (roleId:npcId) 会话自动顶替旧流）并配熔断保护；</li>
+ *   <li>出站 AI 调用：{@link AiClient}，按目标 AI 服务隔离（decision 限制单玩家并发防刷，chat 对同一 (roleId:npcId) 会话自动顶替旧流）并配熔断保护；</li>
  *   <li>入站工具目录：{@link AiToolGateway}，按受众（ops / player）隔离工具并可导出纯值描述符给外部网关。</li>
  * </ul>
  * {@code @DependsOn("gameRuntime")} 保证停服时 Spring 先关闭 AI 客户端和事件发布器，再关闭 GameRuntime。
@@ -73,10 +73,14 @@ public class AiConfig {
     @DependsOn("gameRuntime")
     public AiClient aiClient(AiTransport transport) {
         return AiClient.builder(transport)
-                .lane(GameplayAi.DECISION_LANE, 32, 128, 2, AiClient.KeyConflict.REJECT)
-                .circuitBreaker(GameplayAi.DECISION_LANE, 5, Duration.ofSeconds(10))
-                .lane(GameplayAi.CHAT_LANE, 128, 256, 1, AiClient.KeyConflict.CANCEL_PREVIOUS)
-                .circuitBreaker(GameplayAi.CHAT_LANE, 5, Duration.ofSeconds(15))
+                .service(GameplayAi.DECISION_SERVICE, s -> s
+                        .limits(32, 128)
+                        .perKey(2, AiClient.KeyConflict.REJECT)
+                        .circuitBreaker(5, Duration.ofSeconds(10)))
+                .service(GameplayAi.CHAT_SERVICE, s -> s
+                        .limits(128, 256)
+                        .perKey(1, AiClient.KeyConflict.CANCEL_PREVIOUS)
+                        .circuitBreaker(5, Duration.ofSeconds(15)))
                 .build();
     }
 

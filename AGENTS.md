@@ -9,7 +9,7 @@ Java 25. The root `pom.xml` only aggregates them, to build all in one command; n
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
-| `managame-ai` | common, Jackson, optional ProtoJSON | Three-plane AI boundary: `AiEventPublisher` publishes batched event envelopes to `AiEventSink`; `AiClient` invokes external AI services over isolated named lanes (`call`, `callAsync`, `stream`) through `AiTransport`; `AiTools` publishes audience-scoped tool contracts and delegates decoded calls with caller context to trusted entries. Memory, prompts, model routing, MCP, approvals and registries stay in standalone external services. |
+| `managame-ai` | common, Jackson, optional ProtoJSON | Three-plane AI boundary: `AiEventPublisher` publishes batched event envelopes to `AiEventSink`; `AiClient` invokes external AI services with per-service isolation (`call`, `callAsync`, `stream`, `streamAsync`) through `AiTransport`; `AiTools` publishes audience-scoped tool contracts and delegates decoded calls with caller context to trusted entries. Memory, prompts, model routing, MCP, approvals and registries stay in standalone external services. |
 | `managame-common` | nothing | `Metadata`, `MetadataKey`, `IdGenerator` (`SnowflakeIdGenerator`, `SequenceIdGenerator`), `FrameworkErrorCodes`, `Metrics` (`cn.managame.metrics`) |
 | `managame-network` | common, Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
