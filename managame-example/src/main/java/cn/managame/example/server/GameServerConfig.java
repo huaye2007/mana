@@ -19,7 +19,7 @@ import org.springframework.core.env.Environment;
 
 /**
  * 游戏服的装配：GameRuntime（只注册 PLAYER 和 LOGIN 域）、Dispatcher，以及客户端 TCP 网关。
- * Spring 按依赖的反序关闭：先停客户端服务器与 RPC/AI，再关 GameRuntime 等已接受的任务执行完，最后关 GameData 落盘。
+ * Spring 按依赖的反序关闭：先停客户端服务器与 RPC，再关 GameRuntime 等已接受的任务执行完，最后关 GameData 落盘。
  */
 @Configuration
 public class GameServerConfig {

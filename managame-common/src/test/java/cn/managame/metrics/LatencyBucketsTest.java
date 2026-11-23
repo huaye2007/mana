@@ -1,9 +1,7 @@
 package cn.managame.metrics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class LatencyBucketsTest {
@@ -30,21 +28,5 @@ class LatencyBucketsTest {
         assertEquals(1, metrics.read("managame.test.wait_bucket[domain, 1, le, 5]"));
         assertEquals(1, metrics.read("managame.test.wait_bucket[domain, 1, le, +Inf]"));
         assertEquals(2_000_000, metrics.read("managame.test.wait_nanos[domain, 1]"));
-    }
-
-    @Test void customMillisBoundsWorkForLongerExternalOperations() {
-        MetricsTest.MemoryMetrics metrics = new MetricsTest.MemoryMetrics();
-        LatencyBuckets latency = LatencyBuckets.ofMillis(100, 1000, 5000);
-        latency.report(metrics, "managame.ai.client.latency", "service", "chat");
-        latency.record(TimeUnit.MILLISECONDS.toNanos(800));
-        latency.record(TimeUnit.MILLISECONDS.toNanos(6000));
-
-        assertEquals(0, metrics.read("managame.ai.client.latency_bucket[service, chat, le, 100]"));
-        assertEquals(1, metrics.read("managame.ai.client.latency_bucket[service, chat, le, 1000]"));
-        assertEquals(1, metrics.read("managame.ai.client.latency_bucket[service, chat, le, 5000]"));
-        assertEquals(2, metrics.read("managame.ai.client.latency_bucket[service, chat, le, +Inf]"));
-        assertThrows(IllegalArgumentException.class, () -> LatencyBuckets.ofMillis());
-        assertThrows(IllegalArgumentException.class, () -> LatencyBuckets.ofMillis(100, 100));
-        assertThrows(IllegalArgumentException.class, () -> LatencyBuckets.ofMillis(-1));
     }
 }

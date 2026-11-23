@@ -6,7 +6,6 @@
 
 | 项目 | 依赖 | 内容 |
 | --- | --- | --- |
-| [managame-ai](managame-ai/README.zh-CN.md) | common、Jackson（可选 ProtoJSON） | 三平面 AI 边界：批量事件流发布（`AiEventPublisher`）、按目标服务隔离的外部 AI 调用与流式交互（`AiClient`）、按受众隔离的工具契约目录（`AiTools`） |
 | [managame-common](managame-common/README.zh-CN.md) | 无 | `Metadata`、`MetadataKey`、唯一 id 生成器、共用的错误码，以及 `Metrics`：由应用接到自己后端的计数器、gauge 和计时器 |
 | [managame-network](managame-network/README.zh-CN.md) | common、Netty（只依赖用到的模块） | TCP / TLS / ws / wss 服务端、HTTP/1.1 服务端与自动重连客户端，可接入任意 Netty handler |
 | [managame-runtime](managame-runtime/README.zh-CN.md) | common、network | 所有业务逻辑经同一个入口执行，同一 domain 与路由键的任务逐个执行：按 domain 路由、注解处理器（`Dispatcher`、`EventBus`、`HttpRoutes`）、拦截器与定时器 |
@@ -96,7 +95,7 @@ other processes  --> rpc     --> RpcHandler --+                       ^         
 | 时间轮（runtime、rpc） | 把到期的定时器交给 runtime；超时的 RPC 调用的回调 | 不能阻塞 |
 | data 的写线程 | 写入修改，写的时候读实体 | 实体里的集合要线程安全 |
 
-请求一定会得到应答：要么是处理器返回的结果，要么是 common 的 `FrameworkErrorCodes` 里的错误码，所有组件共用这一张表：RPC 2001–2999，runtime 3001–3999，data 4001–4999，AI 5001–5999。`Metrics` 和日志桥接也只需各绑定一次，所有组件共用。
+请求一定会得到应答：要么是处理器返回的结果，要么是 common 的 `FrameworkErrorCodes` 里的错误码，所有组件共用这一张表：RPC 2001–2999，runtime 3001–3999，data 4001–4999。`Metrics` 和日志桥接也只需各绑定一次，所有组件共用。
 
 ## 日志
 
@@ -127,7 +126,6 @@ Logger 按 `cn.managame.<组件>` 命名，下面再按领域细分，一个配�
 | `cn.managame.runtime`、`.runtime.dispatch`、`.runtime.event`、`.runtime.http`、`.runtime.timer` | runtime |
 | `cn.managame.rpc` | rpc |
 | `cn.managame.data`、`cn.managame.data.mysql` | data、data-mysql |
-| `cn.managame.ai` | ai |
 
 各组件的 README 列出了自己的 logger 会记录什么。各级别在所有组件里含义相同：
 

@@ -201,16 +201,10 @@ public final class LoggedMetrics implements Metrics {
 | 4001 | `DATA_SAVE_FAILED` | 一条修改无法保存，已交给数据错误处理器；或 flush、close 结束时仍有修改没有保存 |
 | 4002 | `DATA_LOG_SAVE_FAILED` | 一条日志无法保存，或因队列已满被拒绝 |
 | 4003 | `DATA_LOAD_FAILED` | 无法从存储加载数据 |
-| 5001 | `AI_CLOSED` | `AiClient` 已关闭并拒绝新调用，或在未完成前关闭 |
-| 5002 | `AI_OVERLOADED` | 对应 AI 服务队列已满或触发单键并发上限 |
-| 5003 | `AI_TIMEOUT` | AI 调用或流式响应超时（含空闲超时、总超时及排队编解码时间） |
-| 5004 | `AI_FAILED` | AI 传输调用失败 |
-| 5005 | `AI_PROTOCOL_ERROR` | AI 请求编码或应答解码失败 |
-| 5006 | `AI_CIRCUIT_OPEN` | 对应 AI 服务熔断器已打开，快速失败保护系统 |
 
 其余错误码（`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、`ROUTE_EXECUTOR_CLOSED`、
 `ROUTE_CALL_EXECUTION_ERROR`、`ROUTE_CALLBACK_DISPATCH_FAILED`）已为框架预留，目前不会出现。号段：RPC 2001–2999，
-runtime 3001–3999，数据 4001–4999，AI 5001–5999；业务自己的错误码应避开这些号段。
+runtime 3001–3999，数据 4001–4999；业务自己的错误码应避开这些号段。
 
 打日志时，`FrameworkErrorCodes.describe(2003)` 得到 `RPC_TIMEOUT(2003)`，`name(code)` 只得到名称；未知错误码显示为
 `UNKNOWN(<code>)`。不要用名称做程序判断。

@@ -1,6 +1,5 @@
 package cn.managame.example.login;
 
-import cn.managame.example.ai.GameplayAi;
 import cn.managame.example.proto.Login;
 import cn.managame.runtime.dispatch.HandleResult;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,9 +9,6 @@ import org.springframework.stereotype.Service;
 public class LoginService {
     @Autowired
     private UserRepository userRepository;
-
-    @Autowired
-    private GameplayAi gameplayAi;
 
     public HandleResult login(Login.LoginReq loginReq) {
         User user = userRepository.get(loginReq.getUserId());
@@ -27,7 +23,6 @@ public class LoginService {
             user.getRoleIdMap().put(loginReq.getServerId(), roleId);
             userRepository.update(user);
         }
-        gameplayAi.onLogin(loginReq.getUserId(), loginReq.getServerId(), roleId);
         Login.LoginRes.Builder builder = Login.LoginRes.newBuilder();
         builder.setRoleId(roleId);
         return HandleResult.ok(builder.build());

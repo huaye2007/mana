@@ -4,12 +4,11 @@ Guidance for coding agents working in this workspace. Read it before changing an
 
 ## Workspace
 
-Eight component projects, a BOM and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
+Seven component projects, a BOM and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
 Java 25. The root `pom.xml` only aggregates them, to build all in one command; no project inherits from it. The workspace is the git repository https://github.com/huaye2007/mana (branch `main`).
 
 | Project | Depends on | What it is |
 | --- | --- | --- |
-| `managame-ai` | common, Jackson, optional ProtoJSON | Three-plane AI boundary: `AiEventPublisher` publishes batched event envelopes to `AiEventSink`; `AiClient` invokes external AI services with per-service isolation (`call`, `callAsync`, `stream`, `streamAsync`) through `AiTransport`; `AiTools` publishes audience-scoped tool contracts and delegates decoded calls with caller context to trusted entries. Memory, prompts, model routing, MCP, approvals and registries stay in standalone external services. |
 | `managame-common` | nothing | `Metadata`, `MetadataKey`, `IdGenerator` (`SnowflakeIdGenerator`, `SequenceIdGenerator`), `FrameworkErrorCodes`, `Metrics` (`cn.managame.metrics`) |
 | `managame-network` | common, Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
@@ -240,7 +239,7 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   `Change`, `RetryableFailures`, `DelegatingEntityMapper`), and `internal` for the implementation: public only to be
   reachable across packages, marked not API, with no `module-info.java`. A helper used by one package stays
   package-private there.
-- Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999. Failures
+- Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).
 - A method that sends one message returns network's `WriteStatus` (`connection.write`, `peer.notify`,
