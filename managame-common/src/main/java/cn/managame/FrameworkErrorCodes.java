@@ -33,6 +33,18 @@ public final class FrameworkErrorCodes {
     public static final int DATA_LOG_SAVE_FAILED = 4002;
     public static final int DATA_LOAD_FAILED = 4003;
 
+    // AI 5001..5999
+    public static final int AI_CLOSED = 5001;
+    public static final int AI_UNAVAILABLE = 5002;
+    public static final int AI_TIMEOUT = 5003;
+    public static final int AI_OVERLOADED = 5004;
+    public static final int AI_CANCELLED = 5005;
+    public static final int AI_PROTOCOL_ERROR = 5006;
+    public static final int AI_TOOL_NOT_FOUND = 5007;
+    public static final int AI_TOOL_INVALID_ARGS = 5008;
+    public static final int AI_TOOL_EXECUTION_ERROR = 5009;
+    public static final int AI_TOOL_REJECTED = 5010;
+
     private static final Map<Integer, String> NAMES = names();
 
     private FrameworkErrorCodes() {}

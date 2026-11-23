@@ -15,6 +15,7 @@
     <module>managame-network</module>
     <module>managame-runtime</module>
     <module>managame-rpc</module>
+    <module>managame-ai</module>
     <module>managame-data</module>
     <module>managame-data-mysql</module>
     <module>managame-data-mongo</module>

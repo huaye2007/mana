@@ -228,10 +228,20 @@ Zero is success and every failure code is positive. The framework uses these:
 | 4001 | `DATA_SAVE_FAILED` | A change could not be saved and went to the data error handler, or a flush or close left changes unsaved |
 | 4002 | `DATA_LOG_SAVE_FAILED` | A log could not be saved, or was refused because its queue was full |
 | 4003 | `DATA_LOAD_FAILED` | Data could not be loaded from storage |
+| 5001 | `AI_CLOSED` | The AI client is closed and refuses new calls |
+| 5002 | `AI_UNAVAILABLE` | The AI service could not be reached or answered with an error |
+| 5003 | `AI_TIMEOUT` | No answer from the AI service within the call's timeout |
+| 5004 | `AI_OVERLOADED` | Too many AI calls are already in flight |
+| 5005 | `AI_CANCELLED` | The AI call was cancelled or closed before it finished |
+| 5006 | `AI_PROTOCOL_ERROR` | The AI request or response could not be encoded or decoded |
+| 5007 | `AI_TOOL_NOT_FOUND` | No AI tool is registered under the requested name |
+| 5008 | `AI_TOOL_INVALID_ARGS` | The AI tool arguments could not be decoded or validated |
+| 5009 | `AI_TOOL_EXECUTION_ERROR` | The AI tool threw or returned an invalid null result |
+| 5010 | `AI_TOOL_REJECTED` | An interceptor or executor refused the AI tool call |
 
 The others (`HANDLER_CONTEXT_MISMATCH`, `ROUTE_DOMAIN_MISMATCH`, `ROUTE_EXECUTOR_CLOSED`,
 `ROUTE_CALL_EXECUTION_ERROR`, `ROUTE_CALLBACK_DISPATCH_FAILED`) are allocated for the framework and not raised
-today. Ranges: RPC 2001–2999, runtime 3001–3999, data 4001–4999; application codes should stay outside them.
+today. Ranges: RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999; application codes should stay outside them.
 
 For logs, `FrameworkErrorCodes.describe(2003)` gives `RPC_TIMEOUT(2003)` and `name(code)` the bare name; an
 unknown code reads `UNKNOWN(<code>)`. Never base program logic on the names.

@@ -4,7 +4,7 @@ Guidance for coding agents working in this workspace. Read it before changing an
 
 ## Workspace
 
-Seven component projects, a BOM and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
+Eight component projects, a BOM and a benchmark project, Maven with no parent POM, all `cn.managame:*:1.0.0-SNAPSHOT` on
 Java 25. The root `pom.xml` only aggregates them, to build all in one command; no project inherits from it. The workspace is the git repository https://github.com/huaye2007/mana (branch `main`).
 
 | Project | Depends on | What it is |
@@ -13,6 +13,7 @@ Java 25. The root `pom.xml` only aggregates them, to build all in one command; n
 | `managame-network` | common, Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
+| `managame-ai` | common, network | Thin, AI-standard-agnostic boundary: `AiClient` (stateless async HTTP/JSON & SSE calls and notifies to external AI services, pluggable `AiTransport`) and `AiTools` / `AiToolHttpHandler` (exposing `@AiTool` methods with `MethodHandle`s, interceptors and pluggable `AiToolExecutor` over plain HTTP/JSON or custom gateways) |
 | `managame-data` | common, Caffeine | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
 | `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
 | `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
@@ -239,7 +240,7 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   `Change`, `RetryableFailures`, `DelegatingEntityMapper`), and `internal` for the implementation: public only to be
   reachable across packages, marked not API, with no `module-info.java`. A helper used by one package stays
   package-private there.
-- Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999. Failures
+- Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).
 - A method that sends one message returns network's `WriteStatus` (`connection.write`, `peer.notify`,
