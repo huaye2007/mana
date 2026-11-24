@@ -1,11 +1,12 @@
 package cn.managame.benchmark.ai;
 
-import cn.managame.ai.AiJsonCodec;
-import cn.managame.ai.AiToolInterceptor;
-import cn.managame.ai.AiToolResult;
-import cn.managame.ai.AiTools;
-import cn.managame.ai.annotation.AiTool;
-import cn.managame.ai.spi.AiToolExecutor;
+import cn.managame.ai.AiCodec;
+import cn.managame.ai.annotation.McpParam;
+import cn.managame.ai.annotation.McpTool;
+import cn.managame.ai.mcp.McpToolInterceptor;
+import cn.managame.ai.mcp.McpToolResult;
+import cn.managame.ai.mcp.McpTools;
+import cn.managame.ai.spi.McpToolExecutor;
 import cn.managame.benchmark.CountingMetrics;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Type;
@@ -24,7 +25,7 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 
 /**
- * Measures {@link AiTools#invoke} overhead on its direct executor: argument decoding, MethodHandle dispatch,
+ * Measures {@link McpTools#call} overhead on its direct executor: argument decoding, MethodHandle dispatch,
  * interceptor chaining, and metrics recording.
  */
 @State(Scope.Benchmark)
@@ -38,68 +39,81 @@ public class ToolInvokeBenchmark {
     public record BagCount(long roleId, int itemId, int count) {}
 
     public static class BagTools {
-        @AiTool(name = "query_bag", description = "Query item count", group = "npc", readOnly = true)
+        @McpTool(name = "query_bag", description = "Query item count via DTO", group = "npc", readOnly = true)
         public BagCount queryBag(QueryBag req) {
             return new BagCount(req.roleId(), req.itemId(), 5);
         }
 
-        @AiTool(name = "online_count", description = "Online count", group = "gm", readOnly = true)
+        @McpTool(name = "query_item", description = "Query item count via params", group = "npc", readOnly = true)
+        public BagCount queryItem(@McpParam(name = "roleId") long roleId, @McpParam(name = "itemId") int itemId) {
+            return new BagCount(roleId, itemId, 5);
+        }
+
+        @McpTool(name = "online_count", description = "Online count", group = "gm", readOnly = true)
         public int onlineCount() { return 1000; }
     }
 
-    static final class JacksonCodec implements AiJsonCodec {
+    static final class JacksonCodec implements AiCodec {
         private final ObjectMapper mapper = new ObjectMapper();
         @Override public String encode(Object value) throws Exception { return mapper.writeValueAsString(value); }
-        @Override public Object decode(String json, Type type) throws Exception { return mapper.readValue(json, mapper.constructType(type)); }
+        @Override public Object decode(String json, Type type) throws Exception {
+            return mapper.readValue(json, mapper.constructType(type));
+        }
     }
 
     private static final String ARGS_JSON = "{\"roleId\":1001,\"itemId\":2001}";
-    private AiTools plain;
-    private AiTools intercepted;
-    private AiTools metered;
+    private McpTools plain;
+    private McpTools intercepted;
+    private McpTools metered;
 
     @Setup(Level.Trial) public void setup() {
-        AiJsonCodec codec = new JacksonCodec();
-        plain = AiTools.builder()
+        AiCodec codec = new JacksonCodec();
+        plain = McpTools.builder()
                 .codec(codec)
-                .executor(AiToolExecutor.direct())
+                .executor(McpToolExecutor.direct())
                 .register(List.of(new BagTools()))
                 .build();
-        intercepted = AiTools.builder()
+        intercepted = McpTools.builder()
                 .codec(codec)
-                .executor(AiToolExecutor.direct())
-                .intercept(List.of(new AiToolInterceptor() {}))
+                .executor(McpToolExecutor.direct())
+                .intercept(List.of(new McpToolInterceptor() {}))
                 .register(List.of(new BagTools()))
                 .build();
-        metered = AiTools.builder()
+        metered = McpTools.builder()
                 .codec(codec)
-                .executor(AiToolExecutor.direct())
+                .executor(McpToolExecutor.direct())
                 .metrics(new CountingMetrics())
                 .register(List.of(new BagTools()))
                 .build();
     }
 
-    @Benchmark public AiToolResult invokeNoArg() {
-        AiToolResult[] box = new AiToolResult[1];
-        plain.invoke("online_count", "{}", r -> box[0] = r);
+    @Benchmark public McpToolResult invokeNoArg() {
+        McpToolResult[] box = new McpToolResult[1];
+        plain.call("online_count", "{}", r -> box[0] = r);
         return box[0];
     }
 
-    @Benchmark public AiToolResult invokeRecord() {
-        AiToolResult[] box = new AiToolResult[1];
-        plain.invoke("query_bag", ARGS_JSON, r -> box[0] = r);
+    @Benchmark public McpToolResult invokeParams() {
+        McpToolResult[] box = new McpToolResult[1];
+        plain.call("query_item", ARGS_JSON, r -> box[0] = r);
         return box[0];
     }
 
-    @Benchmark public AiToolResult invokeIntercepted() {
-        AiToolResult[] box = new AiToolResult[1];
-        intercepted.invoke("query_bag", ARGS_JSON, r -> box[0] = r);
+    @Benchmark public McpToolResult invokeRecord() {
+        McpToolResult[] box = new McpToolResult[1];
+        plain.call("query_bag", ARGS_JSON, r -> box[0] = r);
         return box[0];
     }
 
-    @Benchmark public AiToolResult invokeMetered() {
-        AiToolResult[] box = new AiToolResult[1];
-        metered.invoke("query_bag", ARGS_JSON, r -> box[0] = r);
+    @Benchmark public McpToolResult invokeIntercepted() {
+        McpToolResult[] box = new McpToolResult[1];
+        intercepted.call("query_bag", ARGS_JSON, r -> box[0] = r);
+        return box[0];
+    }
+
+    @Benchmark public McpToolResult invokeMetered() {
+        McpToolResult[] box = new McpToolResult[1];
+        metered.call("query_bag", ARGS_JSON, r -> box[0] = r);
         return box[0];
     }
 }

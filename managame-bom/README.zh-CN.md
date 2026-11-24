@@ -2,7 +2,7 @@
 
 # managame-bom
 
-统一所有 managame 组件的版本，以及 network、runtime、rpc 共用的 Netty 模块的版本。同时使用多个组件的业务导入一次，之后
+统一所有 managame 组件的版本，以及 network、runtime、rpc、ai 共用的 Netty 模块的版本。同时使用多个组件的业务导入一次，之后
 引用组件时不写版本号，这样各组件一定来自同一次发布、跑在同一个 Netty 上：
 
 ```xml

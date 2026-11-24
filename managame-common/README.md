@@ -228,10 +228,20 @@ Zero is success and every failure code is positive. The framework uses these:
 | 4001 | `DATA_SAVE_FAILED` | A change could not be saved and went to the data error handler, or a flush or close left changes unsaved |
 | 4002 | `DATA_LOG_SAVE_FAILED` | A log could not be saved, or was refused because its queue was full |
 | 4003 | `DATA_LOAD_FAILED` | Data could not be loaded from storage |
+| 5001 | `AI_CLOSED` | `AiClient` is closed and refuses new or in-flight calls |
+| 5002 | `AI_UNAVAILABLE` | External AI service unreachable or returned a 5xx error |
+| 5003 | `AI_TIMEOUT` | AI call or stream timed out |
+| 5004 | `AI_OVERLOADED` | Local `maxInFlight` reached, or external AI service returned 429 / 503 |
+| 5005 | `AI_CANCELLED` | AI call or stream cancelled by caller |
+| 5006 | `AI_PROTOCOL_ERROR` | AI request/response codec error or 4xx response |
+| 5007 | `AI_TOOL_NOT_FOUND` | Unknown MCP tool name |
+| 5008 | `AI_TOOL_INVALID_ARGS` | MCP tool arguments failed JSON parsing or parameter validation |
+| 5009 | `AI_TOOL_EXECUTION_ERROR` | MCP tool threw, non-void returned null, or result encoding failed |
+| 5010 | `AI_TOOL_REJECTED` | MCP tool call rejected by an `McpToolInterceptor` |
 
 The others (`HANDLER_CONTEXT_MISMATCH`, `ROUTE_DOMAIN_MISMATCH`, `ROUTE_EXECUTOR_CLOSED`,
 `ROUTE_CALL_EXECUTION_ERROR`, `ROUTE_CALLBACK_DISPATCH_FAILED`) are allocated for the framework and not raised
-today. Ranges: RPC 2001–2999, runtime 3001–3999, data 4001–4999; application codes should stay outside them.
+today. Ranges: RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999; application codes should stay outside them.
 
 For logs, `FrameworkErrorCodes.describe(2003)` gives `RPC_TIMEOUT(2003)` and `name(code)` the bare name; an
 unknown code reads `UNKNOWN(<code>)`. Never base program logic on the names.

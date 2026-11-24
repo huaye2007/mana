@@ -2,9 +2,9 @@ package cn.managame.benchmark.ai;
 
 import cn.managame.ai.AiClient;
 import cn.managame.ai.AiResult;
-import cn.managame.ai.AiTools;
-import cn.managame.ai.http.AiToolHttpHandler;
-import cn.managame.ai.spi.AiToolExecutor;
+import cn.managame.ai.mcp.McpHttpHandler;
+import cn.managame.ai.mcp.McpTools;
+import cn.managame.ai.spi.McpToolExecutor;
 import cn.managame.benchmark.ai.ToolInvokeBenchmark.BagTools;
 import cn.managame.benchmark.ai.ToolInvokeBenchmark.JacksonCodec;
 import cn.managame.network.http.HttpInitializer;
@@ -35,7 +35,7 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * End-to-end loopback HTTP throughput of {@link AiClient#call} against a Netty HTTP server and of
- * {@link AiToolHttpHandler} serving {@code POST /tools/{name}} requests.
+ * {@link McpHttpHandler} serving JSON-RPC 2.0 {@code tools/call} requests.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -49,12 +49,13 @@ public class AiHttpBenchmark {
     public record ChatRes(String reply) {}
 
     private static final byte[] CHAT_RESPONSE = "{\"reply\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] TOOL_ARGS = "{\"roleId\":1001,\"itemId\":2001}".getBytes(StandardCharsets.UTF_8);
+    private static final String MCP_TOOLS_CALL = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+            + "\"params\":{\"name\":\"query_bag\",\"arguments\":{\"roleId\":1001,\"itemId\":2001}}}";
 
     private NetworkServer echoAiServer;
-    private NetworkServer toolServer;
+    private NetworkServer mcpServer;
     private AiClient aiClient;
-    private AiClient toolClient;
+    private AiClient mcpClient;
     private final ChatReq sampleReq = new ChatReq(7, "hello");
 
     @Setup(Level.Trial) public void start() {
@@ -66,27 +67,25 @@ public class AiHttpBenchmark {
             exchange.respond(resp);
         }).build());
 
-        AiTools tools = AiTools.builder()
+        McpTools tools = McpTools.builder()
                 .codec(codec)
-                .executor(AiToolExecutor.direct())
+                .executor(McpToolExecutor.direct())
                 .register(List.of(new BagTools()))
                 .build();
-        toolServer = NetworkServer.start(0,
-                HttpInitializer.http().contextPath("/ai").handler(new AiToolHttpHandler(tools)).build());
+        mcpServer = NetworkServer.start(0,
+                HttpInitializer.http().contextPath("/mcp").handler(new McpHttpHandler(tools)).build());
 
-        aiClient = AiClient.builder()
-                .baseUrl("http://127.0.0.1:" + echoAiServer.port())
+        aiClient = AiClient.builder("http://127.0.0.1:" + echoAiServer.port())
                 .codec(codec)
                 .build();
-        toolClient = AiClient.builder()
-                .baseUrl("http://127.0.0.1:" + toolServer.port() + "/ai")
+        mcpClient = AiClient.builder("http://127.0.0.1:" + mcpServer.port() + "/mcp")
                 .build();
     }
 
     @TearDown(Level.Trial) public void stop() {
         aiClient.close();
-        toolClient.close();
-        toolServer.close();
+        mcpClient.close();
+        mcpServer.close();
         echoAiServer.close();
     }
 
@@ -98,11 +97,11 @@ public class AiHttpBenchmark {
         return res;
     }
 
-    @Benchmark public AiResult<String> httpToolCall() throws Exception {
+    @Benchmark public AiResult<String> mcpToolsCall() throws Exception {
         CompletableFuture<AiResult<String>> f = new CompletableFuture<>();
-        toolClient.call("/tools/query_bag", TOOL_ARGS, String.class, f::complete);
+        mcpClient.call("", MCP_TOOLS_CALL, String.class, f::complete);
         AiResult<String> res = f.get();
-        if (!res.isSuccess()) throw new IllegalStateException("Tool call failed: " + res);
+        if (!res.isSuccess()) throw new IllegalStateException("MCP call failed: " + res);
         return res;
     }
 }

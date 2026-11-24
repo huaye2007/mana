@@ -201,10 +201,20 @@ public final class LoggedMetrics implements Metrics {
 | 4001 | `DATA_SAVE_FAILED` | 一条修改无法保存，已交给数据错误处理器；或 flush、close 结束时仍有修改没有保存 |
 | 4002 | `DATA_LOG_SAVE_FAILED` | 一条日志无法保存，或因队列已满被拒绝 |
 | 4003 | `DATA_LOAD_FAILED` | 无法从存储加载数据 |
+| 5001 | `AI_CLOSED` | `AiClient` 已关闭，拒绝新调用并中止在途调用 |
+| 5002 | `AI_UNAVAILABLE` | 外部 AI 服务不可达或返回 5xx 错误 |
+| 5003 | `AI_TIMEOUT` | AI 调用或流式响应超时 |
+| 5004 | `AI_OVERLOADED` | 本地并发达到 `maxInFlight` 上限，或外部 AI 服务返回 429 / 503 |
+| 5005 | `AI_CANCELLED` | 调用方取消了 AI 调用或流式接收 |
+| 5006 | `AI_PROTOCOL_ERROR` | AI 请求/响应编解码失败，或返回 4xx 错误 |
+| 5007 | `AI_TOOL_NOT_FOUND` | 未注册的 MCP 工具名 |
+| 5008 | `AI_TOOL_INVALID_ARGS` | MCP 工具参数解析或校验失败 |
+| 5009 | `AI_TOOL_EXECUTION_ERROR` | MCP 工具抛出异常、非 void 返回 null 或结果编码失败 |
+| 5010 | `AI_TOOL_REJECTED` | MCP 工具调用被 `McpToolInterceptor` 拒绝 |
 
 其余错误码（`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、`ROUTE_EXECUTOR_CLOSED`、
 `ROUTE_CALL_EXECUTION_ERROR`、`ROUTE_CALLBACK_DISPATCH_FAILED`）已为框架预留，目前不会出现。号段：RPC 2001–2999，
-runtime 3001–3999，数据 4001–4999；业务自己的错误码应避开这些号段。
+runtime 3001–3999，数据 4001–4999，AI 5001–5999；业务自己的错误码应避开这些号段。
 
 打日志时，`FrameworkErrorCodes.describe(2003)` 得到 `RPC_TIMEOUT(2003)`，`name(code)` 只得到名称；未知错误码显示为
 `UNKNOWN(<code>)`。不要用名称做程序判断。
