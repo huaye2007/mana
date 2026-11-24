@@ -22,7 +22,7 @@ Prompts, LLM providers, conversation memory, RAG and agent orchestration stay in
 | --- | --- |
 | `cn.managame.ai` | `AiClient`, `AiRequest`, `AiResult`, `AiCall`, `AiCallback`, `AiStreamEvent`, `AiStreamListener`, `AiCodec` |
 | `cn.managame.ai.annotation` | `@McpTool`, `@McpParam` |
-| `cn.managame.ai.mcp` | `McpTools`, `McpHttpHandler`, `McpToolDefinition`, `McpToolContext`, `McpToolCall`, `McpToolResult`, `McpToolInterceptor`, `McpToolHandler` |
+| `cn.managame.ai.mcp` | `McpTools`, `McpHttpHandler`, `McpToolDefinition`, `McpToolContext`, `McpToolCall`, `McpToolResult`, `McpToolInterceptor`, `McpToolHandler`, `McpToolProxy` |
 | `cn.managame.ai.spi` | `McpToolExecutor` |
 | `cn.managame.ai.internal` | Zero-dependency JSON parser/writer, JSON Schema generator, basic codec, SSE parser, compiled `ToolMethod` and meters (not API) |
 
@@ -70,13 +70,19 @@ ai.close();
 - **Shared `HttpClient` and bulkhead isolation**: create separate `AiClient` instances per workload (for example
   `npc` with a 30s timeout and `moderation` with a 500ms timeout) and share one `HttpClient` via `.httpClient(shared)`
   so slow streams never starve latency-sensitive calls; a shared client is not shut down by `AiClient.close()`.
-- **String payloads**: passing a `String` body sends it as UTF-8 JSON verbatim without invoking `AiCodec.encode`;
-  requesting `String.class` returns the raw response body without invoking `AiCodec.decode`.
-- **Admission, bounds and shutdown**: calls beyond `maxInFlight` fail with `AI_OVERLOADED`; one-way `notify` uses its
-  own `maxNotifyInFlight` budget and returns `WriteStatus` (`ACCEPTED`, `INACTIVE`, `NOT_WRITABLE`); unary responses
-  over `maxResponseBytes` (1 MiB default) or SSE events over `maxStreamEventChars` (256 KiB default) abort with
-  `AI_PROTOCOL_ERROR`; callbacks run on `.executor(...)` (virtual threads by default), never on the caller or
-  `HttpClient`'s I/O threads; `close()` aborts in-flight calls and rejects subsequent ones with `AI_CLOSED`.
+- **String and `byte[]` payloads**: passing a `String` or `byte[]` body sends it verbatim without invoking `AiCodec`;
+  requesting `String.class` or `byte[].class` returns the raw response body without invoking `AiCodec`. Custom codecs
+  (such as Jackson) can override `AiCodec.encodeBytes` / `decodeBytes` so unary HTTP calls avoid intermediate `String`
+  allocations. `AiCodec.basic()` also coerces quoted numeric strings into exact 64-bit `long`s so Snowflake IDs above
+  `2^53 - 1` never lose precision when quoted by LLMs or callers.
+- **Deadline propagation, admission, bounds and shutdown**: `AiClient` sends the request's timeout budget in
+  milliseconds as `X-Ai-Timeout-Ms` (configurable or disabled via `.timeoutHeader(...)`) so the downstream AI service
+  can bound SSE emitters and cancel stale MCP tool calls after the caller has timed out; calls beyond `maxInFlight` fail
+  with `AI_OVERLOADED`; one-way `notify` uses its own `maxNotifyInFlight` budget and returns `WriteStatus` (`ACCEPTED`,
+  `INACTIVE`, `NOT_WRITABLE`); unary responses over `maxResponseBytes` (1 MiB default) or SSE events over
+  `maxStreamEventChars` (256 KiB default) abort with `AI_PROTOCOL_ERROR`; callbacks run on `.executor(...)` (virtual
+  threads by default), never on the caller or `HttpClient`'s I/O threads; `close()` aborts in-flight calls and rejects
+  subsequent ones with `AI_CLOSED`.
 
 ## Exposing game server methods as MCP tools (`@McpTool`)
 
@@ -151,6 +157,11 @@ NetworkServer mcpServer = NetworkServer.start(8082,
   (for example `@Domain`) and `call.routeKey()`, submits a `GameTask` to `runtime.execute`, and fails `call.context()`
   both when `execute` throws and in `GameTask.refused`. See `AiConfig` and `AiRuntimeIntegrationExampleTest` in
   `managame-example` for a complete end-to-end sample.
+- **Stateless gateway forwarding (`scanDefinitions` / `registerProxy`)**: in multi-server deployments, a stateless
+  gateway node can inspect `@McpTool` schemas via `McpTools.scanDefinitions(types)` or expose one unified `/mcp`
+  endpoint via `McpTools.builder().registerProxy(types, call -> ...)` without instantiating backend game services —
+  argument decoding, 64-bit `call.routeKey()` extraction and `McpToolInterceptor` checks run at the edge before
+  forwarding over `managame-rpc`.
 - **MCP protocol**: `McpHttpHandler` implements stateless Streamable HTTP (JSON-RPC 2.0 `initialize`,
   `notifications/initialized`, `ping`, `tools/list`, `tools/call`; configurable `.path("/mcp")` when co-hosted on an
   existing HTTP server, and `MCP-Protocol-Version` header validation) compatible with Spring AI, LangChain4j, LangChain

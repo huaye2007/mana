@@ -60,21 +60,58 @@ public final class ToolMethod {
         this.routeKeyIndex = routeKeyIndex;
     }
 
-    /** Scans {@code target} and its superclasses for {@link McpTool} methods, in name order, compiling each once. */
+    /** Scans {@code target}, its superclasses and interfaces for {@link McpTool} methods, in name order, compiling each once. */
     public static List<ToolMethod> scan(Object target) {
         Objects.requireNonNull(target, "target");
+        return compileAll(target, target.getClass());
+    }
+
+    /**
+     * Scans {@code targetType}, its superclasses and interfaces for {@link McpTool} methods without requiring an
+     * instance, compiling JSON Schemas, parameter decoders and {@link McpTool#routeKey()} extractors for stateless
+     * schema export or gateway forwarding.
+     */
+    public static List<ToolMethod> scanType(Class<?> targetType) {
+        Objects.requireNonNull(targetType, "targetType");
+        return compileAll(null, targetType);
+    }
+
+    private static List<ToolMethod> compileAll(Object target, Class<?> rootType) {
         List<Method> methods = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        for (Class<?> type = target.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
-            for (Method method : type.getDeclaredMethods()) {
-                if (method.isSynthetic() || method.isBridge() || !method.isAnnotationPresent(McpTool.class)) continue;
-                if (seen.add(method.getName() + List.of(method.getParameterTypes()))) methods.add(method);
+        Set<Class<?>> visitedInterfaces = new HashSet<>();
+        if (rootType.isInterface()) {
+            collectInterfaceMethods(rootType, seen, visitedInterfaces, methods);
+        } else {
+            for (Class<?> type = rootType; type != null && type != Object.class; type = type.getSuperclass()) {
+                addAnnotatedMethods(type, seen, methods);
+            }
+            for (Class<?> type = rootType; type != null && type != Object.class; type = type.getSuperclass()) {
+                for (Class<?> iface : type.getInterfaces()) {
+                    collectInterfaceMethods(iface, seen, visitedInterfaces, methods);
+                }
             }
         }
         methods.sort(Comparator.comparing(Method::getName));
         List<ToolMethod> compiled = new ArrayList<>(methods.size());
         for (Method method : methods) compiled.add(compile(target, method));
         return List.copyOf(compiled);
+    }
+
+    private static void collectInterfaceMethods(Class<?> iface, Set<String> seen,
+            Set<Class<?>> visited, List<Method> out) {
+        if (!visited.add(iface)) return;
+        addAnnotatedMethods(iface, seen, out);
+        for (Class<?> superIface : iface.getInterfaces()) {
+            collectInterfaceMethods(superIface, seen, visited, out);
+        }
+    }
+
+    private static void addAnnotatedMethods(Class<?> type, Set<String> seen, List<Method> out) {
+        for (Method method : type.getDeclaredMethods()) {
+            if (method.isSynthetic() || method.isBridge() || !method.isAnnotationPresent(McpTool.class)) continue;
+            if (seen.add(method.getName() + List.of(method.getParameterTypes()))) out.add(method);
+        }
     }
 
     private static ToolMethod compile(Object target, Method method) {
@@ -130,7 +167,7 @@ public final class ToolMethod {
 
         McpToolDefinition def = new McpToolDefinition(name, ann.description(), ann.group(),
                 ann.readOnly(), ann.idempotent(), schema);
-        MethodHandle handle = buildHandle(target, method, shape, takesContext, argCount);
+        MethodHandle handle = target != null ? buildHandle(target, method, shape, takesContext, argCount) : null;
         MethodHandle routeKeyReader = null;
         int routeKeyIndex = -1;
         String routeKey = ann.routeKey();

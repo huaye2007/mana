@@ -56,8 +56,12 @@ public class ToolInvokeBenchmark {
     static final class JacksonCodec implements AiCodec {
         private final ObjectMapper mapper = new ObjectMapper();
         @Override public String encode(Object value) throws Exception { return mapper.writeValueAsString(value); }
+        @Override public byte[] encodeBytes(Object value) throws Exception { return mapper.writeValueAsBytes(value); }
         @Override public Object decode(String json, Type type) throws Exception {
             return mapper.readValue(json, mapper.constructType(type));
+        }
+        @Override public Object decodeBytes(byte[] utf8, Type type) throws Exception {
+            return mapper.readValue(utf8, mapper.constructType(type));
         }
     }
 

@@ -13,7 +13,7 @@
 | --- | --- |
 | `cn.managame.ai` | `AiClient`、`AiRequest`、`AiResult`、`AiCall`、`AiCallback`、`AiStreamEvent`、`AiStreamListener`、`AiCodec` |
 | `cn.managame.ai.annotation` | `@McpTool`、`@McpParam` |
-| `cn.managame.ai.mcp` | `McpTools`、`McpHttpHandler`、`McpToolDefinition`、`McpToolContext`、`McpToolCall`、`McpToolResult`、`McpToolInterceptor`、`McpToolHandler` |
+| `cn.managame.ai.mcp` | `McpTools`、`McpHttpHandler`、`McpToolDefinition`、`McpToolContext`、`McpToolCall`、`McpToolResult`、`McpToolInterceptor`、`McpToolHandler`、`McpToolProxy` |
 | `cn.managame.ai.spi` | `McpToolExecutor` |
 | `cn.managame.ai.internal` | 零依赖 JSON 编解码、JSON Schema 生成、基础 Codec、SSE 解析器、编译后的 `ToolMethod` 与指标（非 API） |
 
@@ -55,8 +55,8 @@ ai.close();
 - **配合 `managame-runtime`**：在游戏任务发起调用前先取 `Continuation then = runtime.continuation()`，在回调里经 `then.execute(c -> ...)` 回到原路由继续修改状态；在 continuation 里按 id 重新取实体，不要跨调用持有实体。
 - **会话隔离与重置**：在请求 DTO 中带一个业务会话键（例如 `"npc:" + roleId + ":" + npcId + ":" + dialogueEpoch`），对应 Spring AI 的 `ChatMemory.CONVERSATION_ID` 或 LangGraph 的 `thread_id`。重置会话只需把游戏数据里的 `dialogueEpoch` 加 1，无需额外协议状态。
 - **共享 `HttpClient` 与舱壁隔离**：按业务域建多个 `AiClient`（例如 `npc` 配 30s 超时、`moderation` 配 500ms 超时），通过 `.httpClient(shared)` 共享连接池，避免慢对话占满 `maxInFlight` 饿死实时审核；共享实例不会在 `AiClient.close()` 时被关闭。
-- **原始字符串**：请求体为 `String` 时按 UTF-8 原样发送（不经 `AiCodec.encode`）；响应类型为 `String.class` 时原样返回（不经 `AiCodec.decode`）。
-- **准入、体积上限与关闭**：超过 `maxInFlight` 的调用以 `AI_OVERLOADED` 失败；单向 `notify` 使用独立的 `maxNotifyInFlight` 预算并返回 `WriteStatus`（`ACCEPTED`、`INACTIVE`、`NOT_WRITABLE`）；单次响应超过 `maxResponseBytes`（默认 1 MiB）或单条 SSE 事件超过 `maxStreamEventChars`（默认 256 KiB）以 `AI_PROTOCOL_ERROR` 中止；回调统一投递到 `.executor(...)`（默认虚拟线程），绝不在调用线程或 `HttpClient` I/O 线程上运行；`close()` 后在途调用与新调用均以 `AI_CLOSED` 失败。
+- **原始字符串、`byte[]` 直通与 64 位雪花 ID**：请求体为 `String` 或 `byte[]` 时原样发送，响应类型为 `String.class` 或 `byte[].class` 时原样返回；Jackson 等自定义 `AiCodec` 可覆盖 `encodeBytes` / `decodeBytes` 省去单次 HTTP 调用的中间 `String` 拷贝。内置 `AiCodec.basic()` 同时支持把数字字符串无损解析为 64 位 `long`，防止超过 `2^53 - 1` 的雪花 `roleId` 被大模型加引号或经 IEEE-754 双精度截断。
+- **超时预算透传、准入、体积上限与关闭**：默认随请求发送 `X-Ai-Timeout-Ms` 毫秒预算头（可通过 `.timeoutHeader(...)` 改名或禁用），供下游 AI 服务收紧 SSE 与 MCP 回调超时，避免调用方超时放弃后仍消耗算力或下发过期写工具；超过 `maxInFlight` 的调用以 `AI_OVERLOADED` 失败；单向 `notify` 使用独立的 `maxNotifyInFlight` 预算并返回 `WriteStatus`（`ACCEPTED`、`INACTIVE`、`NOT_WRITABLE`）；单次响应超过 `maxResponseBytes`（默认 1 MiB）或单条 SSE 事件超过 `maxStreamEventChars`（默认 256 KiB）以 `AI_PROTOCOL_ERROR` 中止；回调统一投递到 `.executor(...)`（默认虚拟线程），绝不在调用线程或 `HttpClient` I/O 线程上运行；`close()` 后在途调用与新调用均以 `AI_CLOSED` 失败。
 
 ## 通过注解把现有方法暴露为 MCP 工具（`@McpTool`）
 
@@ -112,6 +112,7 @@ NetworkServer mcpServer = NetworkServer.start(8082,
 - **结果上限与幂等提示**：`McpHttpHandler.builder(tools).maxResultChars(...)`（默认 256K 字符）会在返回体过大时转为 `isError: true` 提示模型缩小查询范围；支持安全重试的写工具可标 `@McpTool(idempotent = true)`（输出 `idempotentHint`），并在业务侧按 `opId` 做幂等去重。
 - **拦截器（`McpToolInterceptor`）**：`allowList(headers, tool)` 按调用方过滤 `tools/list` 可见工具；`before(call)` 负责鉴权、分组/只读校验与开关（返回 `false` 拒绝并返回 `AI_TOOL_REJECTED`）；`after(call, result)` 在调用完成后逆序执行，用于审计日志。
 - **对接 `managame-runtime`**：在 `@McpTool(routeKey = "roleId")` 上声明路由键成员（方法参数或单 DTO 的方法/getter/字段，启动期编译为 `MethodHandle`），提供一个 `McpToolExecutor` 读取 `call.method()`（例如 `@Domain`）和 `call.routeKey()` 投递 `GameTask` 到 `runtime.execute`，并在捕获拒绝异常和 `GameTask.refused` 中调用 `call.context().fail(...)`。完整拼装样例见 `managame-example` 中的 `AiConfig` 与 `AiRuntimeIntegrationExampleTest`。
+- **无状态网关代理（`scanDefinitions` / `registerProxy`）**：多区服架构下，无状态运营/MCP 网关无需实例化游戏服业务 Bean，即可通过 `McpTools.scanDefinitions(types)` 导出静态工具目录，或用 `McpTools.builder().registerProxy(types, call -> ...)` 编译 JSON Schema 与 `call.routeKey()` 并在边缘完成参数解码和防越权拦截，再经 `managame-rpc` 按玩家路由转发到对应游戏服。
 - **MCP 协议兼容**：`McpHttpHandler` 实现无状态 Streamable HTTP（JSON-RPC 2.0 `initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`；与已有 HTTP 端口共港时可配 `.path("/mcp")`，并校验 `MCP-Protocol-Version` 请求头），兼容 Spring AI、LangChain4j、LangChain 及官方 MCP SDK（`2024-11-05` 至 `2025-11-25`）。未知工具返回 JSON-RPC `-32602`；参数校验失败、拦截拒绝与业务失败返回 `isError: true`，便于大模型自我纠正。
 
 ## 错误码、日志与指标

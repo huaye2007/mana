@@ -55,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -443,6 +444,67 @@ class AiClientTest {
             @Override public void onComplete(AiResult<Void> result) { sseTooBig.complete(result); }
         });
         assertEquals(AI_PROTOCOL_ERROR, sseTooBig.get(5, TimeUnit.SECONDS).code());
+    }
+
+    @Test void propagatesTimeoutHeaderAndUsesByteCodecFastPath() throws Exception {
+        List<String> seenTimeouts = new CopyOnWriteArrayList<>();
+        httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                HttpInitializer.http().handler(exchange -> {
+                    String hdr = exchange.request().headers().get(AiClient.TIMEOUT_HEADER);
+                    seenTimeouts.add(hdr != null ? hdr : "<absent>");
+                    respond(exchange, HttpResponseStatus.OK, "{\"reply\":\"fast\",\"tokens\":3}");
+                }).build());
+
+        AtomicInteger byteEncodes = new AtomicInteger();
+        AtomicInteger byteDecodes = new AtomicInteger();
+        AtomicInteger stringEncodes = new AtomicInteger();
+        AtomicInteger stringDecodes = new AtomicInteger();
+        AiCodec trackingCodec = new AiCodec() {
+            @Override public String encode(Object value) throws Exception {
+                stringEncodes.incrementAndGet();
+                return AiCodec.basic().encode(value);
+            }
+            @Override public byte[] encodeBytes(Object value) throws Exception {
+                byteEncodes.incrementAndGet();
+                return AiCodec.basic().encodeBytes(value);
+            }
+            @Override public Object decode(String json, java.lang.reflect.Type type) throws Exception {
+                stringDecodes.incrementAndGet();
+                return AiCodec.basic().decode(json, type);
+            }
+            @Override public Object decodeBytes(byte[] utf8, java.lang.reflect.Type type) throws Exception {
+                byteDecodes.incrementAndGet();
+                return AiCodec.basic().decodeBytes(utf8, type);
+            }
+        };
+
+        client = AiClient.builder("http://127.0.0.1:" + httpServer.port())
+                .codec(trackingCodec)
+                .timeout(Duration.ofMillis(4500))
+                .build();
+
+        AiResult<ChatRes> r1 = callSync("/chat", new ChatReq(1L, "hi"), ChatRes.class);
+        assertEquals("fast", r1.data().reply());
+
+        CompletableFuture<AiResult<ChatRes>> r2Future = new CompletableFuture<>();
+        client.call(AiRequest.of("/chat", new ChatReq(1L, "fast")).withTimeout(Duration.ofMillis(1200)),
+                ChatRes.class, r2Future::complete);
+        assertEquals("fast", r2Future.get(5, TimeUnit.SECONDS).data().reply());
+
+        assertEquals(List.of("4500", "1200"), seenTimeouts);
+        assertEquals(2, byteEncodes.get());
+        assertEquals(2, byteDecodes.get());
+        assertEquals(0, stringEncodes.get());
+        assertEquals(0, stringDecodes.get());
+
+        try (AiClient noHeaderClient = AiClient.builder("http://127.0.0.1:" + httpServer.port())
+                .timeoutHeader(null)
+                .build()) {
+            CompletableFuture<AiResult<ChatRes>> r3 = new CompletableFuture<>();
+            noHeaderClient.call("/chat", new ChatReq(1L, "plain"), ChatRes.class, r3::complete);
+            assertEquals("fast", r3.get(5, TimeUnit.SECONDS).data().reply());
+        }
+        assertEquals("<absent>", seenTimeouts.get(2));
     }
 
     private <T> AiResult<T> callSync(String path, Object body, Class<T> type) throws Exception {

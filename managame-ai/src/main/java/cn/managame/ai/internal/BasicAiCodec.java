@@ -110,13 +110,31 @@ public final class BasicAiCodec implements AiCodec {
             if (value instanceof Boolean b) return b;
             throw new IllegalArgumentException("Expected boolean, got " + value);
         }
-        if (raw == int.class || raw == Integer.class) return toExactLong(value, raw).intValueExact();
-        if (raw == long.class || raw == Long.class) return toExactLong(value, raw).longValueExact();
-        if (raw == short.class || raw == Short.class) return toExactLong(value, raw).shortValueExact();
-        if (raw == byte.class || raw == Byte.class) return toExactLong(value, raw).byteValueExact();
+        if (raw == int.class || raw == Integer.class) {
+            long v = toLong(value, raw);
+            if (v < Integer.MIN_VALUE || v > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("Out of range for int: " + value);
+            }
+            return (int) v;
+        }
+        if (raw == long.class || raw == Long.class) return toLong(value, raw);
+        if (raw == short.class || raw == Short.class) {
+            long v = toLong(value, raw);
+            if (v < Short.MIN_VALUE || v > Short.MAX_VALUE) {
+                throw new IllegalArgumentException("Out of range for short: " + value);
+            }
+            return (short) v;
+        }
+        if (raw == byte.class || raw == Byte.class) {
+            long v = toLong(value, raw);
+            if (v < Byte.MIN_VALUE || v > Byte.MAX_VALUE) {
+                throw new IllegalArgumentException("Out of range for byte: " + value);
+            }
+            return (byte) v;
+        }
         if (raw == double.class || raw == Double.class) return toDouble(value);
         if (raw == float.class || raw == Float.class) return (float) toDouble(value);
-        if (raw == BigInteger.class) return toExactLong(value, raw);
+        if (raw == BigInteger.class) return toBigInteger(value);
         if (raw == BigDecimal.class) return toBigDecimal(value);
         if (raw == char.class || raw == Character.class) {
             if (value instanceof String s && s.length() == 1) return s.charAt(0);
@@ -227,18 +245,56 @@ public final class BasicAiCodec implements AiCodec {
         }
     }
 
-    private static BigInteger toExactLong(Object value, Class<?> target) {
+    private static long toLong(Object value, Class<?> target) {
+        if (value instanceof Long l) return l;
+        if (value instanceof Integer i) return i.longValue();
+        if (value instanceof Short sh) return sh.longValue();
+        if (value instanceof Byte b) return b.longValue();
+        if (value instanceof String s && !s.isBlank()) {
+            return Long.parseLong(s.trim());
+        }
+        if (value instanceof BigInteger bi) {
+            try {
+                return bi.longValueExact();
+            } catch (ArithmeticException outOfRange) {
+                throw new IllegalArgumentException("Out of range for " + target.getSimpleName() + ": " + value, outOfRange);
+            }
+        }
+        if (value instanceof Double d && Math.rint(d) == d && Double.isFinite(d)) {
+            try {
+                return BigDecimal.valueOf(d).longValueExact();
+            } catch (ArithmeticException outOfRange) {
+                throw new IllegalArgumentException("Out of range for " + target.getSimpleName() + ": " + value, outOfRange);
+            }
+        }
+        throw new IllegalArgumentException("Expected integer for " + target.getSimpleName() + ", got " + value);
+    }
+
+    private static BigInteger toBigInteger(Object value) {
         if (value instanceof Long l) return BigInteger.valueOf(l);
         if (value instanceof Integer i) return BigInteger.valueOf(i);
         if (value instanceof BigInteger bi) return bi;
         if (value instanceof Double d && Math.rint(d) == d && Double.isFinite(d)) {
             return BigDecimal.valueOf(d).toBigIntegerExact();
         }
-        throw new IllegalArgumentException("Expected integer for " + target.getSimpleName() + ", got " + value);
+        if (value instanceof String s && !s.isBlank()) {
+            return new BigInteger(s.trim());
+        }
+        throw new IllegalArgumentException("Expected integer for BigInteger, got " + value);
     }
 
     private static double toDouble(Object value) {
-        if (value instanceof Number n) return n.doubleValue();
+        if (value instanceof Number n) {
+            double d = n.doubleValue();
+            if (Double.isFinite(d)) return d;
+        } else if (value instanceof String s && !s.isBlank()) {
+            try {
+                double d = Double.parseDouble(s.trim());
+                if (Double.isFinite(d)) return d;
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
         throw new IllegalArgumentException("Expected number, got " + value);
     }
 

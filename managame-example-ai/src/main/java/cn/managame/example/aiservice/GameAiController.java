@@ -8,6 +8,7 @@ import cn.managame.example.aiservice.AiServiceDtos.NpcDecideReq;
 import cn.managame.example.aiservice.AiServiceDtos.NpcDecideRes;
 import cn.managame.example.aiservice.AiServiceDtos.RefreshToolsRes;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -66,11 +67,12 @@ public class GameAiController {
     public NpcChatRes npcChat(
             @RequestBody NpcChatReq req,
             @RequestHeader(value = "X-Game-Server-Id", required = false) String serverId,
-            @RequestHeader(value = "X-Trace-Id", required = false) String traceId) {
+            @RequestHeader(value = "X-Trace-Id", required = false) String traceId,
+            @RequestHeader(value = "X-Ai-Timeout-Ms", required = false) Long timeoutMs) {
         String systemPrompt = "You are game NPC '" + req.npcName() + "' (id=" + req.npcId()
                 + ") talking to player roleId=" + req.roleId()
                 + ". Use query_bag when asked about the player's gold or items. Keep replies concise.";
-        ChatResponse response = McpCallScope.run("npc", req.roleId(), traceId, () ->
+        ChatResponse response = McpCallScope.run("npc", req.roleId(), traceId, timeoutMs, () ->
                 conversationalChatClient.prompt()
                         .system(systemPrompt)
                         .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, req.sessionId()))
@@ -83,8 +85,11 @@ public class GameAiController {
     }
 
     @PostMapping(path = "/npc/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter npcStream(@RequestBody NpcChatReq req) {
-        SseEmitter emitter = new SseEmitter(60_000L);
+    public SseEmitter npcStream(
+            @RequestBody NpcChatReq req,
+            @RequestHeader(value = "X-Ai-Timeout-Ms", required = false) Long timeoutMs) {
+        long budgetMs = timeoutMs != null && timeoutMs > 0 ? Math.min(timeoutMs, 120_000L) : 60_000L;
+        SseEmitter emitter = new SseEmitter(budgetMs);
         AtomicReference<Disposable> subRef = new AtomicReference<>();
         Runnable cancelUpstream = () -> {
             Disposable d = subRef.getAndSet(null);
@@ -102,6 +107,7 @@ public class GameAiController {
                 .user(req.text())
                 .stream()
                 .content()
+                .timeout(Duration.ofMillis(budgetMs))
                 .subscribe(
                         chunk -> {
                             try {
@@ -142,9 +148,10 @@ public class GameAiController {
     public GmAskRes gmAsk(
             @RequestBody GmAskReq req,
             @RequestHeader(value = "X-Game-Server-Id", required = false) String headerServerId,
-            @RequestHeader(value = "X-Trace-Id", required = false) String traceId) {
+            @RequestHeader(value = "X-Trace-Id", required = false) String traceId,
+            @RequestHeader(value = "X-Ai-Timeout-Ms", required = false) Long timeoutMs) {
         String targetServerId = req.serverId() != null ? String.valueOf(req.serverId()) : headerServerId;
-        ChatResponse response = McpCallScope.run("gm", null, traceId, () ->
+        ChatResponse response = McpCallScope.run("gm", null, traceId, timeoutMs, () ->
                 statelessChatClient.prompt()
                         .system("You are a game operations assistant. Use the game server MCP tools to answer or perform GM actions.")
                         .tools(mcpRegistry.gmTools(targetServerId))

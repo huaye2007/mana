@@ -494,6 +494,74 @@ class McpToolsTest {
         assertThrows(IllegalArgumentException.class, () -> McpTools.builder().register(List.of(new BadType())));
     }
 
+    interface GatewayBagContract {
+        @McpTool(name = "proxy_bag", description = "Query bag via gateway", group = "npc", readOnly = true, routeKey = "roleId")
+        String queryBag(@McpParam("player") long roleId, @McpParam("itemId") int itemId);
+    }
+
+    record ProxyGrantDto(long roleId, int count) {}
+
+    static final class UninstantiableBackendService {
+        UninstantiableBackendService() {
+            throw new AssertionError("Stateless gateway must never instantiate backend service");
+        }
+
+        @McpTool(name = "proxy_grant", description = "Grant via gateway", group = "gm", idempotent = true, routeKey = "roleId")
+        public String grant(ProxyGrantDto dto) {
+            throw new AssertionError("Must not invoke local method");
+        }
+    }
+
+    @Test void statelessScanDefinitionsAndProxyRegistrationWithSnowflakeString() throws Exception {
+        List<McpToolDefinition> scanned = McpTools.scanDefinitions(
+                List.of(GatewayBagContract.class, UninstantiableBackendService.class));
+        assertEquals(2, scanned.size());
+        assertEquals("proxy_bag", scanned.get(0).name());
+        assertTrue(scanned.get(0).readOnly());
+        assertEquals("proxy_grant", scanned.get(1).name());
+        assertTrue(scanned.get(1).idempotent());
+
+        long snowflake = 1795519194523264001L;
+        McpToolInterceptor scopeGuard = new McpToolInterceptor() {
+            @Override public boolean before(McpToolCall call) {
+                String bound = call.context().header("X-Role-Id");
+                return bound == null || (call.hasRouteKey() && bound.equals(Long.toString(call.routeKey())));
+            }
+        };
+
+        try (McpTools gateTools = McpTools.builder()
+                .intercept(List.of(scopeGuard))
+                .registerProxy(List.of(GatewayBagContract.class, UninstantiableBackendService.class), call -> {
+                    assertTrue(call.method() != null);
+                    assertTrue(call.hasRouteKey());
+                    Thread.ofVirtual().start(() ->
+                            call.context().reply("forwarded:" + call.toolName() + ":" + call.routeKey()));
+                })
+                .build()) {
+            // Quoted 64-bit Snowflake ID coerced without 53-bit double precision loss
+            CompletableFuture<McpToolResult> ok = new CompletableFuture<>();
+            gateTools.call("proxy_bag",
+                    "{\"roleId\":\"1795519194523264001\",\"itemId\":\"2001\"}",
+                    Map.of("X-Role-Id", "1795519194523264001"),
+                    null,
+                    ok::complete);
+            assertEquals("forwarded:proxy_bag:" + snowflake, ok.get(5, TimeUnit.SECONDS).data());
+
+            // Spoofed cross-player call rejected at the stateless Gate before touching RPC proxy
+            CompletableFuture<McpToolResult> denied = new CompletableFuture<>();
+            gateTools.call("proxy_bag",
+                    "{\"roleId\":\"1795519194523264002\",\"itemId\":2001}",
+                    Map.of("X-Role-Id", "1795519194523264001"),
+                    null,
+                    denied::complete);
+            assertEquals(AI_TOOL_REJECTED, denied.get(5, TimeUnit.SECONDS).code());
+
+            // DTO routeKey also works statelessly
+            assertEquals("forwarded:proxy_grant:1795519194523264001",
+                    invokeSync(gateTools, "proxy_grant", "{\"roleId\":\"1795519194523264001\",\"count\":5}").data());
+        }
+    }
+
     private static McpToolResult invokeSync(McpTools tools, String name, String argsJson) throws Exception {
         CompletableFuture<McpToolResult> f = new CompletableFuture<>();
         tools.call(name, argsJson, f::complete);

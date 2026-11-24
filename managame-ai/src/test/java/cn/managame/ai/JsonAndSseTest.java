@@ -70,6 +70,22 @@ class JsonAndSseTest {
         assertThrows(IllegalArgumentException.class, () -> BasicAiCodec.INSTANCE.decode("null", int.class));
     }
 
+    @Test void basicCodecParsesNumericStringsIncludingFull64BitSnowflakeIds() throws Exception {
+        AiCodec codec = AiCodec.basic();
+        // > 2^53 - 1: casting through IEEE-754 double would corrupt the lowest bit to ...4000L
+        long snowflake = 1795519194523264001L;
+        Bag fromQuotedId = (Bag) codec.decode(
+                "{\"roleId\":\"1795519194523264001\",\"items\":[{\"id\":\"10\",\"name\":\"Sword\",\"rarity\":\"EPIC\"}],\"locked\":false}",
+                Bag.class);
+        assertEquals(snowflake, fromQuotedId.roleId());
+        assertEquals(10, fromQuotedId.items().getFirst().id());
+
+        assertEquals(3.25d, (Double) codec.decode("\"3.25\"", double.class));
+        assertThrows(IllegalArgumentException.class, () -> codec.decode("\"12.5\"", long.class));
+        assertThrows(IllegalArgumentException.class, () -> codec.decode("\"999999999999999999999999\"", long.class));
+        assertThrows(IllegalArgumentException.class, () -> codec.decode("\"\"", long.class));
+    }
+
     @Test void sseParserHandlesSplitUtf8AndMultilineEvents() {
         List<AiStreamEvent> events = new ArrayList<>();
         SseParser parser = new SseParser(events::add);

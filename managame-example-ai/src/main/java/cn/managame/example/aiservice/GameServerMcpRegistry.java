@@ -4,6 +4,7 @@ import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.customizer.McpSyncHttpClientRequestCustomizer;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,6 +44,14 @@ public class GameServerMcpRegistry implements AutoCloseable {
                 if (caller.roleId() != null) builder.setHeader("X-Role-Id", String.valueOf(caller.roleId()));
                 if (caller.traceId() != null && !caller.traceId().isBlank()) {
                     builder.setHeader("X-Trace-Id", caller.traceId());
+                }
+                if (caller.hasDeadline()) {
+                    long remainingMs = caller.remainingMillis();
+                    if (remainingMs <= 0) {
+                        throw new IllegalStateException("Caller X-Ai-Timeout-Ms deadline already expired before MCP tool call");
+                    }
+                    long boundedMs = Math.min(remainingMs, props.getRequestTimeout().toMillis());
+                    builder.timeout(Duration.ofMillis(Math.max(1L, boundedMs)));
                 }
             }
         };

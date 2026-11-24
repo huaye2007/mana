@@ -55,8 +55,12 @@ public class AiConfig {
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         return new AiCodec() {
             @Override public String encode(Object value) throws Exception { return mapper.writeValueAsString(value); }
+            @Override public byte[] encodeBytes(Object value) throws Exception { return mapper.writeValueAsBytes(value); }
             @Override public Object decode(String json, Type type) throws Exception {
                 return mapper.readValue(json, mapper.constructType(type));
+            }
+            @Override public Object decodeBytes(byte[] utf8, Type type) throws Exception {
+                return mapper.readValue(utf8, mapper.constructType(type));
             }
         };
     }
