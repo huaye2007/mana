@@ -48,9 +48,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -243,7 +244,8 @@ class AiRuntimeIntegrationExampleTest {
 
     private static NpcAction askNpcDecision(GameRuntime runtime, AiClient ai, long roleId, long npcId, int epoch,
             List<NpcAction> allowed, String mode, Duration timeout) throws Exception {
-        CompletableFuture<NpcAction> appliedOnRoute = new CompletableFuture<>();
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<NpcAction> appliedOnRoute = new AtomicReference<>();
         GameContext playerCtx = GameContext.of(DomainConstant.PLAYER, roleId);
         runtime.execute(playerCtx, ctx -> {
             Continuation back = runtime.continuation();
@@ -254,13 +256,15 @@ class AiRuntimeIntegrationExampleTest {
                         assertEquals(DomainConstant.PLAYER, Context.current().domain());
                         assertEquals(roleId, Context.current().routeKey());
                         if (!res.isSuccess() || !allowed.contains(res.data().action())) {
-                            appliedOnRoute.complete(NpcAction.FLEE); // 规则降级
+                            appliedOnRoute.set(NpcAction.FLEE); // 规则降级
                         } else {
-                            appliedOnRoute.complete(res.data().action());
+                            appliedOnRoute.set(res.data().action());
                         }
+                        done.countDown();
                     }));
         });
-        return appliedOnRoute.get(5, TimeUnit.SECONDS);
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        return appliedOnRoute.get();
     }
 
     private static void respondJson(cn.managame.network.http.HttpExchange exchange, String json) {
