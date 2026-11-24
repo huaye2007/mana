@@ -343,6 +343,46 @@ class AiClientTest {
         assertEquals("PUT:/config:{\"k\":1}", putRes.get(5, TimeUnit.SECONDS).data());
     }
 
+    @Test void responseBoundsSseEventBoundsAndNonDuplicateDefaultHeaders() throws Exception {
+        AtomicReference<List<String>> seenAcceptHeaders = new AtomicReference<>();
+        httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                HttpInitializer.http().handler(exchange -> {
+                    seenAcceptHeaders.set(exchange.request().headers().getAll(HttpHeaderNames.ACCEPT));
+                    if ("/huge".equals(exchange.path())) {
+                        respond(exchange, HttpResponseStatus.OK, "x".repeat(256));
+                    } else if ("/huge-sse".equals(exchange.path())) {
+                        FullHttpResponse res = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                                Unpooled.copiedBuffer("data: " + "y".repeat(200) + "\n\n", StandardCharsets.UTF_8));
+                        res.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
+                        exchange.respond(res);
+                    } else {
+                        respond(exchange, HttpResponseStatus.OK, "ok");
+                    }
+                }).build());
+
+        client = AiClient.builder("http://127.0.0.1:" + httpServer.port())
+                .maxResponseBytes(64)
+                .maxStreamEventChars(64)
+                .header("Accept", "application/vnd.game+json")
+                .build();
+
+        // Default Accept replaces built-in Accept instead of sending duplicate headers
+        assertEquals("ok", callSync("/ok", "{}", String.class).data());
+        assertEquals(List.of("application/vnd.game+json"), seenAcceptHeaders.get());
+
+        // Oversized unary response fails with AI_PROTOCOL_ERROR
+        AiResult<String> tooBig = callSync("/huge", "{}", String.class);
+        assertEquals(AI_PROTOCOL_ERROR, tooBig.code());
+
+        // Oversized SSE event aborts with AI_PROTOCOL_ERROR
+        CompletableFuture<AiResult<Void>> sseTooBig = new CompletableFuture<>();
+        client.stream("/huge-sse", "{}", new AiStreamListener() {
+            @Override public void onEvent(AiStreamEvent event) {}
+            @Override public void onComplete(AiResult<Void> result) { sseTooBig.complete(result); }
+        });
+        assertEquals(AI_PROTOCOL_ERROR, sseTooBig.get(5, TimeUnit.SECONDS).code());
+    }
+
     private <T> AiResult<T> callSync(String path, Object body, Class<T> type) throws Exception {
         CompletableFuture<AiResult<T>> f = new CompletableFuture<>();
         client.call(path, body, type, f::complete);

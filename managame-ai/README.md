@@ -68,12 +68,14 @@ ai.close();
 - **Session isolation**: carry a business conversation key in your request DTO (for example
   `"npc:" + roleId + ":" + npcId + ":" + dialogueEpoch`), mapped to Spring AI's `ChatMemory.CONVERSATION_ID` or
   LangGraph's `thread_id`. Incrementing `dialogueEpoch` in game data resets the conversation without protocol state.
-- **Shared `HttpClient`**: pass `.httpClient(shared)` so multiple `AiClient` instances share one connection pool; a
-  shared client is not shut down by `AiClient.close()`.
+- **Shared `HttpClient` and bulkhead isolation**: create separate `AiClient` instances per workload (for example
+  `npc` with a 30s timeout and `moderation` with a 500ms timeout) and share one `HttpClient` via `.httpClient(shared)`
+  so slow streams never starve latency-sensitive calls; a shared client is not shut down by `AiClient.close()`.
 - **String payloads**: passing a `String` body sends it as UTF-8 JSON verbatim without invoking `AiCodec.encode`;
   requesting `String.class` returns the raw response body without invoking `AiCodec.decode`.
-- **Admission and shutdown**: calls beyond `maxInFlight` fail with `AI_OVERLOADED`; `close()` aborts in-flight calls
-  and rejects subsequent ones with `AI_CLOSED`.
+- **Admission, bounds and shutdown**: calls beyond `maxInFlight` fail with `AI_OVERLOADED`; unary responses over
+  `maxResponseBytes` (1 MiB default) or SSE events over `maxStreamEventChars` (256 KiB default) abort with
+  `AI_PROTOCOL_ERROR`; `close()` aborts in-flight calls and rejects subsequent ones with `AI_CLOSED`.
 
 ## Exposing game server methods as MCP tools (`@McpTool`)
 
@@ -86,20 +88,23 @@ record SendMail(
         @McpParam("Mail content") String content) {}
 
 class PlayerTools {
-    @McpTool(name = "query_bag", description = "Query a player's bag items", group = "npc", readOnly = true)
+    @McpTool(name = "query_bag", description = "Query a player's bag items",
+            group = "npc", readOnly = true, routeKey = "roleId")
     public BagView queryBag(
             @McpParam("Player role id") long roleId,
             @McpParam(value = "Optional category filter", required = false) String category) {
         return bags.snapshot(roleId, category);
     }
 
-    @McpTool(name = "send_mail", description = "Send a system mail to a player", group = "gm")
+    @McpTool(name = "send_mail", description = "Send a system mail to a player",
+            group = "gm", idempotent = true, routeKey = "roleId")
     public McpToolResult sendMail(SendMail mail) { ... }
 
     @McpTool(name = "online_count", description = "Count online players", group = "gm", readOnly = true)
     public int onlineCount() { return sessions.size(); }
 
-    @McpTool(name = "query_rank", description = "Query cross-server player rank", group = "npc", readOnly = true)
+    @McpTool(name = "query_rank", description = "Query cross-server player rank",
+            group = "npc", readOnly = true, routeKey = "roleId")
     public void queryRank(McpToolContext ctx, @McpParam("Player role id") long roleId) {
         worldRpc.queryRank(roleId, rank -> ctx.reply(rank));
     }
@@ -129,14 +134,22 @@ NetworkServer mcpServer = NetworkServer.start(8082,
   `context.fail`; a `void` method without it answers synchronously with `"ok"`; returning `McpToolResult.fail(...)`
   surfaces a tool error (`isError: true`); returning `null` from a non-`void` method is treated as a bug
   (`AI_TOOL_EXECUTION_ERROR`). Use `.resultAdapter(...)` when reusing existing methods returning `HttpResult` or
-  `HandleResult`, and `.timeout(...)` (closing `McpTools` at shutdown) to guard asynchronous tools against hanging.
+  `HandleResult`, `.maxInFlight(...)` (256 default) to protect game routes against runaway agents, and `.timeout(...)`
+  (closing `McpTools` at shutdown) to guard queued or asynchronous tools — a queued tool that times out before running
+  is skipped so side effects are not executed after timeout, while a non-idempotent mutating tool that times out after
+  starting tells the model its effect is unknown so it checks state instead of blindly retrying.
+- **Safety bounds and idempotency**: `McpHttpHandler.builder(tools).maxResultChars(...)` (256 KiB chars default)
+  turns oversized tool outputs into `isError: true` so the model narrows its query instead of blowing up its context.
+  Mark retry-safe mutating tools with `@McpTool(idempotent = true)` (`idempotentHint`) and deduplicate side-effectful
+  tools in game state by a `requestId` parameter.
 - **Interceptors (`McpToolInterceptor`)**: `allowList(headers, tool)` filters which tools appear in `tools/list` per
   caller; `before(call)` authorizes calls (returning `false` rejects with `AI_TOOL_REJECTED`); `after(call, result)`
   runs in reverse order on completion for auditing.
-- **With `managame-runtime`**: supply a `McpToolExecutor` that inspects `call.method()` (for example `@Domain`) and
-  `call.rawArguments()` / `call.singleArgument()`, submits the task to `runtime.execute`, and calls
-  `call.context().fail(...)` if the runtime refuses it. See `AiRuntimeIntegrationExampleTest` in `managame-example`
-  for a complete end-to-end sample.
+- **With `managame-runtime`**: name the route key in `@McpTool(routeKey = "roleId")` (a parameter or a member of a
+  single DTO, compiled into a `MethodHandle` at startup) and supply a `McpToolExecutor` that inspects `call.method()`
+  (for example `@Domain`) and `call.routeKey()`, submits a `GameTask` to `runtime.execute`, and fails `call.context()`
+  both when `execute` throws and in `GameTask.refused`. See `AiConfig` and `AiRuntimeIntegrationExampleTest` in
+  `managame-example` for a complete end-to-end sample.
 - **MCP protocol**: `McpHttpHandler` implements stateless Streamable HTTP (JSON-RPC 2.0 `initialize`,
   `notifications/initialized`, `ping`, `tools/list`, `tools/call`) compatible with Spring AI, LangChain4j, LangChain
   and the official MCP SDK (`2024-11-05` through `2025-11-25`). Unknown tools return JSON-RPC `-32602`; invalid
@@ -153,7 +166,8 @@ NetworkServer mcpServer = NetworkServer.start(8082,
   `managame.ai.client.latency` (`_bucket`, `_nanos`).
 - MCP metrics (`McpTools.builder().metrics(...)`): `managame.ai.mcp.calls` (`tool`), `managame.ai.mcp.failures`
   (`tool`), `managame.ai.mcp.rejected` (`tool`), `managame.ai.mcp.not_found`, `managame.ai.mcp.invalid_args`,
-  `managame.ai.mcp.latency` (`_bucket`, `_nanos`). No clock is read under `Metrics.noop()`.
+  `managame.ai.mcp.overloaded`, `managame.ai.mcp.in_flight`, `managame.ai.mcp.latency` (`_bucket`, `_nanos`). No clock
+  is read under `Metrics.noop()`.
 
 ## Build and test
 

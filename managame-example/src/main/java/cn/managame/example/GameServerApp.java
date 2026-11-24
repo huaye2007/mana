@@ -1,6 +1,7 @@
 package cn.managame.example;
 
 import cn.managame.example.ai.AiConfig;
+import cn.managame.example.ai.ContentSafetyFilter;
 import cn.managame.example.ai.NpcAiService;
 import cn.managame.example.ai.PlayerBagService;
 import cn.managame.example.data.DataConfig;
@@ -23,6 +24,7 @@ import org.springframework.context.annotation.Import;
         GameServerConfig.class,
         RpcConfig.class,
         AiConfig.class,
+        ContentSafetyFilter.class,
         LoginService.class,
         LoginHandle.class,
         EnterWorldHandle.class,

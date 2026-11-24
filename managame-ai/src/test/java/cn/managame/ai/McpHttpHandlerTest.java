@@ -70,7 +70,7 @@ class McpHttpHandlerTest {
             return new PlayerBag(roleId, Map.copyOf(bags.getOrDefault(roleId, Map.of())));
         }
 
-        @McpTool(name = "grant_item", description = "Grant an item to a player", group = "gm")
+        @McpTool(name = "grant_item", description = "Grant an item to a player", group = "gm", idempotent = true)
         public McpToolResult grantItem(GrantReq req) {
             if (req.count() > 10) return McpToolResult.fail(ITEM_FORBIDDEN, "Count exceeds limit of 10");
             Map<Integer, Integer> bag = bags.computeIfAbsent(req.roleId(), id -> new ConcurrentHashMap<>());
@@ -86,6 +86,11 @@ class McpHttpHandlerTest {
         @McpTool(name = "async_rank", description = "Query rank asynchronously", group = "npc", readOnly = true)
         public void asyncRank(McpToolContext ctx, @McpParam("Player role id") long roleId) {
             Thread.ofVirtual().start(() -> ctx.reply("Role " + roleId + " is #1"));
+        }
+
+        @McpTool(name = "dump_big", description = "Returns a huge payload", group = "gm", readOnly = true)
+        public String dumpBig() {
+            return "A".repeat(200);
         }
     }
 
@@ -167,12 +172,12 @@ class McpHttpHandlerTest {
 
         gameMcpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
                 HttpInitializer.http().contextPath("/mcp")
-                        .handler(McpHttpHandler.builder(tools).serverInfo("mana-game", "1.0.0").build())
+                        .handler(McpHttpHandler.builder(tools).serverInfo("mana-game", "1.0.0").maxResultChars(128).build())
                         .build());
 
         String gameBase = "http://127.0.0.1:" + gameMcpServer.port();
 
-        // 1. Official MCP SDK client (GM role: sees all 4 tools)
+        // 1. Official MCP SDK client (GM role: sees all 5 tools)
         HttpClientStreamableHttpTransport gmTransport = HttpClientStreamableHttpTransport.builder(gameBase)
                 .endpoint("/mcp")
                 .requestBuilder(HttpRequest.newBuilder().header("X-Caller", "gm"))
@@ -184,11 +189,20 @@ class McpHttpHandlerTest {
             gmClient.ping();
 
             McpSchema.ListToolsResult listed = gmClient.listTools();
-            assertEquals(4, listed.tools().size());
+            assertEquals(5, listed.tools().size());
             McpSchema.Tool queryBagTool = listed.tools().stream()
                     .filter(t -> t.name().equals("query_bag")).findFirst().orElseThrow();
             assertEquals(Boolean.TRUE, queryBagTool.annotations().readOnlyHint());
             assertEquals(List.of("roleId"), queryBagTool.inputSchema().required());
+
+            McpSchema.Tool grantTool = listed.tools().stream()
+                    .filter(t -> t.name().equals("grant_item")).findFirst().orElseThrow();
+            assertEquals(Boolean.TRUE, grantTool.annotations().idempotentHint());
+
+            // Oversized tool result (> maxResultChars) returns isError: true
+            McpSchema.CallToolResult tooBig = gmClient.callTool(new McpSchema.CallToolRequest("dump_big", Map.of()));
+            assertTrue(Boolean.TRUE.equals(tooBig.isError()));
+            assertTrue(((McpSchema.TextContent) tooBig.content().getFirst()).text().contains("exceeded limit"));
 
             // Call multi-param readOnly tool
             McpSchema.CallToolResult bagRes = gmClient.callTool(
@@ -229,7 +243,7 @@ class McpHttpHandlerTest {
                 .build();
         try (McpSyncClient npcClient = McpClient.sync(npcTransport).requestTimeout(Duration.ofSeconds(5)).build()) {
             npcClient.initialize();
-            assertEquals(2, npcClient.listTools().tools().size());
+            assertEquals(3, npcClient.listTools().tools().size());
             McpSchema.CallToolResult rejected = npcClient.callTool(
                     new McpSchema.CallToolRequest("grant_item", Map.of("roleId", 1001, "itemId", 100, "count", 1)));
             assertTrue(Boolean.TRUE.equals(rejected.isError()));

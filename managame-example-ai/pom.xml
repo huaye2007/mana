@@ -8,9 +8,10 @@
     <artifactId>managame-example-ai</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <description>
-        Standalone external AI service built purely on Spring Boot 4 and Spring AI 2 (ChatClient, ChatMemory,
-        Structured Output, SSE streaming and Streamable HTTP MCP Client), with zero compile dependency on managame.
-        Tests boot managame-example's real GameServerApp alongside this service to verify all end-to-end game AI flows.
+        Standalone external AI service built purely on Spring Boot 4 and Spring AI 2 (ChatClient, JDBC ChatMemory,
+        Structured Output, SSE streaming and multi-server Streamable HTTP MCP Client), with zero compile dependency on
+        managame. Tests boot real managame-example GameServerApp instances alongside this service to verify all
+        end-to-end game AI lifecycle flows.
     </description>
 
     <properties>
@@ -61,17 +62,21 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-mcp-client</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-chat-memory-repository-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
 
         <!-- Test scope only: boots the real managame-example GameServerApp to run end-to-end tests -->
         <dependency>
             <groupId>cn.managame</groupId>
             <artifactId>managame-example</artifactId>
             <version>1.0.0-SNAPSHOT</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

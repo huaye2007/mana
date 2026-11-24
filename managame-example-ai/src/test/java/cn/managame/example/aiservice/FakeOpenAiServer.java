@@ -83,8 +83,11 @@ final class FakeOpenAiServer implements AutoCloseable {
             }
 
             if (stream) {
-                boolean slow = lastContent.contains("slow stream");
-                sendStream(ctx, slow);
+                if (lastContent.contains("dirty stream")) {
+                    sendStream(ctx, List.of("小心私", "服骗子"), false);
+                } else {
+                    sendStream(ctx, List.of("欢迎", "来到", "铁匠铺"), lastContent.contains("slow stream"));
+                }
                 return;
             }
 
@@ -104,15 +107,26 @@ final class FakeOpenAiServer implements AutoCloseable {
                 return;
             }
             if (lastContent.contains("grant 50 gold")) {
-                sendJson(ctx, toolCallCompletion("grant_item", "{\"roleId\":1001,\"itemId\":0,\"count\":50}"));
+                sendJson(ctx, toolCallCompletion("grant_item",
+                        "{\"opId\":\"gm-op-50\",\"roleId\":1001,\"itemId\":0,\"count\":50}"));
+                return;
+            }
+            if (lastContent.contains("grant 80 gold")) {
+                sendJson(ctx, toolCallCompletion("grant_item",
+                        "{\"opId\":\"gm-op-80\",\"roleId\":1001,\"itemId\":0,\"count\":80}"));
                 return;
             }
             if (lastContent.contains("grant 999 gold")) {
-                sendJson(ctx, toolCallCompletion("grant_item", "{\"roleId\":1001,\"itemId\":0,\"count\":999}"));
+                sendJson(ctx, toolCallCompletion("grant_item",
+                        "{\"opId\":\"gm-op-999\",\"roleId\":1001,\"itemId\":0,\"count\":999}"));
                 return;
             }
             if (lastContent.contains("online count")) {
                 sendJson(ctx, toolCallCompletion("online_count", "{}"));
+                return;
+            }
+            if (lastContent.contains("dirty chat")) {
+                sendJson(ctx, textCompletion("别信外挂和私服广告"));
                 return;
             }
 
@@ -141,8 +155,7 @@ final class FakeOpenAiServer implements AutoCloseable {
         }
     }
 
-    private void sendStream(ChannelHandlerContext ctx, boolean slow) throws InterruptedException {
-        List<String> tokens = List.of("欢迎", "来到", "铁匠铺");
+    private void sendStream(ChannelHandlerContext ctx, List<String> tokens, boolean slow) throws InterruptedException {
         ctx.channel().eventLoop().execute(() -> {
             DefaultHttpResponse headers = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
             headers.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");

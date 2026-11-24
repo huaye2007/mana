@@ -4,7 +4,17 @@ server:
 spring:
   application:
     name: managame-example-ai
+  datasource:
+    # 默认内置 H2 开箱即用；生产多实例部署可切换为共享 MySQL（SPRING_DATASOURCE_URL=jdbc:mysql://...）
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:spring_ai_memory;DB_CLOSE_DELAY=-1}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
   ai:
+    chat:
+      memory:
+        repository:
+          jdbc:
+            initialize-schema: always
     openai:
       # OpenAI 兼容端点：可直接切换到 DeepSeek / 通义千问 / Ollama / OpenAI
       # DeepSeek: https://api.deepseek.com   通义: https://dashscope.aliyuncs.com/compatible-mode   Ollama: http://127.0.0.1:11434
@@ -15,17 +25,15 @@ spring:
           model: ${OPENAI_MODEL:deepseek-chat}
     mcp:
       client:
-        enabled: true
-        type: SYNC
-        request-timeout: 15s
-        toolcallback:
-          enabled: false
-        streamable-http:
-          connections:
-            game:
-              url: ${GAME_MCP_URL:http://127.0.0.1:8082}
-              endpoint: /mcp
+        # 禁用单地址启动期强连，由 GameServerMcpRegistry 按 serverId 懒加载维护多区服 MCP 客户端与工具目录刷新
+        enabled: false
 
 game:
   mcp:
+    default-url: ${GAME_MCP_URL:http://127.0.0.1:8082}
+    endpoint: /mcp
     token: ${GAME_MCP_TOKEN:dev-mcp-token}
+    gm-token: ${GAME_MCP_GM_TOKEN:}
+    request-timeout: 15s
+    # 多区服路由示例：game.mcp.servers.2=http://10.0.0.2:8082, game.mcp.servers.3=http://10.0.0.3:8082
+    servers: {}

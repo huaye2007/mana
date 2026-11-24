@@ -5,8 +5,9 @@ import cn.managame.ai.mcp.McpToolCall;
 /**
  * Dispatches an {@link cn.managame.ai.mcp.McpTools} invocation onto the application's execution model. By default tools
  * run on virtual threads ({@link #virtualThreads()}); an application on {@code managame-runtime} supplies an executor
- * that inspects {@code call.method()} and {@code call.rawArguments()} (or {@code call.singleArgument()}) and submits
- * {@code task} to {@code GameRuntime.execute}, calling {@code call.context().fail(...)} if the runtime refuses it.
+ * that inspects {@code call.method()} and {@code call.routeKey()} (compiled from
+ * {@link cn.managame.ai.annotation.McpTool#routeKey()}) and submits {@code task} to {@code GameRuntime.execute},
+ * failing {@code call.context()} both when {@code execute} throws and in {@code GameTask.refused}.
  */
 @FunctionalInterface
 public interface McpToolExecutor {

@@ -36,4 +36,21 @@ public @interface McpTool {
 
     /** Marks the tool as non-mutating: sets MCP {@code annotations.readOnlyHint=true} and is visible to interceptors. */
     boolean readOnly() default false;
+
+    /**
+     * Marks a mutating tool as safe to retry with the same arguments (for example when guarded by a request id): sets
+     * MCP {@code annotations.idempotentHint=true}. A mutating tool that is not idempotent and times out after it
+     * started is answered with a text telling the model its effect is unknown, so it checks before calling again.
+     */
+    boolean idempotent() default false;
+
+    /**
+     * Names the argument holding the key of the route this tool runs on, for an executor that runs tools on routes
+     * (such as one submitting to {@code GameRuntime}): a parameter of the method, or a member of its single DTO (a
+     * no-argument method of that name, its getter or a field). It must be an integral type or its box. Compiled at
+     * registration, so a missing member fails at startup and a call pays one read; the executor gets it from
+     * {@link cn.managame.ai.mcp.McpToolCall#routeKey()}. Empty (the default) names none. The framework does not
+     * interpret the key.
+     */
+    String routeKey() default "";
 }

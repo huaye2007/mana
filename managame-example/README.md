@@ -10,7 +10,7 @@ Reference game server application assembled with plain Spring (`spring-context`)
   ```
   -Drpc.node=1 -Drpc.port=7101
   ```
-- [GameServerApp](src/main/java/cn/managame/example/GameServerApp.java): game server process wiring `DataConfig`, `GameServerConfig`, `RpcConfig`, `AiConfig` (`AiClient`, `@McpTool` endpoint with Bearer token auth and `GameRuntime` routing) and login/world/AI handlers. Spring closes beans in reverse dependency order (`McpEndpoint / AiClient / NetworkServer / RpcNode -> GameRuntime -> GameData -> DataSource`).
+- [GameServerApp](src/main/java/cn/managame/example/GameServerApp.java): game server process wiring `DataConfig` (`UserRepository`, `PlayerAiStateRepository`, `AiAuditLogRepository`), `GameServerConfig`, `RpcConfig`, `AiConfig` (`AiClient` with `X-Game-Server-Id`, `@McpTool(routeKey = ...)` endpoint with independent NPC/GM Bearer token rotation, `GameTask.refused` handling and write-tool audit logging) and login/world/AI services (`NpcAiService` with persisted dialogue epochs, per-player quota/cooldown, disconnect stream cancellation, sensitive-word filtering and degrade switch). Lifecycle is ordered via `SmartLifecycle` and `@DependsOn` (`McpEndpoint.stop -> NetworkServer / RpcNode -> AiClient / McpTools -> GameRuntime -> GameData -> DataSource`).
   ```
   -Drpc.node=2 -Drpc.peers=1=127.0.0.1:7101 -Dgame.port=7001 -Dai.mcp.port=8082 -Dai.service.url=http://127.0.0.1:8081/api/ai -Dmysql.user=root -Dmysql.password=...
   ```
@@ -25,4 +25,4 @@ mvn -o install "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
 - `GameServerIntegrationTest` boots both `WorldServerApp` and `GameServerApp` (with H2 in MySQL mode) over real loopback TCP/RPC sockets and verifies login, persistence and cross-process RPC end to end.
-- `AiRuntimeIntegrationExampleTest` verifies `GameRuntime` + `managame-ai` wiring on its own; pair with [managame-example-ai](../managame-example-ai/README.md) to run end-to-end against a real Spring Boot + Spring AI external service.
+- `AiRuntimeIntegrationExampleTest` verifies `GameRuntime` + `managame-ai` wiring (`@McpTool(routeKey = ...)`, `GameTask.refused`, `opId` idempotency, streaming content filter and decision fallback); pair with [managame-example-ai](../managame-example-ai/README.md) to run the full multi-server lifecycle suite against a real Spring Boot + Spring AI external service.

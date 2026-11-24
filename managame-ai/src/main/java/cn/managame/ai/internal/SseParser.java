@@ -11,12 +11,17 @@ import java.util.function.Consumer;
 
 /**
  * Incremental W3C Server-Sent Events parser. Decodes arbitrary byte chunks (including multi-byte UTF-8 sequences
- * split across buffers) line by line and emits one {@link AiStreamEvent} per blank-line boundary. Not thread-safe:
- * called sequentially from one stream subscriber. Public only to be reachable across packages; not API.
+ * split across buffers) line by line and emits one {@link AiStreamEvent} per blank-line boundary, bounding line and
+ * event payload sizes to prevent unbounded heap growth on malformed streams. Not thread-safe: called sequentially
+ * from one stream subscriber. Public only to be reachable across packages; not API.
  */
 public final class SseParser {
+    public static final int DEFAULT_MAX_EVENT_CHARS = 256 * 1024;
+    private static final int LINE_HEADER_SLACK = 64;
     private static final int CHAR_BUFFER_SIZE = 1024;
     private final Consumer<AiStreamEvent> sink;
+    private final int maxEventChars;
+    private final int maxLineChars;
     private final CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
             .onMalformedInput(CodingErrorAction.REPLACE)
             .onUnmappableCharacter(CodingErrorAction.REPLACE);
@@ -31,7 +36,14 @@ public final class SseParser {
     private String lastEventId = "";
 
     public SseParser(Consumer<AiStreamEvent> sink) {
+        this(sink, DEFAULT_MAX_EVENT_CHARS);
+    }
+
+    public SseParser(Consumer<AiStreamEvent> sink, int maxEventChars) {
+        if (maxEventChars <= 0) throw new IllegalArgumentException("maxEventChars must be positive");
         this.sink = sink;
+        this.maxEventChars = maxEventChars;
+        this.maxLineChars = (int) Math.min(Integer.MAX_VALUE, (long) maxEventChars + LINE_HEADER_SLACK);
     }
 
     public void feed(ByteBuffer chunk) {
@@ -100,6 +112,9 @@ public final class SseParser {
                 processLine(line.toString());
                 line.setLength(0);
             } else {
+                if (line.length() >= maxLineChars) {
+                    throw new IllegalArgumentException("SSE line exceeded max size (" + maxLineChars + " chars)");
+                }
                 line.append(c);
             }
         }
@@ -125,6 +140,10 @@ public final class SseParser {
         }
         switch (field) {
             case "data" -> {
+                int added = value.length() + (hasData ? 1 : 0);
+                if (data.length() + added > maxEventChars) {
+                    throw new IllegalArgumentException("SSE event exceeded max size (" + maxEventChars + " chars)");
+                }
                 if (hasData) data.append('\n');
                 data.append(value);
                 hasData = true;

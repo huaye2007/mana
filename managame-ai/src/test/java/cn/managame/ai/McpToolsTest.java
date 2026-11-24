@@ -1,5 +1,7 @@
 package cn.managame.ai;
 
+import static cn.managame.FrameworkErrorCodes.AI_CLOSED;
+import static cn.managame.FrameworkErrorCodes.AI_OVERLOADED;
 import static cn.managame.FrameworkErrorCodes.AI_TIMEOUT;
 import static cn.managame.FrameworkErrorCodes.AI_TOOL_EXECUTION_ERROR;
 import static cn.managame.FrameworkErrorCodes.AI_TOOL_INVALID_ARGS;
@@ -31,6 +33,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -50,6 +54,18 @@ class McpToolsTest {
         @McpParam("Target id") public long id;
         public String label;
     }
+
+    static class FieldDto {
+        public Long targetRole;
+    }
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final AiCodec JACKSON_CODEC = new AiCodec() {
+        @Override public String encode(Object v) throws Exception { return MAPPER.writeValueAsString(v); }
+        @Override public Object decode(String j, Type t) throws Exception {
+            return MAPPER.readValue(j, MAPPER.constructType(t));
+        }
+    };
 
     static class GameTools {
         final List<Long> kicked = new ArrayList<>();
@@ -319,7 +335,151 @@ class McpToolsTest {
 
             McpToolResult timedOut = invokeSync(tools, "never_replies", "{}");
             assertEquals(AI_TIMEOUT, timedOut.code());
+            assertTrue(timedOut.message().contains("may still take effect"),
+                    "Started non-idempotent mutating tool timeout must warn model not to blindly retry: " + timedOut.message());
         }
+    }
+
+    @Test void queuedTimeoutSkipsSideEffectsAndMaxInFlightAndClose() throws Exception {
+        AtomicBoolean sideEffectRan = new AtomicBoolean();
+        AtomicBoolean beforeRan = new AtomicBoolean();
+        AtomicReference<Runnable> deferredTask = new AtomicReference<>();
+
+        class MutatingTools {
+            @McpTool(name = "grant_once", description = "Idempotent mutating tool", idempotent = true)
+            public String grantOnce() {
+                sideEffectRan.set(true);
+                return "granted";
+            }
+
+            @McpTool(name = "hold", description = "Async holding tool")
+            public void hold(McpToolContext ctx) {
+                heldContext.set(ctx);
+            }
+
+            final AtomicReference<McpToolContext> heldContext = new AtomicReference<>();
+        }
+
+        MutatingTools target = new MutatingTools();
+        AiClientTest.RecordingMetrics metrics = new AiClientTest.RecordingMetrics();
+        McpTools tools = McpTools.builder()
+                .timeout(Duration.ofMillis(80))
+                .maxInFlight(1)
+                .metrics(metrics)
+                .executor((call, task) -> {
+                    if ("grant_once".equals(call.toolName())) deferredTask.set(task);
+                    else task.run();
+                })
+                .intercept(List.of(new McpToolInterceptor() {
+                    @Override public boolean before(McpToolCall call) {
+                        if ("grant_once".equals(call.toolName())) beforeRan.set(true);
+                        return true;
+                    }
+                }))
+                .register(List.of(target))
+                .build();
+
+        assertTrue(tools.definitions().stream().filter(d -> d.name().equals("grant_once")).findFirst().orElseThrow().idempotent());
+
+        // 1. Queued tool times out before executor runs it -> running deferred task later MUST NOT execute side effects
+        CompletableFuture<McpToolResult> timedOut = new CompletableFuture<>();
+        tools.call("grant_once", "{}", timedOut::complete);
+        McpToolResult queuedTimeout = timedOut.get(5, TimeUnit.SECONDS);
+        assertEquals(AI_TIMEOUT, queuedTimeout.code());
+        assertTrue(queuedTimeout.message().contains("before it started; it will not run"), queuedTimeout.message());
+        assertNotNull(deferredTask.get());
+        deferredTask.get().run();
+        assertFalse(beforeRan.get(), "before interceptor must not run after call already timed out");
+        assertFalse(sideEffectRan.get(), "tool side effect must not run after call already timed out");
+        assertEquals(0, tools.inFlight());
+
+        // 2. maxInFlight=1 rejects 2nd concurrent call with AI_OVERLOADED
+        McpTools limited = McpTools.builder()
+                .maxInFlight(1)
+                .executor(McpToolExecutor.direct())
+                .metrics(metrics)
+                .register(List.of(target))
+                .build();
+        CompletableFuture<McpToolResult> first = new CompletableFuture<>();
+        limited.call("hold", "{}", first::complete);
+        assertEquals(1, limited.inFlight());
+
+        McpToolResult second = invokeSync(limited, "hold", "{}");
+        assertEquals(AI_OVERLOADED, second.code());
+        assertEquals(1L, metrics.counterValue("managame.ai.mcp.overloaded", ""));
+
+        target.heldContext.get().reply("done");
+        assertEquals("done", first.get(5, TimeUnit.SECONDS).data());
+        assertEquals(0, limited.inFlight());
+
+        // 3. Close rejects subsequent calls with AI_CLOSED
+        tools.close();
+        limited.close();
+        assertTrue(limited.isClosed());
+        assertEquals(AI_CLOSED, invokeSync(limited, "grant_once", "{}").code());
+    }
+
+    @Test void routeKeyCompiledAndValidatedAtRegistration() throws Exception {
+        record GuildCmd(int guildId, String notice) {}
+
+        class RoutedTools {
+            @McpTool(name = "by_param", description = "Routed by parameter", routeKey = "roleId", readOnly = true)
+            public long byParam(@McpParam("player") long roleId, @McpParam("tag") String tag) { return roleId; }
+
+            @McpTool(name = "by_dto", description = "Routed by record component", routeKey = "guildId")
+            public int byDto(GuildCmd cmd) { return cmd.guildId(); }
+
+            @McpTool(name = "by_field", description = "Routed by POJO field", routeKey = "targetRole")
+            public long byField(FieldDto dto) { return dto.targetRole; }
+
+            @McpTool(name = "unrouted", description = "No route key", readOnly = true)
+            public String unrouted() { return "ok"; }
+        }
+
+        List<String> observedRoutes = new ArrayList<>();
+        try (McpTools tools = McpTools.builder()
+                .codec(JACKSON_CODEC)
+                .executor((call, task) -> {
+                    observedRoutes.add(call.toolName() + ":" + call.hasRouteKey() + ":" + call.routeKey());
+                    task.run();
+                })
+                .register(List.of(new RoutedTools()))
+                .build()) {
+            assertEquals(1001L, invokeSync(tools, "by_param", "{\"roleId\":1001,\"tag\":\"hi\"}").data());
+            assertEquals(77, invokeSync(tools, "by_dto", "{\"guildId\":77,\"notice\":\"war\"}").data());
+            assertEquals(2002L, invokeSync(tools, "by_field", "{\"targetRole\":2002}").data());
+            assertEquals("ok", invokeSync(tools, "unrouted", "{}").data());
+            assertEquals(List.of(
+                    "by_param:true:1001",
+                    "by_dto:true:77",
+                    "by_field:true:2002",
+                    "unrouted:false:0"), observedRoutes);
+
+            // Null boxed route key fails with AI_TOOL_INVALID_ARGS before reaching executor
+            assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "by_field", "{}").code());
+        }
+
+        // Startup validation: missing param, missing DTO member, zero-arg with routeKey, non-integral routeKey
+        class BadMissingParam {
+            @McpTool(description = "bad", routeKey = "noSuch")
+            public void f(@McpParam("x") long roleId) {}
+        }
+        class BadMissingMember {
+            @McpTool(description = "bad", routeKey = "noSuch")
+            public void f(GuildCmd cmd) {}
+        }
+        class BadZeroArg {
+            @McpTool(description = "bad", routeKey = "roleId")
+            public void f() {}
+        }
+        class BadType {
+            @McpTool(description = "bad", routeKey = "tag")
+            public void f(@McpParam("tag") String tag) {}
+        }
+        assertThrows(IllegalArgumentException.class, () -> McpTools.builder().register(List.of(new BadMissingParam())));
+        assertThrows(IllegalArgumentException.class, () -> McpTools.builder().register(List.of(new BadMissingMember())));
+        assertThrows(IllegalArgumentException.class, () -> McpTools.builder().register(List.of(new BadZeroArg())));
+        assertThrows(IllegalArgumentException.class, () -> McpTools.builder().register(List.of(new BadType())));
     }
 
     private static McpToolResult invokeSync(McpTools tools, String name, String argsJson) throws Exception {

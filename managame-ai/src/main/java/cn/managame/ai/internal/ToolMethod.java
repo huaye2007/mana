@@ -8,6 +8,7 @@ import cn.managame.ai.mcp.McpToolDefinition;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
@@ -40,9 +41,13 @@ public final class ToolMethod {
     private final Type dtoType;
     private final List<JsonSchema.ParamSpec> params;
     private final MethodHandle handle;
+    /** {@code (Object) long} reading the route key from the DTO, or from the parameter at {@link #routeKeyIndex}. */
+    private final MethodHandle routeKeyReader;
+    private final int routeKeyIndex;
 
     private ToolMethod(Method method, McpToolDefinition definition, Shape shape, boolean takesContext,
-            boolean returnsVoid, Type dtoType, List<JsonSchema.ParamSpec> params, MethodHandle handle) {
+            boolean returnsVoid, Type dtoType, List<JsonSchema.ParamSpec> params, MethodHandle handle,
+            MethodHandle routeKeyReader, int routeKeyIndex) {
         this.method = method;
         this.definition = definition;
         this.shape = shape;
@@ -51,6 +56,8 @@ public final class ToolMethod {
         this.dtoType = dtoType;
         this.params = params;
         this.handle = handle;
+        this.routeKeyReader = routeKeyReader;
+        this.routeKeyIndex = routeKeyIndex;
     }
 
     /** Scans {@code target} and its superclasses for {@link McpTool} methods, in name order, compiling each once. */
@@ -121,10 +128,74 @@ public final class ToolMethod {
             schema = JsonSchema.forParameters(paramSpecs);
         }
 
-        McpToolDefinition def = new McpToolDefinition(name, ann.description(), ann.group(), ann.readOnly(), schema);
+        McpToolDefinition def = new McpToolDefinition(name, ann.description(), ann.group(),
+                ann.readOnly(), ann.idempotent(), schema);
         MethodHandle handle = buildHandle(target, method, shape, takesContext, argCount);
+        MethodHandle routeKeyReader = null;
+        int routeKeyIndex = -1;
+        String routeKey = ann.routeKey();
+        if (!routeKey.isEmpty()) {
+            switch (shape) {
+                case ZERO_ARG -> throw invalid(method, "routes by " + routeKey + " but takes no arguments");
+                case SINGLE_DTO -> routeKeyReader = routeKeyReader(method, allParams[start].getType(), routeKey);
+                case PARAMS -> {
+                    for (int i = 0; i < paramSpecs.size(); i++) {
+                        if (paramSpecs.get(i).name().equals(routeKey)) routeKeyIndex = i;
+                    }
+                    if (routeKeyIndex < 0) throw invalid(method, "routes by " + routeKey + ", which is none of its parameters");
+                    Class<?> type = paramSpecs.get(routeKeyIndex).rawType();
+                    try {
+                        routeKeyReader = routeKeyType(MethodHandles.identity(type));
+                    } catch (RuntimeException e) {
+                        throw new IllegalArgumentException(describe(method) + " cannot route by parameter " + routeKey
+                                + ": it must be an integral type or its box", e);
+                    }
+                }
+            }
+        }
         return new ToolMethod(method, def, shape, takesContext, method.getReturnType() == void.class,
-                dtoType, paramSpecs, handle);
+                dtoType, paramSpecs, handle, routeKeyReader, routeKeyIndex);
+    }
+
+    /**
+     * {@code (Object) long} reading {@code name} from a {@code type}: a no-argument method of that name, else its getter
+     * {@code getName()}, else a field, declared by the type or a superclass.
+     */
+    private static MethodHandle routeKeyReader(Method tool, Class<?> type, String name) {
+        String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            Method found = null;
+            for (Method m : current.getDeclaredMethods()) {
+                if (m.getParameterCount() != 0 || Modifier.isStatic(m.getModifiers())) continue;
+                if (m.getName().equals(name)) found = m;
+                else if (found == null && m.getName().equals(getter)) found = m;
+            }
+            try {
+                if (found != null) {
+                    found.setAccessible(true);
+                    return routeKeyType(MethodHandles.lookup().unreflect(found));
+                }
+                for (Field field : current.getDeclaredFields()) {
+                    if (field.getName().equals(name) && !Modifier.isStatic(field.getModifiers())) {
+                        field.setAccessible(true);
+                        return routeKeyType(MethodHandles.lookup().unreflectGetter(field));
+                    }
+                }
+            } catch (IllegalAccessException | RuntimeException e) {
+                throw new IllegalArgumentException(describe(tool) + " cannot route by " + type.getName() + "." + name
+                        + ": it must be an integral type or its box", e);
+            }
+        }
+        throw invalid(tool, "routes by " + name + ", which " + type.getName() + " has neither as a method, getter nor field");
+    }
+
+    private static MethodHandle routeKeyType(MethodHandle reader) {
+        Class<?> type = reader.type().returnType();
+        if (type == float.class || type == double.class || type == boolean.class || type == char.class
+                || type == Float.class || type == Double.class || type == Boolean.class || type == Character.class) {
+            throw new IllegalArgumentException("not an integral type: " + type.getName());
+        }
+        return reader.asType(MethodType.methodType(long.class, Object.class));
     }
 
     private static MethodHandle buildHandle(Object target, Method method, Shape shape,
@@ -188,6 +259,29 @@ public final class ToolMethod {
     public boolean isAsync() { return returnsVoid && takesContext; }
 
     public boolean returnsVoid() { return returnsVoid; }
+
+    /** Whether the tool names a route key with {@link McpTool#routeKey()}. */
+    public boolean hasRouteKey() { return routeKeyReader != null; }
+
+    /**
+     * Reads the route key from arguments decoded by {@link #decodeArguments}; IllegalArgumentException when it is
+     * null. Only for a tool that {@link #hasRouteKey()}.
+     */
+    public long routeKey(Object[] decodedArgs) {
+        Object source = routeKeyIndex >= 0 ? decodedArgs[routeKeyIndex] : decodedArgs[0];
+        if (source == null || source instanceof Optional<?>) {
+            throw new IllegalArgumentException("Missing route key '" + method.getAnnotation(McpTool.class).routeKey() + "'");
+        }
+        try {
+            return (long) routeKeyReader.invokeExact(source);
+        } catch (NullPointerException missing) {
+            throw new IllegalArgumentException("Missing route key '" + method.getAnnotation(McpTool.class).routeKey() + "'");
+        } catch (RuntimeException | Error e) {
+            throw e;
+        } catch (Throwable e) {
+            throw new UndeclaredThrowableException(e);
+        }
+    }
 
     /** Decodes raw JSON arguments into the Java argument array passed to {@link #invoke}. */
     public Object[] decodeArguments(Map<String, Object> rawArguments, String rawJson, AiCodec codec) throws Exception {

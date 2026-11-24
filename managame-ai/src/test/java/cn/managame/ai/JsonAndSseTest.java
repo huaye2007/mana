@@ -94,4 +94,24 @@ class JsonAndSseTest {
         assertEquals(new AiStreamEvent("done", "[END]", "1"), events.get(2));
         assertTrue(events.stream().noneMatch(e -> e.data().contains("keep-alive")));
     }
+
+    @Test void sseParserRejectsOversizedLineAndEvent() {
+        SseParser lineBounded = new SseParser(e -> {}, 16);
+        IllegalArgumentException lineEx = assertThrows(IllegalArgumentException.class,
+                () -> lineBounded.feed(ByteBuffer.wrap((": " + "x".repeat(100) + "\n").getBytes(StandardCharsets.UTF_8))));
+        assertTrue(lineEx.getMessage().contains("SSE line exceeded"));
+
+        // Exact maxEventChars payload on one line succeeds (field prefix does not eat into event payload budget)
+        List<AiStreamEvent> exact = new ArrayList<>();
+        SseParser exactBounded = new SseParser(exact::add, 10);
+        exactBounded.feed(ByteBuffer.wrap("data: 1234567890\n\n".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(List.of(new AiStreamEvent("message", "1234567890", "")), exact);
+
+        // Multi-line accumulation exceeding maxEventChars fails cleanly
+        SseParser eventBounded = new SseParser(e -> {}, 10);
+        eventBounded.feed(ByteBuffer.wrap("data: 123456\n".getBytes(StandardCharsets.UTF_8)));
+        IllegalArgumentException eventEx = assertThrows(IllegalArgumentException.class,
+                () -> eventBounded.feed(ByteBuffer.wrap("data: 78901\n\n".getBytes(StandardCharsets.UTF_8))));
+        assertTrue(eventEx.getMessage().contains("SSE event exceeded"));
+    }
 }

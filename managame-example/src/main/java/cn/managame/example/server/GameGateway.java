@@ -12,6 +12,7 @@ import cn.managame.runtime.dispatch.Dispatcher;
 import com.google.protobuf.Message;
 import io.netty.util.AttributeKey;
 import java.lang.System.Logger.Level;
+import java.util.function.LongConsumer;
 
 /**
  * 服务器的连接处理：每个连接一个 {@link Session}，把解码出的 GamePacket 的 body 连同按会话建立的上下文交给 Dispatcher，
@@ -19,17 +20,23 @@ import java.lang.System.Logger.Level;
  * 错误码为 0。seq 为 0 的消息不需要应答。
  *
  * <p>登录应答 LoginRes 写出之前，先把角色绑定到连接的 Session 上，所以客户端收到登录成功后发的请求都以这个角色执行。
- * 绑定连接是网关的事，登录处理器只管返回 LoginRes。连接不可写时 network 拒绝写，这条应答就丢了。
+ * 绑定连接是网关的事，登录处理器只管返回 LoginRes。连接断开时，经 {@code GameRuntime.handOn} 清理角色在途状态（如取消流式 AI 对话）。
  */
 public final class GameGateway implements ConnectionHandler {
     private static final System.Logger LOG = System.getLogger(GameGateway.class.getName());
     private static final AttributeKey<Session> SESSION = AttributeKey.valueOf("example.session");
     private final Dispatcher dispatcher;
     private final Protocols protocols;
+    private final LongConsumer onRoleDisconnect;
 
     public GameGateway(Dispatcher dispatcher, Protocols protocols) {
+        this(dispatcher, protocols, roleId -> {});
+    }
+
+    public GameGateway(Dispatcher dispatcher, Protocols protocols, LongConsumer onRoleDisconnect) {
         this.dispatcher = dispatcher;
         this.protocols = protocols;
+        this.onRoleDisconnect = onRoleDisconnect != null ? onRoleDisconnect : roleId -> {};
     }
 
     @Override public void onActive(Connection connection) { connection.set(SESSION, new Session(connection, 0)); }
@@ -53,7 +60,10 @@ public final class GameGateway implements ConnectionHandler {
     }
 
     @Override public void onInActive(Connection connection) {
-        // 下线：角色登录过时，在这里把下线消息交给 Dispatcher（保存、离开场景等）
+        Session session = connection.get(SESSION);
+        if (session != null && session.roleId() != 0) {
+            onRoleDisconnect.accept(session.roleId());
+        }
     }
 
     @Override public void onException(Connection connection, Throwable cause) {

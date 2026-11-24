@@ -2,48 +2,34 @@ English | [中文](README.zh-CN.md)
 
 # managame-example-ai
 
-Standalone external AI service built purely on **Spring Boot 4** and **Spring AI 2** (`spring-ai-starter-model-openai` +
-`spring-ai-starter-mcp-client`) with **zero compile dependency on managame**, paired with
-[managame-example](../managame-example/README.md) (`GameServerApp`) over HTTP/SSE and standard **MCP Streamable HTTP**.
+Standalone external AI service built purely on **Spring Boot 4** and **Spring AI 2** (`spring-ai-starter-model-openai`, `spring-ai-starter-mcp-client`, `spring-ai-starter-model-chat-memory-repository-jdbc`) with **zero compile dependency on managame**, paired with [managame-example](../managame-example/README.md) (`GameServerApp`) over HTTP/SSE and standard **MCP Streamable HTTP**.
 
 ## Architecture
 
 ```
-managame-example (GameServerApp)                managame-example-ai (Spring Boot + Spring AI)
-  GameRuntime (PLAYER routes)                     GameAiController (/api/ai)
-   ├── NpcAiService ──AiClient (HTTP / SSE)────▶   ├── POST /npc/chat   (ChatClient + ChatMemory + npcTools)
-   │     (Continuation resumes player route)       ├── POST /npc/stream (ChatClient.stream -> SseEmitter)
-   │                                               ├── POST /npc/decide (ChatClient.entity Structured Output)
-   │                                               ├── POST /gm/ask     (ChatClient + gmTools)
-   │                                               └── DELETE /sessions/{id} (chatMemory.clear)
+managame-example (GameServerApp #2 / #3 ...)     managame-example-ai (Spring Boot + Spring AI)
+  GameRuntime (PLAYER routes) + GameData           GameAiController (/api/ai) + JDBC ChatMemory
+   ├── NpcAiService ──AiClient (HTTP / SSE)────▶    ├── POST /npc/chat   (JDBC ChatMemory + server-routed npcTools)
+   │     (Continuation + filter + quota + audit)    ├── POST /npc/stream (ChatClient.stream -> SseEmitter)
+   │                                                ├── POST /npc/decide (ChatClient.entity Structured Output)
+   │                                                ├── POST /gm/ask     (target serverId + gmTools)
+   │                                                ├── DELETE /sessions/{id} & /players/{prefix}
+   │                                                └── POST /admin/mcp/refresh (invalidate tools/list cache)
    └── /mcp (BearerTokenAuthHandler + McpHttpHandler)
-         ▲  MCP Streamable HTTP (JSON-RPC 2.0)       │
-         └── Authorization + X-Caller + X-Role-Id ◀──┴── McpSyncHttpClientRequestCustomizer
+         ▲  MCP Streamable HTTP (JSON-RPC 2.0)        │
+         └── NPC/GM Bearer + X-Caller + X-Role-Id ◀───┴── GameServerMcpRegistry (per-server lazy McpSyncClient)
 ```
 
-## Scenarios Demonstrated
+## Full Lifecycle Capabilities Demonstrated
 
-1. **Bearer token protection on `/mcp`**: unauthenticated requests are rejected with HTTP `401` by
-   `BearerTokenAuthHandler` before reaching `McpHttpHandler`.
-2. **NPC multi-turn chat + per-player / per-NPC isolation + MCP callback**:
-   - `sessionId = "npc:" + roleId + ":" + npcId + ":" + epoch` isolates `ChatMemory` across players and NPCs.
-   - Spring AI automatically discovers and invokes the game server's `@McpTool("query_bag")` on the target player's
-     `GameRuntime` route, carrying `X-Role-Id` via `McpSyncHttpClientRequestCustomizer`.
-   - Prompt-injection attempts to query another player's bag are rejected by the game server's `McpToolInterceptor`
-     (`isError: true`).
-   - `resetDialogue` bumps the game-side epoch and calls `DELETE /api/ai/sessions/{id}`.
-3. **SSE streaming + cancellation**: Spring AI streams tokens through `SseEmitter`; calling `AiCall.cancel()` on the
-   game server stops generation immediately.
-4. **Structured option decision + fallback**: Spring AI uses `.call().entity(NpcDecideRes.class)`; the game server
-   validates the chosen enum back on the player's route and falls back to rule-based logic on timeout or disallowed
-   choices.
-5. **GM natural-language ops**: `/gm/ask` uses `X-Caller: gm` to invoke `online_count` and `grant_item` (which reuses
-   an `@HttpMethod` returning `HttpResult`, mapped via `resultAdapter` to MCP `isError: true` on rule violations).
+1. **Separated NPC/GM tokens & zero-downtime key rotation**: `BearerTokenAuthHandler` blocks unauthenticated requests and prevents an NPC token from forging `X-Caller: gm`, while supporting multi-token rotation windows.
+2. **Multi-server MCP routing & hot catalog refresh**: `GameServerMcpRegistry` lazily connects to each game server (`game.mcp.servers.<serverId>`) so the AI service can boot before game servers and route MCP calls (`query_bag`, `grant_item`) to the exact server hosting the player; `POST /api/ai/admin/mcp/refresh` refreshes cached `tools/list` after rolling upgrades.
+3. **JDBC `ChatMemory` + persisted epochs + role deletion cleanup**: multi-turn memory is persisted via `JdbcChatMemoryRepository` under `npc:<serverId>:<roleId>:<npcId>:<epoch>`; `PlayerAiState` persists epochs in `GameData`; `onRoleDelete` purges both local state and remote JDBC conversations.
+4. **SSE streaming, split-chunk content safety & disconnect cancellation**: `ContentSafetyFilter.StreamFilter` masks sensitive words even when split across SSE chunks without delaying normal tokens; `onPlayerDisconnect` cancels active streams immediately via `GameRuntime.handOn`.
+5. **Per-player quota, degrade switch & structured decision fallback**: enforces per-player daily quotas/cooldowns, falls back to scripted NPC lines when `aiEnabled=false`, and falls back to rule-based actions on timeout or disallowed enum outputs.
+6. **Idempotent GM write tools (`opId`) & MySQL audit/token accounting**: `grant_item` deduplicates retries by `opId`, blocks oversized grants requiring human approval, and records both `MCP_WRITE` audits and `NPC_CHAT` / `GM_ASK` token usage into `ai_audit_log` via `LogRepository`.
 
 ## Running Against a Real LLM
-
-1. Install the framework and `managame-example`, start `WorldServerApp` and `GameServerApp` (with `-Dai.mcp.port=8082`).
-2. Start `GameAiServiceApplication` with any OpenAI-compatible provider (DeepSeek, Qwen, Ollama, OpenAI):
 
 ```bash
 export OPENAI_BASE_URL=https://api.deepseek.com
@@ -54,12 +40,10 @@ mvn -f managame-example-ai/pom.xml compile exec:java -Dexec.mainClass=cn.managam
 
 ## Running the Automated End-to-End Test (No API Key Required)
 
-Install `managame-example` first, then run:
+Install the framework and `managame-example` first, then run:
 
 ```bash
 mvn -o -f managame-example-ai/pom.xml test "-DargLine=-Djdk.net.unixdomain.tmpdir=D:\tmp"
 ```
 
-`GameServerWithSpringAiIntegrationTest` boots the real `WorldServerApp`, `GameServerApp` and `GameAiServiceApplication`
-against an in-process OpenAI-compatible stub (`FakeOpenAiServer`) and verifies all five scenarios over real loopback
-connections.
+`GameServerWithSpringAiIntegrationTest` boots `WorldServerApp`, two `GameServerApp` instances (`serverId=2` and `serverId=3`) and `GameAiServiceApplication` against an in-process OpenAI-compatible stub (`FakeOpenAiServer`) and verifies every lifecycle scenario end to end.

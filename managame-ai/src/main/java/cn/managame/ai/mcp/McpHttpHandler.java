@@ -52,10 +52,13 @@ public final class McpHttpHandler implements HttpHandler {
     private static final int JSONRPC_METHOD_NOT_FOUND = -32601;
     private static final int JSONRPC_INVALID_PARAMS = -32602;
 
+    private static final int DEFAULT_MAX_RESULT_CHARS = 256 * 1024;
+
     private final McpTools tools;
     private final String serverName;
     private final String serverVersion;
     private final String instructions;
+    private final int maxResultChars;
 
     /** Creates an MCP HTTP handler for {@code tools} with default server info ({@code managame-ai / 1.0.0}). */
     public McpHttpHandler(McpTools tools) {
@@ -67,6 +70,7 @@ public final class McpHttpHandler implements HttpHandler {
         this.serverName = b.serverName;
         this.serverVersion = b.serverVersion;
         this.instructions = b.instructions;
+        this.maxResultChars = b.maxResultChars;
         LOG.log(Level.INFO, () -> "McpHttpHandler ready (" + serverName + " " + serverVersion
                 + ", " + tools.definitions().size() + " tools)");
     }
@@ -160,15 +164,18 @@ public final class McpHttpHandler implements HttpHandler {
     }
 
     private void handleToolsList(HttpExchange exchange, Object id, Map<String, String> headers) {
-        List<McpToolDefinition> visible = tools.list(headers);
+        List<McpToolDefinition> visible = tools.listNormalized(headers);
         List<Map<String, Object>> serialized = new ArrayList<>(visible.size());
         for (McpToolDefinition def : visible) {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("name", def.name());
             entry.put("description", def.description());
             entry.put("inputSchema", new Json.Raw(def.inputSchema()));
-            if (def.readOnly()) {
-                entry.put("annotations", Map.of("readOnlyHint", Boolean.TRUE));
+            if (def.readOnly() || def.idempotent()) {
+                Map<String, Object> annotations = new LinkedHashMap<>();
+                if (def.readOnly()) annotations.put("readOnlyHint", Boolean.TRUE);
+                if (def.idempotent()) annotations.put("idempotentHint", Boolean.TRUE);
+                entry.put("annotations", annotations);
             }
             serialized.add(entry);
         }
@@ -222,6 +229,13 @@ public final class McpHttpHandler implements HttpHandler {
                         text = FrameworkErrorCodes.describe(AI_TOOL_EXECUTION_ERROR) + ": " + cause.getMessage();
                         isError = true;
                     }
+                }
+                if (!isError && text.length() > maxResultChars) {
+                    int actualLen = text.length();
+                    LOG.log(Level.WARNING, () -> "MCP tool '" + toolName + "' result exceeded maxResultChars ("
+                            + actualLen + " > " + maxResultChars + ")");
+                    text = "Tool '" + toolName + "' result exceeded limit (" + maxResultChars + " chars); narrow the query";
+                    isError = true;
                 }
                 respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, toolCallResult(text, isError)));
             } else {
@@ -281,6 +295,7 @@ public final class McpHttpHandler implements HttpHandler {
         private String serverName = "managame-ai";
         private String serverVersion = "1.0.0";
         private String instructions = "";
+        private int maxResultChars = DEFAULT_MAX_RESULT_CHARS;
 
         private Builder(McpTools tools) {
             this.tools = Objects.requireNonNull(tools, "tools");
@@ -300,6 +315,16 @@ public final class McpHttpHandler implements HttpHandler {
         /** Optional instructions returned in MCP {@code initialize} to guide connected AI agents. */
         public Builder instructions(String instructions) {
             this.instructions = Objects.requireNonNull(instructions, "instructions");
+            return this;
+        }
+
+        /**
+         * Maximum encoded result size in characters for {@code tools/call}; oversized responses return {@code isError: true}
+         * so the model is told to narrow the query instead of blowing up its context window. 256 KiB chars by default.
+         */
+        public Builder maxResultChars(int maxResultChars) {
+            if (maxResultChars <= 0) throw new IllegalArgumentException("maxResultChars must be positive");
+            this.maxResultChars = maxResultChars;
             return this;
         }
 
