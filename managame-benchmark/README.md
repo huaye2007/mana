@@ -12,7 +12,6 @@ depends on it, and its benchmarks of one component never join it with another.
 | `cn.managame.benchmark.network` | `EchoThroughputBenchmark`, `EchoLatencyBenchmark`, and the same as `…ProcessBenchmark` | Length-framed messages echoed over loopback: per second with many in flight, and the round trip of one |
 | `cn.managame.benchmark.runtime` | `ExecuteThroughputBenchmark`, `DispatchThroughputBenchmark` | Tasks through `GameRuntime.execute`, without and with an interceptor, and those that come back through a `Continuation`, and player requests through the `Dispatcher` to an annotated handler, without and with an interceptor, per second |
 | `cn.managame.benchmark.rpc` | `CallThroughputBenchmark`, `CallLatencyBenchmark`, `NotifyThroughputBenchmark`, and the same as `…ProcessBenchmark` | Calls answered and notifies handled per second with many in flight, and the round trip of one call |
-| `cn.managame.benchmark.ai` | `ToolInvokeBenchmark`, `AiHttpBenchmark` | `AiTools.invoke` dispatch overhead (no-arg, record DTO, intercepted, metered; ns/op) and loopback HTTP throughput of `AiClient.call` and `AiToolHttpHandler` |
 | `cn.managame.benchmark.data` | `RepositoryBenchmark`, `UpdateThroughputBenchmark`, `WriteThroughputBenchmark`, `LogThroughputBenchmark` | What business threads pay with entities in memory (reading a player or a bag, recording a change of a player or of an item of a bag, with the entity in hand or got by its keys in the same call; ns/op), changes recorded per second by four threads at once, changes a round writes per second through a mapper that keeps nothing, and logs per second queued by four threads and written through a writer that keeps nothing: managame-data's own cost, without a database |
 | `cn.managame.benchmark.mysql` | `SaveThroughputBenchmark` | Rows written per second through managame-data-mysql into an in-memory H2 database in MySQL mode: updates, and inserts with deletes |
 | `cn.managame.benchmark.mysqlserver` | `SaveBenchmark`, `LoadBenchmark` | Against a real MySQL (`MANAGAME_DATA_MYSQL_URL`, `_USER`, `_PASSWORD`): rows written per second (scalar columns, a JSON column, items in groups, inserts with deletes), and entities loaded cold per second by 8 threads (by id, by `getAll` of 100, a group of 20) |
@@ -38,7 +37,7 @@ java -Djdk.net.unixdomain.tmpdir=D:\tmp -jar target/benchmarks.jar rpc
 
 | Argument | Meaning |
 | --- | --- |
-| `common`, `network`, `runtime`, `rpc`, `ai`, `data`, `mysql`, `mysqlserver`, `mongo`, `all` | The components to run (`mysql` is managame-data-mysql on H2; `mysqlserver` and `mongo` need a real server, and `all` leaves them out) |
+| `common`, `network`, `runtime`, `rpc`, `data`, `mysql`, `mysqlserver`, `mongo`, `all` | The components to run (`mysql` is managame-data-mysql on H2; `mysqlserver` and `mongo` need a real server, and `all` leaves them out) |
 | `--save` | Record the results as the new baseline |
 | `--include=<regex>` | Only the benchmarks whose name matches, such as `--include=CallLatency` |
 | `--threshold=<percent>` | How far a result must move to count as better or worse; 10 by default |

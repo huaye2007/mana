@@ -201,20 +201,10 @@ public final class LoggedMetrics implements Metrics {
 | 4001 | `DATA_SAVE_FAILED` | 一条修改无法保存，已交给数据错误处理器；或 flush、close 结束时仍有修改没有保存 |
 | 4002 | `DATA_LOG_SAVE_FAILED` | 一条日志无法保存，或因队列已满被拒绝 |
 | 4003 | `DATA_LOAD_FAILED` | 无法从存储加载数据 |
-| 5001 | `AI_CLOSED` | AI 客户端已关闭，不再接受新调用 |
-| 5002 | `AI_UNAVAILABLE` | AI 服务不可达或返回了错误响应 |
-| 5003 | `AI_TIMEOUT` | 在调用超时时间内没有收到 AI 服务应答 |
-| 5004 | `AI_OVERLOADED` | 正在进行的 AI 调用达到并发上限 |
-| 5005 | `AI_CANCELLED` | AI 调用在完成前被取消或随客户端关闭而中止 |
-| 5006 | `AI_PROTOCOL_ERROR` | AI 请求或应答无法编解码 |
-| 5007 | `AI_TOOL_NOT_FOUND` | 未注册该名称的 AI 工具 |
-| 5008 | `AI_TOOL_INVALID_ARGS` | AI 工具参数无法解码或校验不通过 |
-| 5009 | `AI_TOOL_EXECUTION_ERROR` | AI 工具抛出了异常，或非 void 方法返回了 null |
-| 5010 | `AI_TOOL_REJECTED` | 拦截器或执行器拒绝了本次 AI 工具调用 |
 
 其余错误码（`HANDLER_CONTEXT_MISMATCH`、`ROUTE_DOMAIN_MISMATCH`、`ROUTE_EXECUTOR_CLOSED`、
 `ROUTE_CALL_EXECUTION_ERROR`、`ROUTE_CALLBACK_DISPATCH_FAILED`）已为框架预留，目前不会出现。号段：RPC 2001–2999，
-runtime 3001–3999，数据 4001–4999，AI 5001–5999；业务自己的错误码应避开这些号段。
+runtime 3001–3999，数据 4001–4999；业务自己的错误码应避开这些号段。
 
 打日志时，`FrameworkErrorCodes.describe(2003)` 得到 `RPC_TIMEOUT(2003)`，`name(code)` 只得到名称；未知错误码显示为
 `UNKNOWN(<code>)`。不要用名称做程序判断。

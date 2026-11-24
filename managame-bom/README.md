@@ -2,7 +2,7 @@ English | [中文](README.zh-CN.md)
 
 # managame-bom
 
-One version for every managame component, and for the Netty modules network, runtime, rpc and ai share. An application
+One version for every managame component, and for the Netty modules network, runtime and rpc share. An application
 that takes several components imports it once and names the components without versions, so they always come from
 one release and run on one Netty:
 

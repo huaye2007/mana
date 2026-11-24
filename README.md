@@ -11,7 +11,6 @@ ones it needs:
 | [managame-network](managame-network/README.md) | common, Netty (the modules it uses) | TCP / TLS / ws / wss servers, an HTTP/1.1 server and a reconnecting client, with any Netty handler |
 | [managame-runtime](managame-runtime/README.md) | common, network | Every piece of business logic through one entry, with tasks of one domain and route key run one at a time: routing per domain, annotated handlers (`Dispatcher`, `EventBus`, `HttpRoutes`), interceptors and timers |
 | [managame-rpc](managame-rpc/README.md) | common, network | Calls and notifies between server processes: `RpcNode`, `RpcPeer`, symmetric connections over TCP, restart detection, admission |
-| [managame-ai](managame-ai/README.md) | common, network | Thin, protocol-agnostic AI integration boundary: calling external AI services asynchronously (`AiClient`: unary, SSE streaming, notify) and exposing game server tools (`AiTools`, `@AiTool`, `AiToolHttpHandler`) with no coupling to AI wire standards |
 | [managame-data](managame-data/README.md) | common, Caffeine | Game data in memory, written behind it in batches wherever the application chooses: entities by id (`SingleRepository`), groups of entities (`GroupRepository`) and logs (`LogRepository`), through an `EntityMapper` and a `LogWriter` |
 | [managame-data-mysql](managame-data-mysql/README.md) | data | `MysqlEntityMapper` and `MysqlLogWriter`: entities and logs in MySQL tables |
 | [managame-data-mongo](managame-data-mongo/README.md) | data, MongoDB driver | `MongoEntityMapper`: entities in MongoDB collections |
@@ -120,7 +119,7 @@ on the data, the Dispatcher on the runtime, and the servers and the node on the 
 | data's write threads | Writing changes, reading each entity as it is written | Keep an entity's collections thread-safe |
 
 A request is always answered, with what its handler returns or with a code from common's `FrameworkErrorCodes`, one
-table for every component: RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999. And one `Metrics` and one logging bridge,
+table for every component: RPC 2001–2999, runtime 3001–3999, data 4001–4999. And one `Metrics` and one logging bridge,
 bound once, serve them all.
 
 ## Logging
@@ -152,7 +151,6 @@ Loggers are named `cn.managame.<component>`, and below it by area, so one settin
 | `cn.managame.network`, `.network.http` | network |
 | `cn.managame.runtime`, `.runtime.dispatch`, `.runtime.event`, `.runtime.http`, `.runtime.timer` | runtime |
 | `cn.managame.rpc` | rpc |
-| `cn.managame.ai.client`, `.ai.tool`, `.ai.http` | ai |
 | `cn.managame.data`, `cn.managame.data.mysql` | data, data-mysql |
 
 Each component's README lists what its loggers say. Levels mean the same everywhere:
