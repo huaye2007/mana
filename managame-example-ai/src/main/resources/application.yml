@@ -1,0 +1,31 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: managame-example-ai
+  ai:
+    openai:
+      # OpenAI 兼容端点：可直接切换到 DeepSeek / 通义千问 / Ollama / OpenAI
+      # DeepSeek: https://api.deepseek.com   通义: https://dashscope.aliyuncs.com/compatible-mode   Ollama: http://127.0.0.1:11434
+      base-url: ${OPENAI_BASE_URL:https://api.deepseek.com}
+      api-key: ${OPENAI_API_KEY:demo-key}
+      chat:
+        options:
+          model: ${OPENAI_MODEL:deepseek-chat}
+    mcp:
+      client:
+        enabled: true
+        type: SYNC
+        request-timeout: 15s
+        toolcallback:
+          enabled: false
+        streamable-http:
+          connections:
+            game:
+              url: ${GAME_MCP_URL:http://127.0.0.1:8082}
+              endpoint: /mcp
+
+game:
+  mcp:
+    token: ${GAME_MCP_TOKEN:dev-mcp-token}

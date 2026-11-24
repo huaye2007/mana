@@ -82,6 +82,7 @@ class GameServerIntegrationTest {
                 "rpc.node", 2,
                 "rpc.peers", NodeConstant.WORLD + "=127.0.0.1:" + worldRpcPort,
                 "game.port", 0,
+                "ai.mcp.port", 0,
                 "mysql.url", jdbcUrl,
                 "mysql.user", "sa",
                 "mysql.password", "test")));
