@@ -28,7 +28,7 @@ public final class AiClientMetrics {
     private final LatencyBuckets latency;
     private final List<Meter> owned = new ArrayList<>();
 
-    public AiClientMetrics(Metrics metrics, String clientName, DoubleSupplier inFlight) {
+    public AiClientMetrics(Metrics metrics, String clientName, DoubleSupplier inFlight, DoubleSupplier notifyInFlight) {
         timed = metrics != Metrics.noop();
         String[] base = clientName == null || clientName.isEmpty() ? new String[0] : new String[]{"client", clientName};
         unaryCalls = metrics.counter("managame.ai.client.calls", withTag(base, "kind", "call"));
@@ -41,6 +41,7 @@ public final class AiClientMetrics {
         }
         otherFailures = metrics.counter("managame.ai.client.failures", withTag(base, "code", "OTHER"));
         owned.add(metrics.gauge("managame.ai.client.in_flight", inFlight, base));
+        owned.add(metrics.gauge("managame.ai.client.notify_in_flight", notifyInFlight, base));
         if (timed) {
             latency = new LatencyBuckets();
             owned.addAll(latency.report(metrics, "managame.ai.client.latency", base));

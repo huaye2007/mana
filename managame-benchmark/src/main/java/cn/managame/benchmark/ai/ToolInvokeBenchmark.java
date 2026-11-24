@@ -63,6 +63,7 @@ public class ToolInvokeBenchmark {
 
     private static final String ARGS_JSON = "{\"roleId\":1001,\"itemId\":2001}";
     private McpTools plain;
+    private McpTools basicCodecTools;
     private McpTools intercepted;
     private McpTools metered;
 
@@ -70,6 +71,10 @@ public class ToolInvokeBenchmark {
         AiCodec codec = new JacksonCodec();
         plain = McpTools.builder()
                 .codec(codec)
+                .executor(McpToolExecutor.direct())
+                .register(List.of(new BagTools()))
+                .build();
+        basicCodecTools = McpTools.builder()
                 .executor(McpToolExecutor.direct())
                 .register(List.of(new BagTools()))
                 .build();
@@ -102,6 +107,12 @@ public class ToolInvokeBenchmark {
     @Benchmark public McpToolResult invokeRecord() {
         McpToolResult[] box = new McpToolResult[1];
         plain.call("query_bag", ARGS_JSON, r -> box[0] = r);
+        return box[0];
+    }
+
+    @Benchmark public McpToolResult invokeBasicRecord() {
+        McpToolResult[] box = new McpToolResult[1];
+        basicCodecTools.call("query_bag", ARGS_JSON, r -> box[0] = r);
         return box[0];
     }
 

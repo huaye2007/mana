@@ -7,7 +7,8 @@ import cn.managame.FrameworkErrorCodes;
 import cn.managame.ai.internal.Json;
 import cn.managame.network.http.HttpExchange;
 import cn.managame.network.http.HttpHandler;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
@@ -31,19 +32,24 @@ import java.util.TreeMap;
  * {@code managame-network}:
  *
  * <pre>{@code
+ * // Dedicated context path:
  * NetworkServer server = NetworkServer.start(8082,
  *         HttpInitializer.http().contextPath("/mcp").handler(new McpHttpHandler(tools)).build());
+ *
+ * // Or co-hosted alongside HttpRoutes on the same HTTP server:
+ * McpHttpHandler mcp = McpHttpHandler.builder(tools).path("/mcp").serverInfo("my-game", "1.0.0").build();
  * }</pre>
  *
  * <p>Implements JSON-RPC 2.0 over HTTP POST ({@code initialize}, {@code notifications/initialized}, {@code ping},
  * {@code tools/list}, {@code tools/call}) in stateless Streamable HTTP mode: GET and DELETE return {@code 405 Method
- * Not Allowed} ({@code Allow: POST}) per the MCP Streamable HTTP specification, JSON-RPC notifications return
- * {@code 202 Accepted}, unknown tools return JSON-RPC {@code -32602}, and tool validation/rejection/execution failures
- * return a tool result with {@code isError: true} so the model can observe and recover. Never blocks the Netty
- * EventLoop.
+ * Not Allowed} ({@code Allow: POST}) per the MCP Streamable HTTP specification, unsupported {@code MCP-Protocol-Version}
+ * headers return {@code 400 Bad Request}, JSON-RPC notifications return {@code 202 Accepted}, unknown tools return
+ * JSON-RPC {@code -32602}, and tool validation/rejection/execution failures return a tool result with
+ * {@code isError: true} so the model can observe and recover. Never blocks the Netty EventLoop.
  */
 public final class McpHttpHandler implements HttpHandler {
     private static final System.Logger LOG = System.getLogger("cn.managame.ai.mcp");
+    private static final String PROTOCOL_VERSION_HEADER = "MCP-Protocol-Version";
     private static final String LATEST_PROTOCOL_VERSION = "2025-11-25";
     private static final Set<String> SUPPORTED_PROTOCOL_VERSIONS = Set.of(
             "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05");
@@ -51,34 +57,38 @@ public final class McpHttpHandler implements HttpHandler {
     private static final int JSONRPC_INVALID_REQUEST = -32600;
     private static final int JSONRPC_METHOD_NOT_FOUND = -32601;
     private static final int JSONRPC_INVALID_PARAMS = -32602;
-
     private static final int DEFAULT_MAX_RESULT_CHARS = 256 * 1024;
 
     private final McpTools tools;
+    private final String path;
     private final String serverName;
     private final String serverVersion;
     private final String instructions;
     private final int maxResultChars;
 
-    /** Creates an MCP HTTP handler for {@code tools} with default server info ({@code managame-ai / 1.0.0}). */
+    /** Creates an MCP HTTP handler for {@code tools} matching {@code "/"} with default server info. */
     public McpHttpHandler(McpTools tools) {
         this(builder(tools));
     }
 
     private McpHttpHandler(Builder b) {
         this.tools = b.tools;
+        this.path = b.path;
         this.serverName = b.serverName;
         this.serverVersion = b.serverVersion;
         this.instructions = b.instructions;
         this.maxResultChars = b.maxResultChars;
         LOG.log(Level.INFO, () -> "McpHttpHandler ready (" + serverName + " " + serverVersion
-                + ", " + tools.definitions().size() + " tools)");
+                + ", path=" + path + ", " + tools.definitions().size() + " tools)");
     }
 
     public static Builder builder(McpTools tools) { return new Builder(tools); }
 
+    /** Configured request path matched against {@link HttpExchange#path()}; {@code "/"} by default. */
+    public String path() { return path; }
+
     @Override public void handle(HttpExchange exchange) {
-        if (!"/".equals(exchange.path())) {
+        if (!path.equals(exchange.path())) {
             exchange.respond(HttpResponseStatus.NOT_FOUND);
             return;
         }
@@ -90,17 +100,25 @@ public final class McpHttpHandler implements HttpHandler {
             exchange.respond(response);
             return;
         }
+        String protocolHeader = request.headers().get(PROTOCOL_VERSION_HEADER);
+        if (protocolHeader != null && !protocolHeader.isBlank()
+                && !SUPPORTED_PROTOCOL_VERSIONS.contains(protocolHeader.trim())) {
+            respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
+                    jsonRpcError(null, JSONRPC_INVALID_REQUEST,
+                            "Unsupported MCP-Protocol-Version: " + protocolHeader));
+            return;
+        }
         String body = request.content().toString(StandardCharsets.UTF_8);
         Map<String, String> headers = copyHeaders(request);
-        Object parsed;
+        Json.McpEnvelope mcpEnv;
         try {
-            parsed = Json.parse(body);
+            mcpEnv = Json.parseMcpRequest(body);
         } catch (IllegalArgumentException badJson) {
             respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
                     jsonRpcError(null, JSONRPC_PARSE_ERROR, "Parse error: " + badJson.getMessage()));
             return;
         }
-        if (!(parsed instanceof Map<?, ?> rawEnvelope)) {
+        if (!(mcpEnv.root() instanceof Map<?, ?> rawEnvelope)) {
             respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
                     jsonRpcError(null, JSONRPC_INVALID_REQUEST, "JSON-RPC request must be a JSON object"));
             return;
@@ -136,7 +154,7 @@ public final class McpHttpHandler implements HttpHandler {
             case "initialize" -> handleInitialize(exchange, id, paramsObj);
             case "ping" -> respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, Map.of()));
             case "tools/list" -> handleToolsList(exchange, id, headers);
-            case "tools/call" -> handleToolsCall(exchange, id, paramsObj, headers);
+            case "tools/call" -> handleToolsCall(exchange, id, paramsObj, mcpEnv.rawArgumentsJson(), headers);
             default -> respondJson(exchange, HttpResponseStatus.OK,
                     jsonRpcError(id, JSONRPC_METHOD_NOT_FOUND, "Method not found: " + method));
         }
@@ -182,7 +200,8 @@ public final class McpHttpHandler implements HttpHandler {
         respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, Map.of("tools", serialized)));
     }
 
-    private void handleToolsCall(HttpExchange exchange, Object id, Object paramsObj, Map<String, String> headers) {
+    private void handleToolsCall(HttpExchange exchange, Object id, Object paramsObj,
+            String rawArgumentsJson, Map<String, String> headers) {
         if (!(paramsObj instanceof Map<?, ?> params)) {
             respondJson(exchange, HttpResponseStatus.OK,
                     jsonRpcError(id, JSONRPC_INVALID_PARAMS, "Params for tools/call must be a JSON object"));
@@ -207,7 +226,7 @@ public final class McpHttpHandler implements HttpHandler {
                     jsonRpcError(id, JSONRPC_INVALID_PARAMS, "Tool 'arguments' must be a JSON object"));
             return;
         }
-        tools.invokeParsed(toolName, arguments, null, headers, exchange.remoteAddress(), result -> {
+        tools.invokeParsed(toolName, arguments, rawArgumentsJson, headers, exchange.remoteAddress(), result -> {
             if (result.code() == AI_TOOL_NOT_FOUND) {
                 respondJson(exchange, HttpResponseStatus.OK,
                         jsonRpcError(id, JSONRPC_INVALID_PARAMS, result.message()));
@@ -276,8 +295,8 @@ public final class McpHttpHandler implements HttpHandler {
     }
 
     private static void respondJson(HttpExchange exchange, HttpResponseStatus status, String json) {
-        FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status,
-                Unpooled.copiedBuffer(json, StandardCharsets.UTF_8));
+        FullHttpResponse response = new DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1, status, ByteBufUtil.writeUtf8(ByteBufAllocator.DEFAULT, json));
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
         exchange.respond(response);
     }
@@ -292,6 +311,7 @@ public final class McpHttpHandler implements HttpHandler {
 
     public static final class Builder {
         private final McpTools tools;
+        private String path = "/";
         private String serverName = "managame-ai";
         private String serverVersion = "1.0.0";
         private String instructions = "";
@@ -299,6 +319,18 @@ public final class McpHttpHandler implements HttpHandler {
 
         private Builder(McpTools tools) {
             this.tools = Objects.requireNonNull(tools, "tools");
+        }
+
+        /**
+         * Request path below the listener's {@code contextPath} matched by this handler; {@code "/"} by default (when
+         * mounted via {@code HttpInitializer.http().contextPath("/mcp")}), or e.g. {@code "/mcp"} when co-hosted
+         * alongside other HTTP routes on the same listener.
+         */
+        public Builder path(String path) {
+            Objects.requireNonNull(path, "path");
+            if (!path.startsWith("/")) throw new IllegalArgumentException("path must start with /: " + path);
+            this.path = path.length() > 1 && path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+            return this;
         }
 
         /** Server name and version returned in MCP {@code initialize}. */

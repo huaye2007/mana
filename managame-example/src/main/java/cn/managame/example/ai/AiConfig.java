@@ -71,7 +71,7 @@ public class AiConfig {
                 .codec(aiCodec)
                 .timeout(Duration.ofSeconds(10))
                 .streamIdleTimeout(Duration.ofSeconds(5))
-                .header("Authorization", "Bearer " + token)
+                .header("Authorization", () -> "Bearer " + token)
                 .header("X-Game-Server-Id", String.valueOf(serverId))
                 .propagate(NpcAiService.TRACE_ID, "X-Trace-Id")
                 .build();

@@ -152,6 +152,52 @@ class McpHttpHandlerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> result = (Map<String, Object>) Json.parseObject(badArgs.body()).get("result");
         assertEquals(Boolean.TRUE, result.get("isError"));
+
+        // MCP-Protocol-Version header: supported version -> 200, unsupported version -> 400
+        HttpRequest supportedVer = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + gameMcpServer.port() + "/mcp"))
+                .header("Content-Type", "application/json")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\"}"))
+                .build();
+        assertEquals(200, HTTP.send(supportedVer, HttpResponse.BodyHandlers.ofString()).statusCode());
+
+        HttpRequest unsupportedVer = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + gameMcpServer.port() + "/mcp"))
+                .header("Content-Type", "application/json")
+                .header("MCP-Protocol-Version", "1999-01-01")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}"))
+                .build();
+        assertEquals(400, HTTP.send(unsupportedVer, HttpResponse.BodyHandlers.ofString()).statusCode());
+        tools.close();
+    }
+
+    @Test void coHostedPathAndZeroReserializationForCustomCodec() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> seenDecodeInput = new java.util.concurrent.atomic.AtomicReference<>();
+        AiCodec spyCodec = new AiCodec() {
+            @Override public String encode(Object value) throws Exception { return AiCodec.basic().encode(value); }
+            @Override public Object decode(String json, java.lang.reflect.Type type) throws Exception {
+                seenDecodeInput.set(json);
+                return AiCodec.basic().decode(json, type);
+            }
+        };
+        try (McpTools tools = McpTools.builder().codec(spyCodec).register(List.of(new GameServerService())).build()) {
+            McpHttpHandler mcpHandler = McpHttpHandler.builder(tools).path("/mcp").build();
+            gameMcpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                    HttpInitializer.http().handler(exchange -> {
+                        if ("/health".equals(exchange.path())) {
+                            exchange.respond(HttpResponseStatus.OK);
+                        } else {
+                            mcpHandler.handle(exchange);
+                        }
+                    }).build());
+
+            assertEquals(200, send("GET", "/health", null).statusCode());
+            // Notice extra whitespace inside arguments: verbatim slice preserves it without Json.write re-serialization
+            String rawArgs = "{ \"roleId\" : 1001 , \"itemId\" : 100 , \"count\" : 1 }";
+            HttpResponse<String> callRes = send("POST", "/mcp",
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"grant_item\",\"arguments\":" + rawArgs + "}}");
+            assertEquals(200, callRes.statusCode());
+            assertEquals(rawArgs, seenDecodeInput.get(), "Custom AiCodec must receive verbatim arguments JSON slice");
+        }
     }
 
     @Test void officialMcpJavaSdkInteropAndBidirectionalFlow() throws Exception {

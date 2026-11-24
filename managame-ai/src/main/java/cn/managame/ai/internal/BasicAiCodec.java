@@ -2,8 +2,12 @@ package cn.managame.ai.internal;
 
 import cn.managame.ai.AiCodec;
 import cn.managame.ai.annotation.McpParam;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
@@ -21,10 +25,17 @@ import java.util.UUID;
 
 /**
  * {@link AiCodec#basic()}: encodes and decodes scalars, enums, collections, maps, arrays, {@link Optional} and Java
- * records with no third-party dependency. Public only to be reachable across {@code managame-ai}'s packages; not API.
+ * records (with {@link ClassValue}-cached {@link MethodHandle} accessors and constructors) with no third-party
+ * dependency. Public only to be reachable across {@code managame-ai}'s packages; not API.
  */
 public final class BasicAiCodec implements AiCodec {
     public static final BasicAiCodec INSTANCE = new BasicAiCodec();
+
+    private static final ClassValue<RecordPlan> RECORD_PLANS = new ClassValue<>() {
+        @Override protected RecordPlan computeValue(Class<?> recordClass) {
+            return compileRecordPlan(recordClass);
+        }
+    };
 
     private BasicAiCodec() {}
 
@@ -133,6 +144,10 @@ public final class BasicAiCodec implements AiCodec {
         throw new IllegalArgumentException("No basic decoding for " + raw.getName() + "; configure an AiCodec");
     }
 
+    static RecordPlan recordPlan(Class<?> recordClass) {
+        return RECORD_PLANS.get(recordClass);
+    }
+
     private static List<Object> convertList(Object value, Type elementType) {
         if (!(value instanceof List<?> rawList)) throw new IllegalArgumentException("Expected JSON array");
         List<Object> out = new ArrayList<>(rawList.size());
@@ -152,44 +167,64 @@ public final class BasicAiCodec implements AiCodec {
     private static Object convertRecord(Object value, Class<?> recordClass) {
         if (!(value instanceof Map<?, ?> map))
             throw new IllegalArgumentException("Expected JSON object for " + recordClass.getSimpleName());
-        RecordComponent[] components = recordClass.getRecordComponents();
-        Class<?>[] paramTypes = new Class<?>[components.length];
+        RecordPlan plan = RECORD_PLANS.get(recordClass);
+        ComponentPlan[] components = plan.components();
         Object[] args = new Object[components.length];
         for (int i = 0; i < components.length; i++) {
-            RecordComponent component = components[i];
-            paramTypes[i] = component.getType();
-            String fieldName = componentFieldName(component);
-            boolean present = map.containsKey(fieldName);
+            ComponentPlan component = components[i];
+            String fieldName = component.wireName();
             Object raw = map.get(fieldName);
-            if (!present || raw == null) {
-                if (component.getType() == Optional.class) {
+            if (raw == null) {
+                boolean present = map.containsKey(fieldName);
+                if (component.isOptional()) {
                     args[i] = Optional.empty();
-                } else if (component.getType().isPrimitive()) {
+                } else if (component.isPrimitive()) {
+                    throw new IllegalArgumentException("Missing required field '" + fieldName + "'");
+                } else if (component.explicitRequired() && !present) {
                     throw new IllegalArgumentException("Missing required field '" + fieldName + "'");
                 } else {
-                    McpParam annotation = component.getAnnotation(McpParam.class);
-                    if (annotation != null && annotation.required() && !present) {
-                        throw new IllegalArgumentException("Missing required field '" + fieldName + "'");
-                    }
                     args[i] = null;
                 }
             } else {
-                args[i] = convert(raw, component.getGenericType());
+                args[i] = convert(raw, component.genericType());
             }
         }
-        try {
-            Constructor<?> ctor = recordClass.getDeclaredConstructor(paramTypes);
-            ctor.setAccessible(true);
-            return ctor.newInstance(args);
-        } catch (ReflectiveOperationException e) {
-            Throwable cause = e.getCause() != null ? e.getCause() : e;
-            throw new IllegalArgumentException("Cannot construct " + recordClass.getSimpleName() + ": " + cause.getMessage(), cause);
-        }
+        return plan.construct(recordClass, args);
     }
 
-    static String componentFieldName(RecordComponent component) {
-        McpParam param = component.getAnnotation(McpParam.class);
-        return param != null && !param.name().isEmpty() ? param.name() : component.getName();
+    private static RecordPlan compileRecordPlan(Class<?> recordClass) {
+        RecordComponent[] rawComponents = recordClass.getRecordComponents();
+        Class<?>[] paramTypes = new Class<?>[rawComponents.length];
+        ComponentPlan[] plans = new ComponentPlan[rawComponents.length];
+        MethodHandles.Lookup lookup = MethodHandles.lookup();
+        try {
+            for (int i = 0; i < rawComponents.length; i++) {
+                RecordComponent rc = rawComponents[i];
+                paramTypes[i] = rc.getType();
+                McpParam ann = rc.getAnnotation(McpParam.class);
+                String wireName = ann != null && !ann.name().isEmpty() ? ann.name() : rc.getName();
+                Method accessor = rc.getAccessor();
+                accessor.setAccessible(true);
+                MethodHandle getter = lookup.unreflect(accessor)
+                        .asType(MethodType.methodType(Object.class, Object.class));
+                plans[i] = new ComponentPlan(
+                        wireName,
+                        rc.getType(),
+                        rc.getGenericType(),
+                        rc.getType().isPrimitive(),
+                        rc.getType() == Optional.class,
+                        ann != null && ann.required(),
+                        getter);
+            }
+            Constructor<?> ctor = recordClass.getDeclaredConstructor(paramTypes);
+            ctor.setAccessible(true);
+            MethodHandle ctorHandle = lookup.unreflectConstructor(ctor)
+                    .asSpreader(Object[].class, rawComponents.length)
+                    .asType(MethodType.methodType(Object.class, Object[].class));
+            return new RecordPlan(plans, ctorHandle);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalArgumentException("Cannot compile record plan for " + recordClass.getName(), e);
+        }
     }
 
     private static BigInteger toExactLong(Object value, Class<?> target) {
@@ -220,5 +255,36 @@ public final class BasicAiCodec implements AiCodec {
                 || type == Byte.class || type == Short.class || type == Integer.class || type == Long.class
                 || type == Float.class || type == Double.class || type == BigInteger.class
                 || type == BigDecimal.class || type == UUID.class;
+    }
+
+    record RecordPlan(ComponentPlan[] components, MethodHandle constructor) {
+        Object construct(Class<?> recordClass, Object[] args) {
+            try {
+                return (Object) constructor.invokeExact(args);
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Throwable cause) {
+                throw new IllegalArgumentException("Cannot construct " + recordClass.getSimpleName() + ": " + cause.getMessage(), cause);
+            }
+        }
+    }
+
+    record ComponentPlan(
+            String wireName,
+            Class<?> rawType,
+            Type genericType,
+            boolean isPrimitive,
+            boolean isOptional,
+            boolean explicitRequired,
+            MethodHandle getter) {
+        Object read(Object record) {
+            try {
+                return (Object) getter.invokeExact(record);
+            } catch (RuntimeException | Error e) {
+                throw e;
+            } catch (Throwable cause) {
+                throw new IllegalArgumentException("Cannot read record component " + wireName, cause);
+            }
+        }
     }
 }

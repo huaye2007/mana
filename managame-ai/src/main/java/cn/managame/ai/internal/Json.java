@@ -1,7 +1,6 @@
 package cn.managame.ai.internal;
 
 import java.lang.reflect.Array;
-import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -22,13 +21,26 @@ public final class Json {
     /** Embeds already-encoded JSON verbatim when writing an object or array, such as a pre-built schema. */
     public record Raw(String json) {}
 
+    /** Parsed JSON-RPC request together with the raw JSON slice of {@code params.arguments} when it is an object. */
+    public record McpEnvelope(Object root, String rawArgumentsJson) {}
+
     public static Object parse(String text) {
         if (text == null) throw new IllegalArgumentException("JSON text is null");
-        Parser parser = new Parser(text);
+        Parser parser = new Parser(text, false);
         Object value = parser.readValue(0);
         parser.skipWhitespace();
         if (!parser.eof()) throw parser.error("Unexpected trailing character '" + parser.peek() + "'");
         return value;
+    }
+
+    /** Parses an MCP JSON-RPC payload while slicing out {@code params.arguments} verbatim to avoid re-serialization. */
+    public static McpEnvelope parseMcpRequest(String text) {
+        if (text == null) throw new IllegalArgumentException("JSON text is null");
+        Parser parser = new Parser(text, true);
+        Object value = parser.readValue(0);
+        parser.skipWhitespace();
+        if (!parser.eof()) throw parser.error("Unexpected trailing character '" + parser.peek() + "'");
+        return new McpEnvelope(value, parser.rawArgumentsJson);
     }
 
     @SuppressWarnings("unchecked")
@@ -141,27 +153,28 @@ public final class Json {
 
     private static void writeRecord(StringBuilder out, Object record, int depth) {
         out.append('{');
-        RecordComponent[] components = record.getClass().getRecordComponents();
+        BasicAiCodec.ComponentPlan[] components = BasicAiCodec.recordPlan(record.getClass()).components();
         for (int i = 0; i < components.length; i++) {
             if (i > 0) out.append(',');
-            writeString(out, components[i].getName());
+            BasicAiCodec.ComponentPlan comp = components[i];
+            writeString(out, comp.wireName());
             out.append(':');
-            try {
-                var accessor = components[i].getAccessor();
-                accessor.setAccessible(true);
-                writeTo(out, accessor.invoke(record), depth + 1);
-            } catch (ReflectiveOperationException e) {
-                throw new IllegalArgumentException("Cannot read record component " + components[i].getName(), e);
-            }
+            writeTo(out, comp.read(record), depth + 1);
         }
         out.append('}');
     }
 
     private static final class Parser {
         private final String s;
+        private final boolean captureMcpArgs;
         private int pos;
+        private boolean inTopParams;
+        private String rawArgumentsJson;
 
-        Parser(String s) { this.s = s; }
+        Parser(String s, boolean captureMcpArgs) {
+            this.s = s;
+            this.captureMcpArgs = captureMcpArgs;
+        }
 
         boolean eof() { return pos >= s.length(); }
 
@@ -209,7 +222,26 @@ public final class Json {
                 skipWhitespace();
                 if (eof() || peek() != ':') throw error("Expected ':' after key");
                 pos++;
-                Object value = readValue(depth);
+                Object value;
+                if (captureMcpArgs && depth == 1 && "params".equals(key)) {
+                    inTopParams = true;
+                    try {
+                        value = readValue(depth);
+                    } finally {
+                        inTopParams = false;
+                    }
+                } else if (captureMcpArgs && depth == 2 && inTopParams && "arguments".equals(key)) {
+                    skipWhitespace();
+                    if (!eof() && peek() == '{') {
+                        int argStart = pos;
+                        value = readObject(depth + 1);
+                        rawArgumentsJson = s.substring(argStart, pos);
+                    } else {
+                        value = readValue(depth);
+                    }
+                } else {
+                    value = readValue(depth);
+                }
                 map.put(key, value);
                 skipWhitespace();
                 if (eof()) throw error("Unterminated JSON object");

@@ -9,8 +9,6 @@ import cn.managame.ai.AiCallback;
 import cn.managame.ai.AiClient;
 import cn.managame.ai.AiRequest;
 import cn.managame.ai.AiResult;
-import cn.managame.ai.AiStreamEvent;
-import cn.managame.ai.AiStreamListener;
 import cn.managame.example.ai.AiDtos.GmAskReq;
 import cn.managame.example.ai.AiDtos.GmAskRes;
 import cn.managame.example.ai.AiDtos.NpcAction;
@@ -207,19 +205,17 @@ public class NpcAiService {
 
         ContentSafetyFilter.StreamFilter streamFilter = safetyFilter.newStreamFilter(onToken);
         NpcChatReq req = new NpcChatReq(sid, roleId, npcId, npcName, text);
-        AiCall call = clientRef.get().stream(AiRequest.of("/npc/stream", req, ctx.metadata()), new AiStreamListener() {
-            @Override public void onEvent(AiStreamEvent event) {
-                if ("token".equals(event.event()) || "message".equals(event.event())) {
-                    streamFilter.accept(event.data());
-                }
-            }
-
-            @Override public void onComplete(AiResult<Void> result) {
-                removeSlot(roleId, npcId, slot);
-                if (result.isSuccess()) streamFilter.finish();
-                back.execute(c -> onDone.onResponse(result));
-            }
-        });
+        AiCall call = clientRef.get().stream(AiRequest.of("/npc/stream", req, ctx.metadata()),
+                event -> {
+                    if ("token".equals(event.event()) || "message".equals(event.event())) {
+                        streamFilter.accept(event.data());
+                    }
+                },
+                result -> {
+                    removeSlot(roleId, npcId, slot);
+                    if (result.isSuccess()) streamFilter.finish();
+                    back.execute(c -> onDone.onResponse(result));
+                });
         slot.bind(call);
         return call;
     }

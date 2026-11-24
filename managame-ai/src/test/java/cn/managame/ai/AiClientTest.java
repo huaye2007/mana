@@ -17,6 +17,7 @@ import cn.managame.MetadataKey;
 import cn.managame.metrics.Counter;
 import cn.managame.metrics.Meter;
 import cn.managame.metrics.Metrics;
+import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -151,8 +152,8 @@ class AiClientTest {
         assertEquals(AI_PROTOCOL_ERROR, callSync("/bad", "{}", String.class).code());
         assertEquals(AI_UNAVAILABLE, callSync("/down", "{}", String.class).code());
 
-        // Fire-and-forget notify
-        assertTrue(client.notify("/events/boss", new ChatReq(7, "boss-dead")));
+        // Fire-and-forget notify returns WriteStatus.ACCEPTED
+        assertEquals(WriteStatus.ACCEPTED, client.notify("/events/boss", new ChatReq(7, "boss-dead")));
         assertTrue(notifySeen.await(5, TimeUnit.SECONDS));
         assertTrue(notifyBody.get().contains("boss-dead"));
 
@@ -222,8 +223,69 @@ class AiClientTest {
         CompletableFuture<AiResult<String>> afterClose = new CompletableFuture<>();
         client.call("/slow", "{}", String.class, afterClose::complete);
         assertEquals(AI_CLOSED, afterClose.get(5, TimeUnit.SECONDS).code());
-        assertFalse(client.notify("/slow", "{}"));
+        assertEquals(WriteStatus.INACTIVE, client.notify("/slow", "{}"));
         releaseServer.countDown();
+    }
+
+    @Test void dynamicHeadersCustomExecutorTwoLambdaStreamAndNotifyIsolation() throws Exception {
+        AtomicReference<String> lastAuth = new AtomicReference<>();
+        CountDownLatch holdNotify = new CountDownLatch(1);
+        CountDownLatch notifyArrived = new CountDownLatch(1);
+        httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                HttpInitializer.http().handler(exchange -> {
+                    lastAuth.set(exchange.request().headers().get(HttpHeaderNames.AUTHORIZATION));
+                    if ("/hold-notify".equals(exchange.path())) {
+                        notifyArrived.countDown();
+                        Thread.ofVirtual().start(() -> {
+                            try {
+                                holdNotify.await(5, TimeUnit.SECONDS);
+                                respond(exchange, HttpResponseStatus.OK, "ok");
+                            } catch (InterruptedException ignored) {}
+                        });
+                    } else if ("/sse-two".equals(exchange.path())) {
+                        FullHttpResponse res = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                                Unpooled.copiedBuffer("event: token\ndata: A\n\nevent: token\ndata: B\n\n", StandardCharsets.UTF_8));
+                        res.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
+                        exchange.respond(res);
+                    } else {
+                        respond(exchange, HttpResponseStatus.OK, "pong");
+                    }
+                }).build());
+
+        AtomicReference<String> liveToken = new AtomicReference<>("tok-v1");
+        List<String> execThreads = Collections.synchronizedList(new ArrayList<>());
+        client = AiClient.builder("http://127.0.0.1:" + httpServer.port())
+                .maxInFlight(1)
+                .maxNotifyInFlight(1)
+                .header("Authorization", () -> "Bearer " + liveToken.get())
+                .executor(task -> Thread.ofVirtual().name("custom-ai-exec").start(() -> {
+                    execThreads.add(Thread.currentThread().getName());
+                    task.run();
+                }))
+                .build();
+
+        // 1. Dynamic header supplier rotates token without rebuilding AiClient, and callback runs on custom executor
+        assertEquals("pong", callSync("/ping", "{}", String.class).data());
+        assertEquals("Bearer tok-v1", lastAuth.get());
+        liveToken.set("tok-v2");
+        assertEquals("pong", callSync("/ping", "{}", String.class).data());
+        assertEquals("Bearer tok-v2", lastAuth.get());
+        assertTrue(execThreads.stream().allMatch("custom-ai-exec"::equals));
+
+        // 2. Notify budget is isolated from call/stream budget: saturating notify returns NOT_WRITABLE while call still works
+        assertEquals(WriteStatus.ACCEPTED, client.notify("/hold-notify", "{}"));
+        assertTrue(notifyArrived.await(5, TimeUnit.SECONDS));
+        assertEquals(1, client.notifyInFlight());
+        assertEquals(WriteStatus.NOT_WRITABLE, client.notify("/hold-notify", "{}"));
+        assertEquals("pong", callSync("/ping", "{}", String.class).data());
+        holdNotify.countDown();
+
+        // 3. 2-lambda stream overload preserves event order on custom executor
+        List<String> tokens = Collections.synchronizedList(new ArrayList<>());
+        CompletableFuture<AiResult<Void>> streamDone = new CompletableFuture<>();
+        client.stream("/sse-two", "{}", ev -> tokens.add(ev.data()), streamDone::complete);
+        assertEquals(SUCCESS, streamDone.get(5, TimeUnit.SECONDS).code());
+        assertEquals(List.of("A", "B"), tokens);
     }
 
     @Test void sharedHttpClientSurvivesAiClientClose() throws Exception {

@@ -25,12 +25,12 @@ AiClient ai = AiClient.builder("http://127.0.0.1:8081/api/ai")
         .timeout(Duration.ofSeconds(30))
         .streamIdleTimeout(Duration.ofSeconds(10))    // 可选：SSE 分片间/首包最大空闲超时
         .maxInFlight(128)
-        .header("Authorization", "Bearer " + token)
+        .header("Authorization", () -> "Bearer " + currentToken())
         .propagate(TRACE_ID, "X-Trace-Id")
         .metrics(metrics, "npc")
         .build();
 
-// 非阻塞单次调用（默认 POST，也支持 AiRequest.get / delete / withMethod）；回调绝不在调用线程上运行
+// 非阻塞单次调用（默认 POST，也支持 AiRequest.get / delete / withMethod）；回调运行在独立执行器上
 AiCall call = ai.call(AiRequest.of("/npc/chat", new NpcTalk(roleId, text), ctx.metadata()),
         NpcReply.class, result -> {
             if (result.isSuccess()) { ... } else { ... }
@@ -41,14 +41,13 @@ ai.call(AiRequest.get("/jobs/" + jobId), JobStatus.class, result -> ...);
 ai.call(AiRequest.delete("/sessions/" + sessionId), Void.class, result -> ...);
 
 // 增量 W3C SSE 流式接收，随时可取消（例如玩家下线）
-AiCall stream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text), new AiStreamListener() {
-    @Override public void onEvent(AiStreamEvent event) { ... }
-    @Override public void onComplete(AiResult<Void> result) { ... }
-});
+AiCall stream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text),
+        event -> { ... },
+        result -> { ... });
 stream.cancel();
 
-// 单向异步事件通知
-ai.notify("/events/boss-killed", new BossKilled(bossId, killerRoleId));
+// 单向异步事件通知（独立并发预算，返回 network 的 WriteStatus）
+WriteStatus status = ai.notify("/events/boss-killed", new BossKilled(bossId, killerRoleId));
 
 ai.close();
 ```
@@ -57,7 +56,7 @@ ai.close();
 - **会话隔离与重置**：在请求 DTO 中带一个业务会话键（例如 `"npc:" + roleId + ":" + npcId + ":" + dialogueEpoch`），对应 Spring AI 的 `ChatMemory.CONVERSATION_ID` 或 LangGraph 的 `thread_id`。重置会话只需把游戏数据里的 `dialogueEpoch` 加 1，无需额外协议状态。
 - **共享 `HttpClient` 与舱壁隔离**：按业务域建多个 `AiClient`（例如 `npc` 配 30s 超时、`moderation` 配 500ms 超时），通过 `.httpClient(shared)` 共享连接池，避免慢对话占满 `maxInFlight` 饿死实时审核；共享实例不会在 `AiClient.close()` 时被关闭。
 - **原始字符串**：请求体为 `String` 时按 UTF-8 原样发送（不经 `AiCodec.encode`）；响应类型为 `String.class` 时原样返回（不经 `AiCodec.decode`）。
-- **准入、体积上限与关闭**：超过 `maxInFlight` 的调用以 `AI_OVERLOADED` 失败；单次响应超过 `maxResponseBytes`（默认 1 MiB）或单条 SSE 事件超过 `maxStreamEventChars`（默认 256 KiB）以 `AI_PROTOCOL_ERROR` 中止；`close()` 后在途调用与新调用均以 `AI_CLOSED` 失败。
+- **准入、体积上限与关闭**：超过 `maxInFlight` 的调用以 `AI_OVERLOADED` 失败；单向 `notify` 使用独立的 `maxNotifyInFlight` 预算并返回 `WriteStatus`（`ACCEPTED`、`INACTIVE`、`NOT_WRITABLE`）；单次响应超过 `maxResponseBytes`（默认 1 MiB）或单条 SSE 事件超过 `maxStreamEventChars`（默认 256 KiB）以 `AI_PROTOCOL_ERROR` 中止；回调统一投递到 `.executor(...)`（默认虚拟线程），绝不在调用线程或 `HttpClient` I/O 线程上运行；`close()` 后在途调用与新调用均以 `AI_CLOSED` 失败。
 
 ## 通过注解把现有方法暴露为 MCP 工具（`@McpTool`）
 
@@ -113,14 +112,14 @@ NetworkServer mcpServer = NetworkServer.start(8082,
 - **结果上限与幂等提示**：`McpHttpHandler.builder(tools).maxResultChars(...)`（默认 256K 字符）会在返回体过大时转为 `isError: true` 提示模型缩小查询范围；支持安全重试的写工具可标 `@McpTool(idempotent = true)`（输出 `idempotentHint`），并在业务侧按 `opId` 做幂等去重。
 - **拦截器（`McpToolInterceptor`）**：`allowList(headers, tool)` 按调用方过滤 `tools/list` 可见工具；`before(call)` 负责鉴权、分组/只读校验与开关（返回 `false` 拒绝并返回 `AI_TOOL_REJECTED`）；`after(call, result)` 在调用完成后逆序执行，用于审计日志。
 - **对接 `managame-runtime`**：在 `@McpTool(routeKey = "roleId")` 上声明路由键成员（方法参数或单 DTO 的方法/getter/字段，启动期编译为 `MethodHandle`），提供一个 `McpToolExecutor` 读取 `call.method()`（例如 `@Domain`）和 `call.routeKey()` 投递 `GameTask` 到 `runtime.execute`，并在捕获拒绝异常和 `GameTask.refused` 中调用 `call.context().fail(...)`。完整拼装样例见 `managame-example` 中的 `AiConfig` 与 `AiRuntimeIntegrationExampleTest`。
-- **MCP 协议兼容**：`McpHttpHandler` 实现无状态 Streamable HTTP（JSON-RPC 2.0 `initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`），兼容 Spring AI、LangChain4j、LangChain 及官方 MCP SDK（`2024-11-05` 至 `2025-11-25`）。未知工具返回 JSON-RPC `-32602`；参数校验失败、拦截拒绝与业务失败返回 `isError: true`，便于大模型自我纠正。
+- **MCP 协议兼容**：`McpHttpHandler` 实现无状态 Streamable HTTP（JSON-RPC 2.0 `initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`；与已有 HTTP 端口共港时可配 `.path("/mcp")`，并校验 `MCP-Protocol-Version` 请求头），兼容 Spring AI、LangChain4j、LangChain 及官方 MCP SDK（`2024-11-05` 至 `2025-11-25`）。未知工具返回 JSON-RPC `-32602`；参数校验失败、拦截拒绝与业务失败返回 `isError: true`，便于大模型自我纠正。
 
 ## 错误码、日志与指标
 
 - 错误码位于 `FrameworkErrorCodes`（`5001–5999`）：`AI_CLOSED`、`AI_UNAVAILABLE`、`AI_TIMEOUT`、`AI_OVERLOADED`、`AI_CANCELLED`、`AI_PROTOCOL_ERROR`、`AI_TOOL_NOT_FOUND`、`AI_TOOL_INVALID_ARGS`、`AI_TOOL_EXECUTION_ERROR`、`AI_TOOL_REJECTED`。
 - Logger（`System.Logger`）：`cn.managame.ai.client`、`cn.managame.ai.mcp`。
-- 客户端指标（`AiClient.builder().metrics(...)`，可选 `client` 标签）：`managame.ai.client.calls`（`kind`）、`managame.ai.client.failures`（`code`）、`managame.ai.client.in_flight`、`managame.ai.client.stream_events`、`managame.ai.client.latency`（`_bucket`、`_nanos`）。
-- MCP 工具指标（`McpTools.builder().metrics(...)`）：`managame.ai.mcp.calls`（`tool`）、`managame.ai.mcp.failures`（`tool`）、`managame.ai.mcp.rejected`（`tool`）、`managame.ai.mcp.not_found`、`managame.ai.mcp.invalid_args`、`managame.ai.mcp.overloaded`、`managame.ai.mcp.in_flight`、`managame.ai.mcp.latency`（`_bucket`、`_nanos`）。`Metrics.noop()` 下不读时钟。
+- 客户端指标（`AiClient.builder().metrics(...)`，可选 `client` 标签）：`managame.ai.client.calls`（`kind`）、`managame.ai.client.failures`（`code`）、`managame.ai.client.in_flight`、`managame.ai.client.notify_in_flight`、`managame.ai.client.stream_events`、`managame.ai.client.latency`（`_bucket`、`_nanos`）。
+- MCP 工具指标（`McpTools.builder().metrics(...)`，可选 `server` 标签）：`managame.ai.mcp.calls`（`tool`）、`managame.ai.mcp.failures`（`tool`）、`managame.ai.mcp.rejected`（`tool`）、`managame.ai.mcp.latency`（`tool`、`_bucket`、`_nanos`）、`managame.ai.mcp.not_found`、`managame.ai.mcp.invalid_args`、`managame.ai.mcp.overloaded`、`managame.ai.mcp.closed`、`managame.ai.mcp.in_flight`。`Metrics.noop()` 下不读时钟。
 
 ## 构建与测试
 

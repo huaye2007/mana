@@ -412,11 +412,23 @@ class McpToolsTest {
         assertEquals("done", first.get(5, TimeUnit.SECONDS).data());
         assertEquals(0, limited.inFlight());
 
-        // 3. Close rejects subsequent calls with AI_CLOSED
+        // 3. Close rejects subsequent calls with AI_CLOSED and increments closed counter
         tools.close();
         limited.close();
         assertTrue(limited.isClosed());
         assertEquals(AI_CLOSED, invokeSync(limited, "grant_once", "{}").code());
+        assertEquals(1L, metrics.counterValue("managame.ai.mcp.closed", ""));
+
+        // 4. Named McpTools registry tags metrics with server=<name>
+        AiClientTest.RecordingMetrics namedMetrics = new AiClientTest.RecordingMetrics();
+        try (McpTools gmRegistry = McpTools.builder()
+                .executor(McpToolExecutor.direct())
+                .metrics(namedMetrics, "gm")
+                .register(List.of(target))
+                .build()) {
+            assertEquals("granted", invokeSync(gmRegistry, "grant_once", "{}").data());
+            assertEquals(1L, namedMetrics.counterValue("managame.ai.mcp.calls", "server=gm,tool=grant_once"));
+        }
     }
 
     @Test void routeKeyCompiledAndValidatedAtRegistration() throws Exception {

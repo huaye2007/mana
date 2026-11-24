@@ -34,7 +34,7 @@ AiClient ai = AiClient.builder("http://127.0.0.1:8081/api/ai")
         .timeout(Duration.ofSeconds(30))
         .streamIdleTimeout(Duration.ofSeconds(10))    // optional max gap between SSE chunks
         .maxInFlight(128)
-        .header("Authorization", "Bearer " + token)
+        .header("Authorization", () -> "Bearer " + currentToken())
         .propagate(TRACE_ID, "X-Trace-Id")
         .metrics(metrics, "npc")
         .build();
@@ -50,14 +50,13 @@ ai.call(AiRequest.get("/jobs/" + jobId), JobStatus.class, result -> ...);
 ai.call(AiRequest.delete("/sessions/" + sessionId), Void.class, result -> ...);
 
 // Incremental W3C SSE streaming, cancellable at any time (e.g. player disconnect)
-AiCall stream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text), new AiStreamListener() {
-    @Override public void onEvent(AiStreamEvent event) { ... }
-    @Override public void onComplete(AiResult<Void> result) { ... }
-});
+AiCall stream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text),
+        event -> { ... },
+        result -> { ... });
 stream.cancel();
 
-// One-way fire-and-forget game event notification
-ai.notify("/events/boss-killed", new BossKilled(bossId, killerRoleId));
+// One-way fire-and-forget game event notification (returns network's WriteStatus, isolated budget)
+WriteStatus status = ai.notify("/events/boss-killed", new BossKilled(bossId, killerRoleId));
 
 ai.close();
 ```
@@ -73,9 +72,11 @@ ai.close();
   so slow streams never starve latency-sensitive calls; a shared client is not shut down by `AiClient.close()`.
 - **String payloads**: passing a `String` body sends it as UTF-8 JSON verbatim without invoking `AiCodec.encode`;
   requesting `String.class` returns the raw response body without invoking `AiCodec.decode`.
-- **Admission, bounds and shutdown**: calls beyond `maxInFlight` fail with `AI_OVERLOADED`; unary responses over
-  `maxResponseBytes` (1 MiB default) or SSE events over `maxStreamEventChars` (256 KiB default) abort with
-  `AI_PROTOCOL_ERROR`; `close()` aborts in-flight calls and rejects subsequent ones with `AI_CLOSED`.
+- **Admission, bounds and shutdown**: calls beyond `maxInFlight` fail with `AI_OVERLOADED`; one-way `notify` uses its
+  own `maxNotifyInFlight` budget and returns `WriteStatus` (`ACCEPTED`, `INACTIVE`, `NOT_WRITABLE`); unary responses
+  over `maxResponseBytes` (1 MiB default) or SSE events over `maxStreamEventChars` (256 KiB default) abort with
+  `AI_PROTOCOL_ERROR`; callbacks run on `.executor(...)` (virtual threads by default), never on the caller or
+  `HttpClient`'s I/O threads; `close()` aborts in-flight calls and rejects subsequent ones with `AI_CLOSED`.
 
 ## Exposing game server methods as MCP tools (`@McpTool`)
 
@@ -151,7 +152,8 @@ NetworkServer mcpServer = NetworkServer.start(8082,
   both when `execute` throws and in `GameTask.refused`. See `AiConfig` and `AiRuntimeIntegrationExampleTest` in
   `managame-example` for a complete end-to-end sample.
 - **MCP protocol**: `McpHttpHandler` implements stateless Streamable HTTP (JSON-RPC 2.0 `initialize`,
-  `notifications/initialized`, `ping`, `tools/list`, `tools/call`) compatible with Spring AI, LangChain4j, LangChain
+  `notifications/initialized`, `ping`, `tools/list`, `tools/call`; configurable `.path("/mcp")` when co-hosted on an
+  existing HTTP server, and `MCP-Protocol-Version` header validation) compatible with Spring AI, LangChain4j, LangChain
   and the official MCP SDK (`2024-11-05` through `2025-11-25`). Unknown tools return JSON-RPC `-32602`; invalid
   arguments, rejections and domain failures return `isError: true` so the model can see the error and recover.
 
@@ -162,12 +164,12 @@ NetworkServer mcpServer = NetworkServer.start(8082,
   `AI_TOOL_EXECUTION_ERROR`, `AI_TOOL_REJECTED`.
 - Loggers (`System.Logger`): `cn.managame.ai.client` and `cn.managame.ai.mcp`.
 - Client metrics (`AiClient.builder().metrics(...)`, optional `client` tag): `managame.ai.client.calls` (`kind`),
-  `managame.ai.client.failures` (`code`), `managame.ai.client.in_flight`, `managame.ai.client.stream_events`,
-  `managame.ai.client.latency` (`_bucket`, `_nanos`).
-- MCP metrics (`McpTools.builder().metrics(...)`): `managame.ai.mcp.calls` (`tool`), `managame.ai.mcp.failures`
-  (`tool`), `managame.ai.mcp.rejected` (`tool`), `managame.ai.mcp.not_found`, `managame.ai.mcp.invalid_args`,
-  `managame.ai.mcp.overloaded`, `managame.ai.mcp.in_flight`, `managame.ai.mcp.latency` (`_bucket`, `_nanos`). No clock
-  is read under `Metrics.noop()`.
+  `managame.ai.client.failures` (`code`), `managame.ai.client.in_flight`, `managame.ai.client.notify_in_flight`,
+  `managame.ai.client.stream_events`, `managame.ai.client.latency` (`_bucket`, `_nanos`).
+- MCP metrics (`McpTools.builder().metrics(...)`, optional `server` tag): `managame.ai.mcp.calls` (`tool`),
+  `managame.ai.mcp.failures` (`tool`), `managame.ai.mcp.rejected` (`tool`), `managame.ai.mcp.latency` (`tool`,
+  `_bucket`, `_nanos`), `managame.ai.mcp.not_found`, `managame.ai.mcp.invalid_args`, `managame.ai.mcp.overloaded`,
+  `managame.ai.mcp.closed`, `managame.ai.mcp.in_flight`. No clock is read under `Metrics.noop()`.
 
 ## Build and test
 

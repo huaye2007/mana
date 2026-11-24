@@ -88,7 +88,7 @@ public final class McpTools implements AutoCloseable {
         this.maxInFlight = b.maxInFlight;
         this.timeout = b.timeout;
         this.resultAdapter = b.resultAdapter;
-        this.metrics = new McpMetrics(b.metrics, inFlight::get);
+        this.metrics = new McpMetrics(b.metrics, b.metricsName, inFlight::get);
         Map<String, RegisteredTool> registered = new LinkedHashMap<>(b.entries.size());
         List<McpToolDefinition> defs = new ArrayList<>(b.entries.size());
         for (Builder.Entry entry : b.entries.values()) {
@@ -148,12 +148,13 @@ public final class McpTools implements AutoCloseable {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(callback, "callback");
         if (closed) {
+            metrics.closed();
             LOG.log(Level.WARNING, () -> "MCP tool '" + name + "' refused (closed)");
             deliver(callback, McpToolResult.fail(AI_CLOSED, "McpTools is closed"));
             return;
         }
         Map<String, Object> rawArgs;
-        if (argumentsJson == null || argumentsJson.isBlank()) {
+        if (argumentsJson == null || argumentsJson.isBlank() || "{}".equals(argumentsJson)) {
             rawArgs = Map.of();
         } else {
             try {
@@ -173,6 +174,7 @@ public final class McpTools implements AutoCloseable {
     void invokeParsed(String name, Map<String, Object> rawArgs, String rawJson,
             Map<String, String> headers, SocketAddress remoteAddress, Consumer<McpToolResult> callback) {
         if (closed) {
+            metrics.closed();
             LOG.log(Level.WARNING, () -> "MCP tool '" + name + "' refused (closed)");
             deliver(callback, McpToolResult.fail(AI_CLOSED, "McpTools is closed"));
             return;
@@ -212,8 +214,9 @@ public final class McpTools implements AutoCloseable {
         }
 
         long startNanos = metrics.startTimer();
-        AtomicInteger entered = new AtomicInteger();
-        McpToolCall[] callHolder = new McpToolCall[1];
+        boolean hasInterceptors = !interceptors.isEmpty();
+        AtomicInteger entered = hasInterceptors ? new AtomicInteger() : null;
+        McpToolCall[] callHolder = hasInterceptors ? new McpToolCall[1] : null;
         AtomicReference<ScheduledFuture<?>> timerRef = timeout != null ? new AtomicReference<>() : null;
         // QUEUED -> STARTED when the tool begins, or QUEUED -> TIMED_OUT when its timeout comes first, never both
         AtomicInteger stage = timeout != null ? new AtomicInteger(QUEUED) : null;
@@ -223,17 +226,20 @@ public final class McpTools implements AutoCloseable {
                 ScheduledFuture<?> f = timerRef.getAndSet(null);
                 if (f != null) f.cancel(false);
             }
-            metrics.recordLatency(startNanos);
+            tool.meters.recordLatency(startNanos);
             if (!result.isSuccess()) {
                 if (result.code() == AI_TOOL_REJECTED) tool.meters.rejected().increment();
+                else if (result.code() == AI_CLOSED) { metrics.closed(); tool.meters.failures().increment(); }
                 else tool.meters.failures().increment();
             }
-            McpToolCall completedCall = callHolder[0];
-            for (int i = entered.get() - 1; i >= 0; i--) {
-                try {
-                    interceptors.get(i).after(completedCall, result);
-                } catch (Throwable cause) {
-                    LOG.log(Level.ERROR, "Uncaught exception in McpToolInterceptor.after for '" + name + "'", cause);
+            if (entered != null) {
+                McpToolCall completedCall = callHolder[0];
+                for (int i = entered.get() - 1; i >= 0; i--) {
+                    try {
+                        interceptors.get(i).after(completedCall, result);
+                    } catch (Throwable cause) {
+                        LOG.log(Level.ERROR, "Uncaught exception in McpToolInterceptor.after for '" + name + "'", cause);
+                    }
                 }
             }
             deliver(callback, result);
@@ -246,7 +252,7 @@ public final class McpTools implements AutoCloseable {
                 context,
                 hasRouteKey,
                 routeKey);
-        callHolder[0] = call;
+        if (callHolder != null) callHolder[0] = call;
 
         if (closed) {
             context.fail(AI_CLOSED, "McpTools is closed");
@@ -408,6 +414,7 @@ public final class McpTools implements AutoCloseable {
         private Duration timeout;
         private Function<Object, McpToolResult> resultAdapter;
         private Metrics metrics = Metrics.noop();
+        private String metricsName = "";
 
         private Builder() {}
 
@@ -489,7 +496,13 @@ public final class McpTools implements AutoCloseable {
 
         /** Where metrics are reported; {@link Metrics#noop()} by default. */
         public Builder metrics(Metrics metrics) {
+            return metrics(metrics, "");
+        }
+
+        /** Where metrics are reported, tagged {@code server=name} when {@code name} is non-empty. */
+        public Builder metrics(Metrics metrics, String name) {
             this.metrics = Objects.requireNonNull(metrics, "metrics");
+            this.metricsName = Objects.requireNonNull(name, "name");
             return this;
         }
 
