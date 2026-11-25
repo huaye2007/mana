@@ -7,9 +7,14 @@ import java.util.Objects;
  * {@link McpToolInterceptor}. {@code inputSchema} is a pre-built JSON Schema object string.
  */
 public record McpToolDefinition(String name, String description, String group,
-        boolean readOnly, boolean idempotent, String inputSchema) {
+        boolean readOnly, boolean destructive, boolean idempotent, String inputSchema) {
     public McpToolDefinition(String name, String description, String group, boolean readOnly, String inputSchema) {
-        this(name, description, group, readOnly, false, inputSchema);
+        this(name, description, group, readOnly, false, false, inputSchema);
+    }
+
+    public McpToolDefinition(String name, String description, String group,
+            boolean readOnly, boolean idempotent, String inputSchema) {
+        this(name, description, group, readOnly, false, idempotent, inputSchema);
     }
 
     public McpToolDefinition {
@@ -26,5 +31,6 @@ public record McpToolDefinition(String name, String description, String group,
         if (inputSchema.isBlank()) {
             throw new IllegalArgumentException("Tool '" + name + "' requires a non-blank inputSchema");
         }
+        if (readOnly) destructive = false;
     }
 }

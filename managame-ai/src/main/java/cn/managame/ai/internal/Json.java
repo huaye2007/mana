@@ -3,11 +3,15 @@ package cn.managame.ai.internal;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.net.URI;
+import java.time.Duration;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Minimal RFC 8259 JSON parser and writer for the framework's own envelopes (JSON-RPC 2.0, JSON Schema and the basic
@@ -107,6 +111,10 @@ public final class Json {
             }
             case BigInteger bi -> out.append(bi);
             case BigDecimal bd -> out.append(bd);
+            case UUID u -> writeString(out, u.toString());
+            case URI u -> writeString(out, u.toString());
+            case TemporalAccessor t -> writeString(out, t.toString());
+            case Duration d -> writeString(out, d.toString());
             case Enum<?> e -> writeString(out, e.name());
             case Optional<?> opt -> writeTo(out, opt.orElse(null), depth + 1);
             case Map<?, ?> map -> {

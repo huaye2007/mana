@@ -32,10 +32,11 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
+import org.openjdk.jmh.infra.Blackhole;
 
 /**
- * End-to-end loopback HTTP throughput of {@link AiClient#call} against a Netty HTTP server and of
- * {@link McpHttpHandler} serving JSON-RPC 2.0 {@code tools/call} requests.
+ * End-to-end loopback HTTP throughput of {@link AiClient#call}, {@link AiClient#stream}, and {@link McpHttpHandler}
+ * serving JSON-RPC 2.0 {@code tools/call} requests.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -49,11 +50,17 @@ public class AiHttpBenchmark {
     public record ChatRes(String reply) {}
 
     private static final byte[] CHAT_RESPONSE = "{\"reply\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] SSE_RESPONSE = (
+            "id: 1\nevent: token\ndata: 你好\n\n"
+            + "id: 2\nevent: token\ndata: 冒险者\n\n"
+            + "id: 3\nevent: done\ndata: [DONE]\n\n"
+    ).getBytes(StandardCharsets.UTF_8);
     private static final String MCP_TOOLS_CALL = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
             + "\"params\":{\"name\":\"query_bag\",\"arguments\":{\"roleId\":1001,\"itemId\":2001}}}";
 
     private NetworkServer echoAiServer;
     private NetworkServer mcpServer;
+    private McpTools mcpTools;
     private AiClient aiClient;
     private AiClient mcpClient;
     private final ChatReq sampleReq = new ChatReq(7, "hello");
@@ -61,19 +68,26 @@ public class AiHttpBenchmark {
     @Setup(Level.Trial) public void start() {
         JacksonCodec codec = new JacksonCodec();
         echoAiServer = NetworkServer.start(0, HttpInitializer.http().handler(exchange -> {
-            FullHttpResponse resp = new DefaultFullHttpResponse(
-                    HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(CHAT_RESPONSE));
-            resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
-            exchange.respond(resp);
+            if ("/stream".equals(exchange.path())) {
+                FullHttpResponse resp = new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(SSE_RESPONSE));
+                resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
+                exchange.respond(resp);
+            } else {
+                FullHttpResponse resp = new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(CHAT_RESPONSE));
+                resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+                exchange.respond(resp);
+            }
         }).build());
 
-        McpTools tools = McpTools.builder()
+        mcpTools = McpTools.builder()
                 .codec(codec)
                 .executor(McpToolExecutor.direct())
                 .register(List.of(new BagTools()))
                 .build();
         mcpServer = NetworkServer.start(0,
-                HttpInitializer.http().contextPath("/mcp").handler(new McpHttpHandler(tools)).build());
+                HttpInitializer.http().contextPath("/mcp").handler(new McpHttpHandler(mcpTools)).build());
 
         aiClient = AiClient.builder("http://127.0.0.1:" + echoAiServer.port())
                 .codec(codec)
@@ -86,6 +100,7 @@ public class AiHttpBenchmark {
         aiClient.close();
         mcpClient.close();
         mcpServer.close();
+        mcpTools.close();
         echoAiServer.close();
     }
 
@@ -94,6 +109,14 @@ public class AiHttpBenchmark {
         aiClient.call("/chat", sampleReq, ChatRes.class, f::complete);
         AiResult<ChatRes> res = f.get();
         if (!res.isSuccess()) throw new IllegalStateException("Call failed: " + res);
+        return res;
+    }
+
+    @Benchmark public AiResult<Void> clientSseStream(Blackhole bh) throws Exception {
+        CompletableFuture<AiResult<Void>> f = new CompletableFuture<>();
+        aiClient.stream("/stream", sampleReq, bh::consume, f::complete);
+        AiResult<Void> res = f.get();
+        if (!res.isSuccess()) throw new IllegalStateException("Stream failed: " + res);
         return res;
     }
 

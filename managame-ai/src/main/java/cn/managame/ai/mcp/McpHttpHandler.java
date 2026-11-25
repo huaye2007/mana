@@ -20,6 +20,7 @@ import java.lang.System.Logger.Level;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,9 +44,9 @@ import java.util.TreeMap;
  * <p>Implements JSON-RPC 2.0 over HTTP POST ({@code initialize}, {@code notifications/initialized}, {@code ping},
  * {@code tools/list}, {@code tools/call}) in stateless Streamable HTTP mode: GET and DELETE return {@code 405 Method
  * Not Allowed} ({@code Allow: POST}) per the MCP Streamable HTTP specification, unsupported {@code MCP-Protocol-Version}
- * headers return {@code 400 Bad Request}, JSON-RPC notifications return {@code 202 Accepted}, unknown tools return
- * JSON-RPC {@code -32602}, and tool validation/rejection/execution failures return a tool result with
- * {@code isError: true} so the model can observe and recover. Never blocks the Netty EventLoop.
+ * headers on post-initialization requests return {@code 400 Bad Request}, JSON-RPC notifications return
+ * {@code 202 Accepted}, unknown tools return JSON-RPC {@code -32602}, and tool validation/rejection/execution failures
+ * return a tool result with {@code isError: true} so the model can observe and recover. Never blocks the Netty EventLoop.
  */
 public final class McpHttpHandler implements HttpHandler {
     private static final System.Logger LOG = System.getLogger("cn.managame.ai.mcp");
@@ -58,6 +59,7 @@ public final class McpHttpHandler implements HttpHandler {
     private static final int JSONRPC_METHOD_NOT_FOUND = -32601;
     private static final int JSONRPC_INVALID_PARAMS = -32602;
     private static final int DEFAULT_MAX_RESULT_CHARS = 256 * 1024;
+    private static final Json.Raw EMPTY_OBJECT_RAW = new Json.Raw("{}");
 
     private final McpTools tools;
     private final String path;
@@ -65,6 +67,8 @@ public final class McpHttpHandler implements HttpHandler {
     private final String serverVersion;
     private final String instructions;
     private final int maxResultChars;
+    private final Map<McpToolDefinition, Json.Raw> encodedTools;
+    private final Json.Raw allToolsListPayload;
 
     /** Creates an MCP HTTP handler for {@code tools} matching {@code "/"} with default server info. */
     public McpHttpHandler(McpTools tools) {
@@ -78,6 +82,15 @@ public final class McpHttpHandler implements HttpHandler {
         this.serverVersion = b.serverVersion;
         this.instructions = b.instructions;
         this.maxResultChars = b.maxResultChars;
+        IdentityHashMap<McpToolDefinition, Json.Raw> perTool = new IdentityHashMap<>();
+        List<Json.Raw> all = new ArrayList<>(tools.definitions().size());
+        for (McpToolDefinition def : tools.definitions()) {
+            Json.Raw raw = new Json.Raw(encodeToolDefinition(def));
+            perTool.put(def, raw);
+            all.add(raw);
+        }
+        this.encodedTools = perTool;
+        this.allToolsListPayload = new Json.Raw(Json.write(Map.of("tools", all)));
         LOG.log(Level.INFO, () -> "McpHttpHandler ready (" + serverName + " " + serverVersion
                 + ", path=" + path + ", " + tools.definitions().size() + " tools)");
     }
@@ -100,16 +113,7 @@ public final class McpHttpHandler implements HttpHandler {
             exchange.respond(response);
             return;
         }
-        String protocolHeader = request.headers().get(PROTOCOL_VERSION_HEADER);
-        if (protocolHeader != null && !protocolHeader.isBlank()
-                && !SUPPORTED_PROTOCOL_VERSIONS.contains(protocolHeader.trim())) {
-            respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
-                    jsonRpcError(null, JSONRPC_INVALID_REQUEST,
-                            "Unsupported MCP-Protocol-Version: " + protocolHeader));
-            return;
-        }
         String body = request.content().toString(StandardCharsets.UTF_8);
-        Map<String, String> headers = copyHeaders(request);
         Json.McpEnvelope mcpEnv;
         try {
             mcpEnv = Json.parseMcpRequest(body);
@@ -136,6 +140,16 @@ public final class McpHttpHandler implements HttpHandler {
                     jsonRpcError(null, JSONRPC_INVALID_REQUEST, "Field 'method' must be a non-empty string"));
             return;
         }
+        if (!"initialize".equals(method)) {
+            String protocolHeader = request.headers().get(PROTOCOL_VERSION_HEADER);
+            if (protocolHeader != null && !protocolHeader.isBlank()
+                    && !SUPPORTED_PROTOCOL_VERSIONS.contains(protocolHeader.trim())) {
+                respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
+                        jsonRpcError(null, JSONRPC_INVALID_REQUEST,
+                                "Unsupported MCP-Protocol-Version: " + protocolHeader));
+                return;
+            }
+        }
         boolean hasId = envelope.containsKey("id");
         Object id = envelope.get("id");
         if (hasId && id != null && !(id instanceof String) && !(id instanceof Number)) {
@@ -152,9 +166,9 @@ public final class McpHttpHandler implements HttpHandler {
         if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, () -> "MCP request " + method + " (id=" + id + ")");
         switch (method) {
             case "initialize" -> handleInitialize(exchange, id, paramsObj);
-            case "ping" -> respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, Map.of()));
-            case "tools/list" -> handleToolsList(exchange, id, headers);
-            case "tools/call" -> handleToolsCall(exchange, id, paramsObj, mcpEnv.rawArgumentsJson(), headers);
+            case "ping" -> respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, EMPTY_OBJECT_RAW));
+            case "tools/list" -> handleToolsList(exchange, id, request);
+            case "tools/call" -> handleToolsCall(exchange, id, paramsObj, mcpEnv.rawArgumentsJson(), copyHeaders(request));
             default -> respondJson(exchange, HttpResponseStatus.OK,
                     jsonRpcError(id, JSONRPC_METHOD_NOT_FOUND, "Method not found: " + method));
         }
@@ -169,7 +183,7 @@ public final class McpHttpHandler implements HttpHandler {
             }
         }
         Map<String, Object> capabilities = new LinkedHashMap<>();
-        capabilities.put("tools", Map.of());
+        capabilities.put("tools", EMPTY_OBJECT_RAW);
         Map<String, Object> serverInfo = new LinkedHashMap<>();
         serverInfo.put("name", serverName);
         serverInfo.put("version", serverVersion);
@@ -181,23 +195,34 @@ public final class McpHttpHandler implements HttpHandler {
         respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, result));
     }
 
-    private void handleToolsList(HttpExchange exchange, Object id, Map<String, String> headers) {
-        List<McpToolDefinition> visible = tools.listNormalized(headers);
-        List<Map<String, Object>> serialized = new ArrayList<>(visible.size());
+    private void handleToolsList(HttpExchange exchange, Object id, FullHttpRequest request) {
+        if (!tools.hasInterceptors()) {
+            respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, allToolsListPayload));
+            return;
+        }
+        List<McpToolDefinition> visible = tools.listNormalized(copyHeaders(request));
+        List<Json.Raw> serialized = new ArrayList<>(visible.size());
         for (McpToolDefinition def : visible) {
-            Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("name", def.name());
-            entry.put("description", def.description());
-            entry.put("inputSchema", new Json.Raw(def.inputSchema()));
-            if (def.readOnly() || def.idempotent()) {
-                Map<String, Object> annotations = new LinkedHashMap<>();
-                if (def.readOnly()) annotations.put("readOnlyHint", Boolean.TRUE);
-                if (def.idempotent()) annotations.put("idempotentHint", Boolean.TRUE);
-                entry.put("annotations", annotations);
-            }
-            serialized.add(entry);
+            Json.Raw cached = encodedTools.get(def);
+            serialized.add(cached != null ? cached : new Json.Raw(encodeToolDefinition(def)));
         }
         respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, Map.of("tools", serialized)));
+    }
+
+    private static String encodeToolDefinition(McpToolDefinition def) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("name", def.name());
+        entry.put("description", def.description());
+        entry.put("inputSchema", new Json.Raw(def.inputSchema()));
+        Map<String, Object> annotations = new LinkedHashMap<>();
+        annotations.put("readOnlyHint", def.readOnly());
+        if (!def.readOnly()) {
+            annotations.put("destructiveHint", def.destructive());
+            if (def.idempotent()) annotations.put("idempotentHint", Boolean.TRUE);
+        }
+        annotations.put("openWorldHint", Boolean.FALSE);
+        entry.put("annotations", annotations);
+        return Json.write(entry);
     }
 
     private void handleToolsCall(HttpExchange exchange, Object id, Object paramsObj,
@@ -302,11 +327,12 @@ public final class McpHttpHandler implements HttpHandler {
     }
 
     private static Map<String, String> copyHeaders(FullHttpRequest request) {
+        if (request.headers().isEmpty()) return Map.of();
         TreeMap<String, String> map = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         for (Map.Entry<String, String> entry : request.headers()) {
             map.putIfAbsent(entry.getKey(), entry.getValue());
         }
-        return map.isEmpty() ? Map.of() : Collections.unmodifiableMap(map);
+        return Collections.unmodifiableMap(map);
     }
 
     public static final class Builder {

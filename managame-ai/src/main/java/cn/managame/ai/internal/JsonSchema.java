@@ -9,6 +9,9 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.net.URI;
+import java.time.Duration;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.IdentityHashMap;
@@ -101,7 +104,8 @@ public final class JsonSchema {
             return schema;
         }
         if (raw == String.class || CharSequence.class.isAssignableFrom(raw)
-                || raw == char.class || raw == Character.class || raw == UUID.class) {
+                || raw == char.class || raw == Character.class || raw == UUID.class
+                || raw == URI.class || raw == Duration.class || TemporalAccessor.class.isAssignableFrom(raw)) {
             schema.put("type", "string");
             return schema;
         }
@@ -132,6 +136,8 @@ public final class JsonSchema {
     private static Map<String, Object> objectSchema(Class<?> type, Map<Class<?>, Boolean> visiting) {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("type", "object");
+        String pkg = type.getPackageName();
+        if (pkg.startsWith("java.") || pkg.startsWith("javax.")) return root;
         if (visiting.put(type, Boolean.TRUE) != null) return root;
         try {
             Map<String, Object> properties = new LinkedHashMap<>();

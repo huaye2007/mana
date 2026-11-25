@@ -13,7 +13,7 @@ Java 25. The root `pom.xml` only aggregates them, to build all in one command; n
 | `managame-network` | common, Netty 4.2.19, the modules it uses (common, buffer, transport, handler, codec-base, codec-http, epoll), never `netty-all` | TCP / TLS / ws / wss servers, HTTP/1.1 server, reconnecting client |
 | `managame-runtime` | common, network | `GameRuntime` (the single entry for business logic), routing, `Dispatcher`, `EventBus`, `GameTimer`, HTTP routes |
 | `managame-rpc` | common, network | `RpcNode` / `RpcPeer`: calls and notifies between server processes over symmetric TCP connections, membership the application drives, restart detection and admission |
-| `managame-ai` | common, network | Thin integration with external AI services: non-blocking HTTP/SSE `AiClient`, and exposing existing game methods as stateless Streamable HTTP MCP tools (`@McpTool`, `McpTools`, `McpHttpHandler`) |
+| `managame-ai` | common, network | Thin integration with external AI services: non-blocking HTTP/SSE `AiClient` (`AiDispatcher`), and exposing existing game methods as stateless Streamable HTTP MCP tools (`@McpTool`, `McpTools`, `McpToolExecutor`, `McpHttpHandler`) |
 | `managame-data` | common, Caffeine | `SingleRepository` / `GroupRepository` / `LogRepository`: game data in memory, written behind it in batches through the `EntityMapper` and `LogWriter` the application picks; knows no database |
 | `managame-data-mysql` | data | `MysqlEntityMapper`, `MysqlLogWriter`: entities and logs in MySQL over JDBC |
 | `managame-data-mongo` | data, MongoDB sync driver | `MongoEntityMapper`: entities in MongoDB |
@@ -240,6 +240,13 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   `Change`, `RetryableFailures`, `DelegatingEntityMapper`), and `internal` for the implementation: public only to be
   reachable across packages, marked not API, with no `module-info.java`. A helper used by one package stays
   package-private there.
+- ai names and decisions: `managame-ai` depends only on `common` and `network` and knows nothing of `GameRuntime`; one
+  `AiClient` (`AiDispatcher` capturing the caller's continuation and `Metadata` from `request.context()`) and one
+  `McpTools` (`McpToolExecutor` with startup `prepare` and off-thread `complete`) serve the whole process over a single
+  shared daemon time wheel (`AiTimer`). Packages split into `cn.managame.ai` (`AiClient`, `AiRequest`, `AiResponse`,
+  `AiCallback`, `AiStreamListener`, `AiStreamControl`), `mcp` (`McpTools`, `McpHttpHandler`, `McpToolContext`,
+  `McpToolCall`, `McpToolInterceptor`), `annotation` (`@McpTool`, `@McpParam`), `spi` (`AiDispatcher`,
+  `McpToolExecutor`, `AiCodec`), and `internal`.
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).

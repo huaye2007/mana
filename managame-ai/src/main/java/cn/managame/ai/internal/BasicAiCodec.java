@@ -13,6 +13,14 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -68,9 +76,13 @@ public final class BasicAiCodec implements AiCodec {
             if (List.class.isAssignableFrom(raw) || Set.class.isAssignableFrom(raw) || Collection.class == raw)
                 return args.length == 1 && supports(args[0]);
             if (Map.class.isAssignableFrom(raw))
-                return args.length == 2 && args[0] == String.class && supports(args[1]);
+                return args.length == 2 && isSupportedMapKey(args[0]) && supports(args[1]);
         }
         return false;
+    }
+
+    private static boolean isSupportedMapKey(Type keyType) {
+        return keyType instanceof Class<?> k && (k == Object.class || isScalar(k) || k.isEnum());
     }
 
     /** Converts a value already parsed by {@link Json#parse} into {@code type}. */
@@ -88,9 +100,10 @@ public final class BasicAiCodec implements AiCodec {
                 return new LinkedHashSet<>(convertList(value, pt.getActualTypeArguments()[0]));
             }
             if (Map.class.isAssignableFrom(raw)) {
-                if (pt.getActualTypeArguments()[0] != String.class)
-                    throw new IllegalArgumentException("Only Map<String, ?> is supported by the basic codec");
-                return convertMap(value, pt.getActualTypeArguments()[1]);
+                Type keyType = pt.getActualTypeArguments()[0];
+                if (!isSupportedMapKey(keyType))
+                    throw new IllegalArgumentException("Unsupported Map key type " + keyType.getTypeName() + "; configure an AiCodec");
+                return convertMap(value, keyType, pt.getActualTypeArguments()[1]);
             }
             throw new IllegalArgumentException("Unsupported generic type " + type.getTypeName() + "; configure an AiCodec");
         }
@@ -144,6 +157,38 @@ public final class BasicAiCodec implements AiCodec {
             if (value instanceof String s) return UUID.fromString(s);
             throw new IllegalArgumentException("Expected UUID string, got " + value);
         }
+        if (raw == URI.class) {
+            if (value instanceof String s) return URI.create(s);
+            throw new IllegalArgumentException("Expected URI string, got " + value);
+        }
+        if (raw == Instant.class) {
+            if (value instanceof String s) return Instant.parse(s);
+            throw new IllegalArgumentException("Expected Instant string, got " + value);
+        }
+        if (raw == LocalDate.class) {
+            if (value instanceof String s) return LocalDate.parse(s);
+            throw new IllegalArgumentException("Expected LocalDate string, got " + value);
+        }
+        if (raw == LocalTime.class) {
+            if (value instanceof String s) return LocalTime.parse(s);
+            throw new IllegalArgumentException("Expected LocalTime string, got " + value);
+        }
+        if (raw == LocalDateTime.class) {
+            if (value instanceof String s) return LocalDateTime.parse(s);
+            throw new IllegalArgumentException("Expected LocalDateTime string, got " + value);
+        }
+        if (raw == OffsetDateTime.class) {
+            if (value instanceof String s) return OffsetDateTime.parse(s);
+            throw new IllegalArgumentException("Expected OffsetDateTime string, got " + value);
+        }
+        if (raw == ZonedDateTime.class) {
+            if (value instanceof String s) return ZonedDateTime.parse(s);
+            throw new IllegalArgumentException("Expected ZonedDateTime string, got " + value);
+        }
+        if (raw == Duration.class) {
+            if (value instanceof String s) return Duration.parse(s);
+            throw new IllegalArgumentException("Expected ISO-8601 Duration string, got " + value);
+        }
         if (raw.isEnum()) {
             if (value instanceof String s) return Enum.valueOf((Class<Enum>) raw, s);
             throw new IllegalArgumentException("Expected enum string for " + raw.getSimpleName() + ", got " + value);
@@ -157,7 +202,7 @@ public final class BasicAiCodec implements AiCodec {
         }
         if (List.class.isAssignableFrom(raw) || Collection.class == raw) return convertList(value, Object.class);
         if (Set.class.isAssignableFrom(raw)) return new LinkedHashSet<>(convertList(value, Object.class));
-        if (Map.class.isAssignableFrom(raw)) return convertMap(value, Object.class);
+        if (Map.class.isAssignableFrom(raw)) return convertMap(value, String.class, Object.class);
         if (raw.isRecord()) return convertRecord(value, raw);
         throw new IllegalArgumentException("No basic decoding for " + raw.getName() + "; configure an AiCodec");
     }
@@ -173,11 +218,13 @@ public final class BasicAiCodec implements AiCodec {
         return out;
     }
 
-    private static Map<String, Object> convertMap(Object value, Type valueType) {
+    private static Map<Object, Object> convertMap(Object value, Type keyType, Type valueType) {
         if (!(value instanceof Map<?, ?> rawMap)) throw new IllegalArgumentException("Expected JSON object");
-        Map<String, Object> out = new LinkedHashMap<>(rawMap.size());
+        Map<Object, Object> out = new LinkedHashMap<>(rawMap.size());
         for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-            out.put(entry.getKey().toString(), convert(entry.getValue(), valueType));
+            String keyStr = entry.getKey().toString();
+            Object k = (keyType == String.class || keyType == Object.class) ? keyStr : convert(keyStr, keyType);
+            out.put(k, convert(entry.getValue(), valueType));
         }
         return out;
     }
@@ -193,12 +240,9 @@ public final class BasicAiCodec implements AiCodec {
             String fieldName = component.wireName();
             Object raw = map.get(fieldName);
             if (raw == null) {
-                boolean present = map.containsKey(fieldName);
                 if (component.isOptional()) {
                     args[i] = Optional.empty();
-                } else if (component.isPrimitive()) {
-                    throw new IllegalArgumentException("Missing required field '" + fieldName + "'");
-                } else if (component.explicitRequired() && !present) {
+                } else if (component.isPrimitive() || component.explicitRequired()) {
                     throw new IllegalArgumentException("Missing required field '" + fieldName + "'");
                 } else {
                     args[i] = null;
@@ -310,7 +354,10 @@ public final class BasicAiCodec implements AiCodec {
         return type.isPrimitive() || type == String.class || type == Boolean.class || type == Character.class
                 || type == Byte.class || type == Short.class || type == Integer.class || type == Long.class
                 || type == Float.class || type == Double.class || type == BigInteger.class
-                || type == BigDecimal.class || type == UUID.class;
+                || type == BigDecimal.class || type == UUID.class || type == URI.class
+                || type == Instant.class || type == LocalDate.class || type == LocalTime.class
+                || type == LocalDateTime.class || type == OffsetDateTime.class || type == ZonedDateTime.class
+                || type == Duration.class;
     }
 
     record RecordPlan(ComponentPlan[] components, MethodHandle constructor) {

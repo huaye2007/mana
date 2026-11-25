@@ -1,0 +1,10 @@
+# recorded 2026-11-25 on Windows 11 amd64, the 8 faster of 18 CPUs, Java 25.0.3
+benchmark,params,mode,score,error,unit,alloc_bytes_per_op,p50,p99,alloc_mb_per_s,gc_count,gc_ms,cpu_ns_per_op,cpu_caller_ns_per_op,cpu_eventloop_ns_per_op,cpu_other_ns_per_op,cpu_jvm_ns_per_op,direct_mib,sent_bytes_per_op,received_bytes_per_op,busy_percent,peer_cpu_ns_per_op,peer_cpu_eventloop_ns_per_op,peer_cpu_other_ns_per_op,peer_cpu_jvm_ns_per_op,peer_alloc_bytes_per_op,peer_gc_count,peer_gc_ms,peer_direct_mib
+SseParserBenchmark.parseTenEvents,,avgt,2547.761,119.634,ns/op,8552.226,,,3181.339,52.000,41.000,2582.705,2522.904,0.000,19.741,40.059,0.000,,,7.369,,,,,,,,
+ToolInvokeBenchmark.invokeBasicRecord,,avgt,311.594,4.275,ns/op,984.028,,,2993.464,49.000,43.000,312.390,306.566,0.000,0.973,4.851,0.000,,,5.381,,,,,,,,
+ToolInvokeBenchmark.invokeIntercepted,,avgt,496.374,14.255,ns/op,1672.044,,,3192.779,53.000,47.000,503.860,489.154,0.000,0.000,14.706,0.000,,,5.076,,,,,,,,
+ToolInvokeBenchmark.invokeMetered,,avgt,505.163,21.867,ns/op,1672.045,,,3137.108,52.000,44.000,500.314,495.542,0.000,0.000,4.772,0.000,,,5.987,,,,,,,,
+ToolInvokeBenchmark.invokeNoArg,,avgt,127.814,4.523,ns/op,328.011,,,2432.499,40.000,35.000,131.537,126.156,0.000,1.199,4.182,0.000,,,7.935,,,,,,,,
+ToolInvokeBenchmark.invokeParams,,avgt,285.396,6.005,ns/op,936.025,,,3109.535,51.000,45.000,283.061,282.173,0.000,0.000,0.888,0.000,,,4.640,,,,,,,,
+ToolInvokeBenchmark.invokeRecord,,avgt,452.100,5.226,ns/op,1672.040,,,3505.305,57.000,48.000,459.641,445.535,0.000,5.653,8.454,0.000,,,4.163,,,,,,,,
+AiHttpBenchmark.clientUnaryCall,,thrpt,21654.850,232.726,ops/s,26003.402,,,497.975,9.000,44.000,216191.705,11899.685,43197.146,158429.339,2665.534,2.500,,,7.806,,,,,,,,

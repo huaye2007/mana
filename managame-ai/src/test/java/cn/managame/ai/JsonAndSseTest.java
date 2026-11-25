@@ -6,21 +6,30 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import cn.managame.ai.annotation.McpParam;
 import cn.managame.ai.internal.BasicAiCodec;
 import cn.managame.ai.internal.Json;
+import cn.managame.ai.internal.JsonSchema;
 import cn.managame.ai.internal.SseParser;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class JsonAndSseTest {
     enum Rarity { COMMON, EPIC }
     record Item(int id, String name, Rarity rarity) {}
     record Bag(long roleId, List<Item> items, Optional<String> note, boolean locked) {}
+    record AuditEntry(UUID id, Instant at, LocalDate day, Duration cost, URI endpoint,
+            @McpParam(value = "Required title", required = true) String title) {}
 
     @Test void jsonRoundTripAndEscapes() {
         Map<String, Object> input = Map.of(
@@ -53,7 +62,7 @@ class JsonAndSseTest {
         assertThrows(IllegalArgumentException.class, () -> Json.parse(deep));
     }
 
-    @Test void basicCodecDecodesRecordsAndCollections() throws Exception {
+    @Test void basicCodecDecodesRecordsUuidJavaTimeAndValidatesRequiredFields() throws Exception {
         AiCodec codec = AiCodec.basic();
         Bag bag = new Bag(1001L, List.of(new Item(10, "Sword", Rarity.EPIC)), Optional.of("vip"), true);
         String json = codec.encode(bag);
@@ -68,11 +77,34 @@ class JsonAndSseTest {
         assertArrayEquals(new int[]{1, 2, 3}, nums);
         assertNull(codec.decode("null", String.class));
         assertThrows(IllegalArgumentException.class, () -> BasicAiCodec.INSTANCE.decode("null", int.class));
+
+        // UUID, Instant, LocalDate, Duration, URI round-trip and string JSON Schema (never JDK internal fields)
+        AuditEntry entry = new AuditEntry(
+                UUID.fromString("550e8400-e29b-41d4-a716-446655440000"),
+                Instant.parse("2026-11-25T04:00:00Z"),
+                LocalDate.of(2026, 11, 25),
+                Duration.ofMillis(250),
+                URI.create("http://127.0.0.1:8081/api"),
+                "daily");
+        String entryJson = codec.encode(entry);
+        assertEquals(entry, codec.decode(entryJson, AuditEntry.class));
+
+        Map<String, Object> schema = Json.parseObject(JsonSchema.forObjectType(AuditEntry.class));
+        @SuppressWarnings("unchecked")
+        Map<String, Map<String, Object>> props = (Map<String, Map<String, Object>>) schema.get("properties");
+        assertEquals("string", props.get("id").get("type"));
+        assertEquals("string", props.get("at").get("type"));
+        assertEquals("string", props.get("day").get("type"));
+        assertEquals("string", props.get("cost").get("type"));
+        assertEquals("string", props.get("endpoint").get("type"));
+
+        // Explicit null for @McpParam(required = true) must fail validation
+        String withNullTitle = entryJson.replace("\"daily\"", "null");
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(withNullTitle, AuditEntry.class));
     }
 
     @Test void basicCodecParsesNumericStringsIncludingFull64BitSnowflakeIds() throws Exception {
         AiCodec codec = AiCodec.basic();
-        // > 2^53 - 1: casting through IEEE-754 double would corrupt the lowest bit to ...4000L
         long snowflake = 1795519194523264001L;
         Bag fromQuotedId = (Bag) codec.decode(
                 "{\"roleId\":\"1795519194523264001\",\"items\":[{\"id\":\"10\",\"name\":\"Sword\",\"rarity\":\"EPIC\"}],\"locked\":false}",
@@ -86,7 +118,7 @@ class JsonAndSseTest {
         assertThrows(IllegalArgumentException.class, () -> codec.decode("\"\"", long.class));
     }
 
-    @Test void sseParserHandlesSplitUtf8AndMultilineEvents() {
+    @Test void sseParserHandlesSplitUtf8MultilineEventsAndDiscardsUnterminatedTail() {
         List<AiStreamEvent> events = new ArrayList<>();
         SseParser parser = new SseParser(events::add);
         String stream = "\uFEFF: keep-alive\r\n"
@@ -96,14 +128,16 @@ class JsonAndSseTest {
                 + "data: 世界\r\n"
                 + "\r\n"
                 + "data: plain\n\n"
-                + "event: done\ndata: [END]";
+                + "event: done\ndata: [END]\n\n"
+                + "event: truncated\ndata: {\"half\":";
         byte[] bytes = stream.getBytes(StandardCharsets.UTF_8);
-        // Feed 1 byte at a time to stress split multi-byte UTF-8 and CRLF boundaries
+        // Feed 1 byte at a time to stress 4-byte UTF-8 remainder and CRLF boundaries
         for (byte b : bytes) {
             parser.feed(ByteBuffer.wrap(new byte[]{b}));
         }
         parser.finish();
 
+        // Per W3C SSE spec, the unterminated trailing fragment without blank line is discarded
         assertEquals(3, events.size());
         assertEquals(new AiStreamEvent("delta", "你好\n世界", "1"), events.get(0));
         assertEquals(new AiStreamEvent("message", "plain", "1"), events.get(1));
@@ -117,13 +151,11 @@ class JsonAndSseTest {
                 () -> lineBounded.feed(ByteBuffer.wrap((": " + "x".repeat(100) + "\n").getBytes(StandardCharsets.UTF_8))));
         assertTrue(lineEx.getMessage().contains("SSE line exceeded"));
 
-        // Exact maxEventChars payload on one line succeeds (field prefix does not eat into event payload budget)
         List<AiStreamEvent> exact = new ArrayList<>();
         SseParser exactBounded = new SseParser(exact::add, 10);
         exactBounded.feed(ByteBuffer.wrap("data: 1234567890\n\n".getBytes(StandardCharsets.UTF_8)));
         assertEquals(List.of(new AiStreamEvent("message", "1234567890", "")), exact);
 
-        // Multi-line accumulation exceeding maxEventChars fails cleanly
         SseParser eventBounded = new SseParser(e -> {}, 10);
         eventBounded.feed(ByteBuffer.wrap("data: 123456\n".getBytes(StandardCharsets.UTF_8)));
         IllegalArgumentException eventEx = assertThrows(IllegalArgumentException.class,

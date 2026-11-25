@@ -10,10 +10,11 @@ import static cn.managame.FrameworkErrorCodes.AI_UNAVAILABLE;
 import cn.managame.Metadata;
 import cn.managame.MetadataKey;
 import cn.managame.ai.internal.AiClientMetrics;
+import cn.managame.ai.internal.AiTimer;
 import cn.managame.ai.internal.SseParser;
+import cn.managame.ai.spi.AiDispatcher;
 import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.WriteStatus;
-import io.netty.util.HashedWheelTimer;
 import io.netty.util.Timeout;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -40,8 +41,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -49,28 +48,28 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
- * Thin, non-blocking HTTP and W3C SSE client for calling an external AI service (such as one built with Spring AI or
- * LangChain) without blocking game threads:
+ * Single non-blocking HTTP and W3C SSE client shared across all AI-enabled business modules of a game server:
  *
  * <pre>{@code
  * AiClient ai = AiClient.builder("http://127.0.0.1:8081/api/ai")
  *         .codec(jsonCodec)
- *         .timeout(Duration.ofSeconds(10))
- *         .maxInFlight(128)
+ *         .dispatcher(runtimeDispatcher)
+ *         .timeout(Duration.ofSeconds(30))
  *         .header("Authorization", () -> "Bearer " + currentToken())
  *         .propagate(TRACE_ID, "X-Trace-Id")
- *         .metrics(metrics, "npc")
+ *         .metrics(metrics)
  *         .build();
  *
+ * // Any business module simply calls the single shared AiClient; context validation, Metadata propagation, and route
+ * // continuation happen automatically via the configured AiDispatcher:
  * AiCall call = ai.call("/npc/chat", new NpcTalk(roleId, text), NpcReply.class, result -> { ... });
  * }</pre>
  *
- * <p>Callbacks and stream listeners never run on the calling thread or on I/O selector / timer threads. Every outbound
- * request carries its timeout budget in {@link #TIMEOUT_HEADER} ({@code X-Ai-Timeout-Ms}, unless disabled via
- * {@link Builder#timeoutHeader(String)}) so the downstream AI service can abort abandoned work early. Calls exceeding
- * {@code maxInFlight} fail with {@link cn.managame.FrameworkErrorCodes#AI_OVERLOADED}; one-way {@link #notify} uses an
- * isolated {@code maxNotifyInFlight} budget and returns {@link WriteStatus}; calling {@link #close()} fails new calls
- * with {@link cn.managame.FrameworkErrorCodes#AI_CLOSED} and aborts in-flight calls and streams.
+ * <p>One {@link AiClient} serves the entire server process with a single HTTP connection pool and a shared daemon
+ * timing wheel covering full end-to-end deadlines (both response headers and response body) for unary calls, SSE
+ * streams, and one-way notifications. Callbacks and stream listeners never run on the calling thread or on I/O selector
+ * / timer threads: response decoding happens off the business route before dispatching the decoded result through
+ * {@link AiDispatcher}.
  */
 public final class AiClient implements AutoCloseable {
     /** Default HTTP header carrying the caller's per-request timeout budget in milliseconds. */
@@ -79,16 +78,14 @@ public final class AiClient implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger("cn.managame.ai.client");
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
-    private static final int DEFAULT_MAX_IN_FLIGHT = 256;
+    private static final int DEFAULT_MAX_IN_FLIGHT = 1024;
     private static final int DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
     private static final int MAX_ERROR_BODY_CHARS = 512;
-    private static final long TIMER_TICK_MILLIS = 10L;
     private static final byte[] EMPTY_BYTES = {};
-    private static final Executor DEFAULT_CALLBACK_EXECUTOR =
-            task -> Thread.ofVirtual().name("managame-ai-cb-", 0).start(task);
 
     private final String baseUrl;
     private final AiCodec codec;
+    private final AiDispatcher dispatcher;
     private final Duration defaultTimeout;
     private final String defaultTimeoutMillis;
     private final Duration defaultStreamIdleTimeout;
@@ -102,9 +99,6 @@ public final class AiClient implements AutoCloseable {
     private final List<PropagatedHeader> propagated;
     private final HttpClient httpClient;
     private final boolean ownsHttpClient;
-    private final Executor customExecutor;
-    private final Executor asyncFallbackExecutor;
-    private final AtomicReference<HashedWheelTimer> streamTimer = new AtomicReference<>();
     private final AtomicInteger inFlight = new AtomicInteger();
     private final AtomicInteger notifyInFlight = new AtomicInteger();
     private final Set<InFlightCall> active = ConcurrentHashMap.newKeySet();
@@ -114,6 +108,7 @@ public final class AiClient implements AutoCloseable {
     private AiClient(Builder b) {
         this.baseUrl = normalizeBaseUrl(b.baseUri);
         this.codec = b.codec;
+        this.dispatcher = b.dispatcher;
         this.defaultTimeout = b.timeout;
         this.defaultTimeoutMillis = Long.toString(Math.max(1L, b.timeout.toMillis()));
         this.defaultStreamIdleTimeout = b.streamIdleTimeout;
@@ -134,11 +129,10 @@ public final class AiClient implements AutoCloseable {
             this.httpClient = HttpClient.newBuilder()
                     .version(version)
                     .connectTimeout(b.connectTimeout)
+                    .executor(task -> Thread.ofVirtual().name("managame-ai-io-", 0).start(task))
                     .build();
             this.ownsHttpClient = true;
         }
-        this.customExecutor = b.callbackExecutor;
-        this.asyncFallbackExecutor = b.callbackExecutor != null ? b.callbackExecutor : DEFAULT_CALLBACK_EXECUTOR;
         this.metrics = new AiClientMetrics(b.metrics, b.clientName, inFlight::get, notifyInFlight::get);
         LOG.log(Level.INFO, () -> "AiClient ready for " + baseUrl + " (maxInFlight=" + maxInFlight
                 + ", timeout=" + defaultTimeout + ")");
@@ -166,40 +160,34 @@ public final class AiClient implements AutoCloseable {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(responseType, "responseType");
         Objects.requireNonNull(callback, "callback");
+        Executor routeExecutor = Objects.requireNonNull(dispatcher.capture(request.context()), "captured executor");
+        Metadata ambient = dispatcher.metadata(request.context());
+        HttpRequest httpRequest = buildHttpRequest(request, ambient, "application/json");
         metrics.callStarted();
-        if (closed) return failImmediately(AI_CLOSED, "AiClient is closed", callback);
+        if (closed) return failImmediately(routeExecutor, AI_CLOSED, "AiClient is closed", callback);
         if (!tryAcquireSlot(inFlight, maxInFlight)) {
             LOG.log(Level.WARNING, () -> "AiClient overloaded (" + maxInFlight + " in flight) for " + request.path());
-            return failImmediately(AI_OVERLOADED, "Max in-flight AI calls reached (" + maxInFlight + ")", callback);
+            return failImmediately(routeExecutor, AI_OVERLOADED, "Max in-flight AI calls reached (" + maxInFlight + ")", callback);
         }
         long startNanos = metrics.startTimer();
-        HttpRequest httpRequest;
-        try {
-            httpRequest = buildHttpRequest(request, "application/json");
-        } catch (Throwable cause) {
-            inFlight.decrementAndGet();
-            LOG.log(Level.ERROR, "Failed to encode AI request for " + request.path(), cause);
-            return failImmediately(AI_PROTOCOL_ERROR, describeError(cause), callback);
-        }
-        UnaryCall<T> call = new UnaryCall<>(startNanos, callback);
+        Duration timeout = request.timeout() != null ? request.timeout() : defaultTimeout;
+        UnaryCall<T> call = new UnaryCall<>(startNanos, routeExecutor, callback);
         active.add(call);
         if (closed) {
-            call.abort(AI_CLOSED, "AiClient is closed");
+            call.abort(AI_CLOSED, 0, "AiClient is closed");
             return call;
         }
         if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, () -> "AI call " + request.method() + " " + httpRequest.uri());
-        Thread caller = Thread.currentThread();
-        CompletableFuture<HttpResponse<byte[]>> future = httpClient.sendAsync(
-                httpRequest, info -> new BoundedBytesBodySubscriber(maxResponseBytes));
-        call.attach(future);
-        future.whenComplete((response, error) -> {
-            if (customExecutor != null || Thread.currentThread() == caller) {
-                dispatchCallback(() -> completeUnary(request, responseType, call, response, error),
-                        () -> call.releaseWithoutDelivery(AI_UNAVAILABLE));
-            } else {
-                completeUnary(request, responseType, call, response, error);
+        Timeout totalTimeout = AiTimer.newTimeout(t -> {
+            if (call.abort(AI_TIMEOUT, 0, "AI call timed out after " + timeout)) {
+                LOG.log(Level.WARNING, () -> "AI call timed out: " + request.path());
             }
-        });
+        }, timeout.toNanos());
+        call.attachTimer(totalTimeout);
+        CompletableFuture<HttpResponse<byte[]>> future = httpClient.sendAsync(
+                httpRequest, info -> new BoundedBytesBodySubscriber(maxResponseBytes, call::attachSubscription));
+        call.attach(future);
+        future.whenComplete((response, error) -> completeUnary(request, responseType, call, response, error));
         return call;
     }
 
@@ -209,7 +197,7 @@ public final class AiClient implements AutoCloseable {
         if (error != null) {
             int code = mapThrowable(error);
             if (code == AI_TIMEOUT) LOG.log(Level.WARNING, () -> "AI call timed out: " + request.path());
-            call.finishOnExecutor(AiResult.fail(code, describeError(unwrap(error))));
+            call.finish(AiResult.fail(code, describeError(unwrap(error))));
             return;
         }
         int status = response.statusCode();
@@ -219,16 +207,16 @@ public final class AiClient implements AutoCloseable {
             if (code == AI_OVERLOADED || code == AI_TIMEOUT) {
                 LOG.log(Level.WARNING, () -> "AI call " + request.path() + " failed with HTTP " + status);
             }
-            call.finishOnExecutor(AiResult.fail(code, status, truncateError(body, status)));
+            call.finish(AiResult.fail(code, status, truncateError(body, status)));
             return;
         }
         try {
             @SuppressWarnings("unchecked")
             T decoded = (T) decodeBody(body, responseType);
-            call.finishOnExecutor(AiResult.ok(status, decoded));
+            call.finish(AiResult.ok(status, decoded));
         } catch (Throwable cause) {
             LOG.log(Level.ERROR, "Failed to decode AI response for " + request.path(), cause);
-            call.finishOnExecutor(AiResult.fail(AI_PROTOCOL_ERROR, status, describeError(cause)));
+            call.finish(AiResult.fail(AI_PROTOCOL_ERROR, status, describeError(cause)));
         }
     }
 
@@ -256,64 +244,46 @@ public final class AiClient implements AutoCloseable {
     public AiCall stream(AiRequest request, AiStreamListener listener) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(listener, "listener");
+        Executor routeExecutor = Objects.requireNonNull(dispatcher.capture(request.context()), "captured executor");
+        Metadata ambient = dispatcher.metadata(request.context());
+        HttpRequest httpRequest = buildHttpRequest(request, ambient, "text/event-stream");
         metrics.streamStarted();
-        if (closed) return failStreamImmediately(AI_CLOSED, "AiClient is closed", listener);
+        if (closed) return failStreamImmediately(routeExecutor, AI_CLOSED, "AiClient is closed", listener);
         if (!tryAcquireSlot(inFlight, maxInFlight)) {
             LOG.log(Level.WARNING, () -> "AiClient overloaded (" + maxInFlight + " in flight) for stream " + request.path());
-            return failStreamImmediately(AI_OVERLOADED, "Max in-flight AI calls reached (" + maxInFlight + ")", listener);
+            return failStreamImmediately(routeExecutor, AI_OVERLOADED, "Max in-flight AI calls reached (" + maxInFlight + ")", listener);
         }
         long startNanos = metrics.startTimer();
-        HttpRequest httpRequest;
-        try {
-            httpRequest = buildHttpRequest(request, "text/event-stream");
-        } catch (Throwable cause) {
-            inFlight.decrementAndGet();
-            LOG.log(Level.ERROR, "Failed to encode AI stream request for " + request.path(), cause);
-            return failStreamImmediately(AI_PROTOCOL_ERROR, describeError(cause), listener);
-        }
         Duration timeout = request.timeout() != null ? request.timeout() : defaultTimeout;
         Duration idleTimeout = request.idleTimeout() != null ? request.idleTimeout() : defaultStreamIdleTimeout;
-        StreamCall call = new StreamCall(startNanos, request.path(), listener);
+        StreamCall call = new StreamCall(startNanos, routeExecutor, request.path(), listener);
         active.add(call);
         if (closed) {
-            call.abort(AI_CLOSED, "AiClient is closed");
+            call.abort(AI_CLOSED, 0, "AiClient is closed");
             return call;
         }
         if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, () -> "AI stream " + request.method() + " " + httpRequest.uri());
-        try {
-            Timeout totalTimeout = timer().newTimeout(t -> {
-                if (call.abort(AI_TIMEOUT, "AI stream timed out after " + timeout)) {
-                    LOG.log(Level.WARNING, () -> "AI stream timed out: " + request.path());
-                }
-            }, timeout.toNanos(), TimeUnit.NANOSECONDS);
-            call.attachTimer(totalTimeout);
-            if (idleTimeout != null) {
-                call.startIdleTimer(idleTimeout.toNanos(), idleTimeout);
+        Timeout totalTimeout = AiTimer.newTimeout(t -> {
+            if (call.abort(AI_TIMEOUT, 0, "AI stream timed out after " + timeout)) {
+                LOG.log(Level.WARNING, () -> "AI stream timed out: " + request.path());
             }
-        } catch (IllegalStateException closedRace) {
-            call.abort(AI_CLOSED, "AiClient is closed");
-            return call;
+        }, timeout.toNanos());
+        call.attachTimer(totalTimeout);
+        if (idleTimeout != null) {
+            call.startIdleTimer(idleTimeout.toNanos(), idleTimeout);
         }
         HttpResponse.BodyHandler<byte[]> bodyHandler = info -> {
             int status = info.statusCode();
             if (!is2xx(status)) {
-                return new BoundedBytesBodySubscriber(Math.min(maxResponseBytes, 4096));
+                return new BoundedBytesBodySubscriber(Math.min(maxResponseBytes, 4096), call::attachSubscription);
             }
             return HttpResponse.BodySubscribers.mapping(
                     HttpResponse.BodySubscribers.fromSubscriber(new SseBodySubscriber(call, status, maxStreamEventChars)),
                     ignored -> EMPTY_BYTES);
         };
-        Thread caller = Thread.currentThread();
         CompletableFuture<HttpResponse<byte[]>> future = httpClient.sendAsync(httpRequest, bodyHandler);
         call.attach(future);
-        future.whenComplete((response, error) -> {
-            if (customExecutor != null || Thread.currentThread() == caller) {
-                dispatchCallback(() -> completeStream(request, call, response, error),
-                        () -> call.releaseWithoutDelivery(AI_UNAVAILABLE));
-            } else {
-                completeStream(request, call, response, error);
-            }
-        });
+        future.whenComplete((response, error) -> completeStream(request, call, response, error));
         return call;
     }
 
@@ -335,36 +305,29 @@ public final class AiClient implements AutoCloseable {
 
     /**
      * Sends a one-way asynchronous POST notification (such as a game event) without waiting for a response body.
-     * Uses its own {@code maxNotifyInFlight} budget without tracking in the active call set. Returns
-     * {@link WriteStatus#ACCEPTED}, {@link WriteStatus#INACTIVE} when closed, or {@link WriteStatus#NOT_WRITABLE} when
-     * {@code maxNotifyInFlight} is full; throws {@link IllegalArgumentException} if {@code body} cannot be encoded.
+     * Uses its own {@code maxNotifyInFlight} budget and returns {@link WriteStatus#ACCEPTED},
+     * {@link WriteStatus#INACTIVE} when closed, or {@link WriteStatus#NOT_WRITABLE} when {@code maxNotifyInFlight} is
+     * full; throws {@link IllegalArgumentException} if {@code body} cannot be encoded.
      */
     public WriteStatus notify(String path, Object body) {
         return notify(AiRequest.of(path, body));
     }
 
     /**
-     * Sends a one-way asynchronous notification without waiting for a response body. Returns
-     * {@link WriteStatus#ACCEPTED}, {@link WriteStatus#INACTIVE} when closed, or {@link WriteStatus#NOT_WRITABLE} when
-     * {@code maxNotifyInFlight} is full; throws {@link IllegalArgumentException} if the request cannot be encoded.
+     * Sends a one-way asynchronous notification without waiting for a response body. Automatically propagates ambient
+     * {@link AiDispatcher#metadata} headers. Returns {@link WriteStatus#ACCEPTED}, {@link WriteStatus#INACTIVE} when
+     * closed, or {@link WriteStatus#NOT_WRITABLE} when {@code maxNotifyInFlight} is full; throws
+     * {@link IllegalArgumentException} if the request cannot be built or encoded.
      */
     public WriteStatus notify(AiRequest request) {
         Objects.requireNonNull(request, "request");
+        Metadata ambient = dispatcher.metadata(request.context());
+        HttpRequest httpRequest = buildHttpRequest(request, ambient, "application/json");
         metrics.notifyStarted();
         if (closed) {
             metrics.failed(AI_CLOSED);
             LOG.log(Level.WARNING, () -> "AI notify refused (closed): " + request.path());
             return WriteStatus.INACTIVE;
-        }
-        HttpRequest httpRequest;
-        try {
-            httpRequest = buildHttpRequest(request, "application/json");
-        } catch (IllegalArgumentException badArg) {
-            metrics.failed(AI_PROTOCOL_ERROR);
-            throw badArg;
-        } catch (Throwable cause) {
-            metrics.failed(AI_PROTOCOL_ERROR);
-            throw new IllegalArgumentException("Failed to encode AI notify for " + request.path() + ": " + describeError(cause), cause);
         }
         if (!tryAcquireSlot(notifyInFlight, maxNotifyInFlight)) {
             metrics.failed(AI_OVERLOADED);
@@ -377,21 +340,27 @@ public final class AiClient implements AutoCloseable {
             return WriteStatus.INACTIVE;
         }
         long startNanos = metrics.startTimer();
+        Duration timeout = request.timeout() != null ? request.timeout() : defaultTimeout;
         if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, () -> "AI notify " + request.method() + " " + httpRequest.uri());
-        httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.discarding())
-                .whenComplete((response, error) -> {
-                    notifyInFlight.decrementAndGet();
-                    metrics.recordLatency(startNanos);
-                    if (error != null) {
-                        int code = mapThrowable(error);
-                        metrics.failed(code);
-                        LOG.log(Level.WARNING, () -> "AI notify failed for " + request.path() + ": " + describeError(unwrap(error)));
-                    } else if (!is2xx(response.statusCode())) {
-                        int code = mapStatus(response.statusCode());
-                        metrics.failed(code);
-                        LOG.log(Level.WARNING, () -> "AI notify failed for " + request.path() + " with HTTP " + response.statusCode());
-                    }
-                });
+        AtomicBoolean timedOut = new AtomicBoolean();
+        CompletableFuture<HttpResponse<Void>> future = httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.discarding());
+        Timeout timerHandle = AiTimer.newTimeout(t -> {
+            if (timedOut.compareAndSet(false, true)) future.cancel(true);
+        }, timeout.toNanos());
+        future.whenComplete((response, error) -> {
+            timerHandle.cancel();
+            notifyInFlight.decrementAndGet();
+            metrics.recordLatency(startNanos);
+            if (error != null) {
+                int code = timedOut.get() ? AI_TIMEOUT : mapThrowable(error);
+                metrics.failed(code);
+                LOG.log(Level.WARNING, () -> "AI notify failed for " + request.path() + ": " + describeError(unwrap(error)));
+            } else if (!is2xx(response.statusCode())) {
+                int code = mapStatus(response.statusCode());
+                metrics.failed(code);
+                LOG.log(Level.WARNING, () -> "AI notify failed for " + request.path() + " with HTTP " + response.statusCode());
+            }
+        });
         return WriteStatus.ACCEPTED;
     }
 
@@ -405,70 +374,77 @@ public final class AiClient implements AutoCloseable {
 
     /**
      * Closes the client: subsequent calls fail with {@link cn.managame.FrameworkErrorCodes#AI_CLOSED}, in-flight calls
-     * and streams are aborted with {@code AI_CLOSED}, the stream time wheel (if started) is stopped, and the internal
+     * and streams are aborted with {@code AI_CLOSED} (cancelling their timers and HTTP subscriptions), and the internal
      * {@link HttpClient} (if owned) is shut down. Safe to call more than once.
      */
     @Override public void close() {
         if (closed) return;
         closed = true;
         LOG.log(Level.INFO, () -> "Closing AiClient for " + baseUrl);
-        HashedWheelTimer wheel = streamTimer.getAndSet(null);
-        if (wheel != null) wheel.stop();
         for (InFlightCall call : active) {
-            call.abort(AI_CLOSED, "AiClient closed");
+            call.abort(AI_CLOSED, 0, "AiClient closed");
         }
         if (ownsHttpClient) httpClient.shutdownNow();
         metrics.close();
     }
 
-    private HttpRequest buildHttpRequest(AiRequest request, String accept) throws Exception {
-        URI uri = resolveUri(request.path());
-        Duration timeout = request.timeout() != null ? request.timeout() : defaultTimeout;
-        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                .timeout(timeout)
-                .header("Accept", accept);
-        if (timeoutHeader != null && !timeoutHeader.isEmpty()) {
-            String millis = request.timeout() == null
-                    ? defaultTimeoutMillis
-                    : Long.toString(Math.max(1L, timeout.toMillis()));
-            builder.setHeader(timeoutHeader, millis);
+    private HttpRequest buildHttpRequest(AiRequest request, Metadata ambientMetadata, String accept) {
+        try {
+            URI uri = resolveUri(request.path());
+            Duration timeout = request.timeout() != null ? request.timeout() : defaultTimeout;
+            Object body = request.body();
+            HttpRequest.BodyPublisher publisher;
+            if (body == null) {
+                publisher = HttpRequest.BodyPublishers.noBody();
+            } else if (body instanceof String s) {
+                publisher = HttpRequest.BodyPublishers.ofString(s, StandardCharsets.UTF_8);
+            } else if (body instanceof byte[] bytes) {
+                publisher = HttpRequest.BodyPublishers.ofByteArray(bytes);
+            } else {
+                publisher = HttpRequest.BodyPublishers.ofByteArray(codec.encodeBytes(body));
+            }
+            HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                    .timeout(timeout)
+                    .setHeader("Accept", accept);
+            if (body != null) {
+                builder.setHeader("Content-Type", "application/json; charset=UTF-8");
+            }
+            if (!timeoutHeader.isEmpty()) {
+                String millis = request.timeout() == null
+                        ? defaultTimeoutMillis
+                        : Long.toString(Math.max(1L, timeout.toMillis()));
+                builder.setHeader(timeoutHeader, millis);
+            }
+            for (Map.Entry<String, String> entry : defaultHeaders.entrySet()) {
+                builder.setHeader(entry.getKey(), entry.getValue());
+            }
+            for (DynamicHeader dynamic : dynamicHeaders) {
+                String value = dynamic.supplier().get();
+                if (value != null) builder.setHeader(dynamic.name(), value);
+            }
+            if (ambientMetadata != null) propagateHeaders(builder, ambientMetadata);
+            propagateHeaders(builder, request.metadata());
+            for (Map.Entry<String, String> entry : request.headers().entrySet()) {
+                builder.setHeader(entry.getKey(), entry.getValue());
+            }
+            builder.method(request.method(), publisher);
+            return builder.build();
+        } catch (IllegalArgumentException badArg) {
+            throw badArg;
+        } catch (Throwable cause) {
+            throw new IllegalArgumentException(
+                    "Failed to build AI request for " + request.path() + ": " + describeError(cause), cause);
         }
-        for (Map.Entry<String, String> entry : defaultHeaders.entrySet()) {
-            builder.setHeader(entry.getKey(), entry.getValue());
-        }
-        for (DynamicHeader dynamic : dynamicHeaders) {
-            String value = dynamic.supplier().get();
-            if (value != null) builder.setHeader(dynamic.name(), value);
-        }
-        Metadata metadata = request.metadata();
-        if (!metadata.isEmpty()) {
-            for (PropagatedHeader entry : propagated) {
-                if (metadata.contains(entry.key())) {
-                    Object value = metadata.get(entry.key());
-                    if (value != null) builder.setHeader(entry.header(), value.toString());
-                }
+    }
+
+    private void propagateHeaders(HttpRequest.Builder builder, Metadata metadata) {
+        if (metadata.isEmpty() || propagated.isEmpty()) return;
+        for (PropagatedHeader entry : propagated) {
+            if (metadata.contains(entry.key())) {
+                Object value = metadata.get(entry.key());
+                if (value != null) builder.setHeader(entry.header(), value.toString());
             }
         }
-        for (Map.Entry<String, String> entry : request.headers().entrySet()) {
-            builder.setHeader(entry.getKey(), entry.getValue());
-        }
-        Object body = request.body();
-        HttpRequest.BodyPublisher publisher;
-        if (body == null) {
-            publisher = HttpRequest.BodyPublishers.noBody();
-        } else if (body instanceof String s) {
-            builder.header("Content-Type", "application/json; charset=UTF-8");
-            publisher = HttpRequest.BodyPublishers.ofString(s, StandardCharsets.UTF_8);
-        } else if (body instanceof byte[] bytes) {
-            builder.header("Content-Type", "application/json; charset=UTF-8");
-            publisher = HttpRequest.BodyPublishers.ofByteArray(bytes);
-        } else {
-            byte[] encoded = codec.encodeBytes(body);
-            builder.header("Content-Type", "application/json; charset=UTF-8");
-            publisher = HttpRequest.BodyPublishers.ofByteArray(encoded);
-        }
-        builder.method(request.method(), publisher);
-        return builder.build();
     }
 
     private Object decodeBody(byte[] body, Type responseType) throws Exception {
@@ -502,47 +478,25 @@ public final class AiClient implements AutoCloseable {
         }
     }
 
-    private void dispatchCallback(Runnable task, Runnable onRejected) {
+    private static void dispatchCallback(Executor executor, Runnable task) {
         try {
-            asyncFallbackExecutor.execute(task);
-        } catch (RejectedExecutionException rejected) {
-            if (onRejected != null) onRejected.run();
-            LOG.log(Level.ERROR, "AiClient callback executor rejected delivery", rejected);
+            executor.execute(task);
+        } catch (RuntimeException rejected) {
+            LOG.log(Level.WARNING, () -> "AiClient callback dispatcher rejected delivery: " + describeError(rejected));
         }
     }
 
-    private HashedWheelTimer timer() {
-        if (closed) throw new IllegalStateException("AiClient is closed");
-        HashedWheelTimer existing = streamTimer.get();
-        if (existing != null) return existing;
-        HashedWheelTimer created = new HashedWheelTimer(
-                Thread.ofPlatform().name("managame-ai-timer").daemon().factory(),
-                TIMER_TICK_MILLIS, TimeUnit.MILLISECONDS);
-        if (streamTimer.compareAndSet(null, created)) {
-            if (closed) {
-                streamTimer.compareAndSet(created, null);
-                created.stop();
-                throw new IllegalStateException("AiClient is closed");
-            }
-            return created;
-        }
-        created.stop();
-        HashedWheelTimer winner = streamTimer.get();
-        if (winner == null || closed) throw new IllegalStateException("AiClient is closed");
-        return winner;
-    }
-
-    private <T> AiCall failImmediately(int code, String message, AiCallback<T> callback) {
+    private <T> AiCall failImmediately(Executor executor, int code, String message, AiCallback<T> callback) {
         metrics.failed(code);
         AiResult<T> result = AiResult.fail(code, message);
-        dispatchCallback(() -> deliver(callback, result), null);
+        dispatchCallback(executor, () -> deliver(callback, result));
         return CompletedCall.INSTANCE;
     }
 
-    private AiCall failStreamImmediately(int code, String message, AiStreamListener listener) {
+    private AiCall failStreamImmediately(Executor executor, int code, String message, AiStreamListener listener) {
         metrics.failed(code);
         AiResult<Void> result = AiResult.fail(code, message);
-        dispatchCallback(() -> deliverComplete(listener, result), null);
+        dispatchCallback(executor, () -> deliverComplete(listener, result));
         return CompletedCall.INSTANCE;
     }
 
@@ -615,6 +569,8 @@ public final class AiClient implements AutoCloseable {
         private final long startNanos;
         private final AtomicBoolean done = new AtomicBoolean();
         private final AtomicReference<CompletableFuture<?>> httpFuture = new AtomicReference<>();
+        private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
+        private final AtomicReference<Timeout> totalTimerRef = new AtomicReference<>();
 
         InFlightCall(long startNanos) { this.startNanos = startNanos; }
 
@@ -623,76 +579,83 @@ public final class AiClient implements AutoCloseable {
             if (done.get()) future.cancel(true);
         }
 
+        void attachSubscription(Flow.Subscription sub) {
+            subscription.set(sub);
+            if (done.get()) sub.cancel();
+        }
+
+        void attachTimer(Timeout timeout) {
+            totalTimerRef.set(timeout);
+            if (done.get()) timeout.cancel();
+        }
+
         boolean markDone() {
             if (!done.compareAndSet(false, true)) return false;
             active.remove(this);
             inFlight.decrementAndGet();
+            Timeout total = totalTimerRef.getAndSet(null);
+            if (total != null) total.cancel();
             metrics.recordLatency(startNanos);
             return true;
         }
 
         void cancelTransport() {
+            Flow.Subscription sub = subscription.get();
+            if (sub != null) sub.cancel();
             CompletableFuture<?> f = httpFuture.get();
             if (f != null) f.cancel(true);
         }
 
-        abstract boolean abort(int code, String message);
+        abstract boolean abort(int code, int status, String message);
 
         @Override public boolean isDone() { return done.get(); }
 
-        @Override public boolean cancel() { return abort(AI_CANCELLED, "Cancelled"); }
+        @Override public boolean cancel() { return abort(AI_CANCELLED, 0, "Cancelled"); }
     }
 
     private final class UnaryCall<T> extends InFlightCall {
+        private final Executor routeExecutor;
         private final AiCallback<T> callback;
 
-        UnaryCall(long startNanos, AiCallback<T> callback) {
+        UnaryCall(long startNanos, Executor routeExecutor, AiCallback<T> callback) {
             super(startNanos);
+            this.routeExecutor = routeExecutor;
             this.callback = callback;
         }
 
-        void finishOnExecutor(AiResult<T> result) {
+        void finish(AiResult<T> result) {
             if (!markDone()) return;
             if (!result.isSuccess()) metrics.failed(result.code());
-            deliver(callback, result);
+            dispatchCallback(routeExecutor, () -> deliver(callback, result));
         }
 
-        void releaseWithoutDelivery(int errorCode) {
-            if (markDone()) metrics.failed(errorCode);
-        }
-
-        @Override boolean abort(int code, String message) {
+        @Override boolean abort(int code, int status, String message) {
             if (!markDone()) return false;
             cancelTransport();
             metrics.failed(code);
-            AiResult<T> result = AiResult.fail(code, message);
-            dispatchCallback(() -> deliver(callback, result), null);
+            AiResult<T> result = AiResult.fail(code, status, message);
+            dispatchCallback(routeExecutor, () -> deliver(callback, result));
             return true;
         }
     }
 
     private final class StreamCall extends InFlightCall {
+        private final Executor routeExecutor;
         private final String path;
         private final AiStreamListener listener;
         private final ConcurrentLinkedQueue<AiStreamEvent> eventQueue = new ConcurrentLinkedQueue<>();
         private final AtomicInteger wip = new AtomicInteger();
         private final AtomicBoolean completedDelivered = new AtomicBoolean();
-        private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
-        private final AtomicReference<Timeout> timerRef = new AtomicReference<>();
         private final AtomicReference<Timeout> idleTimerRef = new AtomicReference<>();
         private volatile boolean aborted;
         private volatile AiResult<Void> terminalResult;
         private volatile long lastActivityNanos;
 
-        StreamCall(long startNanos, String path, AiStreamListener listener) {
+        StreamCall(long startNanos, Executor routeExecutor, String path, AiStreamListener listener) {
             super(startNanos);
+            this.routeExecutor = routeExecutor;
             this.path = path;
             this.listener = listener;
-        }
-
-        void attachTimer(Timeout timeout) {
-            timerRef.set(timeout);
-            if (isDone()) timeout.cancel();
         }
 
         void startIdleTimer(long idleNanos, Duration idleDuration) {
@@ -702,23 +665,17 @@ public final class AiClient implements AutoCloseable {
 
         private void scheduleIdleCheck(long delayNanos, long idleNanos, Duration idleDuration) {
             if (isDone() || closed) return;
-            Timeout next;
-            try {
-                next = timer().newTimeout(t -> {
-                    if (isDone()) return;
-                    long remaining = idleNanos - (System.nanoTime() - lastActivityNanos);
-                    if (remaining <= 0) {
-                        if (abort(AI_TIMEOUT, "AI stream idle timed out after " + idleDuration)) {
-                            LOG.log(Level.WARNING, () -> "AI stream idle timed out: " + path);
-                        }
-                    } else {
-                        scheduleIdleCheck(remaining, idleNanos, idleDuration);
+            Timeout next = AiTimer.newTimeout(t -> {
+                if (isDone()) return;
+                long remaining = idleNanos - (System.nanoTime() - lastActivityNanos);
+                if (remaining <= 0) {
+                    if (abort(AI_TIMEOUT, 0, "AI stream idle timed out after " + idleDuration)) {
+                        LOG.log(Level.WARNING, () -> "AI stream idle timed out: " + path);
                     }
-                }, delayNanos, TimeUnit.NANOSECONDS);
-            } catch (IllegalStateException closedRace) {
-                if (closed) abort(AI_CLOSED, "AiClient closed");
-                return;
-            }
+                } else {
+                    scheduleIdleCheck(remaining, idleNanos, idleDuration);
+                }
+            }, delayNanos);
             Timeout previous = idleTimerRef.getAndSet(next);
             if (previous != null) previous.cancel();
             if (isDone()) next.cancel();
@@ -726,15 +683,12 @@ public final class AiClient implements AutoCloseable {
 
         void touch() { lastActivityNanos = System.nanoTime(); }
 
-        void attachSubscription(Flow.Subscription sub) {
-            subscription.set(sub);
-            if (isDone()) sub.cancel();
-        }
-
-        void emit(AiStreamEvent event) {
+        void emit(int status, AiStreamEvent event) {
             if (isDone()) return;
-            if (customExecutor == null) {
-                emitDirect(event);
+            if ("error".equals(event.event())) {
+                String errMsg = event.data().isBlank() ? "SSE error event" : event.data();
+                LOG.log(Level.WARNING, () -> "AI stream received error event on " + path + ": " + errMsg);
+                finishAndCancel(AiResult.fail(AI_UNAVAILABLE, status, errMsg));
                 return;
             }
             eventQueue.offer(event);
@@ -743,60 +697,29 @@ public final class AiClient implements AutoCloseable {
 
         void finish(AiResult<Void> result) {
             if (!markDone()) return;
-            cancelTimers();
+            cancelIdleTimer();
             if (!result.isSuccess()) metrics.failed(result.code());
-            if (customExecutor == null) {
-                synchronized (eventQueue) {
-                    if (completedDelivered.compareAndSet(false, true)) {
-                        deliverComplete(listener, result);
-                    }
-                }
-                return;
-            }
             terminalResult = result;
             scheduleDrain();
         }
 
-        void releaseWithoutDelivery(int errorCode) {
-            if (markDone()) {
-                cancelTimers();
-                metrics.failed(errorCode);
-            }
+        private void finishAndCancel(AiResult<Void> result) {
+            if (!markDone()) return;
+            cancelIdleTimer();
+            cancelTransport();
+            if (!result.isSuccess()) metrics.failed(result.code());
+            terminalResult = result;
+            scheduleDrain();
         }
 
-        private void emitDirect(AiStreamEvent event) {
-            synchronized (eventQueue) {
-                if (isDone() || completedDelivered.get()) return;
-                metrics.streamEvent();
-                try {
-                    listener.onEvent(event);
-                } catch (Throwable cause) {
-                    LOG.log(Level.ERROR, "Uncaught exception in AiStreamListener.onEvent", cause);
-                }
-            }
-        }
-
-        @Override boolean abort(int code, String message) {
+        @Override boolean abort(int code, int status, String message) {
             if (!markDone()) return false;
             aborted = true;
-            cancelTimers();
-            Flow.Subscription sub = subscription.get();
-            if (sub != null) sub.cancel();
+            cancelIdleTimer();
             cancelTransport();
             metrics.failed(code);
             eventQueue.clear();
-            AiResult<Void> failRes = AiResult.fail(code, message);
-            if (customExecutor == null) {
-                dispatchCallback(() -> {
-                    synchronized (eventQueue) {
-                        if (completedDelivered.compareAndSet(false, true)) {
-                            deliverComplete(listener, failRes);
-                        }
-                    }
-                }, null);
-                return true;
-            }
-            terminalResult = failRes;
+            terminalResult = AiResult.fail(code, status, message);
             scheduleDrain();
             return true;
         }
@@ -804,11 +727,15 @@ public final class AiClient implements AutoCloseable {
         private void scheduleDrain() {
             if (wip.getAndIncrement() != 0) return;
             try {
-                asyncFallbackExecutor.execute(this::drainLoop);
-            } catch (RejectedExecutionException rejected) {
+                routeExecutor.execute(this::drainLoop);
+            } catch (RuntimeException rejected) {
+                aborted = true;
                 eventQueue.clear();
-                wip.set(0);
-                LOG.log(Level.ERROR, "AiClient callback executor rejected stream delivery", rejected);
+                cancelIdleTimer();
+                cancelTransport();
+                if (markDone()) metrics.failed(AI_UNAVAILABLE);
+                LOG.log(Level.WARNING, () -> "AiClient callback dispatcher rejected stream delivery for "
+                        + path + ": " + describeError(rejected));
             }
         }
 
@@ -842,9 +769,7 @@ public final class AiClient implements AutoCloseable {
             }
         }
 
-        private void cancelTimers() {
-            Timeout t = timerRef.getAndSet(null);
-            if (t != null) t.cancel();
+        private void cancelIdleTimer() {
             Timeout idle = idleTimerRef.getAndSet(null);
             if (idle != null) idle.cancel();
         }
@@ -859,7 +784,7 @@ public final class AiClient implements AutoCloseable {
         SseBodySubscriber(StreamCall call, int status, int maxEventChars) {
             this.call = call;
             this.status = status;
-            this.parser = new SseParser(call::emit, maxEventChars);
+            this.parser = new SseParser(event -> call.emit(status, event), maxEventChars);
         }
 
         @Override public void onSubscribe(Flow.Subscription subscription) {
@@ -885,7 +810,7 @@ public final class AiClient implements AutoCloseable {
             } catch (IllegalArgumentException oversized) {
                 subscription.cancel();
                 LOG.log(Level.WARNING, () -> "AI SSE stream aborted: " + oversized.getMessage());
-                call.abort(AI_PROTOCOL_ERROR, oversized.getMessage());
+                call.abort(AI_PROTOCOL_ERROR, status, oversized.getMessage());
                 return;
             }
             if (!call.isDone()) subscription.request(1);
@@ -915,18 +840,23 @@ public final class AiClient implements AutoCloseable {
 
     private static final class BoundedBytesBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
         private final int maxBytes;
+        private final Consumer<Flow.Subscription> onSubscribeHook;
         private final CompletableFuture<byte[]> body = new CompletableFuture<>();
         private Flow.Subscription subscription;
         private byte[] firstChunk;
         private ByteArrayOutputStream multiChunk;
         private int totalBytes;
 
-        BoundedBytesBodySubscriber(int maxBytes) { this.maxBytes = maxBytes; }
+        BoundedBytesBodySubscriber(int maxBytes, Consumer<Flow.Subscription> onSubscribeHook) {
+            this.maxBytes = maxBytes;
+            this.onSubscribeHook = onSubscribeHook;
+        }
 
         @Override public java.util.concurrent.CompletionStage<byte[]> getBody() { return body; }
 
         @Override public void onSubscribe(Flow.Subscription subscription) {
             this.subscription = subscription;
+            if (onSubscribeHook != null) onSubscribeHook.accept(subscription);
             subscription.request(1);
         }
 
@@ -934,7 +864,7 @@ public final class AiClient implements AutoCloseable {
             for (ByteBuffer buf : buffers) {
                 int remaining = buf.remaining();
                 if (remaining == 0) continue;
-                if (totalBytes + remaining > maxBytes) {
+                if (remaining > maxBytes - totalBytes) {
                     subscription.cancel();
                     body.completeExceptionally(new ResponseTooLargeException(
                             "AI response body exceeded maxResponseBytes (" + maxBytes + ")"));
@@ -976,6 +906,7 @@ public final class AiClient implements AutoCloseable {
     public static final class Builder {
         private final URI baseUri;
         private AiCodec codec = AiCodec.basic();
+        private AiDispatcher dispatcher = AiDispatcher.virtualThreads();
         private Duration timeout = DEFAULT_TIMEOUT;
         private Duration streamIdleTimeout;
         private Duration connectTimeout = DEFAULT_CONNECT_TIMEOUT;
@@ -988,7 +919,6 @@ public final class AiClient implements AutoCloseable {
         private final List<DynamicHeader> dynamicHeaders = new ArrayList<>();
         private final List<PropagatedHeader> propagated = new ArrayList<>();
         private HttpClient httpClient;
-        private Executor callbackExecutor;
         private Metrics metrics = Metrics.noop();
         private String clientName = "";
 
@@ -1009,7 +939,21 @@ public final class AiClient implements AutoCloseable {
             return this;
         }
 
-        /** Default total timeout per call or stream; 30 seconds by default. */
+        /**
+         * Context and route bridge capturing the caller's execution continuation and ambient {@link Metadata} on every
+         * call; {@link AiDispatcher#virtualThreads()} by default.
+         */
+        public Builder dispatcher(AiDispatcher dispatcher) {
+            this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+            return this;
+        }
+
+        /** Convenience shorthand for {@code dispatcher(AiDispatcher.ofExecutor(executor))}. */
+        public Builder executor(Executor executor) {
+            return dispatcher(AiDispatcher.ofExecutor(executor));
+        }
+
+        /** Default end-to-end timeout per call, stream, or notification; 30 seconds by default. */
         public Builder timeout(Duration timeout) {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("timeout must be positive");
@@ -1048,7 +992,7 @@ public final class AiClient implements AutoCloseable {
             return this;
         }
 
-        /** Maximum concurrent in-flight {@link #call} and {@link #stream} requests before AI_OVERLOADED; 256 by default. */
+        /** Maximum concurrent in-flight {@link #call} and {@link #stream} requests before AI_OVERLOADED; 1024 by default. */
         public Builder maxInFlight(int maxInFlight) {
             if (maxInFlight <= 0) throw new IllegalArgumentException("maxInFlight must be positive");
             this.maxInFlight = maxInFlight;
@@ -1057,7 +1001,7 @@ public final class AiClient implements AutoCloseable {
 
         /**
          * Maximum concurrent in-flight one-way {@link #notify} requests before returning
-         * {@link WriteStatus#NOT_WRITABLE}, isolated from {@link #maxInFlight}; 256 by default.
+         * {@link WriteStatus#NOT_WRITABLE}, isolated from {@link #maxInFlight}; 1024 by default.
          */
         public Builder maxNotifyInFlight(int maxNotifyInFlight) {
             if (maxNotifyInFlight <= 0) throw new IllegalArgumentException("maxNotifyInFlight must be positive");
@@ -1100,7 +1044,10 @@ public final class AiClient implements AutoCloseable {
             return this;
         }
 
-        /** Propagates {@code key} from {@link AiRequest#metadata()} as HTTP header {@code headerName} when present. */
+        /**
+         * Propagates {@code key} from ambient {@link AiDispatcher#metadata} and {@link AiRequest#metadata()} as HTTP
+         * header {@code headerName} when present.
+         */
         public Builder propagate(MetadataKey<?> key, String headerName) {
             Objects.requireNonNull(key, "key");
             Objects.requireNonNull(headerName, "headerName");
@@ -1112,15 +1059,6 @@ public final class AiClient implements AutoCloseable {
         /** Shares an existing {@link HttpClient}; it is not shut down when this {@link AiClient} closes. */
         public Builder httpClient(HttpClient httpClient) {
             this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
-            return this;
-        }
-
-        /**
-         * Executor on which {@link AiCallback} and {@link AiStreamListener} run; when unset, callbacks run on
-         * {@link HttpClient}'s async pool (or a fallback virtual thread if completed synchronously).
-         */
-        public Builder executor(Executor executor) {
-            this.callbackExecutor = Objects.requireNonNull(executor, "executor");
             return this;
         }
 

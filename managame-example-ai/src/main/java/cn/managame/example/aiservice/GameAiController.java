@@ -118,7 +118,13 @@ public class GameAiController {
                         },
                         error -> {
                             cancelUpstream.run();
-                            emitter.completeWithError(error);
+                            try {
+                                String msg = error.getMessage() != null ? error.getMessage() : error.getClass().getSimpleName();
+                                emitter.send(SseEmitter.event().name("error").data(msg));
+                                emitter.complete();
+                            } catch (IOException ignored) {
+                                emitter.completeWithError(error);
+                            }
                         },
                         () -> {
                             try {

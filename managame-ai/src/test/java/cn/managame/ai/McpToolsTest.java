@@ -10,10 +10,12 @@ import static cn.managame.FrameworkErrorCodes.AI_TOOL_REJECTED;
 import static cn.managame.FrameworkErrorCodes.SUCCESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import cn.managame.MetadataKey;
 import cn.managame.ai.annotation.McpParam;
 import cn.managame.ai.annotation.McpTool;
 import cn.managame.ai.internal.Json;
@@ -25,21 +27,24 @@ import cn.managame.ai.mcp.McpToolResult;
 import cn.managame.ai.mcp.McpTools;
 import cn.managame.ai.spi.McpToolExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class McpToolsTest {
     private static final int BAG_FULL = 10_001;
+    private static final MetadataKey<String> CALLER_ID = MetadataKey.stringKey(7);
 
     enum MailKind { SYSTEM, REWARD }
 
@@ -87,7 +92,7 @@ class McpToolsTest {
             return McpToolResult.ok("sent:" + mail.roleId() + ":" + mail.title() + ":" + mail.kind());
         }
 
-        @McpTool(name = "kick_player", description = "Kick a player offline", group = "gm")
+        @McpTool(name = "kick_player", description = "Kick a player offline", group = "gm", destructive = true)
         public void kickPlayer(@McpParam("Player role id") long roleId) {
             kicked.add(roleId);
         }
@@ -95,7 +100,8 @@ class McpToolsTest {
         @McpTool(name = "query_rank", description = "Query player rank asynchronously", group = "npc", readOnly = true)
         public void queryRank(McpToolContext context, @McpParam("Player role id") long roleId) {
             String caller = context.header("x-agent");
-            Thread.ofVirtual().start(() -> context.reply("rank#" + roleId + "@1(" + caller + ")"));
+            Thread.ofVirtual().name("simulated-rpc-io").start(
+                    () -> context.reply("rank#" + roleId + "@1(" + caller + ")"));
         }
 
         @McpTool(name = "returns_null", description = "Buggy tool returning null")
@@ -105,86 +111,98 @@ class McpToolsTest {
         public String throwsBoom() { throw new IllegalStateException("boom"); }
     }
 
-    @Test void schemasAndAllInvocationShapes() throws Exception {
+    @Test void schemasInvocationShapesPrepareHookAndDistinctFailureMetrics() throws Exception {
         GameTools target = new GameTools();
         AiClientTest.RecordingMetrics metrics = new AiClientTest.RecordingMetrics();
-        McpTools tools = McpTools.builder()
-                .executor(McpToolExecutor.direct())
+        List<String> preparedTools = new ArrayList<>();
+        McpToolExecutor customExec = new McpToolExecutor() {
+            @Override public void prepare(McpToolDefinition definition, Method method) {
+                preparedTools.add(definition.name());
+            }
+            @Override public void execute(McpToolCall call, Runnable task) { task.run(); }
+            @Override public void complete(McpToolCall call, Runnable completion) { completion.run(); }
+        };
+
+        try (McpTools tools = McpTools.builder()
+                .executor(customExec)
                 .metrics(metrics)
                 .register(List.of(target))
                 .register(new McpToolDefinition("ping_tool", "Programmatic ping", "ops", true,
                                 "{\"type\":\"object\",\"properties\":{\"msg\":{\"type\":\"string\"}}}"),
                         (ctx, args) -> ctx.reply("pong:" + args.get("msg")))
-                .build();
+                .build()) {
 
-        // Check generated JSON schemas
-        Map<String, McpToolDefinition> byName = new java.util.HashMap<>();
-        for (McpToolDefinition def : tools.definitions()) byName.put(def.name(), def);
+            assertEquals(8, preparedTools.size());
 
-        Map<String, Object> bagSchema = Json.parseObject(byName.get("query_bag").inputSchema());
-        assertEquals("object", bagSchema.get("type"));
-        @SuppressWarnings("unchecked")
-        Map<String, Map<String, Object>> bagProps = (Map<String, Map<String, Object>>) bagSchema.get("properties");
-        assertEquals("integer", bagProps.get("roleId").get("type"));
-        assertEquals("Player role id", bagProps.get("roleId").get("description"));
-        assertEquals("string", bagProps.get("category").get("type"));
-        assertEquals("integer", bagProps.get("limit").get("type"));
-        assertEquals(List.of("roleId"), bagSchema.get("required"));
+            Map<String, McpToolDefinition> byName = new java.util.HashMap<>();
+            for (McpToolDefinition def : tools.definitions()) byName.put(def.name(), def);
 
-        Map<String, Object> mailSchema = Json.parseObject(byName.get("send_mail").inputSchema());
-        @SuppressWarnings("unchecked")
-        Map<String, Map<String, Object>> mailProps = (Map<String, Map<String, Object>>) mailSchema.get("properties");
-        assertEquals(List.of("SYSTEM", "REWARD"), mailProps.get("kind").get("enum"));
-        assertEquals(List.of("roleId", "title"), mailSchema.get("required"));
+            assertTrue(byName.get("kick_player").destructive());
+            assertFalse(byName.get("query_bag").destructive());
 
-        // 0-arg
-        assertEquals(42, invokeSync(tools, "online_count", "{}").data());
+            Map<String, Object> bagSchema = Json.parseObject(byName.get("query_bag").inputSchema());
+            assertEquals("object", bagSchema.get("type"));
+            @SuppressWarnings("unchecked")
+            Map<String, Map<String, Object>> bagProps = (Map<String, Map<String, Object>>) bagSchema.get("properties");
+            assertEquals("integer", bagProps.get("roleId").get("type"));
+            assertEquals("Player role id", bagProps.get("roleId").get("description"));
+            assertEquals("string", bagProps.get("category").get("type"));
+            assertEquals("integer", bagProps.get("limit").get("type"));
+            assertEquals(List.of("roleId"), bagSchema.get("required"));
 
-        // Multi-param with optional omitted and present
-        assertEquals(new BagView(1001L, "all", 10), invokeSync(tools, "query_bag", "{\"roleId\":1001}").data());
-        assertEquals(new BagView(1001L, "weapon", 5),
-                invokeSync(tools, "query_bag", "{\"roleId\":1001,\"category\":\"weapon\",\"limit\":5}").data());
+            Map<String, Object> mailSchema = Json.parseObject(byName.get("send_mail").inputSchema());
+            @SuppressWarnings("unchecked")
+            Map<String, Map<String, Object>> mailProps = (Map<String, Map<String, Object>>) mailSchema.get("properties");
+            assertEquals(List.of("SYSTEM", "REWARD"), mailProps.get("kind").get("enum"));
+            assertEquals(List.of("roleId", "title"), mailSchema.get("required"));
 
-        // Missing required param -> AI_TOOL_INVALID_ARGS
-        assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "query_bag", "{}").code());
-        assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "query_bag", "not-json").code());
+            assertEquals(42, invokeSync(tools, "online_count", "{}").data());
+            assertEquals(new BagView(1001L, "all", 10), invokeSync(tools, "query_bag", "{\"roleId\":1001}").data());
+            assertEquals(new BagView(1001L, "weapon", 5),
+                    invokeSync(tools, "query_bag", "{\"roleId\":1001,\"category\":\"weapon\",\"limit\":5}").data());
 
-        // Single DTO + domain failure code
-        assertEquals("sent:1001:Hi:REWARD",
-                invokeSync(tools, "send_mail", "{\"roleId\":1001,\"title\":\"Hi\",\"kind\":\"REWARD\"}").data());
-        McpToolResult domainFail = invokeSync(tools, "send_mail", "{\"roleId\":1001,\"title\":\"full\"}");
-        assertEquals(BAG_FULL, domainFail.code());
-        assertEquals("Mailbox is full", domainFail.message());
+            assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "query_bag", "{}").code());
+            assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "query_bag", "not-json").code());
 
-        // Sync void without McpToolContext
-        assertEquals("ok", invokeSync(tools, "kick_player", "{\"roleId\":88}").data());
-        assertEquals(List.of(88L), target.kicked);
+            assertEquals("sent:1001:Hi:REWARD",
+                    invokeSync(tools, "send_mail", "{\"roleId\":1001,\"title\":\"Hi\",\"kind\":\"REWARD\"}").data());
+            McpToolResult domainFail = invokeSync(tools, "send_mail", "{\"roleId\":1001,\"title\":\"full\"}");
+            assertEquals(BAG_FULL, domainFail.code());
+            assertEquals("Mailbox is full", domainFail.message());
 
-        // Async void with McpToolContext
-        CompletableFuture<McpToolResult> async = new CompletableFuture<>();
-        tools.call("query_rank", "{\"roleId\":99}", Map.of("X-Agent", "npc-ai"), null, async::complete);
-        assertEquals("rank#99@1(npc-ai)", async.get(5, TimeUnit.SECONDS).data());
+            assertEquals("ok", invokeSync(tools, "kick_player", "{\"roleId\":88}").data());
+            assertEquals(List.of(88L), target.kicked);
 
-        // Programmatic handler
-        assertEquals("pong:hello", invokeSync(tools, "ping_tool", "{\"msg\":\"hello\"}").data());
+            CompletableFuture<McpToolResult> async = new CompletableFuture<>();
+            tools.call("query_rank", "{\"roleId\":99}", Map.of("X-Agent", "npc-ai"), null, async::complete);
+            assertEquals("rank#99@1(npc-ai)", async.get(5, TimeUnit.SECONDS).data());
 
-        // Errors: not found, null return, exception
-        assertEquals(AI_TOOL_NOT_FOUND, invokeSync(tools, "no_such_tool", "{}").code());
-        assertEquals(AI_TOOL_EXECUTION_ERROR, invokeSync(tools, "returns_null", "{}").code());
-        assertEquals(AI_TOOL_EXECUTION_ERROR, invokeSync(tools, "throws_boom", "{}").code());
+            assertEquals("pong:hello", invokeSync(tools, "ping_tool", "{\"msg\":\"hello\"}").data());
 
-        assertEquals(1L, metrics.counterValue("managame.ai.mcp.not_found", ""));
-        assertEquals(2L, metrics.counterValue("managame.ai.mcp.invalid_args", ""));
-        assertEquals(1L, metrics.counterValue("managame.ai.mcp.calls", "tool=online_count"));
+            assertEquals(AI_TOOL_NOT_FOUND, invokeSync(tools, "no_such_tool", "{}").code());
+            assertEquals(AI_TOOL_EXECUTION_ERROR, invokeSync(tools, "returns_null", "{}").code());
+            assertEquals(AI_TOOL_EXECUTION_ERROR, invokeSync(tools, "throws_boom", "{}").code());
+
+            assertEquals(1L, metrics.counterValue("managame.ai.mcp.not_found", ""));
+            assertEquals(2L, metrics.counterValue("managame.ai.mcp.invalid_args", ""));
+            assertEquals(1L, metrics.counterValue("managame.ai.mcp.calls", "tool=online_count"));
+            assertEquals(1L, metrics.counterValue("managame.ai.mcp.business_failures", "tool=send_mail"));
+            assertEquals(0L, metrics.counterValue("managame.ai.mcp.failures", "tool=send_mail"));
+            assertEquals(1L, metrics.counterValue("managame.ai.mcp.failures", "tool=throws_boom"));
+        }
     }
 
-    @Test void interceptorsFilterAuthorizeAndAuditInOrder() throws Exception {
-        List<String> trace = new ArrayList<>();
+    @Test void interceptorsPreserveMetadataIsolateAsyncIoThreadsAndExposeRawArgumentsJson() throws Exception {
+        List<String> trace = Collections.synchronizedList(new ArrayList<>());
+        AtomicReference<String> auditedRawJson = new AtomicReference<>();
+        AtomicReference<String> afterThreadName = new AtomicReference<>();
+
         McpToolInterceptor auth = new McpToolInterceptor() {
             @Override public boolean allowList(Map<String, String> headers, McpToolDefinition tool) {
                 return !"npc".equals(headers.get("X-Role")) || tool.readOnly();
             }
             @Override public boolean before(McpToolCall call) {
+                call.context().put(CALLER_ID, "verified-" + call.context().header("X-Role"));
                 trace.add("auth:before");
                 if ("npc".equals(call.context().header("X-Role")) && !call.definition().readOnly()) {
                     return false;
@@ -192,7 +210,9 @@ class McpToolsTest {
                 return true;
             }
             @Override public void after(McpToolCall call, McpToolResult result) {
-                trace.add("auth:after:" + result.code());
+                afterThreadName.set(Thread.currentThread().getName());
+                auditedRawJson.set(call.rawArgumentsJson());
+                trace.add("auth:after:" + result.code() + ":" + call.context().metadata().get(CALLER_ID));
             }
         };
         McpToolInterceptor audit = new McpToolInterceptor() {
@@ -205,78 +225,85 @@ class McpToolsTest {
             }
         };
 
-        McpTools tools = McpTools.builder()
-                .executor(McpToolExecutor.direct())
+        McpToolExecutor routeLikeExec = new McpToolExecutor() {
+            @Override public void execute(McpToolCall call, Runnable task) {
+                Thread.ofVirtual().name("player-route").start(task);
+            }
+            @Override public void complete(McpToolCall call, Runnable completion) {
+                Thread.ofVirtual().name("player-route").start(completion);
+            }
+        };
+
+        try (McpTools tools = McpTools.builder()
+                .executor(routeLikeExec)
                 .intercept(List.of(auth, audit))
                 .register(List.of(new GameTools()))
-                .build();
+                .build()) {
 
-        // NPC sees only readOnly tools
-        List<McpToolDefinition> npcVisible = tools.list(Map.of("x-role", "npc"));
-        assertTrue(npcVisible.stream().allMatch(McpToolDefinition::readOnly));
-        assertFalse(npcVisible.stream().anyMatch(d -> d.name().equals("kick_player")));
+            List<McpToolDefinition> npcVisible = tools.list(Map.of("x-role", "npc"));
+            assertTrue(npcVisible.stream().allMatch(McpToolDefinition::readOnly));
+            assertFalse(npcVisible.stream().anyMatch(d -> d.name().equals("kick_player")));
 
-        // Allowed call: before in order, after in reverse order
-        CompletableFuture<McpToolResult> ok = new CompletableFuture<>();
-        tools.call("online_count", "{}", Map.of("X-Role", "npc"), null, ok::complete);
-        assertEquals(SUCCESS, ok.get(5, TimeUnit.SECONDS).code());
-        assertEquals(List.of("auth:before", "audit:before", "audit:after:0", "auth:after:0"), trace);
+            // Async query_rank calls ctx.reply on "simulated-rpc-io", yet `after` runs on "player-route" via complete()!
+            CompletableFuture<McpToolResult> ok = new CompletableFuture<>();
+            String verbatimArgs = "{ \"roleId\" : 99 }";
+            tools.call("query_rank", verbatimArgs, Map.of("X-Role", "npc", "X-Agent", "bot"), null, ok::complete);
+            assertEquals(SUCCESS, ok.get(5, TimeUnit.SECONDS).code());
+            assertNotEquals("simulated-rpc-io", afterThreadName.get(), "after must not block the RPC I/O thread");
+            assertEquals("player-route", afterThreadName.get());
+            assertEquals(verbatimArgs, auditedRawJson.get());
+            assertEquals(List.of("auth:before", "audit:before", "audit:after:0", "auth:after:0:verified-npc"), trace);
 
-        // Refused by auth: audit never enters, neither after runs
-        trace.clear();
-        CompletableFuture<McpToolResult> refused = new CompletableFuture<>();
-        tools.call("kick_player", "{\"roleId\":1}", Map.of("X-Role", "npc"), null, refused::complete);
-        assertEquals(AI_TOOL_REJECTED, refused.get(5, TimeUnit.SECONDS).code());
-        assertEquals(List.of("auth:before"), trace);
+            trace.clear();
+            CompletableFuture<McpToolResult> refused = new CompletableFuture<>();
+            tools.call("kick_player", "{\"roleId\":1}", Map.of("X-Role", "npc"), null, refused::complete);
+            assertEquals(AI_TOOL_REJECTED, refused.get(5, TimeUnit.SECONDS).code());
+            assertEquals(List.of("auth:before"), trace);
+        }
     }
 
-    @Test void pojoRequiresCustomCodecAndValidationFailsEagerly() throws Exception {
-        class PojoTools {
+    @Test void pojoParamAndReturnTypeRequireCustomCodecAndFailEagerlyAtStartup() throws Exception {
+        class PojoParamTools {
             @McpTool(description = "Uses mutable POJO")
             public String usePojo(MutablePojo pojo) { return pojo.id + ":" + pojo.label; }
         }
-        // Fails eagerly under basic codec
+        class PojoReturnTools {
+            @McpTool(description = "Returns mutable POJO")
+            public MutablePojo returnPojo() { return new MutablePojo(); }
+        }
         assertThrows(IllegalArgumentException.class,
-                () -> McpTools.builder().register(List.of(new PojoTools())).build());
+                () -> McpTools.builder().register(List.of(new PojoParamTools())).build());
+        assertThrows(IllegalArgumentException.class,
+                () -> McpTools.builder().register(List.of(new PojoReturnTools())).build());
 
-        // Succeeds with Jackson codec
-        ObjectMapper mapper = new ObjectMapper();
-        AiCodec jackson = new AiCodec() {
-            @Override public String encode(Object v) throws Exception { return mapper.writeValueAsString(v); }
-            @Override public Object decode(String j, Type t) throws Exception {
-                return mapper.readValue(j, mapper.constructType(t));
-            }
-        };
-        McpTools tools = McpTools.builder()
-                .codec(jackson)
+        try (McpTools tools = McpTools.builder()
+                .codec(JACKSON_CODEC)
                 .executor(McpToolExecutor.direct())
-                .register(List.of(new PojoTools()))
-                .build();
-        assertEquals("7:ok", invokeSync(tools, "usePojo", "{\"id\":7,\"label\":\"ok\"}").data());
+                .register(List.of(new PojoParamTools()))
+                .build()) {
+            assertEquals("7:ok", invokeSync(tools, "usePojo", "{\"id\":7,\"label\":\"ok\"}").data());
+        }
 
-        // Duplicate tool names rejected
         assertThrows(IllegalArgumentException.class,
                 () -> McpTools.builder().register(List.of(new GameTools(), new GameTools())).build());
 
-        // Context in non-first position rejected
         class BadCtx {
             @McpTool(description = "bad")
             public void bad(long id, McpToolContext ctx) {}
         }
         assertThrows(IllegalArgumentException.class, () -> McpTools.builder().register(List.of(new BadCtx())));
 
-        // Executor sees method and decoded singleArgument for routing
         AtomicReference<McpToolCall> captured = new AtomicReference<>();
-        McpTools routed = McpTools.builder()
+        try (McpTools routed = McpTools.builder()
                 .executor((call, task) -> { captured.set(call); task.run(); })
                 .register(List.of(new GameTools()))
-                .build();
-        invokeSync(routed, "send_mail", "{\"roleId\":55,\"title\":\"hi\"}");
-        assertNotNull(captured.get().method());
-        assertEquals(55L, ((SendMail) captured.get().singleArgument()).roleId());
-        assertEquals(55L, captured.get().rawArguments().get("roleId"));
+                .build()) {
+            invokeSync(routed, "send_mail", "{\"roleId\":55,\"title\":\"hi\"}");
+            assertNotNull(captured.get().method());
+            assertEquals(55L, ((SendMail) captured.get().singleArgument()).roleId());
+            assertEquals(55L, captured.get().rawArguments().get("roleId"));
+        }
 
-        // Inherited and overridden @McpTool methods are deduplicated
         class BaseService {
             @McpTool(description = "base tool", readOnly = true)
             public String info() { return "base"; }
@@ -286,9 +313,10 @@ class McpToolsTest {
             @McpTool(description = "sub tool", readOnly = true)
             public String info() { return "sub"; }
         }
-        McpTools inherited = McpTools.builder().executor(McpToolExecutor.direct()).register(List.of(new SubService())).build();
-        assertEquals(1, inherited.definitions().size());
-        assertEquals("sub", invokeSync(inherited, "info", "{}").data());
+        try (McpTools inherited = McpTools.builder().executor(McpToolExecutor.direct()).register(List.of(new SubService())).build()) {
+            assertEquals(1, inherited.definitions().size());
+            assertEquals("sub", invokeSync(inherited, "info", "{}").data());
+        }
     }
 
     @Test void toolTimeoutAndResultAdapter() throws Exception {
@@ -311,8 +339,10 @@ class McpToolsTest {
             }
         }
 
+        AiClientTest.RecordingMetrics metrics = new AiClientTest.RecordingMetrics();
         try (McpTools tools = McpTools.builder()
                 .timeout(Duration.ofMillis(120))
+                .metrics(metrics)
                 .resultAdapter(res -> res instanceof AppResult r
                         ? (r.code() == 0 ? McpToolResult.ok(r.data()) : McpToolResult.fail(r.code(), r.msg()))
                         : null)
@@ -337,13 +367,15 @@ class McpToolsTest {
             assertEquals(AI_TIMEOUT, timedOut.code());
             assertTrue(timedOut.message().contains("may still take effect"),
                     "Started non-idempotent mutating tool timeout must warn model not to blindly retry: " + timedOut.message());
+            assertEquals(1L, metrics.counterValue("managame.ai.mcp.timeouts", ""));
         }
     }
 
-    @Test void queuedTimeoutSkipsSideEffectsAndMaxInFlightAndClose() throws Exception {
+    @Test void queuedTimeoutSkipsSideEffectsMaxInFlightAndCloseAbortsInFlight() throws Exception {
         AtomicBoolean sideEffectRan = new AtomicBoolean();
         AtomicBoolean beforeRan = new AtomicBoolean();
         AtomicReference<Runnable> deferredTask = new AtomicReference<>();
+        CountDownLatch holdEntered = new CountDownLatch(1);
 
         class MutatingTools {
             @McpTool(name = "grant_once", description = "Idempotent mutating tool", idempotent = true)
@@ -355,6 +387,7 @@ class McpToolsTest {
             @McpTool(name = "hold", description = "Async holding tool")
             public void hold(McpToolContext ctx) {
                 heldContext.set(ctx);
+                holdEntered.countDown();
             }
 
             final AtomicReference<McpToolContext> heldContext = new AtomicReference<>();
@@ -381,7 +414,6 @@ class McpToolsTest {
 
         assertTrue(tools.definitions().stream().filter(d -> d.name().equals("grant_once")).findFirst().orElseThrow().idempotent());
 
-        // 1. Queued tool times out before executor runs it -> running deferred task later MUST NOT execute side effects
         CompletableFuture<McpToolResult> timedOut = new CompletableFuture<>();
         tools.call("grant_once", "{}", timedOut::complete);
         McpToolResult queuedTimeout = timedOut.get(5, TimeUnit.SECONDS);
@@ -392,8 +424,9 @@ class McpToolsTest {
         assertFalse(beforeRan.get(), "before interceptor must not run after call already timed out");
         assertFalse(sideEffectRan.get(), "tool side effect must not run after call already timed out");
         assertEquals(0, tools.inFlight());
+        tools.close();
 
-        // 2. maxInFlight=1 rejects 2nd concurrent call with AI_OVERLOADED
+        // maxInFlight=1 rejects 2nd concurrent call with AI_OVERLOADED, and close() aborts in-flight async call with AI_CLOSED
         McpTools limited = McpTools.builder()
                 .maxInFlight(1)
                 .executor(McpToolExecutor.direct())
@@ -402,24 +435,20 @@ class McpToolsTest {
                 .build();
         CompletableFuture<McpToolResult> first = new CompletableFuture<>();
         limited.call("hold", "{}", first::complete);
+        assertTrue(holdEntered.await(5, TimeUnit.SECONDS));
         assertEquals(1, limited.inFlight());
 
         McpToolResult second = invokeSync(limited, "hold", "{}");
         assertEquals(AI_OVERLOADED, second.code());
         assertEquals(1L, metrics.counterValue("managame.ai.mcp.overloaded", ""));
 
-        target.heldContext.get().reply("done");
-        assertEquals("done", first.get(5, TimeUnit.SECONDS).data());
-        assertEquals(0, limited.inFlight());
-
-        // 3. Close rejects subsequent calls with AI_CLOSED and increments closed counter
-        tools.close();
         limited.close();
         assertTrue(limited.isClosed());
+        assertEquals(AI_CLOSED, first.get(5, TimeUnit.SECONDS).code());
+        assertEquals(0, limited.inFlight());
         assertEquals(AI_CLOSED, invokeSync(limited, "grant_once", "{}").code());
-        assertEquals(1L, metrics.counterValue("managame.ai.mcp.closed", ""));
+        assertEquals(2L, metrics.counterValue("managame.ai.mcp.closed", ""));
 
-        // 4. Named McpTools registry tags metrics with server=<name>
         AiClientTest.RecordingMetrics namedMetrics = new AiClientTest.RecordingMetrics();
         try (McpTools gmRegistry = McpTools.builder()
                 .executor(McpToolExecutor.direct())
@@ -467,11 +496,9 @@ class McpToolsTest {
                     "by_field:true:2002",
                     "unrouted:false:0"), observedRoutes);
 
-            // Null boxed route key fails with AI_TOOL_INVALID_ARGS before reaching executor
             assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "by_field", "{}").code());
         }
 
-        // Startup validation: missing param, missing DTO member, zero-arg with routeKey, non-integral routeKey
         class BadMissingParam {
             @McpTool(description = "bad", routeKey = "noSuch")
             public void f(@McpParam("x") long roleId) {}
@@ -532,13 +559,13 @@ class McpToolsTest {
         try (McpTools gateTools = McpTools.builder()
                 .intercept(List.of(scopeGuard))
                 .registerProxy(List.of(GatewayBagContract.class, UninstantiableBackendService.class), call -> {
-                    assertTrue(call.method() != null);
+                    assertNotNull(call.method());
                     assertTrue(call.hasRouteKey());
+                    assertTrue(call.rawArgumentsJson().contains("1795519194523264001"));
                     Thread.ofVirtual().start(() ->
                             call.context().reply("forwarded:" + call.toolName() + ":" + call.routeKey()));
                 })
                 .build()) {
-            // Quoted 64-bit Snowflake ID coerced without 53-bit double precision loss
             CompletableFuture<McpToolResult> ok = new CompletableFuture<>();
             gateTools.call("proxy_bag",
                     "{\"roleId\":\"1795519194523264001\",\"itemId\":\"2001\"}",
@@ -547,7 +574,6 @@ class McpToolsTest {
                     ok::complete);
             assertEquals("forwarded:proxy_bag:" + snowflake, ok.get(5, TimeUnit.SECONDS).data());
 
-            // Spoofed cross-player call rejected at the stateless Gate before touching RPC proxy
             CompletableFuture<McpToolResult> denied = new CompletableFuture<>();
             gateTools.call("proxy_bag",
                     "{\"roleId\":\"1795519194523264002\",\"itemId\":2001}",
@@ -556,7 +582,6 @@ class McpToolsTest {
                     denied::complete);
             assertEquals(AI_TOOL_REJECTED, denied.get(5, TimeUnit.SECONDS).code());
 
-            // DTO routeKey also works statelessly
             assertEquals("forwarded:proxy_grant:1795519194523264001",
                     invokeSync(gateTools, "proxy_grant", "{\"roleId\":\"1795519194523264001\",\"count\":5}").data());
         }

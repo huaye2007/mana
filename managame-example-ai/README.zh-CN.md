@@ -10,7 +10,7 @@
 managame-example（游戏服 2服 / 3服 ...）          managame-example-ai（Spring Boot + Spring AI）
   GameRuntime（PLAYER 路由）+ GameData             GameAiController（/api/ai）+ JDBC ChatMemory
    ├── NpcAiService ──AiClient (HTTP / SSE)────▶    ├── POST /npc/chat   （JDBC 记忆 + 按服路由 npcTools + Token 用量）
-   │     （Continuation + 脱敏 + 配额 + 审计）      ├── POST /npc/stream （ChatClient.stream -> SseEmitter）
+   │     （AiDispatcher + 脱敏 + 配额 + 审计）    ├── POST /npc/stream （ChatClient.stream -> SseEmitter）
    │                                                ├── POST /npc/decide （ChatClient.entity 结构化选项决策）
    │                                                ├── POST /gm/ask     （按目标区服路由 gmTools）
    │                                                ├── DELETE /sessions/{id} 与 /players/{prefix}（重置与删号清理）

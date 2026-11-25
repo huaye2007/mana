@@ -17,6 +17,7 @@ public final class McpMetrics {
     private final Counter invalidArgs;
     private final Counter overloaded;
     private final Counter closed;
+    private final Counter timeouts;
     private final List<Meter> owned = new ArrayList<>();
 
     public McpMetrics(Metrics metrics, String serverName, DoubleSupplier inFlight) {
@@ -27,6 +28,7 @@ public final class McpMetrics {
         this.invalidArgs = metrics.counter("managame.ai.mcp.invalid_args", baseTags);
         this.overloaded = metrics.counter("managame.ai.mcp.overloaded", baseTags);
         this.closed = metrics.counter("managame.ai.mcp.closed", baseTags);
+        this.timeouts = metrics.counter("managame.ai.mcp.timeouts", baseTags);
         this.owned.add(metrics.gauge("managame.ai.mcp.in_flight", inFlight, baseTags));
     }
 
@@ -40,6 +42,7 @@ public final class McpMetrics {
         return new ToolMeters(
                 metrics.counter("managame.ai.mcp.calls", toolTags),
                 metrics.counter("managame.ai.mcp.failures", toolTags),
+                metrics.counter("managame.ai.mcp.business_failures", toolTags),
                 metrics.counter("managame.ai.mcp.rejected", toolTags),
                 latency);
     }
@@ -54,6 +57,8 @@ public final class McpMetrics {
 
     public void closed() { closed.increment(); }
 
+    public void timeout() { timeouts.increment(); }
+
     public void close() {
         for (Meter meter : owned) meter.close();
     }
@@ -66,7 +71,12 @@ public final class McpMetrics {
         return tags;
     }
 
-    public record ToolMeters(Counter calls, Counter failures, Counter rejected, LatencyBuckets latency) {
+    public record ToolMeters(
+            Counter calls,
+            Counter failures,
+            Counter businessFailures,
+            Counter rejected,
+            LatencyBuckets latency) {
         public void recordLatency(long startNanos) {
             if (latency != null && startNanos != 0L) latency.record(System.nanoTime() - startNanos);
         }

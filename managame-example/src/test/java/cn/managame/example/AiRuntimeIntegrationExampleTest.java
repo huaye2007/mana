@@ -17,7 +17,9 @@ import cn.managame.ai.mcp.McpToolDefinition;
 import cn.managame.ai.mcp.McpToolInterceptor;
 import cn.managame.ai.mcp.McpToolResult;
 import cn.managame.ai.mcp.McpTools;
+import cn.managame.ai.spi.AiDispatcher;
 import cn.managame.ai.spi.McpToolExecutor;
+import cn.managame.example.ai.AiConfig;
 import cn.managame.example.ai.ContentSafetyFilter;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
@@ -136,24 +138,8 @@ class AiRuntimeIntegrationExampleTest {
                 }))
                 .build();
 
-        // 1. McpToolExecutor：读取方法上的 @Domain 和编译期 call.routeKey()，覆盖 GameTask.refused 防止拦截拒绝时悬挂超时
-        McpToolExecutor runtimeExecutor = (call, task) -> {
-            Domain domain = call.method().getAnnotation(Domain.class);
-            if (domain == null) domain = call.method().getDeclaringClass().getAnnotation(Domain.class);
-            if (domain == null) { McpToolExecutor.virtualThreads().execute(call, task); return; }
-            long routeKey = call.hasRouteKey() ? call.routeKey() : 0L;
-            GameContext ctx = GameContext.of(domain.value(), routeKey);
-            try {
-                runtime.execute(ctx, new GameTask<Context>() {
-                    @Override public void run(Context c) { task.run(); }
-                    @Override public void refused(Context c) {
-                        call.context().fail(FrameworkErrorCodes.AI_TOOL_REJECTED, "Player route is frozen");
-                    }
-                });
-            } catch (GameRuntimeException refused) {
-                call.context().fail(refused.errorCode(), FrameworkErrorCodes.describe(refused.errorCode()));
-            }
-        };
+        // 1. McpToolExecutor：启动期预校验 @Domain 与绑定 TaskKind，运行期零反射投递并覆盖 GameTask.refused
+        McpToolExecutor runtimeExecutor = AiConfig.runtimeToolExecutor(runtime);
 
         // 2. McpToolInterceptor：NPC 仅可见 npc 组只读工具，且强校验 X-Role-Id == call.routeKey()
         McpToolInterceptor scopeGuard = new McpToolInterceptor() {
@@ -235,8 +221,19 @@ class AiRuntimeIntegrationExampleTest {
                     });
                 }).build());
 
+        AiDispatcher runtimeDispatcher = new AiDispatcher() {
+            @Override public java.util.concurrent.Executor capture(Object explicitContext) {
+                Continuation back = runtime.continuation();
+                return task -> back.execute(_ -> task.run());
+            }
+            @Override public cn.managame.Metadata metadata(Object explicitContext) {
+                return Context.hasCurrent() ? Context.current().metadata() : cn.managame.Metadata.empty();
+            }
+        };
+
         AiClient aiClient = AiClient.builder("http://127.0.0.1:" + fakeAiService.port())
                 .codec(jackson)
+                .dispatcher(runtimeDispatcher)
                 .propagate(TRACE_ID, "X-Trace-Id")
                 .build();
 
@@ -267,7 +264,7 @@ class AiRuntimeIntegrationExampleTest {
                                 Map.of("opId", "op-frozen", "roleId", 9999, "itemId", 0, "count", 10)));
                 long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
                 assertTrue(Boolean.TRUE.equals(frozen.isError()));
-                assertTrue(((McpSchema.TextContent) frozen.content().getFirst()).text().contains("frozen"));
+                assertTrue(((McpSchema.TextContent) frozen.content().getFirst()).text().contains("refused"));
                 assertTrue(elapsedMs < 2000, "GameTask.refused must fail immediately, took " + elapsedMs + "ms");
 
                 // 幂等写工具：相同 opId 重试两次只加一次金币
@@ -305,20 +302,18 @@ class AiRuntimeIntegrationExampleTest {
         AtomicReference<NpcAction> appliedOnRoute = new AtomicReference<>();
         GameContext playerCtx = GameContext.of(DomainConstant.PLAYER, roleId);
         runtime.execute(playerCtx, ctx -> {
-            Continuation back = runtime.continuation();
             String sessionId = "npc:2:" + roleId + ":" + npcId + ":" + epoch;
             DecideReq req = new DecideReq(sessionId, roleId, npcId, allowed, mode);
-            ai.call(AiRequest.of("/npc/decide", req, ctx.metadata()).withTimeout(timeout), DecideRes.class, res ->
-                    back.execute(c -> {
-                        assertEquals(DomainConstant.PLAYER, Context.current().domain());
-                        assertEquals(roleId, Context.current().routeKey());
-                        if (!res.isSuccess() || !allowed.contains(res.data().action())) {
-                            appliedOnRoute.set(NpcAction.FLEE);
-                        } else {
-                            appliedOnRoute.set(res.data().action());
-                        }
-                        done.countDown();
-                    }));
+            ai.call(AiRequest.of("/npc/decide", req).withTimeout(timeout), DecideRes.class, res -> {
+                assertEquals(DomainConstant.PLAYER, Context.current().domain());
+                assertEquals(roleId, Context.current().routeKey());
+                if (!res.isSuccess() || !allowed.contains(res.data().action())) {
+                    appliedOnRoute.set(NpcAction.FLEE);
+                } else {
+                    appliedOnRoute.set(res.data().action());
+                }
+                done.countDown();
+            });
         });
         assertTrue(done.await(5, TimeUnit.SECONDS));
         return appliedOnRoute.get();

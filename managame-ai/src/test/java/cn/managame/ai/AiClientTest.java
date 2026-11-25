@@ -10,10 +10,12 @@ import static cn.managame.FrameworkErrorCodes.SUCCESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.managame.Metadata;
 import cn.managame.MetadataKey;
+import cn.managame.ai.spi.AiDispatcher;
 import cn.managame.metrics.Counter;
 import cn.managame.metrics.Meter;
 import cn.managame.metrics.Metrics;
@@ -57,6 +59,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -91,9 +94,10 @@ class AiClientTest {
         if (sseGroup != null) sseGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
     }
 
-    @Test void unaryCallHeadersMetadataAndRawString() throws Exception {
+    @Test void unaryCallHeadersMetadataDispatcherAndRawString() throws Exception {
         CountDownLatch notifySeen = new CountDownLatch(1);
         AtomicReference<String> notifyBody = new AtomicReference<>();
+        AtomicReference<String> notifyTrace = new AtomicReference<>();
 
         httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
                 HttpInitializer.http().contextPath("/api").handler(exchange -> {
@@ -107,9 +111,10 @@ class AiClientTest {
                                     + "\",\"trace\":\"" + trace + "\",\"auth\":\"" + auth + "\"}";
                             respond(exchange, HttpResponseStatus.OK, resJson);
                         }
-                        case "/raw" -> respond(exchange, HttpResponseStatus.OK, "{\"raw\":true}");
+                        case "/raw" -> respond(exchange, HttpResponseStatus.OK, "{\"raw\":true,\"trace\":\"" + trace + "\"}");
                         case "/events/boss" -> {
                             notifyBody.set(body);
+                            notifyTrace.set(trace);
                             notifySeen.countDown();
                             exchange.respond(HttpResponseStatus.NO_CONTENT);
                         }
@@ -120,43 +125,72 @@ class AiClientTest {
                     }
                 }).build());
 
+        // Simulate any custom game server framework's ThreadLocal / ScopedValue route context via AiDispatcher
+        ScopedValue<String> currentRoute = ScopedValue.newInstance();
+        AiDispatcher frameworkDispatcher = new AiDispatcher() {
+            @Override public Executor capture(Object explicitCtx) {
+                String route = explicitCtx != null ? explicitCtx.toString()
+                        : (currentRoute.isBound() ? currentRoute.get() : null);
+                if (route == null) throw new IllegalStateException("AI call must run inside a route context");
+                return task -> Thread.ofVirtual().name("route-" + route).start(
+                        () -> ScopedValue.where(currentRoute, route).run(task));
+            }
+            @Override public Metadata metadata(Object explicitCtx) {
+                String route = explicitCtx != null ? explicitCtx.toString()
+                        : (currentRoute.isBound() ? currentRoute.get() : null);
+                return route != null ? Metadata.builder().put(TRACE_ID, "trace-" + route).build() : Metadata.empty();
+            }
+        };
+
         RecordingMetrics metrics = new RecordingMetrics();
         client = AiClient.builder("http://127.0.0.1:" + httpServer.port() + "/api")
                 .codec(JACKSON)
+                .dispatcher(frameworkDispatcher)
                 .header("Authorization", "Bearer secret")
                 .propagate(TRACE_ID, "X-Trace-Id")
                 .metrics(metrics, "npc")
                 .build();
 
+        // Calling outside an active route context fails fast via AiDispatcher.capture
+        assertThrows(IllegalStateException.class,
+                () -> client.call("/chat", new ChatReq(7, "outside"), ChatRes.class, r -> {}));
+
+        // Calling inside a route context automatically propagates ambient Metadata and resumes on the captured route
         Thread callerThread = Thread.currentThread();
         AtomicReference<Thread> callbackThread = new AtomicReference<>();
+        AtomicReference<String> observedRoute = new AtomicReference<>();
         CompletableFuture<AiResult<ChatRes>> typed = new CompletableFuture<>();
-        Metadata md = Metadata.builder().put(TRACE_ID, "trace-42").build();
-        client.call(AiRequest.of("/chat", new ChatReq(7, "hello"), md), ChatRes.class, res -> {
-            callbackThread.set(Thread.currentThread());
-            typed.complete(res);
+
+        ScopedValue.where(currentRoute, "player-42").run(() -> {
+            assertEquals(WriteStatus.ACCEPTED, client.notify("/events/boss", new ChatReq(42, "boss-dead")));
+            client.call("/chat", new ChatReq(42, "hello"), ChatRes.class, res -> {
+                callbackThread.set(Thread.currentThread());
+                observedRoute.set(currentRoute.get());
+                typed.complete(res);
+            });
         });
+
         AiResult<ChatRes> res = typed.get(5, TimeUnit.SECONDS);
         assertTrue(res.isSuccess());
         assertEquals(200, res.status());
-        assertEquals("trace-42", res.data().trace());
+        assertEquals("trace-player-42", res.data().trace());
         assertEquals("Bearer secret", res.data().auth());
+        assertEquals("player-42", observedRoute.get());
         assertNotEquals(callerThread, callbackThread.get(), "Callback must not run on caller thread");
 
-        // String body & String response bypass Jackson codec (no double-quoting)
-        CompletableFuture<AiResult<String>> raw = new CompletableFuture<>();
-        client.call("/raw", "{\"hello\":1}", String.class, raw::complete);
-        assertEquals("{\"raw\":true}", raw.get(5, TimeUnit.SECONDS).data());
-
-        // Status mapping
-        assertEquals(AI_OVERLOADED, callSync("/busy", "{}", String.class).code());
-        assertEquals(AI_PROTOCOL_ERROR, callSync("/bad", "{}", String.class).code());
-        assertEquals(AI_UNAVAILABLE, callSync("/down", "{}", String.class).code());
-
-        // Fire-and-forget notify returns WriteStatus.ACCEPTED
-        assertEquals(WriteStatus.ACCEPTED, client.notify("/events/boss", new ChatReq(7, "boss-dead")));
         assertTrue(notifySeen.await(5, TimeUnit.SECONDS));
         assertTrue(notifyBody.get().contains("boss-dead"));
+        assertEquals("trace-player-42", notifyTrace.get());
+
+        // Explicit AiRequest.withContext(...) works from an external entry outside an active thread context
+        CompletableFuture<AiResult<String>> raw = new CompletableFuture<>();
+        client.call(AiRequest.of("/raw", "{\"hello\":1}").withContext("gm-entry"), String.class, raw::complete);
+        assertTrue(raw.get(5, TimeUnit.SECONDS).data().contains("trace-gm-entry"));
+
+        // Status mapping
+        assertEquals(AI_OVERLOADED, callWithCtx("gm", "/busy", "{}", String.class).code());
+        assertEquals(AI_PROTOCOL_ERROR, callWithCtx("gm", "/bad", "{}", String.class).code());
+        assertEquals(AI_UNAVAILABLE, callWithCtx("gm", "/down", "{}", String.class).code());
 
         assertEquals(5L, metrics.counterValue("managame.ai.client.calls", "client=npc,kind=call"));
         assertEquals(1L, metrics.counterValue("managame.ai.client.calls", "client=npc,kind=notify"));
@@ -165,9 +199,10 @@ class AiClientTest {
         assertEquals(1L, metrics.counterValue("managame.ai.client.failures", "client=npc,code=AI_UNAVAILABLE"));
     }
 
-    @Test void overloadTimeoutCancelAndClose() throws Exception {
+    @Test void overloadTimeoutPostHeaderStallCancelAndClose() throws Exception {
         CountDownLatch firstArrived = new CountDownLatch(1);
         CountDownLatch releaseServer = new CountDownLatch(1);
+        int ssePort = startSseServer(new CountDownLatch(1), releaseServer);
 
         httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
                 HttpInitializer.http().handler(exchange -> {
@@ -187,13 +222,11 @@ class AiClientTest {
                 .timeout(Duration.ofSeconds(5))
                 .build();
 
-        // 1st fills maxInFlight=1
         CompletableFuture<AiResult<String>> first = new CompletableFuture<>();
         AiCall call1 = client.call("/slow", "{}", String.class, first::complete);
         assertTrue(firstArrived.await(5, TimeUnit.SECONDS));
         assertEquals(1, client.inFlight());
 
-        // 2nd is rejected immediately with AI_OVERLOADED on another thread
         Thread caller = Thread.currentThread();
         AtomicReference<Thread> rejectThread = new AtomicReference<>();
         CompletableFuture<AiResult<String>> overloaded = new CompletableFuture<>();
@@ -204,18 +237,26 @@ class AiClientTest {
         assertEquals(AI_OVERLOADED, overloaded.get(5, TimeUnit.SECONDS).code());
         assertNotEquals(caller, rejectThread.get());
 
-        // Cancel 1st
         assertTrue(call1.cancel());
         assertFalse(call1.cancel());
         assertEquals(AI_CANCELLED, first.get(5, TimeUnit.SECONDS).code());
         assertEquals(0, client.inFlight());
 
-        // Per-request timeout
         CompletableFuture<AiResult<String>> timedOut = new CompletableFuture<>();
         client.call(AiRequest.of("/slow", "{}").withTimeout(Duration.ofMillis(120)), String.class, timedOut::complete);
         assertEquals(AI_TIMEOUT, timedOut.get(5, TimeUnit.SECONDS).code());
 
-        // Close aborts in-flight and rejects subsequent calls with AI_CLOSED
+        // Unary call where server flushes HTTP 200 headers immediately then hangs mid-body MUST time out and free slot
+        try (AiClient bodyStallClient = AiClient.builder("http://127.0.0.1:" + ssePort)
+                .maxInFlight(1)
+                .timeout(Duration.ofMillis(150))
+                .build()) {
+            CompletableFuture<AiResult<String>> stalledBody = new CompletableFuture<>();
+            bodyStallClient.call("/hang", "{}", String.class, stalledBody::complete);
+            assertEquals(AI_TIMEOUT, stalledBody.get(5, TimeUnit.SECONDS).code());
+            assertEquals(0, bodyStallClient.inFlight(), "Post-header body timeout must release inFlight slot");
+        }
+
         CompletableFuture<AiResult<String>> aborted = new CompletableFuture<>();
         client.call("/slow", "{}", String.class, aborted::complete);
         client.close();
@@ -265,7 +306,6 @@ class AiClientTest {
                 }))
                 .build();
 
-        // 1. Dynamic header supplier rotates token without rebuilding AiClient, and callback runs on custom executor
         assertEquals("pong", callSync("/ping", "{}", String.class).data());
         assertEquals("Bearer tok-v1", lastAuth.get());
         liveToken.set("tok-v2");
@@ -273,7 +313,6 @@ class AiClientTest {
         assertEquals("Bearer tok-v2", lastAuth.get());
         assertTrue(execThreads.stream().allMatch("custom-ai-exec"::equals));
 
-        // 2. Notify budget is isolated from call/stream budget: saturating notify returns NOT_WRITABLE while call still works
         assertEquals(WriteStatus.ACCEPTED, client.notify("/hold-notify", "{}"));
         assertTrue(notifyArrived.await(5, TimeUnit.SECONDS));
         assertEquals(1, client.notifyInFlight());
@@ -281,7 +320,6 @@ class AiClientTest {
         assertEquals("pong", callSync("/ping", "{}", String.class).data());
         holdNotify.countDown();
 
-        // 3. 2-lambda stream overload preserves event order on custom executor
         List<String> tokens = Collections.synchronizedList(new ArrayList<>());
         CompletableFuture<AiResult<Void>> streamDone = new CompletableFuture<>();
         client.stream("/sse-two", "{}", ev -> tokens.add(ev.data()), streamDone::complete);
@@ -303,7 +341,7 @@ class AiClientTest {
         }
     }
 
-    @Test void incrementalSseStreamCancelAndTimeout() throws Exception {
+    @Test void incrementalSseStreamMidStreamErrorCancelAndTimeout() throws Exception {
         CountDownLatch sendSecondChunk = new CountDownLatch(1);
         CountDownLatch holdForever = new CountDownLatch(1);
         int port = startSseServer(sendSecondChunk, holdForever);
@@ -312,7 +350,7 @@ class AiClientTest {
                 .timeout(Duration.ofSeconds(5))
                 .build();
 
-        // 1. Incremental delivery: 1st event arrives BEFORE server writes 2nd event
+        // 1. Incremental delivery
         CountDownLatch firstEventSeen = new CountDownLatch(1);
         List<AiStreamEvent> received = Collections.synchronizedList(new ArrayList<>());
         CompletableFuture<AiResult<Void>> done = new CompletableFuture<>();
@@ -332,7 +370,17 @@ class AiClientTest {
         assertEquals(2, received.size());
         assertEquals(new AiStreamEvent("token", "好", "2"), received.get(1));
 
-        // 2. Cancel mid-stream
+        // 2. Mid-stream SSE event: error after HTTP 200 headers fails stream with AI_UNAVAILABLE
+        List<String> partialBeforeErr = Collections.synchronizedList(new ArrayList<>());
+        CompletableFuture<AiResult<Void>> midErr = new CompletableFuture<>();
+        client.stream("/mid-error", "{}", ev -> partialBeforeErr.add(ev.data()), midErr::complete);
+        AiResult<Void> midErrRes = midErr.get(5, TimeUnit.SECONDS);
+        assertEquals(AI_UNAVAILABLE, midErrRes.code());
+        assertEquals(200, midErrRes.status());
+        assertEquals("upstream quota exhausted", midErrRes.message());
+        assertEquals(List.of("你"), partialBeforeErr);
+
+        // 3. Cancel mid-stream
         CountDownLatch firstHangEvent = new CountDownLatch(1);
         CompletableFuture<AiResult<Void>> cancelled = new CompletableFuture<>();
         AiCall streamCall = client.stream("/hang", "{}", new AiStreamListener() {
@@ -343,7 +391,7 @@ class AiClientTest {
         assertTrue(streamCall.cancel());
         assertEquals(AI_CANCELLED, cancelled.get(5, TimeUnit.SECONDS).code());
 
-        // 3. Stream total-duration timeout (even after headers and 1st chunk arrived)
+        // 4. Stream total-duration timeout
         CompletableFuture<AiResult<Void>> timedOut = new CompletableFuture<>();
         client.stream(AiRequest.of("/hang", "{}").withTimeout(Duration.ofMillis(150)), new AiStreamListener() {
             @Override public void onEvent(AiStreamEvent event) {}
@@ -351,7 +399,7 @@ class AiClientTest {
         });
         assertEquals(AI_TIMEOUT, timedOut.get(5, TimeUnit.SECONDS).code());
 
-        // 4. Non-2xx SSE error surfaces HTTP status & code cleanly
+        // 5. Non-2xx SSE error surfaces HTTP status & code cleanly
         CompletableFuture<AiResult<Void>> err = new CompletableFuture<>();
         client.stream("/rate-limit", "{}", new AiStreamListener() {
             @Override public void onEvent(AiStreamEvent event) {}
@@ -361,7 +409,7 @@ class AiClientTest {
         assertEquals(AI_OVERLOADED, errRes.code());
         assertEquals(429, errRes.status());
 
-        // 5. SSE idleTimeout: healthy slow trickle succeeds beyond idleTimeout; stalled stream times out promptly
+        // 6. SSE idleTimeout
         List<AiStreamEvent> trickle = Collections.synchronizedList(new ArrayList<>());
         CompletableFuture<AiResult<Void>> trickleDone = new CompletableFuture<>();
         client.stream(AiRequest.of("/trickle", "{}").withTimeout(Duration.ofSeconds(5))
@@ -382,35 +430,40 @@ class AiClientTest {
         holdForever.countDown();
     }
 
-    @Test void getDeleteAndCustomHttpMethods() throws Exception {
+    @Test void getDeleteQueryParamsAndCustomHttpMethods() throws Exception {
         httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
                 HttpInitializer.http().contextPath("/api").handler(exchange -> {
                     FullHttpRequest req = exchange.request();
                     String method = req.method().name();
                     String body = req.content().toString(StandardCharsets.UTF_8);
-                    respond(exchange, HttpResponseStatus.OK, method + ":" + exchange.path() + ":" + body);
+                    respond(exchange, HttpResponseStatus.OK, method + ":" + req.uri() + ":" + body);
                 }).build());
 
         client = AiClient.builder("http://127.0.0.1:" + httpServer.port() + "/api").build();
 
         CompletableFuture<AiResult<String>> getRes = new CompletableFuture<>();
-        client.call(AiRequest.get("/jobs/42"), String.class, getRes::complete);
-        assertEquals("GET:/jobs/42:", getRes.get(5, TimeUnit.SECONDS).data());
+        client.call(AiRequest.get("/jobs/42").withQuery("tag", "铁匠 A"), String.class, getRes::complete);
+        assertEquals("GET:/api/jobs/42?tag=%E9%93%81%E5%8C%A0%20A:", getRes.get(5, TimeUnit.SECONDS).data());
 
         CompletableFuture<AiResult<String>> delRes = new CompletableFuture<>();
-        client.call(AiRequest.delete("/sessions/npc-1"), String.class, delRes::complete);
-        assertEquals("DELETE:/sessions/npc-1:", delRes.get(5, TimeUnit.SECONDS).data());
+        client.call(AiRequest.delete("/sessions/" + AiRequest.encodeSegment("npc:2:1001")), String.class, delRes::complete);
+        assertEquals("DELETE:/api/sessions/npc%3A2%3A1001:", delRes.get(5, TimeUnit.SECONDS).data());
 
         CompletableFuture<AiResult<String>> putRes = new CompletableFuture<>();
         client.call(AiRequest.of("/config", "{\"k\":1}").withMethod("PUT"), String.class, putRes::complete);
-        assertEquals("PUT:/config:{\"k\":1}", putRes.get(5, TimeUnit.SECONDS).data());
+        assertEquals("PUT:/api/config:{\"k\":1}", putRes.get(5, TimeUnit.SECONDS).data());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> client.call("http://bad path with spaces", "{}", String.class, r -> {}));
     }
 
-    @Test void responseBoundsSseEventBoundsAndNonDuplicateDefaultHeaders() throws Exception {
+    @Test void responseBoundsSseEventBoundsAndSingleNonDuplicateHeaders() throws Exception {
         AtomicReference<List<String>> seenAcceptHeaders = new AtomicReference<>();
+        AtomicReference<List<String>> seenContentTypes = new AtomicReference<>();
         httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
                 HttpInitializer.http().handler(exchange -> {
                     seenAcceptHeaders.set(exchange.request().headers().getAll(HttpHeaderNames.ACCEPT));
+                    seenContentTypes.set(exchange.request().headers().getAll(HttpHeaderNames.CONTENT_TYPE));
                     if ("/huge".equals(exchange.path())) {
                         respond(exchange, HttpResponseStatus.OK, "x".repeat(256));
                     } else if ("/huge-sse".equals(exchange.path())) {
@@ -429,15 +482,17 @@ class AiClientTest {
                 .header("Accept", "application/vnd.game+json")
                 .build();
 
-        // Default Accept replaces built-in Accept instead of sending duplicate headers
-        assertEquals("ok", callSync("/ok", "{}", String.class).data());
+        // Custom Accept and custom Content-Type replace defaults without sending duplicate headers
+        CompletableFuture<AiResult<String>> plainText = new CompletableFuture<>();
+        client.call(AiRequest.of("/ok", "raw-text").withHeader("Content-Type", "text/plain; charset=UTF-8"),
+                String.class, plainText::complete);
+        assertEquals("ok", plainText.get(5, TimeUnit.SECONDS).data());
         assertEquals(List.of("application/vnd.game+json"), seenAcceptHeaders.get());
+        assertEquals(List.of("text/plain; charset=UTF-8"), seenContentTypes.get());
 
-        // Oversized unary response fails with AI_PROTOCOL_ERROR
         AiResult<String> tooBig = callSync("/huge", "{}", String.class);
         assertEquals(AI_PROTOCOL_ERROR, tooBig.code());
 
-        // Oversized SSE event aborts with AI_PROTOCOL_ERROR
         CompletableFuture<AiResult<Void>> sseTooBig = new CompletableFuture<>();
         client.stream("/huge-sse", "{}", new AiStreamListener() {
             @Override public void onEvent(AiStreamEvent event) {}
@@ -468,11 +523,11 @@ class AiClientTest {
                 byteEncodes.incrementAndGet();
                 return AiCodec.basic().encodeBytes(value);
             }
-            @Override public Object decode(String json, java.lang.reflect.Type type) throws Exception {
+            @Override public Object decode(String json, Type type) throws Exception {
                 stringDecodes.incrementAndGet();
                 return AiCodec.basic().decode(json, type);
             }
-            @Override public Object decodeBytes(byte[] utf8, java.lang.reflect.Type type) throws Exception {
+            @Override public Object decodeBytes(byte[] utf8, Type type) throws Exception {
                 byteDecodes.incrementAndGet();
                 return AiCodec.basic().decodeBytes(utf8, type);
             }
@@ -510,6 +565,12 @@ class AiClientTest {
     private <T> AiResult<T> callSync(String path, Object body, Class<T> type) throws Exception {
         CompletableFuture<AiResult<T>> f = new CompletableFuture<>();
         client.call(path, body, type, f::complete);
+        return f.get(5, TimeUnit.SECONDS);
+    }
+
+    private <T> AiResult<T> callWithCtx(Object ctx, String path, Object body, Class<T> type) throws Exception {
+        CompletableFuture<AiResult<T>> f = new CompletableFuture<>();
+        client.call(AiRequest.of(path, body).withContext(ctx), type, f::complete);
         return f.get(5, TimeUnit.SECONDS);
     }
 
@@ -551,6 +612,13 @@ class AiClientTest {
                                                     ctx.channel().eventLoop().execute(() -> {
                                                         ctx.write(new DefaultHttpContent(
                                                                 Unpooled.copiedBuffer("id: 2\nevent: token\ndata: 好\n\n", StandardCharsets.UTF_8)));
+                                                        ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
+                                                    });
+                                                } else if ("/mid-error".equals(req.uri())) {
+                                                    ctx.channel().eventLoop().execute(() -> {
+                                                        ctx.write(new DefaultHttpContent(
+                                                                Unpooled.copiedBuffer("event: error\ndata: upstream quota exhausted\n\n",
+                                                                        StandardCharsets.UTF_8)));
                                                         ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
                                                     });
                                                 } else if ("/trickle".equals(req.uri())) {

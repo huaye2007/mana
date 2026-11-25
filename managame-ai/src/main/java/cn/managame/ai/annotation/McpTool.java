@@ -8,10 +8,11 @@ import java.lang.annotation.Target;
 /**
  * Exposes a game server method as an MCP (Model Context Protocol) tool when its declaring object is registered with
  * {@link cn.managame.ai.mcp.McpTools}. Can be added directly to existing business methods (such as service methods or
- * {@code @HttpMethod} handlers):
+ * HTTP handlers):
  *
  * <pre>{@code
- * @McpTool(name = "query_player_bag", description = "Query items in a player's bag", group = "npc", readOnly = true)
+ * @McpTool(name = "query_player_bag", description = "Query items in a player's bag",
+ *         group = "npc", readOnly = true, routeKey = "roleId")
  * public BagView queryBag(@McpParam("Player role id") long roleId,
  *         @McpParam(value = "Optional item category", required = false) Integer category) { ... }
  * }</pre>
@@ -38,6 +39,13 @@ public @interface McpTool {
     boolean readOnly() default false;
 
     /**
+     * Marks a mutating tool as destructive (for example banning a player or deleting items): sets MCP
+     * {@code annotations.destructiveHint=true} so agent hosts can gate execution on human confirmation. Defaults to
+     * {@code false} (additive / bounded game operations). Ignored when {@link #readOnly()} is {@code true}.
+     */
+    boolean destructive() default false;
+
+    /**
      * Marks a mutating tool as safe to retry with the same arguments (for example when guarded by a request id): sets
      * MCP {@code annotations.idempotentHint=true}. A mutating tool that is not idempotent and times out after it
      * started is answered with a text telling the model its effect is unknown, so it checks before calling again.
@@ -45,12 +53,12 @@ public @interface McpTool {
     boolean idempotent() default false;
 
     /**
-     * Names the argument holding the key of the route this tool runs on, for an executor that runs tools on routes
-     * (such as one submitting to {@code GameRuntime}): a parameter of the method, or a member of its single DTO (a
-     * no-argument method of that name, its getter or a field). It must be an integral type or its box. Compiled at
-     * registration, so a missing member fails at startup and a call pays one read; the executor gets it from
-     * {@link cn.managame.ai.mcp.McpToolCall#routeKey()}. Empty (the default) names none. The framework does not
-     * interpret the key.
+     * Names the argument holding the key of the route this tool runs on, for a {@link cn.managame.ai.spi.McpToolExecutor}
+     * that dispatches tools onto player/entity routes (such as {@code GameRuntime} or an actor system): a parameter of
+     * the method, or a member of its single DTO (a no-argument method of that name, its getter or a field). It must be
+     * an integral type or its box. Compiled at registration, so a missing member fails at startup and a call pays one
+     * read; the executor reads it from {@link cn.managame.ai.mcp.McpToolCall#routeKey()}. Empty (the default) names
+     * none.
      */
     String routeKey() default "";
 }

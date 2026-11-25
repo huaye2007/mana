@@ -2,6 +2,7 @@ package cn.managame.example.ai;
 
 import cn.managame.FrameworkErrorCodes;
 import cn.managame.IdLayout;
+import cn.managame.Metadata;
 import cn.managame.SnowflakeIdGenerator;
 import cn.managame.ai.AiClient;
 import cn.managame.ai.AiCodec;
@@ -11,24 +12,30 @@ import cn.managame.ai.mcp.McpToolDefinition;
 import cn.managame.ai.mcp.McpToolInterceptor;
 import cn.managame.ai.mcp.McpToolResult;
 import cn.managame.ai.mcp.McpTools;
+import cn.managame.ai.spi.AiDispatcher;
 import cn.managame.ai.spi.McpToolExecutor;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
 import cn.managame.runtime.Context;
+import cn.managame.runtime.Continuation;
 import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.GameRuntimeException;
 import cn.managame.runtime.GameTask;
+import cn.managame.runtime.TaskKind;
 import cn.managame.runtime.annotation.Domain;
 import cn.managame.runtime.http.HttpResult;
 import cn.managame.runtime.time.GameTime;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -36,11 +43,12 @@ import org.springframework.context.annotation.DependsOn;
 import org.springframework.core.env.Environment;
 
 /**
- * 游戏服的 AI 接入装配与全生命周期编排：
+ * 游戏服的 AI 接入装配与全生命周期编排（全服仅暴露唯一一个 {@link AiClient}，启动期一次性桥接 {@link GameRuntime}）：
  * <ul>
- *   <li>出站：{@link AiClient} 调外部 Spring AI 服务，自动携带 {@code X-Game-Server-Id} 与透传 {@code X-Trace-Id}</li>
- *   <li>入站：{@link McpTools} + {@link McpHttpHandler} 在 {@code /mcp} 暴露注解工具，配多 Token 热轮换鉴权、
- *       编译期 {@code routeKey} 路由、跨玩家防越权拦截器与写工具 {@link AiAuditLogRepository} 审计落盘</li>
+ *   <li>出站：{@link AiClient} 通过 {@link AiDispatcher} 自动强制校验并捕获调用方 {@link Context} 与路由 {@link Continuation}，
+ *       自动透传 {@code X-Trace-Id}，全服百余业务模块直接调 {@code aiClient.call} / {@code stream} 即可在原路由收回调</li>
+ *   <li>入站：{@link McpTools} 通过 {@link McpToolExecutor#prepare} 在启动期预校验 {@code @Domain} 并绑定每工具独立的
+ *       {@link TaskKind}，运行期零反射投递到 {@code call.routeKey()} 玩家路由，异步回调经 {@code complete} 回到路由</li>
  *   <li>启停顺序：{@link McpEndpoint} 实现最高阶段 {@link SmartLifecycle}，保证开服就绪后再监听 {@code /mcp}，
  *       停服时最先关 {@code /mcp} 入口 → 再关客户端网关/RPC → 再关 {@code AiClient}/{@code McpTools}（在途回调安全回到
  *       仍存活的 {@code GameRuntime}）→ 最后关 {@code GameRuntime} 与 {@code GameData}（刷盘实体与审计日志）</li>
@@ -67,12 +75,31 @@ public class AiConfig {
 
     @Bean
     @DependsOn("gameRuntime")
-    public AiClient aiClient(AiCodec aiCodec, Environment env) {
+    public AiClient aiClient(GameRuntime runtime, AiCodec aiCodec, Environment env) {
         String baseUrl = env.getProperty("ai.service.url", "http://127.0.0.1:8081/api/ai");
         String token = env.getProperty("ai.service.token", "dev-ai-token");
         int serverId = env.getProperty("rpc.node", Integer.class, 2);
+
+        AiDispatcher runtimeDispatcher = new AiDispatcher() {
+            @Override public Executor capture(Object explicitContext) {
+                if (explicitContext != null) {
+                    Context target = (Context) explicitContext;
+                    runtime.checkDomain(target.domain());
+                    return task -> runtime.handOn(target, _ -> task.run());
+                }
+                Continuation back = runtime.continuation();
+                return task -> back.execute(_ -> task.run());
+            }
+
+            @Override public Metadata metadata(Object explicitContext) {
+                if (explicitContext instanceof Context target) return target.metadata();
+                return Context.hasCurrent() ? Context.current().metadata() : Metadata.empty();
+            }
+        };
+
         return AiClient.builder(baseUrl)
                 .codec(aiCodec)
+                .dispatcher(runtimeDispatcher)
                 .timeout(Duration.ofSeconds(10))
                 .streamIdleTimeout(Duration.ofSeconds(5))
                 .header("Authorization", () -> "Bearer " + token)
@@ -88,30 +115,8 @@ public class AiConfig {
         int serverId = env.getProperty("rpc.node", Integer.class, 2);
         SnowflakeIdGenerator auditIds = new SnowflakeIdGenerator(IdLayout.DEFAULT, serverId);
 
-        // 1. 把带 @Domain 的 @McpTool 调度到编译好的 call.routeKey() 玩家路由上串行执行，并覆盖 GameTask.refused
-        McpToolExecutor runtimeExecutor = (call, task) -> {
-            Domain domain = call.method() != null ? call.method().getAnnotation(Domain.class) : null;
-            if (domain == null && call.method() != null) {
-                domain = call.method().getDeclaringClass().getAnnotation(Domain.class);
-            }
-            if (domain == null) {
-                McpToolExecutor.virtualThreads().execute(call, task);
-                return;
-            }
-            long routeKey = call.hasRouteKey() ? call.routeKey() : 0L;
-            try {
-                runtime.execute(GameContext.of(domain.value(), routeKey), new GameTask<Context>() {
-                    @Override public void run(Context context) { task.run(); }
-
-                    @Override public void refused(Context context) {
-                        call.context().fail(FrameworkErrorCodes.AI_TOOL_REJECTED,
-                                "MCP tool refused on route (" + domainFrom(call) + ":" + routeKey + ")");
-                    }
-                });
-            } catch (GameRuntimeException refused) {
-                call.context().fail(refused.errorCode(), FrameworkErrorCodes.describe(refused.errorCode()));
-            }
-        };
+        // 1. 启动期预编译 @Domain 与 TaskKind，运行期零反射按编译好的 call.routeKey() 投递到 GameRuntime
+        McpToolExecutor runtimeExecutor = runtimeToolExecutor(runtime);
 
         // 2. 角色权限 + 跨玩家防越权：NPC 只能调 npc 组只读工具，且编译路由键必须等于绑定头 X-Role-Id
         McpToolInterceptor playerScopeGuard = new McpToolInterceptor() {
@@ -135,7 +140,7 @@ public class AiConfig {
             }
         };
 
-        // 3. 写工具全量审计：无论成功或失败，均异步写入 ai_audit_log 表留痕
+        // 3. 写工具全量审计：无论成功或失败，均异步写入真实原始 JSON 参数到 ai_audit_log 表留痕
         McpToolInterceptor writeAuditInterceptor = new McpToolInterceptor() {
             @Override public void after(McpToolCall call, McpToolResult result) {
                 if (call.definition().readOnly()) return;
@@ -149,7 +154,7 @@ public class AiConfig {
                         roleId,
                         call.toolName(),
                         traceId != null ? traceId : "",
-                        call.rawArguments().toString(),
+                        call.rawArgumentsJson(),
                         result.code(),
                         0,
                         GameTime.currentTimeMillis()));
@@ -168,6 +173,58 @@ public class AiConfig {
                 .build();
     }
 
+    /** 将 {@link McpTools} 对接到 {@link GameRuntime}：启动期校验 {@code @Domain} 并绑定每方法独立的 {@link TaskKind}。 */
+    public static McpToolExecutor runtimeToolExecutor(GameRuntime runtime) {
+        record RouteSpec(int domain, TaskKind kind) {}
+        Map<String, RouteSpec> specs = new HashMap<>();
+        return new McpToolExecutor() {
+            @Override public void prepare(McpToolDefinition definition, Method method) {
+                if (method == null) return;
+                Domain domain = method.getAnnotation(Domain.class);
+                if (domain == null) domain = method.getDeclaringClass().getAnnotation(Domain.class);
+                if (domain == null) return;
+                runtime.checkDomain(domain.value());
+                TaskKind kind = runtime.taskKind(method.getDeclaringClass().getName() + "#" + method.getName());
+                specs.put(definition.name(), new RouteSpec(domain.value(), kind));
+            }
+
+            @Override public void execute(McpToolCall call, Runnable task) {
+                RouteSpec spec = specs.get(call.toolName());
+                if (spec == null) {
+                    McpToolExecutor.virtualThreads().execute(call, task);
+                    return;
+                }
+                long routeKey = call.hasRouteKey() ? call.routeKey() : 0L;
+                try {
+                    runtime.execute(spec.kind(), GameContext.of(spec.domain(), routeKey), new GameTask<Context>() {
+                        @Override public void run(Context context) { task.run(); }
+
+                        @Override public void refused(Context context) {
+                            call.context().fail(FrameworkErrorCodes.AI_TOOL_REJECTED,
+                                    "MCP tool refused on route (" + spec.domain() + ":" + routeKey + ")");
+                        }
+                    });
+                } catch (GameRuntimeException refused) {
+                    call.context().fail(refused.errorCode(), FrameworkErrorCodes.describe(refused.errorCode()));
+                }
+            }
+
+            @Override public void complete(McpToolCall call, Runnable completion) {
+                RouteSpec spec = specs.get(call.toolName());
+                if (spec == null) {
+                    McpToolExecutor.virtualThreads().complete(call, completion);
+                    return;
+                }
+                long routeKey = call.hasRouteKey() ? call.routeKey() : 0L;
+                try {
+                    runtime.handOn(spec.kind(), GameContext.of(spec.domain(), routeKey), _ -> completion.run());
+                } catch (GameRuntimeException runtimeClosed) {
+                    completion.run();
+                }
+            }
+        };
+    }
+
     @Bean
     @DependsOn({"gameServer", "aiClient"})
     public McpEndpoint mcpEndpoint(McpTools mcpTools, Environment env) {
@@ -176,12 +233,6 @@ public class AiConfig {
         String gmToken = env.getProperty("ai.mcp.gm-token", "");
         BearerTokenAuthHandler authHandler = new BearerTokenAuthHandler(mcpToken, gmToken);
         return new McpEndpoint(port, mcpTools, authHandler);
-    }
-
-    private static int domainFrom(McpToolCall call) {
-        Domain d = call.method().getAnnotation(Domain.class);
-        if (d == null) d = call.method().getDeclaringClass().getAnnotation(Domain.class);
-        return d != null ? d.value() : 0;
     }
 
     /**

@@ -10,7 +10,7 @@
   ```
   -Drpc.node=1 -Drpc.port=7101
   ```
-- [GameServerApp](src/main/java/cn/managame/example/GameServerApp.java)：游戏服进程，显式装配 `DataConfig`（`UserRepository`、`PlayerAiStateRepository`、`AiAuditLogRepository`）、`GameServerConfig`、`RpcConfig`、`AiConfig`（自动携带 `X-Game-Server-Id` 的 `AiClient`、支持 NPC/GM 独立 Token 热轮换与编译期 `@McpTool(routeKey = ...)` 路由及审计落盘的 `/mcp` 端点）以及登录/世界/AI 业务（`NpcAiService`：持久化对话代号与每日额度、玩家断线自动取消在途 SSE 流、删号双端清理、跨分片敏感词过滤、一键脚本降级开关）。通过 `SmartLifecycle` 与 `@DependsOn` 严格保障启停顺序（`McpEndpoint.stop -> NetworkServer / RpcNode -> AiClient / McpTools -> GameRuntime -> GameData -> DataSource`）。
+- [GameServerApp](src/main/java/cn/managame/example/GameServerApp.java)：游戏服进程，显式装配 `DataConfig`（`UserRepository`、`PlayerAiStateRepository`、`AiAuditLogRepository`）、`GameServerConfig`、`RpcConfig`、`AiConfig`（绑定 `AiDispatcher` 与 `X-Game-Server-Id` 的单一 `AiClient`、绑定 `McpToolExecutor` 且支持 NPC/GM 独立 Token 热轮换与编译期 `@McpTool(routeKey = ...)` 路由及审计落盘的 `/mcp` 端点）以及登录/世界/AI 业务（`NpcAiService`：持久化对话代号与每日额度、玩家断线自动取消在途 SSE 流、删号双端清理、跨分片敏感词过滤、一键脚本降级开关）。通过 `SmartLifecycle` 与 `@DependsOn` 严格保障启停顺序（`McpEndpoint.stop -> NetworkServer / RpcNode -> AiClient / McpTools -> GameRuntime -> GameData -> DataSource`）。
   ```
   -Drpc.node=2 -Drpc.peers=1=127.0.0.1:7101 -Dgame.port=7001 -Dai.mcp.port=8082 -Dai.service.url=http://127.0.0.1:8081/api/ai -Dmysql.user=root -Dmysql.password=...
   ```

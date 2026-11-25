@@ -5,6 +5,7 @@ import cn.managame.ai.annotation.McpParam;
 import cn.managame.ai.annotation.McpTool;
 import cn.managame.ai.mcp.McpToolContext;
 import cn.managame.ai.mcp.McpToolDefinition;
+import cn.managame.ai.mcp.McpToolResult;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -25,8 +26,9 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * One {@link McpTool}-annotated Java method compiled into a {@link MethodHandle} and pre-built JSON Schema at
- * registration time so invocations pay no reflection. Public only to be reachable across packages; not API.
+ * One {@link McpTool}-annotated Java method compiled into a {@link MethodHandle}, route-key extractor, and pre-built
+ * JSON Schema at registration time so invocations pay no reflection. Public only to be reachable across packages;
+ * not API.
  */
 public final class ToolMethod {
     private static final Object[] EMPTY_ARGS = {};
@@ -166,7 +168,7 @@ public final class ToolMethod {
         }
 
         McpToolDefinition def = new McpToolDefinition(name, ann.description(), ann.group(),
-                ann.readOnly(), ann.idempotent(), schema);
+                ann.readOnly(), ann.destructive(), ann.idempotent(), schema);
         MethodHandle handle = target != null ? buildHandle(target, method, shape, takesContext, argCount) : null;
         MethodHandle routeKeyReader = null;
         int routeKeyIndex = -1;
@@ -267,8 +269,8 @@ public final class ToolMethod {
         return !pkg.startsWith("java.") && !pkg.startsWith("javax.");
     }
 
-    /** Validates that {@link BasicAiCodec} can decode all parameter types of this method. */
-    public void verifyBasicCodec() {
+    /** Validates that {@link BasicAiCodec} can decode all parameter types and encode synchronous return types. */
+    public void verifyBasicCodec(boolean hasResultAdapter) {
         switch (shape) {
             case ZERO_ARG -> {}
             case SINGLE_DTO -> {
@@ -286,6 +288,13 @@ public final class ToolMethod {
                 }
             }
         }
+        if (handle != null && !returnsVoid && !hasResultAdapter) {
+            Type ret = method.getGenericReturnType();
+            if (ret != Object.class && ret != McpToolResult.class && !BasicAiCodec.supports(ret)) {
+                throw invalid(method, "returns " + ret.getTypeName()
+                        + ", which the basic codec cannot write; configure an AiCodec");
+            }
+        }
     }
 
     public Method method() { return method; }
@@ -301,8 +310,8 @@ public final class ToolMethod {
     public boolean hasRouteKey() { return routeKeyReader != null; }
 
     /**
-     * Reads the route key from arguments decoded by {@link #decodeArguments}; IllegalArgumentException when it is
-     * null. Only for a tool that {@link #hasRouteKey()}.
+     * Reads the route key from arguments decoded by {@link #decodeArguments}; throws {@link IllegalArgumentException}
+     * when it is null. Only for a tool that {@link #hasRouteKey()}.
      */
     public long routeKey(Object[] decodedArgs) {
         Object source = routeKeyIndex >= 0 ? decodedArgs[routeKeyIndex] : decodedArgs[0];
@@ -349,7 +358,7 @@ public final class ToolMethod {
                         } else {
                             values[i] = null;
                         }
-                    } else if (codec == BasicAiCodec.INSTANCE || BasicAiCodec.isScalar(spec.rawType()) || spec.rawType().isEnum()) {
+                    } else if (codec == BasicAiCodec.INSTANCE || BasicAiCodec.isScalar(spec.rawType())) {
                         values[i] = BasicAiCodec.convert(rawVal, spec.type());
                     } else {
                         values[i] = codec.decode(Json.write(rawVal), spec.type());

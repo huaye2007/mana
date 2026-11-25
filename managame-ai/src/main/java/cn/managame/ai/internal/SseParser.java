@@ -12,7 +12,8 @@ import java.util.function.Consumer;
 /**
  * Incremental W3C Server-Sent Events parser. Decodes arbitrary byte chunks (including multi-byte UTF-8 sequences
  * split across buffers) line by line and emits one {@link AiStreamEvent} per blank-line boundary, bounding line and
- * event payload sizes to prevent unbounded heap growth on malformed streams. Not thread-safe: called sequentially
+ * event payload sizes to prevent unbounded heap growth on malformed streams. Per the W3C SSE specification, incomplete
+ * trailing data without a terminating blank line at end-of-stream is discarded. Not thread-safe: called sequentially
  * from one stream subscriber. Public only to be reachable across packages; not API.
  */
 public final class SseParser {
@@ -26,9 +27,9 @@ public final class SseParser {
             .onMalformedInput(CodingErrorAction.REPLACE)
             .onUnmappableCharacter(CodingErrorAction.REPLACE);
     private final CharBuffer chars = CharBuffer.allocate(CHAR_BUFFER_SIZE);
+    private final ByteBuffer remainder = ByteBuffer.allocate(4).limit(0);
     private final StringBuilder line = new StringBuilder();
     private final StringBuilder data = new StringBuilder();
-    private ByteBuffer pending = ByteBuffer.allocate(0);
     private boolean sawCr;
     private boolean sawBomChecked;
     private boolean hasData;
@@ -48,38 +49,37 @@ public final class SseParser {
 
     public void feed(ByteBuffer chunk) {
         if (!chunk.hasRemaining()) return;
-        ByteBuffer input;
-        if (pending.hasRemaining()) {
-            ByteBuffer combined = ByteBuffer.allocate(pending.remaining() + chunk.remaining());
-            combined.put(pending);
-            combined.put(chunk);
-            combined.flip();
-            input = combined;
-        } else {
-            input = chunk;
+        if (remainder.hasRemaining()) {
+            while (chunk.hasRemaining() && remainder.hasRemaining()) {
+                remainder.compact();
+                remainder.put(chunk.get());
+                remainder.flip();
+                decode(remainder, false);
+            }
+            if (remainder.hasRemaining()) return;
         }
-        decode(input, false);
-        if (input.hasRemaining()) {
-            pending = ByteBuffer.allocate(input.remaining());
-            pending.put(input);
-            pending.flip();
-        } else {
-            pending = ByteBuffer.allocate(0);
+        if (chunk.hasRemaining()) {
+            decode(chunk, false);
+            if (chunk.hasRemaining()) {
+                remainder.clear();
+                remainder.put(chunk);
+                remainder.flip();
+            }
         }
     }
 
     public void finish() {
-        decode(pending, true);
-        pending = ByteBuffer.allocate(0);
+        decode(remainder, true);
+        remainder.limit(0);
         chars.clear();
         decoder.flush(chars);
         chars.flip();
         consumeChars();
-        if (line.length() > 0) {
-            processLine(line.toString());
-            line.setLength(0);
-        }
-        dispatchIfReady();
+        // Per W3C SSE spec: incomplete trailing lines or events not terminated by a blank line at EOF are discarded.
+        line.setLength(0);
+        data.setLength(0);
+        hasData = false;
+        eventType = "";
     }
 
     private void decode(ByteBuffer input, boolean endOfInput) {
@@ -141,7 +141,7 @@ public final class SseParser {
         switch (field) {
             case "data" -> {
                 int added = value.length() + (hasData ? 1 : 0);
-                if (data.length() + added > maxEventChars) {
+                if (added > maxEventChars - data.length()) {
                     throw new IllegalArgumentException("SSE event exceeded max size (" + maxEventChars + " chars)");
                 }
                 if (hasData) data.append('\n');

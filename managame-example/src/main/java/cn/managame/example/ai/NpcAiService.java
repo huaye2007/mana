@@ -9,6 +9,7 @@ import cn.managame.ai.AiCallback;
 import cn.managame.ai.AiClient;
 import cn.managame.ai.AiRequest;
 import cn.managame.ai.AiResult;
+import cn.managame.example.DomainConstant;
 import cn.managame.example.ai.AiDtos.GmAskReq;
 import cn.managame.example.ai.AiDtos.GmAskRes;
 import cn.managame.example.ai.AiDtos.NpcAction;
@@ -18,6 +19,7 @@ import cn.managame.example.ai.AiDtos.NpcDecideReq;
 import cn.managame.example.ai.AiDtos.NpcDecideRes;
 import cn.managame.runtime.Context;
 import cn.managame.runtime.Continuation;
+import cn.managame.runtime.GameContext;
 import cn.managame.runtime.GameRuntime;
 import cn.managame.runtime.time.GameTime;
 import java.time.Duration;
@@ -32,19 +34,10 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
 /**
- * 游戏服里的 AI 业务入口，写法与 {@link cn.managame.example.rpc.GameRpc} 一致：必须在当前玩家的
- * {@link GameRuntime} 任务里调用，不返回 {@code CompletableFuture}，只返回可随时取消的 {@link AiCall}；
- * 所有结果回调都经 {@link Continuation} 回到发起调用的那条玩家路由上执行，并在 Continuation 内按 id 重新取实体。
- *
- * <p>完整覆盖运行期治理：
- * <ul>
- *   <li>会话代号与每日额度持久化在 {@link PlayerAiStateRepository}（Caffeine 过期淘汰，重启不丢 epoch）</li>
- *   <li>同一玩家对同一 NPC 只允许 1 个在途请求，支持单玩家冷却与每日配额</li>
- *   <li>玩家断线（{@link #onPlayerDisconnect}）自动取消所有在途 {@link AiCall} / 流式对话</li>
- *   <li>删号（{@link #onRoleDelete}）清理本地 {@code PlayerAiState} 与远端 Spring AI {@code ChatMemory}</li>
- *   <li>AI 输出经 {@link ContentSafetyFilter} 敏感词脱敏（含跨 SSE 分片前缀缓冲过滤）</li>
- *   <li>支持一键降级开关（{@link #setAiEnabled}）退回脚本台词，以及运行期热轮换 {@link #rotateClient}</li>
- * </ul>
+ * 游戏服里的 NPC / GM AI 业务模块示例：全服所有业务模块只需注入唯一一个 {@link AiClient}。
+ * 因为 {@link AiConfig} 已为 {@code AiClient} 配置了桥接 {@link GameRuntime} 的 {@code AiDispatcher}，业务代码无需
+ * 手写 {@code Continuation} 或透传 {@code ctx.metadata()}——单次回调与流式分片均自动回到发起调用的玩家路由上串行执行，
+ * 回调内直接按 id 重新取最新实体即可。
  */
 @Service
 public class NpcAiService {
@@ -96,7 +89,7 @@ public class NpcAiService {
 
     public void setDailyQuota(int dailyQuota) { this.dailyQuota = Math.max(1, dailyQuota); }
 
-    /** 热替换底层 {@link AiClient}（例如轮换下游 API Token 或切换网关地址），返回旧实例供调用方在排空后关闭。 */
+    /** 热替换底层 {@link AiClient}（例如切换网关地址），返回旧实例供调用方在排空后关闭。 */
     public AiClient rotateClient(AiClient next) {
         return clientRef.getAndSet(Objects.requireNonNull(next, "next"));
     }
@@ -113,27 +106,29 @@ public class NpcAiService {
         return map == null ? 0 : map.size();
     }
 
-    /** NPC 多轮对话：在当前玩家路由任务中调用，回调经 Continuation 回到同一条玩家路由执行。 */
+    /** NPC 多轮对话：在玩家路由任务中直接调用，回调已由 AiDispatcher 自动切回同一条玩家路由。 */
     public AiCall talk(long npcId, String npcName, String text, AiCallback<NpcChatRes> onResponse) {
         Context ctx = Context.current();
         long roleId = ctx.routeKey();
-        Continuation back = runtime.continuation();
         PlayerAiState state = getOrCreateState(roleId);
         int epoch = state.getNpcEpochs().getOrDefault(npcId, 1);
         String sid = formatSessionId(roleId, npcId, epoch);
 
         if (!aiEnabled) {
+            Continuation back = runtime.continuation();
             back.execute(c -> onResponse.onResponse(AiResult.ok(200, new NpcChatRes(sid, scriptedFallback(npcName), 0))));
             return NOOP_CALL;
         }
         String limitReason = checkAndConsumeQuota(roleId, npcId, state);
         if (limitReason != null) {
+            Continuation back = runtime.continuation();
             back.execute(c -> onResponse.onResponse(AiResult.fail(FrameworkErrorCodes.AI_OVERLOADED, 429, limitReason)));
             return NOOP_CALL;
         }
 
         ActiveCall slot = registerSlot(roleId, npcId);
         if (slot == null) {
+            Continuation back = runtime.continuation();
             back.execute(c -> onResponse.onResponse(AiResult.fail(
                     FrameworkErrorCodes.AI_OVERLOADED, 429, "NPC is still replying to your previous message")));
             return NOOP_CALL;
@@ -141,49 +136,45 @@ public class NpcAiService {
 
         String traceId = ctx.metadata().get(TRACE_ID);
         NpcChatReq req = new NpcChatReq(sid, roleId, npcId, npcName, text);
-        AiCall call = clientRef.get().call(AiRequest.of("/npc/chat", req, ctx.metadata()), NpcChatRes.class, res -> {
+        AiCall call = clientRef.get().call("/npc/chat", req, NpcChatRes.class, res -> {
             removeSlot(roleId, npcId, slot);
-            back.execute(c -> {
-                // 在 Continuation 内重新按 roleId 取实体校验最新代号，绝不跨异步持有旧实体引用
-                PlayerAiState latest = aiStateRepo.get(roleId);
-                int currentEpoch = latest == null ? 1 : latest.getNpcEpochs().getOrDefault(npcId, 1);
-                if (res.isSuccess() && currentEpoch != epoch) {
-                    onResponse.onResponse(AiResult.ok(res.status(), new NpcChatRes(sid, "[stale dialogue ignored]", 0)));
-                    return;
-                }
-                AiResult<NpcChatRes> finalRes;
-                int tokens = 0;
-                if (res.isSuccess() && res.data() != null) {
-                    tokens = res.data().totalTokens();
-                    String safeReply = safetyFilter.filter(res.data().reply());
-                    finalRes = AiResult.ok(res.status(), new NpcChatRes(res.data().sessionId(), safeReply, tokens));
-                } else {
-                    finalRes = res;
-                }
-                auditLogRepo.insert(new AiAuditLog(logIds.generateId(), "NPC_CHAT", "player", roleId,
-                        "/npc/chat", traceId, sid, finalRes.code(), tokens, GameTime.currentTimeMillis()));
-                onResponse.onResponse(finalRes);
-            });
+            PlayerAiState latest = aiStateRepo.get(roleId);
+            int currentEpoch = latest == null ? 1 : latest.getNpcEpochs().getOrDefault(npcId, 1);
+            if (res.isSuccess() && currentEpoch != epoch) {
+                onResponse.onResponse(AiResult.ok(res.status(), new NpcChatRes(sid, "[stale dialogue ignored]", 0)));
+                return;
+            }
+            AiResult<NpcChatRes> finalRes;
+            int tokens = 0;
+            if (res.isSuccess() && res.data() != null) {
+                tokens = res.data().totalTokens();
+                String safeReply = safetyFilter.filter(res.data().reply());
+                finalRes = AiResult.ok(res.status(), new NpcChatRes(res.data().sessionId(), safeReply, tokens));
+            } else {
+                finalRes = res;
+            }
+            auditLogRepo.insert(new AiAuditLog(logIds.generateId(), "NPC_CHAT", "player", roleId,
+                    "/npc/chat", traceId != null ? traceId : "", sid, finalRes.code(), tokens, GameTime.currentTimeMillis()));
+            onResponse.onResponse(finalRes);
         });
         slot.bind(call);
         return call;
     }
 
     /**
-     * NPC 流式对话（SSE）：每个分片经 {@link ContentSafetyFilter.StreamFilter} 过滤后回调 {@code onToken}，
-     * 结束或取消时经 Continuation 回到原玩家路由执行 {@code onDone}；玩家断线或手动 cancel 均会立即中断上游生成。
+     * NPC 流式对话（SSE）：每个分片与结束回调均经 {@code AiDispatcher} 按序在原玩家路由上串行执行，
+     * 经过 {@link ContentSafetyFilter.StreamFilter} 过滤后回调；玩家断线或手动 cancel 均会立即中断上游生成。
      */
     public AiCall streamTalk(long npcId, String npcName, String text,
             Consumer<String> onToken, AiCallback<Void> onDone) {
-        Context ctx = Context.current();
-        long roleId = ctx.routeKey();
-        Continuation back = runtime.continuation();
+        long roleId = Context.current().routeKey();
         PlayerAiState state = getOrCreateState(roleId);
         int epoch = state.getNpcEpochs().getOrDefault(npcId, 1);
         String sid = formatSessionId(roleId, npcId, epoch);
 
         if (!aiEnabled) {
             String fallback = scriptedFallback(npcName);
+            Continuation back = runtime.continuation();
             back.execute(c -> {
                 onToken.accept(fallback);
                 onDone.onResponse(AiResult.ok(200, null));
@@ -192,12 +183,14 @@ public class NpcAiService {
         }
         String limitReason = checkAndConsumeQuota(roleId, npcId, state);
         if (limitReason != null) {
+            Continuation back = runtime.continuation();
             back.execute(c -> onDone.onResponse(AiResult.fail(FrameworkErrorCodes.AI_OVERLOADED, 429, limitReason)));
             return NOOP_CALL;
         }
 
         ActiveCall slot = registerSlot(roleId, npcId);
         if (slot == null) {
+            Continuation back = runtime.continuation();
             back.execute(c -> onDone.onResponse(AiResult.fail(
                     FrameworkErrorCodes.AI_OVERLOADED, 429, "NPC stream already in progress")));
             return NOOP_CALL;
@@ -205,7 +198,7 @@ public class NpcAiService {
 
         ContentSafetyFilter.StreamFilter streamFilter = safetyFilter.newStreamFilter(onToken);
         NpcChatReq req = new NpcChatReq(sid, roleId, npcId, npcName, text);
-        AiCall call = clientRef.get().stream(AiRequest.of("/npc/stream", req, ctx.metadata()),
+        AiCall call = clientRef.get().stream("/npc/stream", req,
                 event -> {
                     if ("token".equals(event.event()) || "message".equals(event.event())) {
                         streamFilter.accept(event.data());
@@ -214,7 +207,7 @@ public class NpcAiService {
                 result -> {
                     removeSlot(roleId, npcId, slot);
                     if (result.isSuccess()) streamFilter.finish();
-                    back.execute(c -> onDone.onResponse(result));
+                    onDone.onResponse(result);
                 });
         slot.bind(call);
         return call;
@@ -223,38 +216,35 @@ public class NpcAiService {
     /** NPC 结构化选项决策：在当前玩家路由调用，关闭或异常/超时/越界选项均自动降级为 {@code fallback}。 */
     public AiCall decide(long npcId, String situation, List<NpcAction> allowedActions,
             NpcAction fallback, Duration timeout, Consumer<NpcAction> onDecision) {
-        Context ctx = Context.current();
-        long roleId = ctx.routeKey();
-        Continuation back = runtime.continuation();
+        long roleId = Context.current().routeKey();
         if (!aiEnabled) {
+            Continuation back = runtime.continuation();
             back.execute(c -> onDecision.accept(fallback));
             return NOOP_CALL;
         }
         NpcDecideReq req = new NpcDecideReq(sessionId(roleId, npcId), roleId, npcId, situation, allowedActions);
-        return clientRef.get().call(AiRequest.of("/npc/decide", req, ctx.metadata()).withTimeout(timeout),
-                NpcDecideRes.class, res -> back.execute(c -> {
+        return clientRef.get().call(AiRequest.of("/npc/decide", req).withTimeout(timeout),
+                NpcDecideRes.class, res -> {
                     if (!res.isSuccess() || res.data() == null || res.data().action() == null
                             || !allowedActions.contains(res.data().action())) {
                         onDecision.accept(fallback);
                     } else {
                         onDecision.accept(res.data().action());
                     }
-                }));
+                });
     }
 
     /** 重置当前玩家与指定 NPC 的对话：取消在途请求，持久化递增会话代号，并发 DELETE 清理外部 Spring AI ChatMemory。 */
     public AiCall resetDialogue(long npcId, AiCallback<Void> onDone) {
-        Context ctx = Context.current();
-        long roleId = ctx.routeKey();
+        long roleId = Context.current().routeKey();
         cancelInFlight(roleId, npcId);
         PlayerAiState state = getOrCreateState(roleId);
         int oldEpoch = state.getNpcEpochs().getOrDefault(npcId, 1);
         state.getNpcEpochs().put(npcId, oldEpoch + 1);
         aiStateRepo.update(state);
         String oldSessionId = formatSessionId(roleId, npcId, oldEpoch);
-        Continuation back = runtime.continuation();
-        return clientRef.get().call(AiRequest.delete("/sessions/" + oldSessionId, ctx.metadata()),
-                Void.class, res -> back.execute(c -> onDone.onResponse(res)));
+        return clientRef.get().call(AiRequest.delete("/sessions/" + AiRequest.encodeSegment(oldSessionId)),
+                Void.class, onDone);
     }
 
     /** 玩家断线清理（由网关在 {@code GameRuntime.handOn} 中触发）：立即取消该角色所有在途 AI 请求与 SSE 流。 */
@@ -271,13 +261,11 @@ public class NpcAiService {
         onPlayerDisconnect(roleId);
         aiStateRepo.delete(roleId);
         String prefix = "npc:" + serverId + ":" + roleId + ":";
-        if (Context.hasCurrent()) {
-            Context ctx = Context.current();
-            Continuation back = runtime.continuation();
-            return clientRef.get().call(AiRequest.delete("/players/" + prefix, ctx.metadata()),
-                    Void.class, res -> back.execute(c -> onDone.onResponse(res)));
+        AiRequest req = AiRequest.delete("/players/" + AiRequest.encodeSegment(prefix));
+        if (!Context.hasCurrent()) {
+            req = req.withContext(GameContext.of(DomainConstant.PLAYER, roleId));
         }
-        return clientRef.get().call(AiRequest.delete("/players/" + prefix), Void.class, onDone);
+        return clientRef.get().call(req, Void.class, onDone);
     }
 
     /** 运营/GM 自然语言指令入口：可指定目标区服 {@code serverId}（默认当前游戏服）。 */
@@ -287,22 +275,15 @@ public class NpcAiService {
 
     public AiCall askGm(String instruction, int targetServerId, AiCallback<GmAskRes> onResponse) {
         GmAskReq req = new GmAskReq(instruction, targetServerId);
-        if (Context.hasCurrent()) {
-            Context ctx = Context.current();
-            String traceId = ctx.metadata().get(TRACE_ID);
-            Continuation back = runtime.continuation();
-            return clientRef.get().call(AiRequest.of("/gm/ask", req, ctx.metadata()),
-                    GmAskRes.class, res -> back.execute(c -> {
-                        int tokens = res.isSuccess() && res.data() != null ? res.data().totalTokens() : 0;
-                        auditLogRepo.insert(new AiAuditLog(logIds.generateId(), "GM_ASK", "gm", 0L,
-                                "/gm/ask", traceId, instruction, res.code(), tokens, GameTime.currentTimeMillis()));
-                        onResponse.onResponse(res);
-                    }));
+        String traceId = Context.hasCurrent() ? Context.current().metadata().get(TRACE_ID) : "";
+        AiRequest aiReq = AiRequest.of("/gm/ask", req);
+        if (!Context.hasCurrent()) {
+            aiReq = aiReq.withContext(GameContext.of(DomainConstant.PLAYER, 0L));
         }
-        return clientRef.get().call("/gm/ask", req, GmAskRes.class, res -> {
+        return clientRef.get().call(aiReq, GmAskRes.class, res -> {
             int tokens = res.isSuccess() && res.data() != null ? res.data().totalTokens() : 0;
             auditLogRepo.insert(new AiAuditLog(logIds.generateId(), "GM_ASK", "gm", 0L,
-                    "/gm/ask", "", instruction, res.code(), tokens, GameTime.currentTimeMillis()));
+                    "/gm/ask", traceId != null ? traceId : "", instruction, res.code(), tokens, GameTime.currentTimeMillis()));
             onResponse.onResponse(res);
         });
     }

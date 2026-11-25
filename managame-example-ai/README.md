@@ -10,7 +10,7 @@ Standalone external AI service built purely on **Spring Boot 4** and **Spring AI
 managame-example (GameServerApp #2 / #3 ...)     managame-example-ai (Spring Boot + Spring AI)
   GameRuntime (PLAYER routes) + GameData           GameAiController (/api/ai) + JDBC ChatMemory
    ├── NpcAiService ──AiClient (HTTP / SSE)────▶    ├── POST /npc/chat   (JDBC ChatMemory + server-routed npcTools)
-   │     (Continuation + filter + quota + audit)    ├── POST /npc/stream (ChatClient.stream -> SseEmitter)
+   │     (AiDispatcher + filter + quota + audit)  ├── POST /npc/stream (ChatClient.stream -> SseEmitter)
    │                                                ├── POST /npc/decide (ChatClient.entity Structured Output)
    │                                                ├── POST /gm/ask     (target serverId + gmTools)
    │                                                ├── DELETE /sessions/{id} & /players/{prefix}
