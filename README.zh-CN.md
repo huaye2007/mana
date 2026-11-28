@@ -96,7 +96,7 @@ other processes  --> rpc     --> RpcHandler --+                       ^         
 | 时间轮（runtime、rpc） | 把到期的定时器交给 runtime；超时的 RPC 调用的回调 | 不能阻塞 |
 | data 的写线程 | 写入修改，写的时候读实体 | 实体里的集合要线程安全 |
 
-请求一定会得到应答：要么是处理器返回的结果，要么是 common 的 `FrameworkErrorCodes` 里的错误码，所有组件共用这一张表：RPC 2001–2999，runtime 3001–3999，data 4001–4999。`Metrics` 和日志桥接也只需各绑定一次，所有组件共用。
+请求一定会得到应答：要么是处理器返回的结果，要么是 common 的 `FrameworkErrorCodes` 里的错误码，所有组件共用这一张表：RPC 2001–2999，runtime 3001–3999，data 4001–4999，AI 5001–5999。`Metrics` 和日志桥接也只需各绑定一次，所有组件共用。
 
 ## 日志
 
@@ -126,7 +126,8 @@ Logger 按 `cn.managame.<组件>` 命名，下面再按领域细分，一个配�
 | `cn.managame.network`、`.network.http` | network |
 | `cn.managame.runtime`、`.runtime.dispatch`、`.runtime.event`、`.runtime.http`、`.runtime.timer` | runtime |
 | `cn.managame.rpc` | rpc |
-| `cn.managame.data`、`cn.managame.data.mysql` | data、data-mysql |
+| `cn.managame.ai.client`、`.ai.mcp` | ai |
+| `cn.managame.data`、`cn.managame.data.mysql`、`cn.managame.data.mongo` | data、data-mysql、data-mongo |
 
 各组件的 README 列出了自己的 logger 会记录什么。各级别在所有组件里含义相同：
 

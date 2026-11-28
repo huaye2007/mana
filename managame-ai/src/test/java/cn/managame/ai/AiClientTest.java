@@ -48,6 +48,11 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.resolver.AbstractAddressResolver;
+import io.netty.resolver.AddressResolver;
+import io.netty.resolver.AddressResolverGroup;
+import io.netty.util.concurrent.EventExecutor;
+import io.netty.util.concurrent.Promise;
 import java.lang.reflect.Type;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -676,6 +681,58 @@ class AiClientTest {
             assertEquals("fast", r3.get(5, TimeUnit.SECONDS).data().reply());
         }
         assertEquals("<absent>", seenTimeouts.get(2));
+    }
+
+    @Test void resolvesHostPerNewConnectionInsteadOfCachingAtBuild() throws Exception {
+        httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                HttpInitializer.http().handler(exchange -> {
+                    FullHttpResponse res = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                            Unpooled.copiedBuffer("v1:" + exchange.request().headers().get(HttpHeaderNames.HOST),
+                                    StandardCharsets.UTF_8));
+                    if ("/rotate".equals(exchange.path())) {
+                        res.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+                    }
+                    exchange.respond(res);
+                }).build());
+
+        try (NetworkServer server2 = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                HttpInitializer.http().handler(exchange -> respond(exchange, HttpResponseStatus.OK,
+                        "v2:" + exchange.request().headers().get(HttpHeaderNames.HOST))).build())) {
+            AtomicInteger targetPort = new AtomicInteger(httpServer.port());
+            AtomicInteger resolutions = new AtomicInteger();
+            AddressResolverGroup<InetSocketAddress> dynamicResolver = new AddressResolverGroup<>() {
+                @Override protected AddressResolver<InetSocketAddress> newResolver(EventExecutor executor) {
+                    return new AbstractAddressResolver<>(executor, InetSocketAddress.class) {
+                        @Override protected boolean doIsResolved(InetSocketAddress address) {
+                            return !address.isUnresolved();
+                        }
+                        @Override protected void doResolve(InetSocketAddress address, Promise<InetSocketAddress> promise) {
+                            resolutions.incrementAndGet();
+                            promise.setSuccess(new InetSocketAddress("127.0.0.1", targetPort.get()));
+                        }
+                        @Override protected void doResolveAll(InetSocketAddress address, Promise<List<InetSocketAddress>> promise) {
+                            promise.setSuccess(List.of(new InetSocketAddress("127.0.0.1", targetPort.get())));
+                        }
+                    };
+                }
+            };
+
+            client = AiClient.builder("http://localhost:18081")
+                    .bootstrap(new Bootstrap().resolver(dynamicResolver))
+                    .build();
+            assertEquals(0, resolutions.get(), "build() must not resolve or cache the endpoint IP eagerly");
+
+            assertEquals("v1:localhost:18081", callSync("/keep", "{}", String.class).data());
+            assertEquals(1, resolutions.get());
+            assertEquals("v1:localhost:18081", callSync("/keep", "{}", String.class).data());
+            assertEquals(1, resolutions.get(), "keep-alive reuse must not re-dial");
+
+            assertEquals("v1:localhost:18081", callSync("/rotate", "{}", String.class).data());
+            targetPort.set(server2.port());
+
+            assertEquals("v2:localhost:18081", callSync("/keep", "{}", String.class).data());
+            assertEquals(2, resolutions.get(), "new connection must re-resolve host to the updated backend IP");
+        }
     }
 
     private <T> AiResult<T> callSync(String path, Object body, Class<T> type) throws Exception {

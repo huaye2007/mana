@@ -38,7 +38,8 @@ import javax.net.ssl.SSLParameters;
 
 /**
  * Lightweight Netty HTTP/1.1 keep-alive connection pool for {@link AiClient}. Reuses warm connections in LIFO order,
- * supports HTTPS with hostname verification, and never returns aborted or non-keep-alive channels to the pool.
+ * resolves the target host on each new connection rather than caching an IP at build time, supports HTTPS with
+ * hostname verification, and never returns aborted or non-keep-alive channels to the pool.
  */
 final class AiHttpPool implements AutoCloseable {
     interface ExchangeListener {
@@ -63,7 +64,7 @@ final class AiHttpPool implements AutoCloseable {
     AiHttpPool(Bootstrap baseBootstrap, String scheme, String host, int port, SslContext explicitSsl, int connectTimeoutMillis) {
         this.host = host;
         this.port = port;
-        this.remote = new InetSocketAddress(host, port);
+        this.remote = InetSocketAddress.createUnresolved(host, port);
         if ("https".equalsIgnoreCase(scheme)) {
             if (explicitSsl != null) {
                 if (!explicitSsl.isClient()) throw new IllegalArgumentException("Client SslContext required");

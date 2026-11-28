@@ -184,7 +184,7 @@ class GameRuntimeTest {
 
     @ParameterizedTest(name = "{0}") @MethodSource("executors")
     void workHandedOnDuringShutdownRunsAcrossDomains(String name, Supplier<RouteExecutor> executor) throws Exception {
-        int hops = 200;
+        int hops = 2000;
         CountDownLatch release = new CountDownLatch(1), started = new CountDownLatch(1);
         AtomicInteger ran = new AtomicInteger();
         BlockingQueue<Throwable> errors = new LinkedBlockingQueue<>();

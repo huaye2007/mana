@@ -5,7 +5,7 @@ import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Shared framework error codes (OGBS Core). Zero is success; every failure code is positive. */
+/** Shared framework error codes. Zero is success; every failure code is positive. */
 public final class FrameworkErrorCodes {
     public static final int SUCCESS = 0;
 

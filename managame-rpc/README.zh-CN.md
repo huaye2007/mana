@@ -42,7 +42,7 @@ worldPeer.call(RpcRequest.of(RANK_OF, playerId, body), (request, response) -> {
 
 - 除 `requestId`、`deadline` 和 `code` 外，所有字段都归业务所有，原样传输：`command` 表示请求的内容，`businessType` 和 `businessId` 表示涉及的业务对象，`metadata`（common 的 `Metadata`）携带其他信息，比如追踪 id、调用方身份。节点自己只读 `routeKey`，用来选连接。
 - `requestId` 和 `deadline` 由发起调用的节点分配。`RpcRequest.of(...)` 把它们设为 0，调用时再分配。被调用方用同一个 id 回一个 `RpcResponse`。
-- `deadline` 是持有该请求的进程的 `System.nanoTime()` 值，表示调用方停止等待的时间点。它在线上以"剩余时间"传输，所以两台机器的时钟不必一致。到达时已过期的请求直接丢弃；被调用方在执行排过队的请求前，可以用 `request.isExpired()` 检查一下。
+- `deadline` 是持有该请求的进程的 `System.nanoTime()` 值，表示调用方停止等待的时间点。它在线上以"剩余时间"传输，所以两台机器的时钟不必一致；被调用方在执行排过队的请求前，可以用 `request.isExpired()` 检查一下。
 - `RpcResponse.of(requestId, [metadata,] body)` 表示成功（code 为 0）；`RpcResponse.failure(requestId, code[, metadata, body])` 表示失败，code 必须是正数。metadata 和 body 用来说明错误码说不清的内容，比如提示文字里的动态值，格式由业务决定。
 - body 是 Netty 的 `ByteBuf`。三种记录都通过 body 做引用计数，和 Netty 自己的消息一样。
 

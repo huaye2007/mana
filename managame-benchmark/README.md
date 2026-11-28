@@ -207,7 +207,7 @@ no baseline from a run taken while the machine was busy.
 mvn -o clean package
 ```
 
-Install managame-common, managame-network, managame-runtime, managame-rpc, managame-data, managame-data-mysql and
-managame-data-mongo first. The `mysqlserver` and `mongo` benchmarks make their tables or database afresh in the server
+Install managame-common, managame-network, managame-runtime, managame-rpc, managame-ai, managame-data,
+managame-data-mysql and managame-data-mongo first. The `mysqlserver` and `mongo` benchmarks make their tables or database afresh in the server
 their environment variables name: give one that can be thrown away. A server on the same machine keeps it busier than
 Bench lets a baseline be saved from, so compare their runs by hand or `--against`.

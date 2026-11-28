@@ -165,6 +165,6 @@ NotifyThroughputBenchmark.notifyPeer   connections=1 payload=64 window=1024   77
 mvn -o clean package
 ```
 
-请先安装 managame-common、managame-network、managame-runtime、managame-rpc、managame-data、managame-data-mysql 和
+请先安装 managame-common、managame-network、managame-runtime、managame-rpc、managame-ai、managame-data、managame-data-mysql 和
 managame-data-mongo。`mysqlserver` 和 `mongo` 基准会在环境变量指定的服务器里重新建表或建库：请给一个可以丢弃的库。服务器
 和基准在同一台机器上时，机器忙碌度总会超过 Bench 允许保存基线的上限，所以它们的结果要手工对比，或用 `--against`。

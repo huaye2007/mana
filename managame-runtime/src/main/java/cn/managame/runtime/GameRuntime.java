@@ -58,6 +58,8 @@ public final class GameRuntime implements AutoCloseable {
         @Override protected TaskKind computeValue(Class<?> type) { return taskKind(ownerName(type)); }
     };
     private volatile boolean shutdown;
+    /** Set when a task is handed on or finishes during shutdown, so scanning {@code pending()} cannot miss work in motion. */
+    private volatile boolean movedDuringShutdown;
 
     private GameRuntime(Builder b) {
         metrics = b.metrics;
@@ -245,6 +247,7 @@ public final class GameRuntime implements AutoCloseable {
                 if (!pastLimits && !CURRENT.isBound()) throw full;
                 executor.handOn(context.routeKey(), work);
             }
+            if (shutdown) movedDuringShutdown = true;
         } catch (GameRuntimeException refused) {
             throw refuse(domain, context, refused);
         }
@@ -291,6 +294,8 @@ public final class GameRuntime implements AutoCloseable {
                 LOG.log(Level.ERROR, "Game task error handler failed", error);
             }
             return false;
+        } finally {
+            if (shutdown) movedDuringShutdown = true;
         }
     }
 
@@ -351,12 +356,22 @@ public final class GameRuntime implements AutoCloseable {
     }
 
     /**
-     * A task hands on before it ends, so work moving between domains always shows in one, yet a look at one domain after
-     * another can miss it once. Looking twice in a row cannot: that would take two whole hops between two looks.
+     * A task hands on before it ends, so work moving between domains or route queues can slip past a look at
+     * {@link RouteExecutor#pending()} only while tasks are still being handed on or finishing. Two quiet looks a
+     * millisecond apart, with nothing handed on or finished meanwhile, leave none in motion.
      */
     private void shutDownExecutorsWhenIdle() {
         try {
-            while (!idle() || !idle()) Thread.sleep(1);
+            movedDuringShutdown = false;
+            for (int quiet = 0; quiet < 2;) {
+                if (idle() && !movedDuringShutdown) {
+                    quiet++;
+                } else {
+                    movedDuringShutdown = false;
+                    quiet = 0;
+                }
+                if (quiet < 2) Thread.sleep(1);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

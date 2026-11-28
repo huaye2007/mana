@@ -52,8 +52,8 @@ Node 1 can call node 2 back over the connections node 2 dialed: `world.peer(2).n
 - `requestId` and `deadline` are the calling node's. `RpcRequest.of(...)` leaves them 0 and the call assigns
   both. The callee answers with an `RpcResponse` under the same id.
 - `deadline` is a `System.nanoTime()` value of the process holding the request, when the caller stops waiting.
-  It travels as the time left, so the two clocks need not agree. A request that arrives expired is dropped; the
-  callee can check `request.isExpired()` before running a queued request.
+  It travels as the time left, so the two clocks need not agree; the callee can check `request.isExpired()` before
+  running a queued request.
 - `RpcResponse.of(requestId, [metadata,] body)` is a success (code 0); `RpcResponse.failure(requestId, code[, metadata,
   body])` a failure, with a positive code. Its metadata and body say what the code alone cannot, such as the values
   its message shows, in the application's format.

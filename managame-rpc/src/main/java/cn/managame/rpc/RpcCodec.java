@@ -41,7 +41,7 @@ import java.util.concurrent.TimeUnit;
  * Metadata is its length as an unsigned short, then its bytes. Bodies are not copied: an outgoing one follows its
  * header as a buffer of its own, an incoming one is a slice of what was read. Other outgoing messages pass through
  * untouched. A frame larger than this node's largest closes the connection; an answer larger goes out as
- * RPC_PROTOCOL_ERROR instead. A request that expired on the way is dropped on arrival.
+ * RPC_PROTOCOL_ERROR instead.
  *
  * <p>The heartbeat is the dialing side's: every heartbeat interval it sends a Heartbeat, which the other side
  * answers with one. Every interval of its own, on the node's time wheel, each side looks at whether anything
@@ -195,10 +195,10 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
         in.skipBytes(LENGTH_FIELD);
         Object frame = frame(in, end);
         in.readerIndex(end);
-        if (frame != null) out.add(frame);
+        out.add(frame);
     }
 
-    /** The frame between the reader index and {@code end}, or null for a request that expired on the way. */
+    /** The frame between the reader index and {@code end}. */
     private static Object frame(ByteBuf in, int end) {
         byte type = in.readByte();
         int header = switch (type) {
@@ -219,11 +219,8 @@ final class RpcCodec extends ByteToMessageDecoder implements ChannelOutboundHand
                 return Heartbeat.INSTANCE;
             }
             case REQUEST -> {
-                int id = in.readInt();
-                long deadline = deadline(in.readInt());
-                if (deadline != 0 && System.nanoTime() - deadline >= 0) return null;
-                return new RpcRequest(id, deadline, in.readInt(), in.readLong(), in.readByte(), in.readLong(),
-                        metadata(in, end), body(in, end));
+                return new RpcRequest(in.readInt(), deadline(in.readInt()), in.readInt(), in.readLong(), in.readByte(),
+                        in.readLong(), metadata(in, end), body(in, end));
             }
             case RESPONSE -> {
                 return new RpcResponse(in.readInt(), in.readInt(), metadata(in, end), body(in, end));

@@ -5,8 +5,8 @@
   <version>1.0.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <description>
-    One version for every managame component, and for the Netty modules network, runtime and rpc share. Versions only:
-    no code, and no component depends on it.
+    One version for every managame component, and for the Netty modules network, runtime, rpc and ai share. Versions
+    only: no code, and no component depends on it.
   </description>
 
   <properties>
