@@ -114,8 +114,7 @@ public final class GameData implements AutoCloseable {
     /**
      * Writes every entity change made before the call, now, on the write threads, and returns when they are written;
      * logs are not waited for. Throws {@link DataException} ({@code DATA_SAVE_FAILED}) when some failed: those failing for
-     * a retryable reason wait for the next round, the others went to the DataErrorHandler. Use it before another process
-     * reads the data, such as when a player moves to another server.
+     * a retryable reason wait for the next round, the others went to the DataErrorHandler.
      */
     public void flush() {
         if (closed) throw new IllegalStateException("GameData is closed");

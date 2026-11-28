@@ -83,8 +83,7 @@ timer, a call to another process, whose answer continues on it.
   ```
 
   The data needs nothing done: what the player changed is written in the next round whether or not it stays in memory,
-  and leaves memory by itself when unused for `cacheExpire`. Only a player moving to another process is flushed and
-  evicted first, so that process reads the newest.
+  and leaves memory by itself when unused for `cacheExpire`.
 
 ### Starting and stopping
 

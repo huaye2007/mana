@@ -223,8 +223,7 @@ Every `flushInterval` (1 second) a round writes what changed since the last one:
   migration, loses no change. A row that fails alone in its batch is kept the same way, until a round writes another
   row in a batch with it or `close()` hands it over; `flush()` throws while it waits.
 - **`flush()`** writes every entity change made before the call, now, and returns when it is written; it throws
-  `DataException` (`DATA_SAVE_FAILED`) when something failed. Use it before another process reads the data, such as
-  when a player moves to another server: `flush()`, then `evict`. It does not wait for logs.
+  `DataException` (`DATA_SAVE_FAILED`) when something failed. It does not wait for logs.
 - **`close()`** refuses further changes, then writes what is waiting, trying again every flush interval for up to
   `shutdownTimeout` (30 seconds) while writes fail. What is still not written goes, one by one, to the
   `DataErrorHandler`, where the application can keep it elsewhere, and close throws. Close it on shutdown: its threads
