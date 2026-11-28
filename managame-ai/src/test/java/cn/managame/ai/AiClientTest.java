@@ -22,7 +22,9 @@ import cn.managame.metrics.Metrics;
 import cn.managame.network.connection.WriteStatus;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
+import cn.managame.network.netty.NetworkTransports;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -48,7 +50,6 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import java.lang.reflect.Type;
 import java.net.InetSocketAddress;
-import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -327,18 +328,133 @@ class AiClientTest {
         assertEquals(List.of("A", "B"), tokens);
     }
 
-    @Test void sharedHttpClientSurvivesAiClientClose() throws Exception {
+    @Test void sharedBootstrapEventLoopSurvivesAiClientClose() throws Exception {
         httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
                 HttpInitializer.http().handler(ex -> respond(ex, HttpResponseStatus.OK, "pong")).build());
-        try (HttpClient shared = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()) {
-            AiClient a = AiClient.builder("http://127.0.0.1:" + httpServer.port()).httpClient(shared).build();
-            AiClient b = AiClient.builder("http://127.0.0.1:" + httpServer.port()).httpClient(shared).build();
+        EventLoopGroup shared = NetworkTransports.newEventLoopGroup(1, "shared-ai-test");
+        try {
+            Bootstrap bootstrap = new Bootstrap().group(shared);
+            AiClient a = AiClient.builder("http://127.0.0.1:" + httpServer.port()).bootstrap(bootstrap).build();
+            AiClient b = AiClient.builder("http://127.0.0.1:" + httpServer.port()).bootstrap(bootstrap).build();
             a.close();
             CompletableFuture<AiResult<String>> res = new CompletableFuture<>();
             b.call("/ping", "{}", String.class, res::complete);
             assertEquals("pong", res.get(5, TimeUnit.SECONDS).data());
             b.close();
+
+            Bootstrap withHandler = new Bootstrap().group(shared).handler(new ChannelInitializer<>() {
+                @Override protected void initChannel(Channel ch) {}
+            });
+            assertThrows(IllegalArgumentException.class,
+                    () -> AiClient.builder("http://127.0.0.1:" + httpServer.port()).bootstrap(withHandler));
+        } finally {
+            shared.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
         }
+    }
+
+    record DeltaChunk(String delta, int seq) {}
+
+    @Test void typedSseStreamBackpressureMaxStreamBytesAndNotifyCloseLifecycle() throws Exception {
+        CountDownLatch holdNotify = new CountDownLatch(1);
+        CountDownLatch notifyArrived = new CountDownLatch(1);
+        httpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                HttpInitializer.http().handler(exchange -> {
+                    switch (exchange.path()) {
+                        case "/typed-sse" -> {
+                            String sse = "data: {\"delta\":\"Hello \",\"seq\":1}\n\n"
+                                    + "event: token\ndata: {\"delta\":\"world\",\"seq\":2}\n\n"
+                                    + "data: [DONE]\n\n";
+                            FullHttpResponse res = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                                    Unpooled.copiedBuffer(sse, StandardCharsets.UTF_8));
+                            res.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
+                            exchange.respond(res);
+                        }
+                        case "/bad-typed-sse" -> {
+                            FullHttpResponse res = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                                    Unpooled.copiedBuffer("data: {broken-json\n\n", StandardCharsets.UTF_8));
+                            res.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
+                            exchange.respond(res);
+                        }
+                        case "/many-sse" -> {
+                            StringBuilder sb = new StringBuilder();
+                            for (int i = 0; i < 160; i++) {
+                                sb.append("data: {\"delta\":\"t\",\"seq\":").append(i).append("}\n\n");
+                            }
+                            sb.append("data: [DONE]\n\n");
+                            FullHttpResponse res = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                                    Unpooled.copiedBuffer(sb.toString(), StandardCharsets.UTF_8));
+                            res.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
+                            exchange.respond(res);
+                        }
+                        case "/slow-notify" -> {
+                            notifyArrived.countDown();
+                            Thread.ofVirtual().start(() -> {
+                                try {
+                                    holdNotify.await(5, TimeUnit.SECONDS);
+                                    exchange.respond(HttpResponseStatus.NO_CONTENT);
+                                } catch (InterruptedException ignored) {}
+                            });
+                        }
+                        default -> exchange.respond(HttpResponseStatus.NOT_FOUND);
+                    }
+                }).build());
+
+        RecordingMetrics metrics = new RecordingMetrics();
+        client = AiClient.builder("http://127.0.0.1:" + httpServer.port())
+                .codec(JACKSON)
+                .metrics(metrics, "sse")
+                .build();
+
+        // 1. Typed SSE stream decodes DTOs off-route and skips bare data: [DONE]
+        List<DeltaChunk> chunks = Collections.synchronizedList(new ArrayList<>());
+        CompletableFuture<AiResult<Void>> typedDone = new CompletableFuture<>();
+        client.stream("/typed-sse", "{}", DeltaChunk.class, chunks::add, typedDone::complete);
+        assertEquals(SUCCESS, typedDone.get(5, TimeUnit.SECONDS).code());
+        assertEquals(List.of(new DeltaChunk("Hello ", 1), new DeltaChunk("world", 2)), chunks);
+
+        // 2. Malformed JSON in typed SSE fails cleanly with AI_PROTOCOL_ERROR
+        CompletableFuture<AiResult<Void>> badJsonDone = new CompletableFuture<>();
+        client.stream("/bad-typed-sse", "{}", DeltaChunk.class, c -> {}, badJsonDone::complete);
+        assertEquals(AI_PROTOCOL_ERROR, badJsonDone.get(5, TimeUnit.SECONDS).code());
+
+        // 3. Backpressure (> STREAM_HIGH_WATER 64 events while slow route consumer pauses) delivers all 160 in order
+        CountDownLatch unblockConsumer = new CountDownLatch(1);
+        CountDownLatch firstBlocked = new CountDownLatch(1);
+        List<Integer> seqs = Collections.synchronizedList(new ArrayList<>());
+        CompletableFuture<AiResult<Void>> bpDone = new CompletableFuture<>();
+        client.stream("/many-sse", "{}", DeltaChunk.class, chunk -> {
+            if (chunk.seq() == 0) {
+                firstBlocked.countDown();
+                try {
+                    unblockConsumer.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {}
+            }
+            seqs.add(chunk.seq());
+        }, bpDone::complete);
+        assertTrue(firstBlocked.await(5, TimeUnit.SECONDS));
+        Thread.sleep(50);
+        unblockConsumer.countDown();
+        assertEquals(SUCCESS, bpDone.get(5, TimeUnit.SECONDS).code());
+        assertEquals(160, seqs.size());
+        for (int i = 0; i < 160; i++) assertEquals(i, seqs.get(i));
+
+        // 4. maxStreamBytes bounds total SSE stream size
+        try (AiClient byteCapped = AiClient.builder("http://127.0.0.1:" + httpServer.port())
+                .maxStreamBytes(128)
+                .build()) {
+            CompletableFuture<AiResult<Void>> cappedDone = new CompletableFuture<>();
+            byteCapped.stream("/many-sse", "{}", ev -> {}, cappedDone::complete);
+            assertEquals(AI_PROTOCOL_ERROR, cappedDone.get(5, TimeUnit.SECONDS).code());
+        }
+
+        // 5. In-flight notify() is aborted cleanly on close() and releases notifyInFlight immediately
+        assertEquals(WriteStatus.ACCEPTED, client.notify("/slow-notify", "{}"));
+        assertTrue(notifyArrived.await(5, TimeUnit.SECONDS));
+        assertEquals(1, client.notifyInFlight());
+        client.close();
+        assertEquals(0, client.notifyInFlight());
+        assertEquals(1L, metrics.counterValue("managame.ai.client.failures", "client=sse,code=AI_CLOSED"));
+        holdNotify.countDown();
     }
 
     @Test void incrementalSseStreamMidStreamErrorCancelAndTimeout() throws Exception {

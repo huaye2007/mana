@@ -11,10 +11,10 @@ import java.util.function.Consumer;
 
 /**
  * Incremental W3C Server-Sent Events parser. Decodes arbitrary byte chunks (including multi-byte UTF-8 sequences
- * split across buffers) line by line and emits one {@link AiStreamEvent} per blank-line boundary, bounding line and
- * event payload sizes to prevent unbounded heap growth on malformed streams. Per the W3C SSE specification, incomplete
- * trailing data without a terminating blank line at end-of-stream is discarded. Not thread-safe: called sequentially
- * from one stream subscriber. Public only to be reachable across packages; not API.
+ * split across buffers) line by line without intermediate per-line {@link String} allocations, and emits one
+ * {@link AiStreamEvent} per blank-line boundary while bounding line and event payload sizes. Per the W3C SSE
+ * specification, incomplete trailing data without a terminating blank line at end-of-stream is discarded. Not
+ * thread-safe: called sequentially from one stream subscriber. Public only to be reachable across packages; not API.
  */
 public final class SseParser {
     public static final int DEFAULT_MAX_EVENT_CHARS = 256 * 1024;
@@ -28,8 +28,8 @@ public final class SseParser {
             .onUnmappableCharacter(CodingErrorAction.REPLACE);
     private final CharBuffer chars = CharBuffer.allocate(CHAR_BUFFER_SIZE);
     private final ByteBuffer remainder = ByteBuffer.allocate(4).limit(0);
-    private final StringBuilder line = new StringBuilder();
-    private final StringBuilder data = new StringBuilder();
+    private final StringBuilder line = new StringBuilder(128);
+    private final StringBuilder data = new StringBuilder(128);
     private boolean sawCr;
     private boolean sawBomChecked;
     private boolean hasData;
@@ -106,10 +106,10 @@ public final class SseParser {
             }
             if (c == '\r') {
                 sawCr = true;
-                processLine(line.toString());
+                processLine();
                 line.setLength(0);
             } else if (c == '\n') {
-                processLine(line.toString());
+                processLine();
                 line.setLength(0);
             } else {
                 if (line.length() >= maxLineChars) {
@@ -120,40 +120,66 @@ public final class SseParser {
         }
     }
 
-    private void processLine(String text) {
-        if (text.isEmpty()) {
+    private void processLine() {
+        int len = line.length();
+        if (len == 0) {
             dispatchIfReady();
             return;
         }
-        if (text.charAt(0) == ':') return; // SSE comment
-        int colon = text.indexOf(':');
-        String field;
-        String value;
+        if (line.charAt(0) == ':') return; // SSE comment
+        int colon = -1;
+        for (int i = 0; i < len; i++) {
+            if (line.charAt(i) == ':') {
+                colon = i;
+                break;
+            }
+        }
+        int fieldLen;
+        int valStart;
         if (colon < 0) {
-            field = text;
-            value = "";
+            fieldLen = len;
+            valStart = len;
         } else {
-            field = text.substring(0, colon);
-            int start = colon + 1;
-            if (start < text.length() && text.charAt(start) == ' ') start++;
-            value = text.substring(start);
+            fieldLen = colon;
+            valStart = colon + 1;
+            if (valStart < len && line.charAt(valStart) == ' ') valStart++;
         }
-        switch (field) {
-            case "data" -> {
-                int added = value.length() + (hasData ? 1 : 0);
-                if (added > maxEventChars - data.length()) {
-                    throw new IllegalArgumentException("SSE event exceeded max size (" + maxEventChars + " chars)");
-                }
-                if (hasData) data.append('\n');
-                data.append(value);
-                hasData = true;
+        int valLen = len - valStart;
+        if (fieldLen == 4 && line.charAt(0) == 'd' && line.charAt(1) == 'a'
+                && line.charAt(2) == 't' && line.charAt(3) == 'a') {
+            int added = valLen + (hasData ? 1 : 0);
+            if (added > maxEventChars - data.length()) {
+                throw new IllegalArgumentException("SSE event exceeded max size (" + maxEventChars + " chars)");
             }
-            case "event" -> eventType = value;
-            case "id" -> {
-                if (value.indexOf('\0') < 0) lastEventId = value;
+            if (hasData) data.append('\n');
+            if (valLen > 0) data.append(line, valStart, len);
+            hasData = true;
+        } else if (fieldLen == 5 && line.charAt(0) == 'e' && line.charAt(1) == 'v'
+                && line.charAt(2) == 'e' && line.charAt(3) == 'n' && line.charAt(4) == 't') {
+            if (valLen == 0 || regionEquals(line, valStart, len, "message")) {
+                eventType = "";
+            } else {
+                eventType = line.substring(valStart, len);
             }
-            default -> { /* ignore retry and unknown fields */ }
+        } else if (fieldLen == 2 && line.charAt(0) == 'i' && line.charAt(1) == 'd') {
+            for (int i = valStart; i < len; i++) {
+                if (line.charAt(i) == '\0') return;
+            }
+            if (valLen == 0) {
+                lastEventId = "";
+            } else if (!regionEquals(line, valStart, len, lastEventId)) {
+                lastEventId = line.substring(valStart, len);
+            }
         }
+    }
+
+    private static boolean regionEquals(StringBuilder sb, int start, int end, String target) {
+        int len = end - start;
+        if (len != target.length()) return false;
+        for (int i = 0; i < len; i++) {
+            if (sb.charAt(start + i) != target.charAt(i)) return false;
+        }
+        return true;
     }
 
     private void dispatchIfReady() {

@@ -6,7 +6,7 @@
 
 大模型厂商对接、Prompt、会话记忆、RAG 与 Agent 编排都留在外部 AI 服务中；`managame-ai` 只维护游戏服一侧的两个薄边界，零第三方编译依赖（仅依赖 `managame-common` 和 `managame-network`），与 `managame-runtime`、`managame-rpc`、`managame-data` 平等且完全独立——既可与 `GameRuntime` 无缝拼装，也可直接接入任意其他游戏服务器框架（Actor、自定义线程模型等）：
 
-1. **游戏服 → AI 服务（全服单实例 `AiClient`）**：全服所有业务模块共享唯一一个非阻塞 HTTP 与 W3C SSE 客户端、唯一连接池与全进程共享守护时间轮。通过 `AiDispatcher` 在启动期一次性桥接服务器的上下文与路由模型后，业务模块直接调用即可自动校验上下文、透传 `Metadata` 请求头并在原业务路由按序接收回调，内置并发准入（`maxInFlight`）、端到端总超时（含响应头与流/分块响应体）、空闲超时、随时取消、单向事件通知与 `Metrics`。
+1. **游戏服 → AI 服务（全服单实例 `AiClient`）**：全服所有业务模块共享唯一一个基于 Netty HTTP/1.1 连接池（支持 `.bootstrap(...)` 共享 EventLoop 与 `.ssl(...)`）的非阻塞客户端与全进程共享守护时间轮。通过 `AiDispatcher` 在启动期一次性桥接服务器的上下文与路由模型后，业务模块直接调用即可自动校验上下文、透传 `Metadata` 请求头并在原业务路由按序接收回调，内置并发准入（`maxInFlight`）、SSE `autoRead` 流式背压、端到端总超时（含响应头与流/分块响应体）、空闲超时、随时取消、单向事件通知与 `Metrics`。
 2. **AI 服务 → 游戏服（`@McpTool` + `McpTools` + `McpHttpHandler`）**：在游戏服现有方法上加注解，直接以标准 **MCP（Model Context Protocol）** 无状态 Streamable HTTP（JSON-RPC 2.0）工具对外开放。启动期一次性编译 `MethodHandle`、路由键提取器与 JSON Schema，回调 `McpToolExecutor.prepare` 完成框架注解预检，通过拦截器按调用方过滤可见工具、鉴权与审计，并由 `McpToolExecutor` 安全调度到游戏执行路由。
 
 | 包 | 内容 |
@@ -63,9 +63,12 @@ ai.call(AiRequest.of("/moderation/check", text).withTimeout(Duration.ofMillis(50
 ai.call(AiRequest.get("/jobs/status").withQuery("jobId", jobId), JobStatus.class, result -> ...);
 ai.call(AiRequest.delete("/sessions/" + AiRequest.encodeSegment(sessionId)), Void.class, result -> ...);
 
-// 增量 W3C SSE 流式接收：分片与完成回调按序回到原业务路由，收到 event: error 自动按失败收敛，随时可取消
+// 增量 W3C SSE 流式接收（亦支持传入 Class<T> 在进路由前自动解码 JSON 分片并跳过 [DONE] 结束帧）
 AiCall stream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text),
         event -> { ... },
+        result -> { ... });
+AiCall typedStream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text), TokenDelta.class,
+        delta -> { ... },
         result -> { ... });
 stream.cancel();
 
@@ -78,7 +81,7 @@ ai.close();
 - **单客户端服务全服百余模块**：无需按业务模块拆分多个 `AiClient`。单个 `AiClient` 统一管理连接池、并发水位（默认 `maxInFlight = 1024`）与全进程唯一的 10ms 守护时间轮；不同业务接口的快慢差异直接通过 `AiRequest.withTimeout(...)` 按请求覆盖，响应反序列化在进入业务路由前并行完成，绝不占用路由串行时间。在回调里按 id 重新取实体，不要跨异步调用持有实体引用。
 - **会话隔离与重置**：在请求 DTO 中带业务会话键（例如 `"npc:" + serverId + ":" + roleId + ":" + npcId + ":" + dialogueEpoch`），对应 Spring AI 的 `ChatMemory.CONVERSATION_ID` 或 LangGraph 的 `thread_id`。重置会话只需递增游戏数据里的 `dialogueEpoch`。
 - **原始字符串、`byte[]` 直通与 64 位雪花 ID**：请求体为 `String` 或 `byte[]` 时原样发送，响应类型为 `String.class` 或 `byte[].class` 时原样返回；自定义 `AiCodec` 可覆盖 `encodeBytes` / `decodeBytes` 省去单次调用的中间 `String` 拷贝。内置 `AiCodec.basic()` 支持无损解析引号包裹的 64 位雪花 `long` ID，并原生支持 `UUID`、`URI`、`Duration` 与 `java.time.*` 类型。
-- **全阶段超时、准入、体积上限与关闭**：默认随请求发送 `X-Ai-Timeout-Ms` 毫秒预算头（可通过 `.timeoutHeader(...)` 改名或禁用）；守护时间轮同时覆盖响应头与分块响应体读取阶段，防止下游先刷出 `200 OK` 头再挂起导致槽位泄漏；超过 `maxInFlight` 以 `AI_OVERLOADED` 失败；单次响应超过 `maxResponseBytes`（默认 1 MiB）或单条 SSE 事件超过 `maxStreamEventChars`（默认 256 KiB）以 `AI_PROTOCOL_ERROR` 中止；SSE 流中途收到 `event: error` 自动以 `AI_UNAVAILABLE` 失败收敛；`close()` 后在途与后续调用均以 `AI_CLOSED` 失败。
+- **全阶段超时、流式背压、准入、体积上限与关闭**：默认随请求发送 `X-Ai-Timeout-Ms` 毫秒预算头（可通过 `.timeoutHeader(...)` 改名或禁用）；守护时间轮同时覆盖响应头与分块响应体读取阶段；SSE 流在业务路由积压时自动经 Netty `autoRead` 暂停底层读取形成 TCP 背压；超过 `maxInFlight` 以 `AI_OVERLOADED` 失败；单次响应超过 `maxResponseBytes`（默认 1 MiB）、单条 SSE 事件超过 `maxStreamEventChars`（默认 256 KiB）或单条流总流量超过 `maxStreamBytes`（默认 16 MiB）以 `AI_PROTOCOL_ERROR` 中止；SSE 流中途收到 `event: error` 自动以 `AI_UNAVAILABLE` 失败收敛；`close()` 后在途调用、流与单向通知均以 `AI_CLOSED` 中止。
 
 ## 通过注解把现有方法暴露为 MCP 工具（`@McpTool`）
 
@@ -131,7 +134,7 @@ NetworkServer mcpServer = NetworkServer.start(8082,
 ```
 
 - **支持的方法签名**：无参、单个 DTO（record 或 POJO，其成员展开为 `inputSchema` 顶层属性）、或多个显式参数（编译开 `-parameters` 或用 `@McpParam(name = ...)` 指定参数名），首位可可选声明 `McpToolContext`。
-- **返回值语义、安全提示与保护**：带 `McpToolContext` 的 `void` 方法异步通过 `context.reply` / `context.fail` 应答；不带 `McpToolContext` 的 `void` 方法同步返回 `"ok"`；业务失败返回 `McpToolResult.fail(...)`（MCP `isError: true`）；非 `void` 方法返回 `null` 视为 bug（`AI_TOOL_EXECUTION_ERROR`）。`@McpTool` 支持声明 `readOnly`、`destructive`（破坏性高危操作提示，便于 Agent 触发人工确认）与 `idempotent`（幂等重试提示），并默认标记 `openWorldHint: false`。`McpHttpHandler` 默认限制结果不超过 `256K` 字符；`tools.close()` 会主动以 `AI_CLOSED` 中止未完成的异步调用，防止连接悬挂。
+- **返回值语义、必填校验、超时兜底与安全提示**：带 `McpToolContext` 的 `void` 方法异步通过 `context.reply` / `context.fail` 应答；不带 `McpToolContext` 的 `void` 方法同步返回 `"ok"`；业务失败返回 `McpToolResult.fail(...)`（MCP `isError: true`）；非 `void` 方法返回 `null` 视为 bug（`AI_TOOL_EXECUTION_ERROR`）。单 DTO 参数的必填字段在 `AiCodec.basic()` 与自定义 Codec（如 Jackson）下统一强制校验；排队或异步工具默认带 30s 安全超时（`McpTools.DEFAULT_TIMEOUT`），并在收到调用方 `X-Ai-Timeout-Ms` 头时自动收紧预算。`@McpTool` 支持声明 `readOnly`、`destructive` 与 `idempotent`，默认标记 `openWorldHint: false`。`McpHttpHandler` 默认限制结果不超过 `256K` 字符；`tools.close()` 主动以 `AI_CLOSED` 中止在途异步调用。
 - **上下文与拦截器（`McpToolContext` / `McpToolInterceptor`）**：`McpToolContext` 内置 `Metadata`（`put` / `metadata()`），便于前置鉴权拦截器（`before`）将解析出的调用方身份传递给工具与后置审计（`after`）；`McpToolCall.rawArgumentsJson()` 提供原始参数 JSON 切片供审计落库或网关零重序列化转发。当异步工具在外部 I/O 线程（如 RPC EventLoop）调用 `ctx.reply` 时，`McpTools` 自动经 `McpToolExecutor.complete` 切离 I/O 线程再执行 `after` 与响应编码。
 - **对接 `managame-runtime` 或其他游戏框架**：实现 `McpToolExecutor`，在 `prepare(definition, method)` 中一次性校验框架注解（如 `@Domain`）并预建每工具独立的 `TaskKind`，在 `execute` 与 `complete` 中按编译好的 `call.routeKey()` 投递到对应玩家路由。完整示例见 `managame-example` 中的 `AiConfig`。
 - **无状态网关代理（`scanDefinitions` / `registerProxy`）**：无状态边缘网关无需实例化业务 Bean，即可通过 `McpTools.scanDefinitions(types)` 导出工具目录，或用 `McpTools.builder().registerProxy(types, call -> ...)` 在边缘完成参数校验、64 位 `routeKey` 提取与越权拦截，再将 `call.rawArgumentsJson()` 经 RPC 转发给目标游戏服。
@@ -140,8 +143,8 @@ NetworkServer mcpServer = NetworkServer.start(8082,
 
 - 错误码位于 `FrameworkErrorCodes`（`5001–5999`）：`AI_CLOSED`、`AI_UNAVAILABLE`、`AI_TIMEOUT`、`AI_OVERLOADED`、`AI_CANCELLED`、`AI_PROTOCOL_ERROR`、`AI_TOOL_NOT_FOUND`、`AI_TOOL_INVALID_ARGS`、`AI_TOOL_EXECUTION_ERROR`、`AI_TOOL_REJECTED`。
 - Logger（`System.Logger`）：`cn.managame.ai.client`、`cn.managame.ai.mcp`。
-- 客户端指标（`AiClient.builder().metrics(...)`，可选 `client` 标签）：`managame.ai.client.calls`（`kind`）、`managame.ai.client.failures`（`code`）、`managame.ai.client.in_flight`、`managame.ai.client.notify_in_flight`、`managame.ai.client.stream_events`、`managame.ai.client.latency`（`_bucket`、`_nanos`）。
-- MCP 工具指标（`McpTools.builder().metrics(...)`，可选 `server` 标签）：`managame.ai.mcp.calls`（`tool`）、`managame.ai.mcp.failures`（`tool`，仅统计框架/异常/超时故障）、`managame.ai.mcp.business_failures`（`tool`，业务规则错误码）、`managame.ai.mcp.rejected`（`tool`）、`managame.ai.mcp.latency`（`tool`、`_bucket`、`_nanos`）、`managame.ai.mcp.timeouts`、`managame.ai.mcp.not_found`、`managame.ai.mcp.invalid_args`、`managame.ai.mcp.overloaded`、`managame.ai.mcp.closed`、`managame.ai.mcp.in_flight`。`Metrics.noop()` 下不读时钟。
+- 客户端指标（`AiClient.builder().metrics(...)`，可选 `client` 标签）：`managame.ai.client.calls`（`kind`）、`managame.ai.client.failures`（`code`）、`managame.ai.client.in_flight`、`managame.ai.client.notify_in_flight`、`managame.ai.client.stream_events`、`managame.ai.client.latency`（`kind`、`_bucket`、`_nanos`）。
+- MCP 工具指标（`McpTools.builder().metrics(...)`，可选 `server` 标签）：`managame.ai.mcp.calls`（`tool`）、`managame.ai.mcp.failures`（`tool`，统计框架/异常/超时/超限故障）、`managame.ai.mcp.business_failures`（`tool`，业务规则错误码）、`managame.ai.mcp.rejected`（`tool`）、`managame.ai.mcp.latency`（`tool`、`_bucket`、`_nanos`）、`managame.ai.mcp.timeouts`、`managame.ai.mcp.not_found`、`managame.ai.mcp.invalid_args`、`managame.ai.mcp.overloaded`、`managame.ai.mcp.closed`、`managame.ai.mcp.protocol_errors`、`managame.ai.mcp.result_too_large`、`managame.ai.mcp.in_flight`。`Metrics.noop()` 下不读时钟。
 
 ## 构建与测试
 

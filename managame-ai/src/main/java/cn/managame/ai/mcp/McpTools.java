@@ -11,6 +11,7 @@ import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_CLOSED;
 import static cn.managame.FrameworkErrorCodes.ROUTE_EXECUTOR_OVERLOADED;
 import static cn.managame.FrameworkErrorCodes.RUNTIME_CLOSED;
 
+import cn.managame.ai.AiClient;
 import cn.managame.ai.AiCodec;
 import cn.managame.ai.internal.AiTimer;
 import cn.managame.ai.internal.BasicAiCodec;
@@ -21,6 +22,8 @@ import cn.managame.ai.spi.McpToolExecutor;
 import cn.managame.metrics.Metrics;
 import io.netty.util.Timeout;
 import java.lang.System.Logger.Level;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -31,21 +34,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
  * Registry and dispatcher of MCP tools exposed by a game server. Scans objects for
  * {@link cn.managame.ai.annotation.McpTool} methods (compiling each once into a {@code MethodHandle}, route-key
- * extractor, and JSON Schema), calls {@link McpToolExecutor#prepare} once per tool at startup, applies
- * {@link McpToolInterceptor}s for discovery filtering, authorization and auditing, protects the server with
- * {@code maxInFlight} admission and optional per-call {@code timeout}, and runs calls on the configured
- * {@link McpToolExecutor}:
+ * extractor, required-field plan, and JSON Schema), calls {@link McpToolExecutor#prepare} once per tool at startup,
+ * applies {@link McpToolInterceptor}s for discovery filtering, authorization and auditing, protects the server with
+ * {@code maxInFlight} admission and per-call {@code timeout} (30 seconds by default, narrowed by incoming
+ * {@code X-Ai-Timeout-Ms} when present), and runs calls on the configured {@link McpToolExecutor}:
  *
  * <pre>{@code
  * McpTools tools = McpTools.builder()
@@ -65,6 +66,9 @@ import java.util.function.Function;
  * invoked directly from tests or custom transports (such as {@code managame-rpc}).
  */
 public final class McpTools implements AutoCloseable {
+    /** Default safety timeout per queued or asynchronous tool invocation (30 seconds). */
+    public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
+
     private static final System.Logger LOG = System.getLogger("cn.managame.ai.mcp");
     private static final int DEFAULT_MAX_IN_FLIGHT = 1024;
     private static final int FIRST_FRAMEWORK_CODE = 2001, LAST_FRAMEWORK_CODE = 5999;
@@ -79,6 +83,7 @@ public final class McpTools implements AutoCloseable {
     private final List<McpToolInterceptor> interceptors;
     private final int maxInFlight;
     private final Duration timeout;
+    private final String timeoutHeader;
     private final Function<Object, McpToolResult> resultAdapter;
     private final AtomicInteger inFlight = new AtomicInteger();
     private final Set<Invocation> active = ConcurrentHashMap.newKeySet();
@@ -91,6 +96,7 @@ public final class McpTools implements AutoCloseable {
         this.interceptors = List.copyOf(b.interceptors);
         this.maxInFlight = b.maxInFlight;
         this.timeout = b.timeout;
+        this.timeoutHeader = b.timeoutHeader;
         this.resultAdapter = b.resultAdapter;
         this.metrics = new McpMetrics(b.metrics, b.metricsName, inFlight::get);
         Map<String, RegisteredTool> registered = new LinkedHashMap<>(b.entries.size());
@@ -103,7 +109,8 @@ public final class McpTools implements AutoCloseable {
         }
         this.tools = Collections.unmodifiableMap(registered);
         this.definitions = List.copyOf(defs);
-        LOG.log(Level.INFO, () -> "McpTools ready with " + definitions.size() + " tools (maxInFlight=" + maxInFlight + ")");
+        LOG.log(Level.INFO, () -> "McpTools ready with " + definitions.size() + " tools (maxInFlight=" + maxInFlight
+                + ", timeout=" + timeout + ")");
         for (RegisteredTool tool : registered.values()) {
             LOG.log(Level.DEBUG, () -> "MCP tool '" + tool.definition.name() + "' (group=" + tool.definition.group()
                     + ", readOnly=" + tool.definition.readOnly() + ", destructive=" + tool.definition.destructive()
@@ -147,10 +154,18 @@ public final class McpTools implements AutoCloseable {
 
     boolean hasInterceptors() { return !interceptors.isEmpty(); }
 
+    void recordProtocolError() { metrics.protocolError(); }
+
+    void recordResultTooLarge(String toolName) {
+        metrics.resultTooLarge();
+        RegisteredTool tool = tools.get(toolName);
+        if (tool != null) tool.meters.failures().increment();
+    }
+
     /** Tools visible to a caller with {@code headers}, after filtering through {@link McpToolInterceptor#allowList}. */
     public List<McpToolDefinition> list(Map<String, String> headers) {
         if (interceptors.isEmpty()) return definitions;
-        Map<String, String> safeHeaders = headers == null || headers.isEmpty() ? EMPTY_HEADERS : caseInsensitive(headers);
+        Map<String, String> safeHeaders = headers == null || headers.isEmpty() ? EMPTY_HEADERS : FlatHeadersMap.of(headers);
         return listNormalized(safeHeaders);
     }
 
@@ -196,7 +211,7 @@ public final class McpTools implements AutoCloseable {
                 return;
             }
         }
-        Map<String, String> safeHeaders = headers == null || headers.isEmpty() ? EMPTY_HEADERS : caseInsensitive(headers);
+        Map<String, String> safeHeaders = headers == null || headers.isEmpty() ? EMPTY_HEADERS : FlatHeadersMap.of(headers);
         invokeParsed(name, rawArgs, normalizedJson, safeHeaders, remoteAddress, callback);
     }
 
@@ -223,14 +238,14 @@ public final class McpTools implements AutoCloseable {
             return;
         }
         tool.meters.calls().increment();
-        Map<String, Object> unmodifiableRaw = rawArgs.isEmpty() ? Map.of() : Collections.unmodifiableMap(rawArgs);
-        String effectiveRawJson = rawJson != null ? rawJson : (unmodifiableRaw.isEmpty() ? "{}" : Json.write(unmodifiableRaw));
+        Map<String, Object> safeRaw = rawArgs.isEmpty() ? Map.of() : rawArgs;
+        String effectiveRawJson = rawJson != null ? rawJson : (safeRaw.isEmpty() ? "{}" : Json.write(safeRaw));
         Object[] decodedArgs;
         boolean hasRouteKey = tool.method != null && tool.method.hasRouteKey();
         long routeKey = 0;
         if (tool.method != null) {
             try {
-                decodedArgs = tool.method.decodeArguments(unmodifiableRaw, effectiveRawJson, codec);
+                decodedArgs = tool.method.decodeArguments(safeRaw, effectiveRawJson, codec);
                 if (hasRouteKey) routeKey = tool.method.routeKey(decodedArgs);
             } catch (Throwable cause) {
                 inFlight.decrementAndGet();
@@ -244,22 +259,50 @@ public final class McpTools implements AutoCloseable {
             decodedArgs = EMPTY_ARGS;
         }
 
-        Invocation inv = new Invocation(tool, decodedArgs, unmodifiableRaw, effectiveRawJson,
-                hasRouteKey, routeKey, headers, remoteAddress, callback);
-        active.add(inv);
+        Duration effectiveTimeout = resolveTimeout(headers);
+        Invocation inv = new Invocation(tool, decodedArgs, safeRaw, effectiveRawJson,
+                hasRouteKey, routeKey, headers, remoteAddress, effectiveTimeout != null, callback);
         if (closed) {
-            inv.abortExternal(McpToolResult.fail(AI_CLOSED, "McpTools is closed"));
+            inv.abortExternal(McpToolResult.fail(AI_CLOSED, "McpTools is closed"), false);
             return;
-        }
-        if (timeout != null) {
-            inv.armTimeout();
         }
         try {
             executor.execute(inv.call, inv::run);
         } catch (Throwable cause) {
             LOG.log(Level.ERROR, "McpToolExecutor rejected MCP tool '" + name + "'", cause);
-            inv.abortExternal(McpToolResult.fail(AI_TOOL_EXECUTION_ERROR, describeError(cause)));
+            inv.abortExternal(McpToolResult.fail(AI_TOOL_EXECUTION_ERROR, describeError(cause)), false);
+            return;
         }
+        if (!inv.isDone()) {
+            inv.registeredActive = true;
+            active.add(inv);
+            if (inv.isDone()) {
+                active.remove(inv);
+            } else if (closed) {
+                inv.abortExternal(McpToolResult.fail(AI_CLOSED, "McpTools is closed"), false);
+            } else if (effectiveTimeout != null) {
+                inv.armTimeout(effectiveTimeout);
+            }
+        }
+    }
+
+    private Duration resolveTimeout(Map<String, String> headers) {
+        Duration effective = timeout;
+        if (!timeoutHeader.isEmpty() && !headers.isEmpty()) {
+            String hdr = headers.get(timeoutHeader);
+            if (hdr != null && !hdr.isBlank()) {
+                try {
+                    long callerMs = Long.parseLong(hdr.trim());
+                    if (callerMs > 0) {
+                        Duration callerDuration = Duration.ofMillis(callerMs);
+                        if (effective == null || callerDuration.compareTo(effective) < 0) {
+                            effective = callerDuration;
+                        }
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return effective;
     }
 
     /**
@@ -271,7 +314,7 @@ public final class McpTools implements AutoCloseable {
         if (closed) return;
         closed = true;
         for (Invocation inv : active) {
-            inv.abortExternal(McpToolResult.fail(AI_CLOSED, "McpTools is closed"));
+            inv.abortExternal(McpToolResult.fail(AI_CLOSED, "McpTools is closed"), false);
         }
         metrics.close();
     }
@@ -296,12 +339,6 @@ public final class McpTools implements AutoCloseable {
         return true;
     }
 
-    static Map<String, String> caseInsensitive(Map<String, String> source) {
-        TreeMap<String, String> copy = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        copy.putAll(source);
-        return Collections.unmodifiableMap(copy);
-    }
-
     private static void deliver(Consumer<McpToolResult> callback, McpToolResult result) {
         try {
             callback.accept(result);
@@ -315,8 +352,8 @@ public final class McpTools implements AutoCloseable {
         return msg != null && !msg.isBlank() ? msg : cause.getClass().getSimpleName();
     }
 
-    private String timeoutMessage(McpToolDefinition def, boolean beforeStart) {
-        String head = "MCP tool '" + def.name() + "' timed out after " + timeout;
+    private static String timeoutMessage(McpToolDefinition def, Duration limit, boolean beforeStart) {
+        String head = "MCP tool '" + def.name() + "' timed out after " + limit;
         if (beforeStart) return head + " before it started; it will not run";
         if (def.readOnly() || def.idempotent()) return head;
         return head + "; it may still take effect, so check its result before calling it again";
@@ -334,16 +371,32 @@ public final class McpTools implements AutoCloseable {
     }
 
     private final class Invocation {
+        private static final VarHandle DONE;
+        private static final VarHandle STAGE;
+        private static final VarHandle TIMER;
+
+        static {
+            try {
+                MethodHandles.Lookup l = MethodHandles.lookup();
+                DONE = l.findVarHandle(Invocation.class, "doneState", int.class);
+                STAGE = l.findVarHandle(Invocation.class, "runStage", int.class);
+                TIMER = l.findVarHandle(Invocation.class, "timerHandle", Timeout.class);
+            } catch (ReflectiveOperationException e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
+
         private final RegisteredTool tool;
         private final Object[] decodedArgs;
         private final Consumer<McpToolResult> callback;
         private final long startNanos;
+        private final boolean trackStage;
         private final McpToolContext context;
         private final McpToolCall call;
-        private final AtomicBoolean done = new AtomicBoolean();
-        private final AtomicInteger stage;
-        private final AtomicReference<Timeout> timerRef;
-        private final Object interceptorLock = new Object();
+        @SuppressWarnings("unused") private volatile int doneState;
+        @SuppressWarnings("unused") private volatile int runStage;
+        @SuppressWarnings("unused") private volatile Timeout timerHandle;
+        private volatile boolean registeredActive;
         private volatile Thread runningThread;
         private volatile boolean anyBeforeEntered;
         private int entered;
@@ -354,13 +407,12 @@ public final class McpTools implements AutoCloseable {
 
         Invocation(RegisteredTool tool, Object[] decodedArgs, Map<String, Object> rawArgs, String rawJson,
                 boolean hasRouteKey, long routeKey, Map<String, String> headers, SocketAddress remoteAddress,
-                Consumer<McpToolResult> callback) {
+                boolean trackStage, Consumer<McpToolResult> callback) {
             this.tool = tool;
             this.decodedArgs = decodedArgs;
             this.callback = callback;
             this.startNanos = metrics.startTimer();
-            this.stage = timeout != null ? new AtomicInteger(QUEUED) : null;
-            this.timerRef = timeout != null ? new AtomicReference<>() : null;
+            this.trackStage = trackStage;
             this.context = new McpToolContext(tool.definition.name(), headers, remoteAddress,
                     resultAdapter, this::completeFromContext);
             this.call = new McpToolCall(tool.definition,
@@ -368,33 +420,35 @@ public final class McpTools implements AutoCloseable {
                     decodedArgs, rawArgs, rawJson, context, hasRouteKey, routeKey);
         }
 
-        void armTimeout() {
+        boolean isDone() { return doneState != 0; }
+
+        void armTimeout(Duration limit) {
             Timeout handle = AiTimer.newTimeout(t -> {
-                boolean beforeStart = stage.compareAndSet(QUEUED, TIMED_OUT);
-                if (done.get()) return;
-                String message = timeoutMessage(tool.definition, beforeStart);
-                if (abortExternal(McpToolResult.fail(AI_TIMEOUT, message))) {
+                boolean beforeStart = STAGE.compareAndSet(this, QUEUED, TIMED_OUT);
+                if (isDone()) return;
+                String message = timeoutMessage(tool.definition, limit, beforeStart);
+                if (abortExternal(McpToolResult.fail(AI_TIMEOUT, message), true)) {
                     LOG.log(Level.WARNING, () -> message);
                 }
-            }, timeout.toNanos());
-            timerRef.set(handle);
-            if (done.get()) handle.cancel();
+            }, limit.toNanos());
+            TIMER.set(this, handle);
+            if (isDone()) handle.cancel();
         }
 
         void run() {
-            if (stage != null && !stage.compareAndSet(QUEUED, STARTED)) return;
-            if (done.get()) return;
+            if (trackStage && !STAGE.compareAndSet(this, QUEUED, STARTED)) return;
+            if (isDone()) return;
             runningThread = Thread.currentThread();
             boolean hasInterceptors = !interceptors.isEmpty();
             if (hasInterceptors) {
-                synchronized (interceptorLock) {
+                synchronized (this) {
                     beforeActive = true;
                 }
             }
             boolean allAllowed = true;
             try {
                 for (int i = 0; i < interceptors.size(); i++) {
-                    if (done.get()) {
+                    if (isDone()) {
                         allAllowed = false;
                         break;
                     }
@@ -402,27 +456,32 @@ public final class McpTools implements AutoCloseable {
                     if (!allowed) {
                         allAllowed = false;
                         LOG.log(Level.WARNING, () -> "MCP tool '" + tool.definition.name() + "' rejected by interceptor");
-                        if (!done.get()) context.fail(AI_TOOL_REJECTED, "Tool call rejected");
+                        if (!isDone()) context.fail(AI_TOOL_REJECTED, "Tool call rejected");
                         break;
                     }
-                    synchronized (interceptorLock) {
+                    synchronized (this) {
                         entered = i + 1;
                     }
                     anyBeforeEntered = true;
                 }
                 if (hasInterceptors) {
-                    McpToolResult deferredAfter = null;
-                    synchronized (interceptorLock) {
+                    McpToolResult deferredAfter;
+                    synchronized (this) {
                         beforeActive = false;
                         deferredAfter = pendingAfterResult;
                         pendingAfterResult = null;
                     }
                     if (deferredAfter != null) {
                         runAfterInterceptors(deferredAfter);
+                        if (deferredDelivery != null) {
+                            Runnable pendingDeliver = deferredDelivery;
+                            deferredDelivery = null;
+                            pendingDeliver.run();
+                        }
                         return;
                     }
                 }
-                if (allAllowed && !done.get()) {
+                if (allAllowed && !isDone()) {
                     if (tool.proxy != null) {
                         tool.proxy.handle(call);
                     } else if (tool.method != null) {
@@ -431,7 +490,7 @@ public final class McpTools implements AutoCloseable {
                             if (tool.method.returnsVoid()) {
                                 context.reply("ok");
                             } else if (result == null) {
-                                if (!done.get()) {
+                                if (!isDone()) {
                                     IllegalStateException bug = new IllegalStateException(
                                             tool.method + " returned null; only a void tool with McpToolContext answers later");
                                     LOG.log(Level.ERROR, "MCP tool '" + tool.definition.name() + "' returned null", bug);
@@ -447,7 +506,7 @@ public final class McpTools implements AutoCloseable {
                 }
             } catch (Throwable cause) {
                 if (hasInterceptors) {
-                    synchronized (interceptorLock) {
+                    synchronized (this) {
                         beforeActive = false;
                     }
                 }
@@ -464,6 +523,8 @@ public final class McpTools implements AutoCloseable {
             }
         }
 
+        private Runnable deferredDelivery;
+
         private boolean completeFromContext(McpToolResult result) {
             if (!markFinished(result)) return false;
             if (Thread.currentThread() == runningThread) {
@@ -474,19 +535,24 @@ public final class McpTools implements AutoCloseable {
                 deliver(callback, result);
                 return true;
             }
-            dispatchCompletion(() -> {
-                scheduleOrRunAfter(result);
-                deliver(callback, result);
-            });
+            dispatchCompletion(() -> finishAfterAndDeliver(result));
             return true;
         }
 
-        boolean abortExternal(McpToolResult result) {
+        boolean abortExternal(McpToolResult result, boolean offloadFromTimer) {
             if (!markFinished(result)) return false;
             context.markAnswered();
-            deliver(callback, result);
-            if (!interceptors.isEmpty() && (stage == null || stage.get() == STARTED)) {
-                dispatchCompletion(() -> scheduleOrRunAfter(result));
+            boolean mayHaveEnteredBefore = !interceptors.isEmpty() && (!trackStage || runStage == STARTED);
+            if (offloadFromTimer || mayHaveEnteredBefore) {
+                dispatchCompletion(() -> {
+                    if (mayHaveEnteredBefore) {
+                        finishAfterAndDeliver(result);
+                    } else {
+                        deliver(callback, result);
+                    }
+                });
+            } else {
+                deliver(callback, result);
             }
             return true;
         }
@@ -501,22 +567,24 @@ public final class McpTools implements AutoCloseable {
             }
         }
 
-        private void scheduleOrRunAfter(McpToolResult result) {
-            synchronized (interceptorLock) {
+        private void finishAfterAndDeliver(McpToolResult result) {
+            synchronized (this) {
                 if (beforeActive) {
                     pendingAfterResult = result;
+                    deferredDelivery = () -> deliver(callback, result);
                     return;
                 }
             }
             runAfterInterceptors(result);
+            deliver(callback, result);
         }
 
         private boolean markFinished(McpToolResult result) {
-            if (!done.compareAndSet(false, true)) return false;
-            active.remove(this);
+            if (!DONE.compareAndSet(this, 0, 1)) return false;
+            if (registeredActive) active.remove(this);
             inFlight.decrementAndGet();
-            if (timerRef != null) {
-                Timeout t = timerRef.getAndSet(null);
+            if (timerHandle != null) {
+                Timeout t = (Timeout) TIMER.getAndSet(this, null);
                 if (t != null) t.cancel();
             }
             tool.meters.recordLatency(startNanos);
@@ -544,7 +612,7 @@ public final class McpTools implements AutoCloseable {
 
         private void runAfterInterceptors(McpToolResult result) {
             int count;
-            synchronized (interceptorLock) {
+            synchronized (this) {
                 if (afterDelivered || entered == 0) return;
                 afterDelivered = true;
                 count = entered;
@@ -568,7 +636,8 @@ public final class McpTools implements AutoCloseable {
         private AiCodec codec = AiCodec.basic();
         private McpToolExecutor executor = McpToolExecutor.virtualThreads();
         private int maxInFlight = DEFAULT_MAX_IN_FLIGHT;
-        private Duration timeout;
+        private Duration timeout = DEFAULT_TIMEOUT;
+        private String timeoutHeader = AiClient.TIMEOUT_HEADER;
         private Function<Object, McpToolResult> resultAdapter;
         private Metrics metrics = Metrics.noop();
         private String metricsName = "";
@@ -649,14 +718,26 @@ public final class McpTools implements AutoCloseable {
         }
 
         /**
-         * Optional safety timeout per tool invocation: if a tool (for example an asynchronous {@code void} tool or a
-         * queued task) does not answer within {@code timeout}, it is failed with
-         * {@link cn.managame.FrameworkErrorCodes#AI_TIMEOUT} and skipped if it has not started yet. Disabled by default.
+         * Safety timeout per queued or asynchronous tool invocation ({@link #DEFAULT_TIMEOUT}, 30 seconds by default):
+         * if a tool does not answer within {@code timeout}, it is failed with
+         * {@link cn.managame.FrameworkErrorCodes#AI_TIMEOUT} and skipped if it has not started yet. Pass {@code null}
+         * to disable the server-side default timeout.
          */
         public Builder timeout(Duration timeout) {
-            Objects.requireNonNull(timeout, "timeout");
-            if (timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("timeout must be positive");
+            if (timeout != null && (timeout.isNegative() || timeout.isZero())) {
+                throw new IllegalArgumentException("timeout must be positive, or null to disable");
+            }
             this.timeout = timeout;
+            return this;
+        }
+
+        /**
+         * Inbound request header carrying the caller's remaining timeout budget in milliseconds
+         * ({@link AiClient#TIMEOUT_HEADER} by default); narrows per-call timeout to {@code min(timeout, callerBudget)}.
+         * Pass {@code null} or {@code ""} to ignore caller timeout headers.
+         */
+        public Builder timeoutHeader(String headerName) {
+            this.timeoutHeader = headerName == null ? "" : headerName.trim();
             return this;
         }
 

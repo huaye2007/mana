@@ -200,7 +200,8 @@ public class NpcAiService {
         NpcChatReq req = new NpcChatReq(sid, roleId, npcId, npcName, text);
         AiCall call = clientRef.get().stream("/npc/stream", req,
                 event -> {
-                    if ("token".equals(event.event()) || "message".equals(event.event())) {
+                    if (("token".equals(event.event()) || "message".equals(event.event()))
+                            && !"[DONE]".equals(event.data().trim())) {
                         streamFilter.accept(event.data());
                     }
                 },

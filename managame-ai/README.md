@@ -11,12 +11,13 @@ Prompts, LLM providers, conversation memory, RAG and agent orchestration stay in
 `managame-data` — so it plugs cleanly into `GameRuntime` or into any other game server framework (actor systems,
 custom route executors, or standalone services):
 
-1. **Game server → AI service (single shared `AiClient`)**: one non-blocking HTTP and W3C SSE client shared across all
-   business modules in the server process, backed by a single connection pool and a single process-wide daemon timing
-   wheel. Once bridged at startup via `AiDispatcher`, business modules call `ai.call(...)` / `ai.stream(...)` directly
-   with automatic context validation, ambient `Metadata` header propagation, and ordered callback delivery back onto the
-   caller's route — with concurrency admission (`maxInFlight`), full end-to-end timeouts (headers and body alike),
-   idle stream timeouts, cancellation, one-way notifications, pluggable `AiCodec` and `Metrics`.
+1. **Game server → AI service (single shared `AiClient`)**: one non-blocking Netty HTTP/1.1 and W3C SSE client shared
+   across all business modules in the server process, backed by a keep-alive connection pool (`.bootstrap(...)`,
+   `.ssl(...)`) and a single process-wide daemon timing wheel. Once bridged at startup via `AiDispatcher`, business
+   modules call `ai.call(...)` / `ai.stream(...)` directly with automatic context validation, ambient `Metadata` header
+   propagation, and ordered callback delivery back onto the caller's route — with concurrency admission (`maxInFlight`),
+   `autoRead` TCP stream backpressure, full end-to-end timeouts (headers and body alike), idle stream timeouts,
+   cancellation, one-way notifications, pluggable `AiCodec` and `Metrics`.
 2. **AI service → Game server (`@McpTool` + `McpTools` + `McpHttpHandler`)**: expose existing game server methods as
    standard **MCP (Model Context Protocol)** tools over stateless Streamable HTTP (JSON-RPC 2.0) by adding annotations.
    Methods are compiled into `MethodHandle`s, route-key readers and JSON Schemas once at startup; `McpToolExecutor`
@@ -78,9 +79,12 @@ ai.call(AiRequest.of("/moderation/check", text).withTimeout(Duration.ofMillis(50
 ai.call(AiRequest.get("/jobs/status").withQuery("jobId", jobId), JobStatus.class, result -> ...);
 ai.call(AiRequest.delete("/sessions/" + AiRequest.encodeSegment(sessionId)), Void.class, result -> ...);
 
-// Incremental W3C SSE streaming: events & completion arrive in order on the caller's route; event: error fails cleanly
+// Incremental W3C SSE streaming (or typed JSON chunk streaming decoded off-route, skipping [DONE] sentinels)
 AiCall stream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text),
         event -> { ... },
+        result -> { ... });
+AiCall typedStream = ai.stream("/npc/chat/stream", new NpcTalk(roleId, text), TokenDelta.class,
+        delta -> { ... },
         result -> { ... });
 stream.cancel();
 
@@ -101,11 +105,13 @@ ai.close();
   custom codecs can override `encodeBytes` / `decodeBytes` to avoid intermediate `String` copies. `AiCodec.basic()`
   coerces quoted numeric strings into exact 64-bit `long`s and natively supports `UUID`, `URI`, `Duration` and
   `java.time.*` types.
-- **Full-body deadlines, admission, bounds and shutdown**: `AiClient` sends `X-Ai-Timeout-Ms` (configurable via
-  `.timeoutHeader(...)`) and enforces end-to-end timeouts across both response headers and chunked response bodies;
-  calls beyond `maxInFlight` fail with `AI_OVERLOADED`; responses over `maxResponseBytes` (1 MiB default) or SSE events
-  over `maxStreamEventChars` (256 KiB default) abort with `AI_PROTOCOL_ERROR`; mid-stream `event: error` frames fail
-  with `AI_UNAVAILABLE`; `close()` aborts in-flight calls and rejects subsequent ones with `AI_CLOSED`.
+- **Full-body deadlines, backpressure, admission, bounds and shutdown**: `AiClient` sends `X-Ai-Timeout-Ms`
+  (configurable via `.timeoutHeader(...)`) and enforces end-to-end timeouts across both response headers and chunked
+  response bodies; SSE streams apply Netty `autoRead` backpressure when the target route falls behind; calls beyond
+  `maxInFlight` fail with `AI_OVERLOADED`; responses over `maxResponseBytes` (1 MiB default), single SSE events over
+  `maxStreamEventChars` (256 KiB default), or total stream payloads over `maxStreamBytes` (16 MiB default) abort with
+  `AI_PROTOCOL_ERROR`; mid-stream `event: error` frames fail with `AI_UNAVAILABLE`; `close()` aborts in-flight calls,
+  streams, and notifications with `AI_CLOSED`.
 
 ## Exposing game server methods as MCP tools (`@McpTool`)
 
@@ -160,9 +166,12 @@ NetworkServer mcpServer = NetworkServer.start(8082,
   `McpToolContext`.
 - **Return semantics, hints and lifecycle**: a `void` method with `McpToolContext` answers asynchronously via
   `context.reply` / `context.fail`; a `void` method without it answers `"ok"`; returning `McpToolResult.fail(...)`
-  surfaces `isError: true`; returning `null` from a non-`void` method fails with `AI_TOOL_EXECUTION_ERROR`. `@McpTool`
-  publishes `readOnlyHint`, `destructiveHint` (`destructive = true` for high-risk actions), `idempotentHint` and
-  `openWorldHint: false`. `tools.close()` aborts in-flight async calls with `AI_CLOSED` so HTTP exchanges never hang.
+  surfaces `isError: true`; returning `null` from a non-`void` method fails with `AI_TOOL_EXECUTION_ERROR`. Required
+  fields on unwrapped DTOs are validated consistently across both `AiCodec.basic()` and custom codecs (such as Jackson).
+  Queued and asynchronous invocations enforce a 30s default safety timeout (`McpTools.DEFAULT_TIMEOUT`), narrowed
+  automatically by incoming `X-Ai-Timeout-Ms` headers when present. `@McpTool` publishes `readOnlyHint`,
+  `destructiveHint` (`destructive = true` for high-risk actions), `idempotentHint` and `openWorldHint: false`.
+  `tools.close()` aborts in-flight async calls with `AI_CLOSED` so HTTP exchanges never hang.
 - **Context, interceptors and I/O isolation**: `McpToolContext` carries mutable `Metadata` (`put` / `metadata()`) across
   `before`, the tool, and `after`; `McpToolCall.rawArgumentsJson()` exposes the verbatim JSON arguments slice for audit
   logging or RPC forwarding. When an async tool calls `ctx.reply` from an external I/O thread (such as an RPC
@@ -184,11 +193,12 @@ NetworkServer mcpServer = NetworkServer.start(8082,
 - Loggers (`System.Logger`): `cn.managame.ai.client` and `cn.managame.ai.mcp`.
 - Client metrics: `managame.ai.client.calls` (`kind`), `managame.ai.client.failures` (`code`),
   `managame.ai.client.in_flight`, `managame.ai.client.notify_in_flight`, `managame.ai.client.stream_events`,
-  `managame.ai.client.latency` (`_bucket`, `_nanos`).
-- MCP metrics: `managame.ai.mcp.calls` (`tool`), `managame.ai.mcp.failures` (`tool`, framework/execution/timeout
+  `managame.ai.client.latency` (`kind`, `_bucket`, `_nanos`).
+- MCP metrics: `managame.ai.mcp.calls` (`tool`), `managame.ai.mcp.failures` (`tool`, framework/execution/timeout/size
   errors), `managame.ai.mcp.business_failures` (`tool`, application error codes), `managame.ai.mcp.rejected` (`tool`),
   `managame.ai.mcp.latency` (`tool`, `_bucket`, `_nanos`), `managame.ai.mcp.timeouts`, `managame.ai.mcp.not_found`,
-  `managame.ai.mcp.invalid_args`, `managame.ai.mcp.overloaded`, `managame.ai.mcp.closed`, `managame.ai.mcp.in_flight`.
+  `managame.ai.mcp.invalid_args`, `managame.ai.mcp.overloaded`, `managame.ai.mcp.closed`,
+  `managame.ai.mcp.protocol_errors`, `managame.ai.mcp.result_too_large`, `managame.ai.mcp.in_flight`.
   No clock is read under `Metrics.noop()`.
 
 ## Build and test

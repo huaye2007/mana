@@ -18,6 +18,8 @@ public final class McpMetrics {
     private final Counter overloaded;
     private final Counter closed;
     private final Counter timeouts;
+    private final Counter protocolErrors;
+    private final Counter resultTooLarge;
     private final List<Meter> owned = new ArrayList<>();
 
     public McpMetrics(Metrics metrics, String serverName, DoubleSupplier inFlight) {
@@ -29,6 +31,8 @@ public final class McpMetrics {
         this.overloaded = metrics.counter("managame.ai.mcp.overloaded", baseTags);
         this.closed = metrics.counter("managame.ai.mcp.closed", baseTags);
         this.timeouts = metrics.counter("managame.ai.mcp.timeouts", baseTags);
+        this.protocolErrors = metrics.counter("managame.ai.mcp.protocol_errors", baseTags);
+        this.resultTooLarge = metrics.counter("managame.ai.mcp.result_too_large", baseTags);
         this.owned.add(metrics.gauge("managame.ai.mcp.in_flight", inFlight, baseTags));
     }
 
@@ -58,6 +62,10 @@ public final class McpMetrics {
     public void closed() { closed.increment(); }
 
     public void timeout() { timeouts.increment(); }
+
+    public void protocolError() { protocolErrors.increment(); }
+
+    public void resultTooLarge() { resultTooLarge.increment(); }
 
     public void close() {
         for (Meter meter : owned) meter.close();

@@ -19,14 +19,12 @@ import io.netty.handler.codec.http.HttpVersion;
 import java.lang.System.Logger.Level;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.TreeMap;
 
 /**
  * Stateless MCP (Model Context Protocol) Streamable HTTP {@link HttpHandler} serving {@link McpTools} over
@@ -118,43 +116,48 @@ public final class McpHttpHandler implements HttpHandler {
         try {
             mcpEnv = Json.parseMcpRequest(body);
         } catch (IllegalArgumentException badJson) {
-            respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
-                    jsonRpcError(null, JSONRPC_PARSE_ERROR, "Parse error: " + badJson.getMessage()));
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.BAD_REQUEST, null,
+                    JSONRPC_PARSE_ERROR, "Parse error: " + badJson.getMessage());
             return;
         }
         if (!(mcpEnv.root() instanceof Map<?, ?> rawEnvelope)) {
-            respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
-                    jsonRpcError(null, JSONRPC_INVALID_REQUEST, "JSON-RPC request must be a JSON object"));
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.BAD_REQUEST, null,
+                    JSONRPC_INVALID_REQUEST, "JSON-RPC request must be a JSON object");
             return;
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> envelope = (Map<String, Object>) rawEnvelope;
         if (!"2.0".equals(envelope.get("jsonrpc"))) {
-            respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
-                    jsonRpcError(null, JSONRPC_INVALID_REQUEST, "Field 'jsonrpc' must be '2.0'"));
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.BAD_REQUEST, null,
+                    JSONRPC_INVALID_REQUEST, "Field 'jsonrpc' must be '2.0'");
             return;
         }
         Object methodObj = envelope.get("method");
         if (!(methodObj instanceof String method) || method.isBlank()) {
-            respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
-                    jsonRpcError(null, JSONRPC_INVALID_REQUEST, "Field 'method' must be a non-empty string"));
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.BAD_REQUEST, null,
+                    JSONRPC_INVALID_REQUEST, "Field 'method' must be a non-empty string");
             return;
         }
         if (!"initialize".equals(method)) {
             String protocolHeader = request.headers().get(PROTOCOL_VERSION_HEADER);
             if (protocolHeader != null && !protocolHeader.isBlank()
                     && !SUPPORTED_PROTOCOL_VERSIONS.contains(protocolHeader.trim())) {
-                respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
-                        jsonRpcError(null, JSONRPC_INVALID_REQUEST,
-                                "Unsupported MCP-Protocol-Version: " + protocolHeader));
+                tools.recordProtocolError();
+                respondJsonRpcError(exchange, HttpResponseStatus.BAD_REQUEST, null,
+                        JSONRPC_INVALID_REQUEST, "Unsupported MCP-Protocol-Version: " + protocolHeader);
                 return;
             }
         }
         boolean hasId = envelope.containsKey("id");
         Object id = envelope.get("id");
-        if (hasId && id != null && !(id instanceof String) && !(id instanceof Number)) {
-            respondJson(exchange, HttpResponseStatus.BAD_REQUEST,
-                    jsonRpcError(null, JSONRPC_INVALID_REQUEST, "Field 'id' must be a string, number or null"));
+        if (hasId && !(id instanceof String) && !(id instanceof Number)) {
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.BAD_REQUEST, null,
+                    JSONRPC_INVALID_REQUEST, "Field 'id' must be a string or number");
             return;
         }
         if (!hasId) {
@@ -166,11 +169,15 @@ public final class McpHttpHandler implements HttpHandler {
         if (LOG.isLoggable(Level.DEBUG)) LOG.log(Level.DEBUG, () -> "MCP request " + method + " (id=" + id + ")");
         switch (method) {
             case "initialize" -> handleInitialize(exchange, id, paramsObj);
-            case "ping" -> respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, EMPTY_OBJECT_RAW));
+            case "ping" -> respondJsonRpcResult(exchange, id, EMPTY_OBJECT_RAW);
             case "tools/list" -> handleToolsList(exchange, id, request);
-            case "tools/call" -> handleToolsCall(exchange, id, paramsObj, mcpEnv.rawArgumentsJson(), copyHeaders(request));
-            default -> respondJson(exchange, HttpResponseStatus.OK,
-                    jsonRpcError(id, JSONRPC_METHOD_NOT_FOUND, "Method not found: " + method));
+            case "tools/call" -> handleToolsCall(exchange, id, paramsObj, mcpEnv.rawArgumentsJson(),
+                    FlatHeadersMap.of(request.headers()));
+            default -> {
+                tools.recordProtocolError();
+                respondJsonRpcError(exchange, HttpResponseStatus.OK, id,
+                        JSONRPC_METHOD_NOT_FOUND, "Method not found: " + method);
+            }
         }
     }
 
@@ -192,21 +199,21 @@ public final class McpHttpHandler implements HttpHandler {
         result.put("capabilities", capabilities);
         result.put("serverInfo", serverInfo);
         if (!instructions.isEmpty()) result.put("instructions", instructions);
-        respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, result));
+        respondJsonRpcResult(exchange, id, result);
     }
 
     private void handleToolsList(HttpExchange exchange, Object id, FullHttpRequest request) {
         if (!tools.hasInterceptors()) {
-            respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, allToolsListPayload));
+            respondJsonRpcResult(exchange, id, allToolsListPayload);
             return;
         }
-        List<McpToolDefinition> visible = tools.listNormalized(copyHeaders(request));
+        List<McpToolDefinition> visible = tools.listNormalized(FlatHeadersMap.of(request.headers()));
         List<Json.Raw> serialized = new ArrayList<>(visible.size());
         for (McpToolDefinition def : visible) {
             Json.Raw cached = encodedTools.get(def);
             serialized.add(cached != null ? cached : new Json.Raw(encodeToolDefinition(def)));
         }
-        respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, Map.of("tools", serialized)));
+        respondJsonRpcResult(exchange, id, Map.of("tools", serialized));
     }
 
     private static String encodeToolDefinition(McpToolDefinition def) {
@@ -228,14 +235,16 @@ public final class McpHttpHandler implements HttpHandler {
     private void handleToolsCall(HttpExchange exchange, Object id, Object paramsObj,
             String rawArgumentsJson, Map<String, String> headers) {
         if (!(paramsObj instanceof Map<?, ?> params)) {
-            respondJson(exchange, HttpResponseStatus.OK,
-                    jsonRpcError(id, JSONRPC_INVALID_PARAMS, "Params for tools/call must be a JSON object"));
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.OK, id,
+                    JSONRPC_INVALID_PARAMS, "Params for tools/call must be a JSON object");
             return;
         }
         Object nameObj = params.get("name");
         if (!(nameObj instanceof String toolName) || toolName.isBlank()) {
-            respondJson(exchange, HttpResponseStatus.OK,
-                    jsonRpcError(id, JSONRPC_INVALID_PARAMS, "Tool 'name' is required"));
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.OK, id,
+                    JSONRPC_INVALID_PARAMS, "Tool 'name' is required");
             return;
         }
         Object argsObj = params.get("arguments");
@@ -247,14 +256,14 @@ public final class McpHttpHandler implements HttpHandler {
             Map<String, Object> cast = (Map<String, Object>) map;
             arguments = cast;
         } else {
-            respondJson(exchange, HttpResponseStatus.OK,
-                    jsonRpcError(id, JSONRPC_INVALID_PARAMS, "Tool 'arguments' must be a JSON object"));
+            tools.recordProtocolError();
+            respondJsonRpcError(exchange, HttpResponseStatus.OK, id,
+                    JSONRPC_INVALID_PARAMS, "Tool 'arguments' must be a JSON object");
             return;
         }
         tools.invokeParsed(toolName, arguments, rawArgumentsJson, headers, exchange.remoteAddress(), result -> {
             if (result.code() == AI_TOOL_NOT_FOUND) {
-                respondJson(exchange, HttpResponseStatus.OK,
-                        jsonRpcError(id, JSONRPC_INVALID_PARAMS, result.message()));
+                respondJsonRpcError(exchange, HttpResponseStatus.OK, id, JSONRPC_INVALID_PARAMS, result.message());
                 return;
             }
             if (result.isSuccess()) {
@@ -276,63 +285,57 @@ public final class McpHttpHandler implements HttpHandler {
                 }
                 if (!isError && text.length() > maxResultChars) {
                     int actualLen = text.length();
+                    tools.recordResultTooLarge(toolName);
                     LOG.log(Level.WARNING, () -> "MCP tool '" + toolName + "' result exceeded maxResultChars ("
                             + actualLen + " > " + maxResultChars + ")");
                     text = "Tool '" + toolName + "' result exceeded limit (" + maxResultChars + " chars); narrow the query";
                     isError = true;
                 }
-                respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, toolCallResult(text, isError)));
+                respondToolCallResult(exchange, id, text, isError);
             } else {
                 String text = result.message().isEmpty()
                         ? FrameworkErrorCodes.describe(result.code()) : result.message();
-                respondJson(exchange, HttpResponseStatus.OK, jsonRpcResult(id, toolCallResult(text, true)));
+                respondToolCallResult(exchange, id, text, true);
             }
         });
     }
 
-    private static Map<String, Object> toolCallResult(String text, boolean isError) {
-        Map<String, Object> contentItem = new LinkedHashMap<>();
-        contentItem.put("type", "text");
-        contentItem.put("text", text);
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("content", List.of(contentItem));
-        payload.put("isError", isError);
-        return payload;
+    private static void respondToolCallResult(HttpExchange exchange, Object id, String text, boolean isError) {
+        StringBuilder sb = new StringBuilder(text.length() + 96);
+        sb.append("{\"jsonrpc\":\"2.0\",\"id\":");
+        Json.appendTo(sb, id);
+        sb.append(",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+        Json.writeString(sb, text);
+        sb.append("}],\"isError\":").append(isError ? "true}}" : "false}}");
+        respondUtf8(exchange, HttpResponseStatus.OK, sb);
     }
 
-    private static String jsonRpcResult(Object id, Object result) {
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("jsonrpc", "2.0");
-        response.put("id", id);
-        response.put("result", result);
-        return Json.write(response);
+    private static void respondJsonRpcResult(HttpExchange exchange, Object id, Object result) {
+        StringBuilder sb = new StringBuilder(128);
+        sb.append("{\"jsonrpc\":\"2.0\",\"id\":");
+        Json.appendTo(sb, id);
+        sb.append(",\"result\":");
+        Json.appendTo(sb, result);
+        sb.append('}');
+        respondUtf8(exchange, HttpResponseStatus.OK, sb);
     }
 
-    private static String jsonRpcError(Object id, int code, String message) {
-        Map<String, Object> error = new LinkedHashMap<>();
-        error.put("code", code);
-        error.put("message", message);
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("jsonrpc", "2.0");
-        response.put("id", id);
-        response.put("error", error);
-        return Json.write(response);
+    private static void respondJsonRpcError(HttpExchange exchange, HttpResponseStatus status,
+            Object id, int code, String message) {
+        StringBuilder sb = new StringBuilder(message.length() + 80);
+        sb.append("{\"jsonrpc\":\"2.0\",\"id\":");
+        Json.appendTo(sb, id);
+        sb.append(",\"error\":{\"code\":").append(code).append(",\"message\":");
+        Json.writeString(sb, message);
+        sb.append("}}");
+        respondUtf8(exchange, status, sb);
     }
 
-    private static void respondJson(HttpExchange exchange, HttpResponseStatus status, String json) {
+    private static void respondUtf8(HttpExchange exchange, HttpResponseStatus status, CharSequence json) {
         FullHttpResponse response = new DefaultFullHttpResponse(
                 HttpVersion.HTTP_1_1, status, ByteBufUtil.writeUtf8(ByteBufAllocator.DEFAULT, json));
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
         exchange.respond(response);
-    }
-
-    private static Map<String, String> copyHeaders(FullHttpRequest request) {
-        if (request.headers().isEmpty()) return Map.of();
-        TreeMap<String, String> map = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        for (Map.Entry<String, String> entry : request.headers()) {
-            map.putIfAbsent(entry.getKey(), entry.getValue());
-        }
-        return Collections.unmodifiableMap(map);
     }
 
     public static final class Builder {

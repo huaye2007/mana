@@ -241,12 +241,14 @@ These come from the maintainer. Follow them, and ask when a change would bend on
   reachable across packages, marked not API, with no `module-info.java`. A helper used by one package stays
   package-private there.
 - ai names and decisions: `managame-ai` depends only on `common` and `network` and knows nothing of `GameRuntime`; one
-  `AiClient` (`AiDispatcher` capturing the caller's continuation and `Metadata` from `request.context()`) and one
-  `McpTools` (`McpToolExecutor` with startup `prepare` and off-thread `complete`) serve the whole process over a single
-  shared daemon time wheel (`AiTimer`). Packages split into `cn.managame.ai` (`AiClient`, `AiRequest`, `AiResponse`,
-  `AiCallback`, `AiStreamListener`, `AiStreamControl`), `mcp` (`McpTools`, `McpHttpHandler`, `McpToolContext`,
-  `McpToolCall`, `McpToolInterceptor`), `annotation` (`@McpTool`, `@McpParam`), `spi` (`AiDispatcher`,
-  `McpToolExecutor`, `AiCodec`), and `internal`.
+  `AiClient` (pooled Netty HTTP/1.1 + SSE transport with `autoRead` stream backpressure, `AiDispatcher` capturing the
+  caller's continuation and `Metadata` from `request.context()`) and one `McpTools` (`McpToolExecutor` with startup
+  `prepare` and off-thread `complete`, 30s default timeout narrowed by `X-Ai-Timeout-Ms`) serve the whole process over a
+  single shared daemon time wheel (`AiTimer`). Packages split into `cn.managame.ai` (`AiClient`, `AiRequest`,
+  `AiResult`, `AiCall`, `AiCallback`, `AiStreamEvent`, `AiStreamListener`, `AiCodec`), `mcp` (`McpTools`,
+  `McpHttpHandler`, `McpToolDefinition`, `McpToolContext`, `McpToolCall`, `McpToolResult`, `McpToolInterceptor`,
+  `McpToolHandler`, `McpToolProxy`), `annotation` (`@McpTool`, `@McpParam`), `spi` (`AiDispatcher`, `McpToolExecutor`),
+  and `internal`.
 - Error codes live in `FrameworkErrorCodes` (common): RPC 2001–2999, runtime 3001–3999, data 4001–4999, AI 5001–5999. Failures
   of a request reach its callbacks as codes; misuse throws `IllegalArgumentException` (bad argument) or
   `IllegalStateException` (missing setting, wrong state).

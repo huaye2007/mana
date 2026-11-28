@@ -60,6 +60,10 @@ public final class Json {
         return out.toString();
     }
 
+    public static void appendTo(StringBuilder out, Object value) {
+        writeTo(out, value, 0);
+    }
+
     public static void writeString(StringBuilder out, CharSequence value) {
         out.append('"');
         for (int i = 0; i < value.length(); i++) {

@@ -51,7 +51,9 @@ public class GameServerMcpRegistry implements AutoCloseable {
                         throw new IllegalStateException("Caller X-Ai-Timeout-Ms deadline already expired before MCP tool call");
                     }
                     long boundedMs = Math.min(remainingMs, props.getRequestTimeout().toMillis());
-                    builder.timeout(Duration.ofMillis(Math.max(1L, boundedMs)));
+                    long effectiveMs = Math.max(1L, boundedMs);
+                    builder.setHeader("X-Ai-Timeout-Ms", Long.toString(effectiveMs));
+                    builder.timeout(Duration.ofMillis(effectiveMs));
                 }
             }
         };

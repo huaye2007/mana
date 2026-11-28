@@ -13,6 +13,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.util.ArrayList;
@@ -26,12 +27,13 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * One {@link McpTool}-annotated Java method compiled into a {@link MethodHandle}, route-key extractor, and pre-built
- * JSON Schema at registration time so invocations pay no reflection. Public only to be reachable across packages;
- * not API.
+ * One {@link McpTool}-annotated Java method compiled into a {@link MethodHandle}, route-key extractor, required-field
+ * plan, and pre-built JSON Schema at registration time so invocations pay no reflection. Public only to be reachable
+ * across packages; not API.
  */
 public final class ToolMethod {
     private static final Object[] EMPTY_ARGS = {};
+    private static final String[] NO_REQUIRED_FIELDS = {};
 
     private enum Shape { ZERO_ARG, SINGLE_DTO, PARAMS }
 
@@ -41,6 +43,7 @@ public final class ToolMethod {
     private final boolean takesContext;
     private final boolean returnsVoid;
     private final Type dtoType;
+    private final String[] requiredDtoFields;
     private final List<JsonSchema.ParamSpec> params;
     private final MethodHandle handle;
     /** {@code (Object) long} reading the route key from the DTO, or from the parameter at {@link #routeKeyIndex}. */
@@ -48,14 +51,15 @@ public final class ToolMethod {
     private final int routeKeyIndex;
 
     private ToolMethod(Method method, McpToolDefinition definition, Shape shape, boolean takesContext,
-            boolean returnsVoid, Type dtoType, List<JsonSchema.ParamSpec> params, MethodHandle handle,
-            MethodHandle routeKeyReader, int routeKeyIndex) {
+            boolean returnsVoid, Type dtoType, String[] requiredDtoFields, List<JsonSchema.ParamSpec> params,
+            MethodHandle handle, MethodHandle routeKeyReader, int routeKeyIndex) {
         this.method = method;
         this.definition = definition;
         this.shape = shape;
         this.takesContext = takesContext;
         this.returnsVoid = returnsVoid;
         this.dtoType = dtoType;
+        this.requiredDtoFields = requiredDtoFields;
         this.params = params;
         this.handle = handle;
         this.routeKeyReader = routeKeyReader;
@@ -131,6 +135,7 @@ public final class ToolMethod {
         int argCount = allParams.length - start;
         Shape shape;
         Type dtoType = null;
+        String[] requiredDtoFields = NO_REQUIRED_FIELDS;
         List<JsonSchema.ParamSpec> paramSpecs = List.of();
         String schema;
         if (argCount == 0) {
@@ -138,8 +143,10 @@ public final class ToolMethod {
             schema = JsonSchema.EMPTY_OBJECT;
         } else if (argCount == 1 && isUnwrappedDto(allParams[start])) {
             shape = Shape.SINGLE_DTO;
+            Class<?> rawDtoClass = allParams[start].getType();
             dtoType = allParams[start].getParameterizedType();
-            schema = JsonSchema.forObjectType(allParams[start].getType());
+            requiredDtoFields = collectRequiredDtoFields(rawDtoClass);
+            schema = JsonSchema.forObjectType(rawDtoClass);
         } else {
             shape = Shape.PARAMS;
             List<JsonSchema.ParamSpec> specs = new ArrayList<>(argCount);
@@ -179,7 +186,12 @@ public final class ToolMethod {
                 case SINGLE_DTO -> routeKeyReader = routeKeyReader(method, allParams[start].getType(), routeKey);
                 case PARAMS -> {
                     for (int i = 0; i < paramSpecs.size(); i++) {
-                        if (paramSpecs.get(i).name().equals(routeKey)) routeKeyIndex = i;
+                        Parameter rawParam = allParams[start + i];
+                        if (paramSpecs.get(i).name().equals(routeKey)
+                                || (rawParam.isNamePresent() && rawParam.getName().equals(routeKey))) {
+                            routeKeyIndex = i;
+                            break;
+                        }
                     }
                     if (routeKeyIndex < 0) throw invalid(method, "routes by " + routeKey + ", which is none of its parameters");
                     Class<?> type = paramSpecs.get(routeKeyIndex).rawType();
@@ -193,14 +205,64 @@ public final class ToolMethod {
             }
         }
         return new ToolMethod(method, def, shape, takesContext, method.getReturnType() == void.class,
-                dtoType, paramSpecs, handle, routeKeyReader, routeKeyIndex);
+                dtoType, requiredDtoFields, paramSpecs, handle, routeKeyReader, routeKeyIndex);
+    }
+
+    private static String[] collectRequiredDtoFields(Class<?> type) {
+        String pkg = type.getPackageName();
+        if (pkg.startsWith("java.") || pkg.startsWith("javax.")) return NO_REQUIRED_FIELDS;
+        List<String> required = new ArrayList<>();
+        if (type.isRecord()) {
+            for (RecordComponent component : type.getRecordComponents()) {
+                McpParam param = component.getAnnotation(McpParam.class);
+                String propName = param != null && !param.name().isEmpty() ? param.name() : component.getName();
+                Class<?> rawType = component.getType();
+                if (rawType.isPrimitive() || (rawType != Optional.class && (param == null || param.required()))) {
+                    required.add(propName);
+                }
+            }
+        } else {
+            List<Class<?>> hierarchy = new ArrayList<>();
+            for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) hierarchy.add(c);
+            Set<String> seen = new HashSet<>();
+            for (int i = hierarchy.size() - 1; i >= 0; i--) {
+                for (Field field : hierarchy.get(i).getDeclaredFields()) {
+                    int mod = field.getModifiers();
+                    if (Modifier.isStatic(mod) || Modifier.isTransient(mod) || field.isSynthetic()) continue;
+                    if (!seen.add(field.getName())) continue;
+                    McpParam param = field.getAnnotation(McpParam.class);
+                    String propName = param != null && !param.name().isEmpty() ? param.name() : field.getName();
+                    Class<?> rawType = field.getType();
+                    if (rawType.isPrimitive() || (rawType != Optional.class && (param == null || param.required()))) {
+                        required.add(propName);
+                    }
+                }
+            }
+        }
+        return required.isEmpty() ? NO_REQUIRED_FIELDS : required.toArray(String[]::new);
     }
 
     /**
-     * {@code (Object) long} reading {@code name} from a {@code type}: a no-argument method of that name, else its getter
-     * {@code getName()}, else a field, declared by the type or a superclass.
+     * {@code (Object) long} reading {@code name} from a {@code type}: a record component (by Java name or
+     * {@link McpParam#name()}), a no-argument method of that name, its getter {@code getName()}, or a field (by Java
+     * name or {@link McpParam#name()}), declared by the type or a superclass.
      */
     private static MethodHandle routeKeyReader(Method tool, Class<?> type, String name) {
+        if (type.isRecord()) {
+            for (RecordComponent rc : type.getRecordComponents()) {
+                McpParam ann = rc.getAnnotation(McpParam.class);
+                if (rc.getName().equals(name) || (ann != null && ann.name().equals(name))) {
+                    try {
+                        Method accessor = rc.getAccessor();
+                        accessor.setAccessible(true);
+                        return routeKeyType(MethodHandles.lookup().unreflect(accessor));
+                    } catch (IllegalAccessException | RuntimeException e) {
+                        throw new IllegalArgumentException(describe(tool) + " cannot route by " + type.getName() + "." + name
+                                + ": it must be an integral type or its box", e);
+                    }
+                }
+            }
+        }
         String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
         for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
             Method found = null;
@@ -215,7 +277,9 @@ public final class ToolMethod {
                     return routeKeyType(MethodHandles.lookup().unreflect(found));
                 }
                 for (Field field : current.getDeclaredFields()) {
-                    if (field.getName().equals(name) && !Modifier.isStatic(field.getModifiers())) {
+                    if (Modifier.isStatic(field.getModifiers())) continue;
+                    McpParam ann = field.getAnnotation(McpParam.class);
+                    if (field.getName().equals(name) || (ann != null && ann.name().equals(name))) {
                         field.setAccessible(true);
                         return routeKeyType(MethodHandles.lookup().unreflectGetter(field));
                     }
@@ -334,6 +398,11 @@ public final class ToolMethod {
         return switch (shape) {
             case ZERO_ARG -> EMPTY_ARGS;
             case SINGLE_DTO -> {
+                for (String reqField : requiredDtoFields) {
+                    if (rawArguments.get(reqField) == null) {
+                        throw new IllegalArgumentException("Missing required argument '" + reqField + "'");
+                    }
+                }
                 Object dto;
                 if (codec == BasicAiCodec.INSTANCE) {
                     dto = BasicAiCodec.convert(rawArguments, dtoType);
@@ -358,7 +427,9 @@ public final class ToolMethod {
                         } else {
                             values[i] = null;
                         }
-                    } else if (codec == BasicAiCodec.INSTANCE || BasicAiCodec.isScalar(spec.rawType())) {
+                    } else if (codec == BasicAiCodec.INSTANCE
+                            || BasicAiCodec.isScalar(spec.rawType())
+                            || spec.rawType().isEnum()) {
                         values[i] = BasicAiCodec.convert(rawVal, spec.type());
                     } else {
                         values[i] = codec.decode(Json.write(rawVal), spec.type());

@@ -106,10 +106,15 @@ class McpHttpHandlerTest {
     }
 
     @Test void rawStreamableHttpConformance() throws Exception {
-        McpTools tools = McpTools.builder().register(List.of(new GameServerService())).build();
+        AiClientTest.RecordingMetrics metrics = new AiClientTest.RecordingMetrics();
+        McpTools tools = McpTools.builder().metrics(metrics).register(List.of(new GameServerService())).build();
         gameMcpServer = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
                 HttpInitializer.http().contextPath("/mcp")
-                        .handler(McpHttpHandler.builder(tools).serverInfo("mana-game", "1.0").instructions("Game tools").build())
+                        .handler(McpHttpHandler.builder(tools)
+                                .serverInfo("mana-game", "1.0")
+                                .instructions("Game tools")
+                                .maxResultChars(128)
+                                .build())
                         .build());
 
         HttpResponse<String> getRes = send("GET", "/mcp", null);
@@ -126,6 +131,10 @@ class McpHttpHandlerTest {
         HttpResponse<String> badRpc = send("POST", "/mcp", "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"ping\"}");
         assertEquals(400, badRpc.statusCode());
         assertTrue(badRpc.body().contains("-32600"));
+
+        HttpResponse<String> nullIdReq = send("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}");
+        assertEquals(400, nullIdReq.statusCode());
+        assertTrue(nullIdReq.body().contains("-32600"));
 
         HttpResponse<String> notif = send("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
         assertEquals(202, notif.statusCode());
@@ -170,6 +179,14 @@ class McpHttpHandlerTest {
                 .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}"))
                 .build();
         assertEquals(400, HTTP.send(unsupportedVer, HttpResponse.BodyHandlers.ofString()).statusCode());
+
+        HttpResponse<String> oversizedRes = send("POST", "/mcp",
+                "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"dump_big\",\"arguments\":{}}}");
+        assertEquals(200, oversizedRes.statusCode());
+        assertTrue(oversizedRes.body().contains("exceeded limit"));
+        assertEquals(1L, metrics.counterValue("managame.ai.mcp.result_too_large", ""));
+        assertEquals(1L, metrics.counterValue("managame.ai.mcp.failures", "tool=dump_big"));
+        assertTrue(metrics.counterValue("managame.ai.mcp.protocol_errors", "") >= 4L);
         tools.close();
     }
 

@@ -5,16 +5,21 @@ import cn.managame.ai.AiResult;
 import cn.managame.ai.mcp.McpHttpHandler;
 import cn.managame.ai.mcp.McpTools;
 import cn.managame.ai.spi.McpToolExecutor;
+import cn.managame.benchmark.CountingSocketChannel;
+import cn.managame.benchmark.PeerProcess;
 import cn.managame.benchmark.ai.ToolInvokeBenchmark.BagTools;
 import cn.managame.benchmark.ai.ToolInvokeBenchmark.JacksonCodec;
 import cn.managame.network.http.HttpInitializer;
 import cn.managame.network.netty.NetworkServer;
+import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.EventLoopGroup;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -36,7 +41,8 @@ import org.openjdk.jmh.infra.Blackhole;
 
 /**
  * End-to-end loopback HTTP throughput of {@link AiClient#call}, {@link AiClient#stream}, and {@link McpHttpHandler}
- * serving JSON-RPC 2.0 {@code tools/call} requests.
+ * serving JSON-RPC 2.0 {@code tools/call} requests, dialing through {@link CountingSocketChannel} so wire bytes are
+ * recorded; {@link AiHttpProcessBenchmark} runs the server side in a separate {@link PeerProcess}.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -49,8 +55,8 @@ public class AiHttpBenchmark {
     public record ChatReq(long npcId, String text) {}
     public record ChatRes(String reply) {}
 
-    private static final byte[] CHAT_RESPONSE = "{\"reply\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] SSE_RESPONSE = (
+    static final byte[] CHAT_RESPONSE = "{\"reply\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
+    static final byte[] SSE_RESPONSE = (
             "id: 1\nevent: token\ndata: 你好\n\n"
             + "id: 2\nevent: token\ndata: 冒险者\n\n"
             + "id: 3\nevent: done\ndata: [DONE]\n\n"
@@ -58,50 +64,79 @@ public class AiHttpBenchmark {
     private static final String MCP_TOOLS_CALL = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
             + "\"params\":{\"name\":\"query_bag\",\"arguments\":{\"roleId\":1001,\"itemId\":2001}}}";
 
-    private NetworkServer echoAiServer;
-    private NetworkServer mcpServer;
-    private McpTools mcpTools;
+    private ServerFixture localServer;
+    private PeerProcess peer;
+    private EventLoopGroup clientGroup;
     private AiClient aiClient;
     private AiClient mcpClient;
     private final ChatReq sampleReq = new ChatReq(7, "hello");
 
-    @Setup(Level.Trial) public void start() {
+    @Setup(Level.Trial) public void start() throws Exception {
         JacksonCodec codec = new JacksonCodec();
-        echoAiServer = NetworkServer.start(0, HttpInitializer.http().handler(exchange -> {
-            if ("/stream".equals(exchange.path())) {
-                FullHttpResponse resp = new DefaultFullHttpResponse(
-                        HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(SSE_RESPONSE));
-                resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
-                exchange.respond(resp);
-            } else {
-                FullHttpResponse resp = new DefaultFullHttpResponse(
-                        HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(CHAT_RESPONSE));
-                resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
-                exchange.respond(resp);
-            }
-        }).build());
-
-        mcpTools = McpTools.builder()
+        int port;
+        if (otherProcess()) {
+            peer = PeerProcess.start(AiHttpPeer.class);
+            port = peer.port();
+        } else {
+            localServer = startServer();
+            port = localServer.port();
+        }
+        clientGroup = CountingSocketChannel.newGroup("ai-bench-client");
+        Bootstrap bootstrap = new Bootstrap().group(clientGroup).channel(CountingSocketChannel.class);
+        aiClient = AiClient.builder("http://127.0.0.1:" + port)
                 .codec(codec)
-                .executor(McpToolExecutor.direct())
-                .register(List.of(new BagTools()))
+                .bootstrap(bootstrap)
                 .build();
-        mcpServer = NetworkServer.start(0,
-                HttpInitializer.http().contextPath("/mcp").handler(new McpHttpHandler(mcpTools)).build());
-
-        aiClient = AiClient.builder("http://127.0.0.1:" + echoAiServer.port())
-                .codec(codec)
-                .build();
-        mcpClient = AiClient.builder("http://127.0.0.1:" + mcpServer.port() + "/mcp")
+        mcpClient = AiClient.builder("http://127.0.0.1:" + port + "/mcp")
+                .bootstrap(bootstrap)
                 .build();
     }
 
     @TearDown(Level.Trial) public void stop() {
         aiClient.close();
         mcpClient.close();
-        mcpServer.close();
-        mcpTools.close();
-        echoAiServer.close();
+        clientGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
+        if (localServer != null) localServer.close();
+        if (peer != null) peer.close();
+    }
+
+    protected boolean otherProcess() { return false; }
+
+    static ServerFixture startServer() {
+        JacksonCodec codec = new JacksonCodec();
+        McpTools mcpTools = McpTools.builder()
+                .codec(codec)
+                .executor(McpToolExecutor.direct())
+                .register(List.of(new BagTools()))
+                .build();
+        McpHttpHandler mcpHandler = McpHttpHandler.builder(mcpTools).path("/mcp").build();
+        NetworkServer server = NetworkServer.start(new InetSocketAddress("127.0.0.1", 0),
+                HttpInitializer.http().handler(exchange -> {
+                    switch (exchange.path()) {
+                        case "/mcp" -> mcpHandler.handle(exchange);
+                        case "/stream" -> {
+                            FullHttpResponse resp = new DefaultFullHttpResponse(
+                                    HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(SSE_RESPONSE));
+                            resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream; charset=UTF-8");
+                            exchange.respond(resp);
+                        }
+                        default -> {
+                            FullHttpResponse resp = new DefaultFullHttpResponse(
+                                    HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(CHAT_RESPONSE));
+                            resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+                            exchange.respond(resp);
+                        }
+                    }
+                }).build());
+        return new ServerFixture(server, mcpTools);
+    }
+
+    record ServerFixture(NetworkServer server, McpTools mcpTools) implements AutoCloseable {
+        int port() { return server.port(); }
+        @Override public void close() {
+            server.close();
+            mcpTools.close();
+        }
     }
 
     @Benchmark public AiResult<ChatRes> clientUnaryCall() throws Exception {

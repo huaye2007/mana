@@ -587,6 +587,71 @@ class McpToolsTest {
         }
     }
 
+    @Test void jacksonDtoRequiredFieldsInboundTimeoutBudgetAndOffTimerAfterOrdering() throws Exception {
+        record StrictGrant(long roleId, String opId, @McpParam(required = false) String memo) {}
+        record WireNamedDto(@McpParam(name = "role_id") long roleId, int count) {}
+
+        class StrictService {
+            @McpTool(name = "strict_grant", description = "Grant with required primitive and reference fields", routeKey = "roleId")
+            public String strictGrant(StrictGrant req) {
+                return req.roleId() + ":" + req.opId() + ":" + req.memo();
+            }
+
+            @McpTool(name = "wire_dto", description = "Routed by Java name with wire rename", routeKey = "roleId")
+            public long wireDto(WireNamedDto req) { return req.roleId(); }
+
+            @McpTool(name = "wire_param", description = "Routed by Java param name with wire rename", routeKey = "roleId")
+            public long wireParam(@McpParam(name = "role_id") long roleId) { return roleId; }
+
+            @McpTool(name = "hang_async", description = "Hangs asynchronously")
+            public void hangAsync(McpToolContext ctx) {
+                // never answers
+            }
+        }
+
+        List<String> order = Collections.synchronizedList(new ArrayList<>());
+        AtomicReference<String> afterThread = new AtomicReference<>();
+        AtomicReference<String> callbackThread = new AtomicReference<>();
+
+        try (McpTools tools = McpTools.builder()
+                .codec(JACKSON_CODEC)
+                .intercept(List.of(new McpToolInterceptor() {
+                    @Override public void after(McpToolCall call, McpToolResult result) {
+                        if ("hang_async".equals(call.toolName())) {
+                            afterThread.set(Thread.currentThread().getName());
+                            order.add("after:" + result.code());
+                        }
+                    }
+                }))
+                .register(List.of(new StrictService()))
+                .build()) {
+
+            // Jackson must NOT silently default missing primitive roleId to 0 or allow missing/null required opId
+            assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "strict_grant", "{\"opId\":\"op-1\"}").code());
+            assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "strict_grant", "{\"roleId\":1001}").code());
+            assertEquals(AI_TOOL_INVALID_ARGS, invokeSync(tools, "strict_grant", "{\"roleId\":1001,\"opId\":null}").code());
+            assertEquals("1001:op-1:null", invokeSync(tools, "strict_grant", "{\"roleId\":1001,\"opId\":\"op-1\"}").data());
+
+            // routeKey resolves cleanly when @McpParam(name = "role_id") renames the JSON property
+            assertEquals(888L, invokeSync(tools, "wire_param", "{\"role_id\":888}").data());
+            try (McpTools basicTools = McpTools.builder().register(List.of(new StrictService())).build()) {
+                assertEquals(777L, invokeSync(basicTools, "wire_dto", "{\"role_id\":777,\"count\":1}").data());
+            }
+
+            // Inbound X-Ai-Timeout-Ms narrows the default 30s timeout, runs `after` before `callback`, and never on AiTimer
+            CompletableFuture<McpToolResult> timedOut = new CompletableFuture<>();
+            tools.call("hang_async", "{}", Map.of("X-Ai-Timeout-Ms", "80"), null, res -> {
+                callbackThread.set(Thread.currentThread().getName());
+                order.add("callback:" + res.code());
+                timedOut.complete(res);
+            });
+            assertEquals(AI_TIMEOUT, timedOut.get(5, TimeUnit.SECONDS).code());
+            assertEquals(List.of("after:" + AI_TIMEOUT, "callback:" + AI_TIMEOUT), order);
+            assertNotEquals("managame-ai-timer", afterThread.get());
+            assertNotEquals("managame-ai-timer", callbackThread.get());
+        }
+    }
+
     private static McpToolResult invokeSync(McpTools tools, String name, String argsJson) throws Exception {
         CompletableFuture<McpToolResult> f = new CompletableFuture<>();
         tools.call(name, argsJson, f::complete);

@@ -1,6 +1,7 @@
 package cn.managame.ai.mcp;
 
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
@@ -16,6 +17,7 @@ public final class McpToolCall {
     private final Method method;
     private final Object[] arguments;
     private final Map<String, Object> rawArguments;
+    private Map<String, Object> unmodifiableRaw;
     private final String rawArgumentsJson;
     private final McpToolContext context;
     private final boolean hasRouteKey;
@@ -57,7 +59,15 @@ public final class McpToolCall {
     public Object singleArgument() { return arguments.length == 1 ? arguments[0] : null; }
 
     /** Unmodifiable view of the parsed JSON arguments object from MCP {@code tools/call}. */
-    public Map<String, Object> rawArguments() { return rawArguments; }
+    public Map<String, Object> rawArguments() {
+        if (rawArguments.isEmpty()) return Map.of();
+        Map<String, Object> view = unmodifiableRaw;
+        if (view == null) {
+            view = Collections.unmodifiableMap(rawArguments);
+            unmodifiableRaw = view;
+        }
+        return view;
+    }
 
     /**
      * Raw JSON object string of the MCP {@code arguments} payload (never null, {@code "{}"} when empty), suitable for

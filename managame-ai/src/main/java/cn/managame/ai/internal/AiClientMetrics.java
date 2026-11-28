@@ -25,15 +25,18 @@ public final class AiClientMetrics {
     private final Counter unaryCalls, streamCalls, notifyCalls, streamEvents;
     private final Counter[] failures = new Counter[FAILURE_CODES.length];
     private final Counter otherFailures;
-    private final LatencyBuckets latency;
+    private final LatencyBuckets callLatency, streamLatency, notifyLatency;
     private final List<Meter> owned = new ArrayList<>();
 
     public AiClientMetrics(Metrics metrics, String clientName, DoubleSupplier inFlight, DoubleSupplier notifyInFlight) {
         timed = metrics != Metrics.noop();
         String[] base = clientName == null || clientName.isEmpty() ? new String[0] : new String[]{"client", clientName};
-        unaryCalls = metrics.counter("managame.ai.client.calls", withTag(base, "kind", "call"));
-        streamCalls = metrics.counter("managame.ai.client.calls", withTag(base, "kind", "stream"));
-        notifyCalls = metrics.counter("managame.ai.client.calls", withTag(base, "kind", "notify"));
+        String[] callTags = withTag(base, "kind", "call");
+        String[] streamTags = withTag(base, "kind", "stream");
+        String[] notifyTags = withTag(base, "kind", "notify");
+        unaryCalls = metrics.counter("managame.ai.client.calls", callTags);
+        streamCalls = metrics.counter("managame.ai.client.calls", streamTags);
+        notifyCalls = metrics.counter("managame.ai.client.calls", notifyTags);
         streamEvents = metrics.counter("managame.ai.client.stream_events", base);
         for (int i = 0; i < FAILURE_CODES.length; i++) {
             failures[i] = metrics.counter("managame.ai.client.failures",
@@ -43,17 +46,31 @@ public final class AiClientMetrics {
         owned.add(metrics.gauge("managame.ai.client.in_flight", inFlight, base));
         owned.add(metrics.gauge("managame.ai.client.notify_in_flight", notifyInFlight, base));
         if (timed) {
-            latency = new LatencyBuckets();
-            owned.addAll(latency.report(metrics, "managame.ai.client.latency", base));
+            callLatency = new LatencyBuckets();
+            streamLatency = new LatencyBuckets();
+            notifyLatency = new LatencyBuckets();
+            owned.addAll(callLatency.report(metrics, "managame.ai.client.latency", callTags));
+            owned.addAll(streamLatency.report(metrics, "managame.ai.client.latency", streamTags));
+            owned.addAll(notifyLatency.report(metrics, "managame.ai.client.latency", notifyTags));
         } else {
-            latency = null;
+            callLatency = null;
+            streamLatency = null;
+            notifyLatency = null;
         }
     }
 
     public long startTimer() { return timed ? System.nanoTime() : 0L; }
 
-    public void recordLatency(long startNanos) {
-        if (timed && startNanos != 0L) latency.record(System.nanoTime() - startNanos);
+    public void recordCallLatency(long startNanos) {
+        if (timed && startNanos != 0L) callLatency.record(System.nanoTime() - startNanos);
+    }
+
+    public void recordStreamLatency(long startNanos) {
+        if (timed && startNanos != 0L) streamLatency.record(System.nanoTime() - startNanos);
+    }
+
+    public void recordNotifyLatency(long startNanos) {
+        if (timed && startNanos != 0L) notifyLatency.record(System.nanoTime() - startNanos);
     }
 
     public void callStarted() { unaryCalls.increment(); }
